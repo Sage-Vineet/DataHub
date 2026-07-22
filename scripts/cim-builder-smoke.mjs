@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { unzipSync, strFromU8 } from "fflate";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -30,8 +31,18 @@ async function main() {
   try {
     const canvasModule = await vite.ssrLoadModule("/src/components/cim/CimNativeBuilderCanvas.jsx");
     const exportModule = await vite.ssrLoadModule("/src/lib/cimPptxExport.js");
+    const interactionModule = await vite.ssrLoadModule("/src/lib/cimNativeBuilderInteraction.js");
     const modelModule = await vite.ssrLoadModule("/src/lib/cimNativeBuilderModel.js");
     const workspaceModule = await vite.ssrLoadModule("/src/pages/broker/workspace/WorkspaceCimPrep.jsx");
+
+    assert.equal(
+      interactionModule.shouldStartCanvasDrag({ x: 100, y: 100 }, { x: 101, y: 101 }),
+      false,
+    );
+    assert.equal(
+      interactionModule.shouldStartCanvasDrag({ clientX: 100, clientY: 100 }, { clientX: 104, clientY: 100 }),
+      true,
+    );
 
     const page = {
       id: "smoke-page",
@@ -106,6 +117,231 @@ async function main() {
     assert.match(editorHtml, /Bg opacity/);
     assert.match(editorHtml, /75%/);
     assert.doesNotMatch(editorHtml, /Image missing/);
+
+    const slide1SourceLayout = JSON.parse(readFileSync("public/cim-template/layouts/source-slide-01.layout.json", "utf8"));
+    const slide1PreparedLayout = workspaceModule.prepareCimLayout(1, slide1SourceLayout);
+    const slide1AdvisorContactRuns = slide1PreparedLayout.elements
+      .filter((element) => [18, 19].includes(Number(element.order || 0)))
+      .flatMap((element) => element.paragraphs || [])
+      .flatMap((paragraph) => paragraph.runs || []);
+    assert.ok(slide1AdvisorContactRuns.length > 0);
+    assert.deepEqual(Array.from(new Set(slide1AdvisorContactRuns.map((run) => run.color))), ["#6D6E71"]);
+    const slide1CompanyNameRuns = slide1PreparedLayout.elements
+      .filter((element) => Number(element.order || 0) === 11)
+      .flatMap((element) => element.paragraphs || [])
+      .flatMap((paragraph) => paragraph.runs || []);
+    assert.deepEqual(Array.from(new Set(slide1CompanyNameRuns.map((run) => Number(run.fontSize)))), [30]);
+    const slide1BuilderFields = workspaceModule.extractTemplateFields(1, slide1PreparedLayout);
+    assert.equal(slide1BuilderFields.some((field) => Number(field.order || 0) === 7), false);
+    const slide1BuilderElements = workspaceModule.buildCimBuilderElementSpecs(
+      1,
+      slide1PreparedLayout,
+      slide1BuilderFields,
+      {},
+      {},
+      {},
+      {},
+      null,
+    );
+    assert.equal(slide1BuilderElements.find((element) => element.id === "template:1:12")?.fontSize, 30);
+    const fetchedDescriptor = "B2B software platform serving North America";
+    const slide1DescriptorElements = workspaceModule.buildCimBuilderElementSpecs(
+      1,
+      slide1PreparedLayout,
+      slide1BuilderFields,
+      {
+        "1:sh/u9knih4b:ppt-text": "Old separate descriptor value",
+      },
+      {},
+      {},
+      { descriptor: fetchedDescriptor },
+      null,
+    );
+    const slide1DescriptorElement = slide1DescriptorElements.find((element) => element.id === "template:1:8");
+    assert.equal(slide1DescriptorElement?.text, fetchedDescriptor);
+
+    const slide1DescriptorPage = workspaceModule.buildCimBuilderPage([slide1DescriptorElement], {
+      elementOverrides: {
+        "template:1:8": {
+          ...slide1DescriptorElement,
+          text: "Old builder override descriptor",
+          y: Number(slide1DescriptorElement.y || 0) + 12,
+        },
+      },
+    });
+    const mergedDescriptorElement = slide1DescriptorPage.elements.find((element) => element.id === "template:1:8");
+    assert.equal(mergedDescriptorElement.text, fetchedDescriptor);
+    assert.equal(mergedDescriptorElement.y, Number(slide1DescriptorElement.y || 0) + 12);
+
+    const slide6SourceLayout = JSON.parse(readFileSync("public/cim-template/layouts/source-slide-06.layout.json", "utf8"));
+    const slide6PreparedLayout = workspaceModule.prepareCimLayout(6, slide6SourceLayout);
+    const slide6Fields = workspaceModule.extractTemplateFields(6, slide6PreparedLayout);
+    const slide6Elements = workspaceModule.buildCimBuilderElementSpecs(
+      6,
+      slide6PreparedLayout,
+      slide6Fields,
+      {},
+      {},
+      {},
+      {},
+      null,
+    );
+    for (const elementId of ["template:6:7", "template:6:10", "template:6:32"]) {
+      const editableElement = slide6Elements.find((element) => element.id === elementId);
+      assert.ok(editableElement?.cimFieldId?.endsWith(":ppt-text"), `${elementId} should support direct full-text editing`);
+    }
+    const slide6Subtitle = slide6Elements.find((element) => element.id === "template:6:7");
+    const editedSlide6Values = workspaceModule.applyCimBuilderElementsToFieldValues([
+      { ...slide6Subtitle, text: "Edited subtitle from builder" },
+    ]);
+    assert.equal(editedSlide6Values[slide6Subtitle.cimFieldId], "Edited subtitle from builder");
+
+    const slide8TemplateSourceLayout = JSON.parse(readFileSync("public/cim-template/layouts/source-slide-08.layout.json", "utf8"));
+    const slide8TemplatePreparedLayout = workspaceModule.prepareCimLayout(8, slide8TemplateSourceLayout);
+    const slide8TemplateFields = workspaceModule.extractTemplateFields(8, slide8TemplatePreparedLayout);
+    const slide8TemplateElements = workspaceModule.buildCimBuilderElementSpecs(
+      8,
+      slide8TemplatePreparedLayout,
+      slide8TemplateFields,
+      {},
+      {},
+      {},
+      {},
+      null,
+    );
+    for (const elementId of [
+      "template:8:6",
+      "template:8:7",
+      "template:8:9",
+      "template:8:10",
+      "template:8:13",
+      "template:8:17",
+      "template:8:21",
+      "template:8:25",
+      "template:8:29",
+      "template:8:33",
+    ]) {
+      const editableElement = slide8TemplateElements.find((element) => element.id === elementId);
+      assert.ok(editableElement?.cimFieldId?.endsWith(":ppt-text"), `${elementId} should support direct full-text editing`);
+    }
+
+    for (let slideNumber = 1; slideNumber <= workspaceModule.TEMPLATE_SLIDE_COUNT; slideNumber += 1) {
+      const sourceLayout = JSON.parse(readFileSync(
+        `public/cim-template/layouts/source-slide-${String(slideNumber).padStart(2, "0")}.layout.json`,
+        "utf8",
+      ));
+      const preparedLayout = workspaceModule.prepareCimLayout(slideNumber, sourceLayout);
+      const fontSizes = [];
+      const collectFontSizes = (value) => {
+        if (Array.isArray(value)) {
+          value.forEach(collectFontSizes);
+          return;
+        }
+        if (!value || typeof value !== "object") return;
+        Object.entries(value).forEach(([key, child]) => {
+          if (key === "fontSize" || key === "resolvedFontSize") {
+            fontSizes.push(Number(child));
+            return;
+          }
+          collectFontSizes(child);
+        });
+      };
+      collectFontSizes(preparedLayout);
+      assert.ok(fontSizes.length > 0, `slide ${slideNumber} should expose font sizes`);
+      assert.ok(fontSizes.every(Number.isInteger), `slide ${slideNumber} should only use whole-number font sizes`);
+
+      const fields = workspaceModule.extractTemplateFields(slideNumber, preparedLayout);
+      const elements = workspaceModule.buildCimBuilderElementSpecs(
+        slideNumber,
+        preparedLayout,
+        fields,
+        {},
+        {},
+        {},
+        {},
+        null,
+      );
+      const linkedTextWithoutDirectEditor = elements.filter((element) => (
+        element.type === "text" &&
+        element.cimKind === "text" &&
+        element.cimLinkedFieldIds?.length &&
+        !element.cimFieldId
+      ));
+      assert.equal(
+        linkedTextWithoutDirectEditor.length,
+        0,
+        `slide ${slideNumber} regular linked text boxes should support direct full-text editing`,
+      );
+    }
+
+    const slide3SourceLayout = JSON.parse(readFileSync("public/cim-template/layouts/source-slide-03.layout.json", "utf8"));
+    const slide3PreparedLayout = workspaceModule.prepareCimLayout(3, slide3SourceLayout);
+    const tocStyles = [
+      { orders: [6, 10, 14, 18, 22, 26, 30, 34, 38, 42], fontSize: 24, color: "#8BC53D", bold: true },
+      { orders: [7, 11, 15, 19, 23, 27, 31, 35, 39, 43], fontSize: 16, color: "#2F3033", bold: true },
+      { orders: [8, 12, 16, 20, 24, 28, 32, 36, 40, 44], fontSize: 11, color: "#8C8D90", bold: false },
+    ];
+    for (const expectedStyle of tocStyles) {
+      const orderSet = new Set(expectedStyle.orders);
+      const runs = slide3PreparedLayout.elements
+        .filter((element) => orderSet.has(Number(element.order || 0)))
+        .flatMap((element) => element.paragraphs || [])
+        .flatMap((paragraph) => paragraph.runs || []);
+      assert.equal(runs.length, 10);
+      assert.deepEqual(Array.from(new Set(runs.map((run) => Number(run.fontSize)))), [expectedStyle.fontSize]);
+      assert.deepEqual(Array.from(new Set(runs.map((run) => run.color))), [expectedStyle.color]);
+      assert.deepEqual(Array.from(new Set(runs.map((run) => Boolean(run.bold)))), [expectedStyle.bold]);
+    }
+
+    const tocOverrideBase = [
+      modelModule.createBuilderElement("text", {
+        id: "template:3:12",
+        text: "Company Overview",
+        fontSize: 16,
+        fill: "#2F3033",
+        fontWeight: 700,
+      }),
+      modelModule.createBuilderElement("text", {
+        id: "template:3:13",
+        text: "History, milestones, corporate structure, and ownership",
+        fontSize: 11,
+        fill: "#8C8D90",
+        fontWeight: 400,
+      }),
+      modelModule.createBuilderElement("text", {
+        id: "template:3:16",
+        text: "Products & Services",
+        fontSize: 16,
+        fill: "#2F3033",
+        fontWeight: 700,
+      }),
+      modelModule.createBuilderElement("text", {
+        id: "template:3:17",
+        text: "Portfolio overview, competitive differentiation, and positioning",
+        fontSize: 11,
+        fill: "#8C8D90",
+        fontWeight: 400,
+      }),
+    ];
+    const tocOverridePage = workspaceModule.buildCimBuilderPage(tocOverrideBase, {
+      elementOverrides: Object.fromEntries(tocOverrideBase.map((element) => [element.id, {
+        ...element,
+        fontSize: 24,
+        fill: "#8BC53D",
+        fontWeight: 400,
+      }])),
+    });
+    const tocOverrideById = Object.fromEntries(tocOverridePage.elements.map((element) => [element.id, element]));
+    assert.equal(tocOverrideById["template:3:12"].fontSize, 16);
+    assert.equal(tocOverrideById["template:3:12"].fill, "#2F3033");
+    assert.equal(tocOverrideById["template:3:12"].fontWeight, 700);
+    assert.equal(tocOverrideById["template:3:13"].fontSize, 11);
+    assert.equal(tocOverrideById["template:3:13"].fill, "#8C8D90");
+    assert.equal(tocOverrideById["template:3:13"].fontWeight, 400);
+    assert.equal(tocOverrideById["template:3:16"].fontSize, 16);
+    assert.equal(tocOverrideById["template:3:16"].fill, "#2F3033");
+    assert.equal(tocOverrideById["template:3:17"].fontSize, 11);
+    assert.equal(tocOverrideById["template:3:17"].fill, "#8C8D90");
 
     const historicalIncomeTable = {
       slide: { backgroundColor: "#FFFFFF" },
@@ -249,6 +485,57 @@ async function main() {
     const foundedMetricSpec = slide8Specs.find((element) => String(element.id || "").includes("founded-metric"));
     assert.equal(foundedMetricSpec.text, "Founded 1999");
     assert.deepEqual(foundedMetricSpec.cimLinkedFieldIds, [foundedYearSourceField.id]);
+
+    const slide1LogoLayout = {
+      slide: { backgroundColor: "#FFFFFF" },
+      elements: [{
+        id: "company-logo-placeholder",
+        kind: "shape",
+        order: 8,
+        bbox: [60, 540, 180, 72],
+        text: "[Company Logo]",
+        resolvedFontSize: 12,
+        paragraphs: [{
+          runs: [{
+            text: "[Company Logo]",
+            fontSize: 12,
+            typeface: "Calibri",
+            color: "#8A8F98",
+          }],
+        }],
+      }],
+    };
+    const slide1LogoFields = workspaceModule.extractTemplateFields(1, slide1LogoLayout);
+    const companyLogoField = slide1LogoFields.find((field) => field.fieldKind === "asset");
+    assert.ok(companyLogoField, "slide 1 company logo asset field should exist");
+    const logoPlaceholderSpecs = workspaceModule.buildCimBuilderElementSpecs(
+      1,
+      slide1LogoLayout,
+      slide1LogoFields,
+      {},
+      {},
+      {},
+      {},
+      null,
+    );
+    const logoPlaceholder = logoPlaceholderSpecs.find((element) => element.cimKind === "assetPlaceholder");
+    assert.equal(logoPlaceholder.cimAssetKey, "company-logo");
+    assert.equal(logoPlaceholder.cimAssetFieldId, companyLogoField.id);
+    assert.equal(logoPlaceholder.src, "");
+
+    const logoImageSpecs = workspaceModule.buildCimBuilderElementSpecs(
+      1,
+      slide1LogoLayout,
+      slide1LogoFields,
+      {},
+      { "company-logo": { dataUrl: ONE_BY_ONE_PNG, name: "Company logo" } },
+      {},
+      {},
+      null,
+    );
+    const logoImage = logoImageSpecs.find((element) => element.cimAssetKey === "company-logo");
+    assert.equal(logoImage.cimKind, "image");
+    assert.equal(logoImage.src, ONE_BY_ONE_PNG);
 
     const blob = exportModule.buildCimPptxBlob({
       layouts: {

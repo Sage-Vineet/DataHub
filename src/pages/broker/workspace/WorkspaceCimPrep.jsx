@@ -1236,6 +1236,24 @@ function createDefaultGlobalDetails(company = null) {
   };
 }
 
+function getLegacySlide1DescriptorFieldValue(fieldValues = {}) {
+  const exactKeys = [
+    "1:sh/u9knih4b:ppt-text",
+    "1:8:ppt-text",
+    "1:sh/u9knih4b:token:0:one-line-company-descriptor-industry-geography-business-model",
+    "1:8:token:0:one-line-company-descriptor-industry-geography-business-model",
+  ];
+
+  for (const key of exactKeys) {
+    if (normalizeText(fieldValues?.[key])) return String(fieldValues[key]);
+  }
+
+  const matched = Object.entries(fieldValues || {}).find(([key, value]) => (
+    key.includes("one-line-company-descriptor") && normalizeText(value)
+  ));
+  return matched ? String(matched[1]) : "";
+}
+
 function getBrokerAdvisorDefaults(user = null) {
   const brokerFirm = user?.broker_company || user?.brokerCompany || user?.company || "";
   const leadAdvisor = user?.name || user?.full_name || "";
@@ -2047,13 +2065,110 @@ function normalizeSlide35InitiativeDescriptions(layout) {
   };
 }
 
+function normalizeTemplateFontSize(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return value;
+  return Math.floor(numeric);
+}
+
+function normalizeTemplateWholeFontSizes(node) {
+  if (Array.isArray(node)) return node.map(normalizeTemplateWholeFontSizes);
+  if (!node || typeof node !== "object") return node;
+  return Object.fromEntries(
+    Object.entries(node).map(([key, value]) => {
+      if (key === "fontSize" || key === "resolvedFontSize") {
+        return [key, normalizeTemplateFontSize(value)];
+      }
+      return [key, normalizeTemplateWholeFontSizes(value)];
+    }),
+  );
+}
+
+function normalizeSlide1CompanyName(layout) {
+  if (!layout?.elements) return layout;
+  return {
+    ...layout,
+    elements: layout.elements.map((element) => {
+      const order = Number(element.order || 0);
+      if ([18, 19].includes(order)) {
+        return {
+          ...element,
+          paragraphs: (element.paragraphs || []).map((paragraph) => ({
+            ...paragraph,
+            runs: (paragraph.runs || []).map((run) => ({ ...run, color: "#6D6E71" })),
+          })),
+        };
+      }
+
+      if (order !== 11 || !/\[Company Legal Name\]/i.test(String(element.text || ""))) return element;
+      return {
+        ...element,
+        resolvedFontSize: 30,
+        resolvedTextStyle: {
+          ...(element.resolvedTextStyle || {}),
+          fontSize: 30,
+        },
+        paragraphs: (element.paragraphs || []).map((paragraph) => ({
+          ...paragraph,
+          runs: (paragraph.runs || []).map((run) => ({ ...run, fontSize: 30 })),
+        })),
+      };
+    }),
+  };
+}
+
+function normalizeSlide3TableOfContents(layout) {
+  if (!layout?.elements) return layout;
+  const tocStylesByOrder = new Map([
+    ...[6, 10, 14, 18, 22, 26, 30, 34, 38, 42].map((order) => [order, {
+      fontSize: 24,
+      color: "#8BC53D",
+      bold: true,
+    }]),
+    ...[7, 11, 15, 19, 23, 27, 31, 35, 39, 43].map((order) => [order, {
+      fontSize: 16,
+      color: "#2F3033",
+      bold: true,
+    }]),
+    ...[8, 12, 16, 20, 24, 28, 32, 36, 40, 44].map((order) => [order, {
+      fontSize: 11,
+      color: "#8C8D90",
+      bold: false,
+    }]),
+  ]);
+
+  return {
+    ...layout,
+    elements: layout.elements.map((element) => {
+      const style = tocStylesByOrder.get(Number(element.order || 0));
+      if (!style || !element.text) return element;
+      return {
+        ...element,
+        resolvedFontSize: style.fontSize,
+        paragraphs: (element.paragraphs || []).map((paragraph) => ({
+          ...paragraph,
+          runs: (paragraph.runs || []).map((run) => ({
+            ...run,
+            fontSize: style.fontSize,
+            color: style.color,
+            bold: style.bold,
+          })),
+        })),
+      };
+    }),
+  };
+}
+
 export function prepareCimLayout(slideNumber, layout) {
-  if (slideNumber === 24) return restructureSlide24Table(layout);
-  if (slideNumber === 26) return restructureSlide26Table(layout);
-  if (slideNumber === 27) return restructureSlide27Table(layout);
-  if (slideNumber === 30) return restructureSlide30TaxTable(layout);
-  if (slideNumber === 35) return normalizeSlide35InitiativeDescriptions(layout);
-  return layout;
+  let preparedLayout = layout;
+  if (slideNumber === 1) preparedLayout = normalizeSlide1CompanyName(preparedLayout);
+  if (slideNumber === 3) preparedLayout = normalizeSlide3TableOfContents(preparedLayout);
+  if (slideNumber === 24) preparedLayout = restructureSlide24Table(preparedLayout);
+  if (slideNumber === 26) preparedLayout = restructureSlide26Table(preparedLayout);
+  if (slideNumber === 27) preparedLayout = restructureSlide27Table(preparedLayout);
+  if (slideNumber === 30) preparedLayout = restructureSlide30TaxTable(preparedLayout);
+  if (slideNumber === 35) preparedLayout = normalizeSlide35InitiativeDescriptions(preparedLayout);
+  return normalizeTemplateWholeFontSizes(preparedLayout);
 }
 
 function makeFieldId(slideNumber, element) {
@@ -2172,7 +2287,9 @@ export function extractTemplateFields(slideNumber, layout) {
         style: getElementStyle(element),
         sourceText: element.text,
       };
-      const pptTextField = fieldKind === "text" && isPptTextEditableElement(element)
+      const pptTextField = fieldKind === "text" &&
+        !isSlide1DescriptorElement(slideNumber, element) &&
+        isPptTextEditableElement(element)
         ? [buildPptTextField(slideNumber, element, baseField)]
         : [];
 
@@ -2428,8 +2545,8 @@ function getChartFieldOverride(slideNumber, element) {
 }
 
 function tokenValue(token, details, sourceText = "") {
-  const key = normalizeText(token).toLowerCase();
-  const source = normalizeText(sourceText).toLowerCase();
+  const key = normalizeText(token).toLowerCase().replace(/[–—]/g, "-");
+  const source = normalizeText(sourceText).toLowerCase().replace(/[–—]/g, "-");
   const companyName = details.companyName || "";
   const isCoAdvisorField = source.includes("co-advisor");
 
@@ -2569,6 +2686,21 @@ function isTopRightSlideNumberElement(element) {
   if (!/^\d{1,3}$/.test(clean)) return false;
   const [left = 0, top = 0, width = 0, height = 0] = element.bbox || [];
   return left >= SLIDE_WIDTH - 96 && top <= 48 && width <= 80 && height <= 40;
+}
+
+function isSlide1DescriptorElement(slideNumber, element) {
+  const clean = normalizeText(element?.text).toLowerCase();
+  return Number(slideNumber || 0) === 1 &&
+    Number(element?.order || 0) === 7 &&
+    clean.includes("company descriptor");
+}
+
+function shouldUseDirectEditorTextField(slideNumber, element, pptTextField) {
+  if (!pptTextField || !element?.text) return false;
+  if (isTopRightSlideNumberElement(element)) return false;
+  if (isSlide1DescriptorElement(slideNumber, element)) return false;
+  if (getFieldKind(element.text) !== "text") return false;
+  return isPptTextEditableElement(element);
 }
 
 function getKnownGlobalTokens(text) {
@@ -3263,8 +3395,9 @@ export function buildCimBuilderElementSpecs(slideNumber, layout, fields, fieldVa
     const inlineTokenField = editableLinkedElementFields.length === 1 && isWholeElementToken(element, editableLinkedElementFields[0])
       ? editableLinkedElementFields[0]
       : null;
+    const directEditorTextField = shouldUseDirectEditorTextField(slideNumber, element, pptTextField) ? pptTextField : null;
     const inlineTextField = !mediaField
-      ? inlineTokenField || (linkedElementFields.length === 0 ? pptTextField : null)
+      ? directEditorTextField || inlineTokenField || (linkedElementFields.length === 0 ? pptTextField : null)
       : null;
 
     if (element.kind === "table" && Array.isArray(element.cells)) {
@@ -3366,10 +3499,30 @@ export function buildCimBuilderElementSpecs(slideNumber, layout, fields, fieldVa
         type: "image",
         cimKind: content.kind,
         cimAssetKey: content.kind === "image" && mediaField ? getAssetKey(mediaField) : null,
+        cimAssetFieldId: content.kind === "image" && mediaField ? mediaField.id : null,
         x: left, y: top, width, height,
         src: content.dataUrl,
         fit: content.fit || element.imageFit || element.fit || "contain",
         objectPosition: content.objectPosition || element.objectPosition || "center center",
+        zIndex: Number(element.order || 1),
+      });
+      return;
+    }
+
+    if (mediaField && isAssetField(mediaField)) {
+      specs.push({
+        id: getCimBuilderTemplateElementId(slideNumber, element),
+        type: "image",
+        cimKind: "assetPlaceholder",
+        cimAssetKey: getAssetKey(mediaField),
+        cimAssetFieldId: mediaField.id,
+        x: left, y: top, width, height,
+        src: "",
+        name: mediaField.label || "Upload logo",
+        fit: content.fit || element.imageFit || element.fit || "contain",
+        objectPosition: content.objectPosition || element.objectPosition || "center center",
+        stroke: cssColor(element.lineColor, "#BFD99B"),
+        strokeWidth: element.lineColor ? Math.max(Number(element.lineWidth || 0), 0) : 1,
         zIndex: Number(element.order || 1),
       });
       return;
@@ -3399,7 +3552,7 @@ export function buildCimBuilderElementSpecs(slideNumber, layout, fields, fieldVa
 
     const displayText = content.text ?? element.text ?? "";
     if (!normalizeText(displayText) && !inlineTextField) return;
-    const style = elementFields[0]?.style || getElementStyle(element);
+    const style = getElementStyle(element);
     const insets = style.insets || {};
     const isRule = width === 0 || height === 0;
     specs.push({
@@ -5098,7 +5251,7 @@ export function SlideCanvas({
           globalDetails,
           displaySlideNumber,
         );
-        const style = elementFields[0]?.style || getElementStyle(element);
+        const style = getElementStyle(element);
         const fillColor = isRule
           ? cssColor(element.lineColor || element.fillColor, "transparent")
           : cssColor(element.fillColor, "transparent");
@@ -7273,6 +7426,7 @@ function sanitizeCimBuilderElement(element = {}) {
     cimFieldId: element.cimFieldId || null,
     cimLinkedFieldIds: Array.from(new Set(element.cimLinkedFieldIds || [])).filter(Boolean).map(String),
     cimAssetKey: element.cimAssetKey || null,
+    cimAssetFieldId: element.cimAssetFieldId || null,
     x: Number(element.x || 0),
     y: Number(element.y || 0),
     width: Math.max(Number(element.width || 1), 1),
@@ -7438,10 +7592,37 @@ function getCimBuilderTemplateBackground() {
   return "#FFFFFF";
 }
 
+const SLIDE3_TOC_POINT_2_3_STYLE_BY_ID = {
+  "template:3:12": { fontSize: 16, fill: "#2F3033", fontWeight: 700 },
+  "template:3:13": { fontSize: 11, fill: "#8C8D90", fontWeight: 400 },
+  "template:3:16": { fontSize: 16, fill: "#2F3033", fontWeight: 700 },
+  "template:3:17": { fontSize: 11, fill: "#8C8D90", fontWeight: 400 },
+};
+
+const SLIDE1_DESCRIPTOR_BUILDER_ELEMENT_IDS = new Set([
+  "template:1:8",
+  "template:1:sh/u9knih4b",
+]);
+
+function isSlide1DescriptorBuilderElement(element = {}) {
+  return SLIDE1_DESCRIPTOR_BUILDER_ELEMENT_IDS.has(String(element.id || ""));
+}
+
+export function normalizeCimBuilderSlide3TocPointStyle(element = {}) {
+  if (element?.type !== "text") return element;
+  const style = SLIDE3_TOC_POINT_2_3_STYLE_BY_ID[String(element.id || "")];
+  if (!style) return element;
+  return {
+    ...element,
+    ...style,
+  };
+}
+
 function getComparableCimBuilderElement(element = {}) {
   const comparable = sanitizeCimBuilderElement(element);
   if (!comparable) return null;
   if (isCimBuilderTextLinked(comparable)) delete comparable.text;
+  if (isSlide1DescriptorBuilderElement(comparable)) delete comparable.text;
   return comparable;
 }
 
@@ -7449,7 +7630,7 @@ function isCimBuilderTextLinked(element = {}) {
   return Boolean(element.cimFieldId || (Array.isArray(element.cimLinkedFieldIds) && element.cimLinkedFieldIds.length));
 }
 
-function buildCimBuilderPage(baseElements = [], pageState = {}, fallbackBackground = "#FFFFFF") {
+export function buildCimBuilderPage(baseElements = [], pageState = {}, fallbackBackground = "#FFFFFF") {
   const normalizedState = normalizeCimBuilderPageState(pageState);
   const hiddenIds = new Set(normalizedState.hiddenElementIds || []);
   const elements = [
@@ -7462,8 +7643,10 @@ function buildCimBuilderPage(baseElements = [], pageState = {}, fallbackBackgrou
         if (!override) return element;
         const safeOverride = { ...override };
         if (isCimBuilderTextLinked(element)) delete safeOverride.text;
+        if (isSlide1DescriptorBuilderElement(element)) delete safeOverride.text;
         return sanitizeCimBuilderElement({ ...element, ...safeOverride, id: element.id, type: element.type });
-      }),
+      })
+      .map(normalizeCimBuilderSlide3TocPointStyle),
     ...normalizedState.addedElements,
   ].filter(Boolean);
 
@@ -7504,6 +7687,7 @@ function extractCimBuilderPageState(baseElements = [], page = {}) {
     if (JSON.stringify(comparableBase) !== JSON.stringify(comparableNext)) {
       const override = sanitizeCimBuilderElement(element);
       if (isCimBuilderTextLinked(override)) delete override.text;
+      if (isSlide1DescriptorBuilderElement(override)) delete override.text;
       elementOverrides[element.id] = override;
     }
   });
@@ -8576,7 +8760,14 @@ export default function WorkspaceCimPrep() {
     let cancelled = false;
 
     function applyLoadedCimPrepState(data) {
-      setGlobalDetails((previous) => ({ ...previous, ...(data.globalDetails || {}) }));
+      setGlobalDetails((previous) => {
+        const nextDetails = { ...previous, ...(data.globalDetails || {}) };
+        const legacyDescriptor = getLegacySlide1DescriptorFieldValue(data.fieldValues || {});
+        if (!normalizeText(nextDetails.descriptor) && legacyDescriptor) {
+          nextDetails.descriptor = legacyDescriptor;
+        }
+        return nextDetails;
+      });
       setFieldValues(data.fieldValues || {});
       setAssetValues(data.assetValues || {});
       setChartValues(data.chartValues || {});
@@ -9315,6 +9506,25 @@ export default function WorkspaceCimPrep() {
     }
   }, [showToast]);
 
+  const handleBuilderAssetPlaceholderUpload = useCallback(async (placeholder, file) => {
+    const fieldsForSlide = fieldsBySlide[activeSlide] || [];
+    const field = fieldsForSlide.find((candidate) => candidate.id === placeholder?.fieldId) ||
+      fieldsForSlide.find((candidate) => (
+        isAssetField(candidate) && getAssetKey(candidate) === placeholder?.assetKey
+      ));
+
+    if (!field) {
+      showToast({
+        type: "error",
+        title: "Logo Upload Failed",
+        message: "This logo placeholder is not linked to a CIM asset field.",
+      });
+      return;
+    }
+
+    await handleAssetUpload(field, file);
+  }, [activeSlide, fieldsBySlide, handleAssetUpload, showToast]);
+
   const handleAssetRemove = useCallback((field) => {
     setAssetValues((previous) => {
       const next = { ...previous };
@@ -9905,6 +10115,7 @@ export default function WorkspaceCimPrep() {
                 onDeletePage={handleDeleteBuilderPage}
                 onRestorePage={handleRestoreBuilderPage}
                 onChange={handleBuilderPageChange}
+                onAssetPlaceholderUpload={handleBuilderAssetPlaceholderUpload}
               />
             )}
           </div>

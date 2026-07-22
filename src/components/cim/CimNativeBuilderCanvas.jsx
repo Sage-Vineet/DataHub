@@ -23,10 +23,25 @@ import {
   Upload,
 } from "lucide-react";
 import { createBuilderElement, normalizeBuilderImageSource } from "../../lib/cimNativeBuilderModel";
+import { shouldStartCanvasDrag } from "../../lib/cimNativeBuilderInteraction";
 
 const SLIDE_WIDTH = 1280;
 const SLIDE_HEIGHT = 720;
 const MIN_ELEMENT_SIZE = 8;
+const BUILDER_FONT_OPTIONS = [
+  { label: "Calibri", value: "Calibri, Aptos, Arial, sans-serif" },
+  { label: "Aptos", value: "Aptos, Calibri, Arial, sans-serif" },
+  { label: "Arial", value: "Arial, Helvetica, sans-serif" },
+  { label: "Helvetica", value: "Helvetica, Arial, sans-serif" },
+  { label: "Times New Roman", value: "'Times New Roman', Times, serif" },
+  { label: "Georgia", value: "Georgia, 'Times New Roman', serif" },
+  { label: "Cambria", value: "Cambria, Georgia, serif" },
+  { label: "Garamond", value: "Garamond, 'Times New Roman', serif" },
+  { label: "Verdana", value: "Verdana, Geneva, sans-serif" },
+  { label: "Tahoma", value: "Tahoma, Geneva, sans-serif" },
+  { label: "Trebuchet MS", value: "'Trebuchet MS', Arial, sans-serif" },
+  { label: "Century Gothic", value: "'Century Gothic', Arial, sans-serif" },
+];
 
 function makeBuilderId(prefix = "element") {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -45,6 +60,45 @@ function normalizeHexColor(value, fallback = "#000000") {
   if (/^#[0-9a-f]{6}$/i.test(raw)) return raw;
   if (/^[0-9a-f]{6}$/i.test(raw)) return `#${raw}`;
   return fallback;
+}
+
+function getFirstFontFamily(fontFamily = "") {
+  return String(fontFamily || "")
+    .split(",")[0]
+    .replace(/["']/g, "")
+    .trim();
+}
+
+function getFontSelectValue(fontFamily = "") {
+  const current = String(fontFamily || "").trim();
+  const first = getFirstFontFamily(current).toLowerCase();
+  const option = BUILDER_FONT_OPTIONS.find((item) => getFirstFontFamily(item.value).toLowerCase() === first);
+  return option?.value || current || BUILDER_FONT_OPTIONS[0].value;
+}
+
+function FontFamilySelect({ value, onChange }) {
+  const selectValue = getFontSelectValue(value);
+  const hasOption = BUILDER_FONT_OPTIONS.some((option) => option.value === selectValue);
+
+  return (
+    <label className="block">
+      <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.06em] text-[#8A8F98]">Font</span>
+      <select
+        value={selectValue}
+        onChange={(event) => onChange(event.target.value)}
+        className="h-7 w-full rounded-md border border-border bg-white px-2 text-xs font-semibold text-[#111827] outline-none focus:border-[#8BC53D]"
+      >
+        {!hasOption ? (
+          <option value={selectValue}>{getFirstFontFamily(selectValue) || "Current font"}</option>
+        ) : null}
+        {BUILDER_FONT_OPTIONS.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
 }
 
 function getElementFrame(element, scale = 1, positioned = true) {
@@ -93,6 +147,17 @@ function preparePageForCommit(nextPage = {}) {
   };
 }
 
+function patchBuilderElement(element, patch = {}) {
+  return {
+    ...element,
+    ...patch,
+    x: patch.x === undefined ? element.x : clamp(roundSlideValue(patch.x), -SLIDE_WIDTH, SLIDE_WIDTH * 2),
+    y: patch.y === undefined ? element.y : clamp(roundSlideValue(patch.y), -SLIDE_HEIGHT, SLIDE_HEIGHT * 2),
+    width: patch.width === undefined ? element.width : Math.max(roundSlideValue(patch.width), MIN_ELEMENT_SIZE),
+    height: patch.height === undefined ? element.height : roundSlideValue(patch.height),
+  };
+}
+
 function useElementWidth(ref) {
   const [width, setWidth] = useState(0);
 
@@ -134,6 +199,7 @@ function renderBuilderElement(element, scale = 1, options = {}) {
 
   if (element.type === "image") {
     const imageSource = normalizeBuilderImageSource(element);
+    const isAssetPlaceholder = Boolean(!imageSource && element.cimAssetKey);
     return (
       <div
         aria-label={element.name || "Slide image"}
@@ -156,6 +222,11 @@ function renderBuilderElement(element, scale = 1, options = {}) {
               objectPosition: element.objectPosition || "center center",
             }}
           />
+        ) : isAssetPlaceholder ? (
+          <div className="flex h-full w-full flex-col items-center justify-center gap-1 border border-dashed border-[#BFD99B] bg-[#F8FCF3] px-2 text-center text-[10px] font-bold uppercase tracking-[0.08em] text-[#476E2C]">
+            <ImagePlus size={18} />
+            <span>{element.name || "Upload logo"}</span>
+          </div>
         ) : (
           <div className="flex h-full w-full items-center justify-center bg-[#F3F4F6] text-[10px] font-bold uppercase tracking-[0.08em] text-[#8A8F98]">
             Image missing
@@ -229,13 +300,25 @@ function renderBuilderElement(element, scale = 1, options = {}) {
         aria-label="Selected slide text"
         value={element.text || ""}
         onChange={(event) => options.onTextChange?.(event.target.value)}
+        onBlur={() => options.onEditEnd?.()}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            event.currentTarget.blur();
+            options.onEditEnd?.();
+          }
+        }}
         onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => event.stopPropagation()}
+        autoFocus
         className="resize-none outline-none"
         spellCheck={false}
         style={{
           ...textBaseStyle,
           display: "block",
+          boxSizing: "border-box",
+          margin: 0,
+          cursor: "text",
         }}
       />
     );
@@ -373,6 +456,7 @@ export default function CimNativeBuilderCanvas({
   onDeletePage,
   onRestorePage,
   onChange,
+  onAssetPlaceholderUpload,
 }) {
   const stageRef = useRef(null);
   const stageWidth = useElementWidth(stageRef);
@@ -380,7 +464,8 @@ export default function CimNativeBuilderCanvas({
   const imageInputRef = useRef(null);
   const backgroundInputRef = useRef(null);
   const interactionRef = useRef(null);
-  const [selectedElementId, setSelectedElementId] = useState("");
+  const [selectedElementIds, setSelectedElementIds] = useState([]);
+  const [editingElementId, setEditingElementId] = useState("");
   const [activeTool, setActiveTool] = useState("select");
   const [undoStack, setUndoStack] = useState([]);
   const [redoStack, setRedoStack] = useState([]);
@@ -389,14 +474,26 @@ export default function CimNativeBuilderCanvas({
     () => sortBuilderElements(page?.elements || []),
     [page?.elements],
   );
-  const selectedElement = elements.find((element) => element.id === selectedElementId) || null;
+  const selectedIdSet = useMemo(() => new Set(selectedElementIds), [selectedElementIds]);
+  const selectedElements = useMemo(
+    () => elements.filter((element) => selectedIdSet.has(element.id)),
+    [elements, selectedIdSet],
+  );
+  const selectedElement = selectedElements.length === 1 ? selectedElements[0] : null;
+  const activeEditingElementId = useMemo(() => {
+    if (!editingElementId || !selectedElementIds.includes(editingElementId)) return "";
+    const editingElement = elements.find((element) => element.id === editingElementId);
+    return editingElement?.type === "text" ? editingElementId : "";
+  }, [editingElementId, elements, selectedElementIds]);
+  const hasSelectedElements = selectedElements.length > 0;
   const deleted = Boolean(page?.deleted);
   const canUndo = undoStack.length > 0;
   const canRedo = redoStack.length > 0;
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
-      setSelectedElementId("");
+      setSelectedElementIds([]);
+      setEditingElementId("");
       setActiveTool("select");
     });
     return () => window.cancelAnimationFrame(frame);
@@ -431,20 +528,36 @@ export default function CimNativeBuilderCanvas({
     commitPage({ ...page, elements: nextElements }, options);
   }, [commitPage, page]);
 
-  const updateElement = useCallback((elementId, patch, options = {}) => {
-    commitElements((page?.elements || []).map((element) => (
-      element.id === elementId
-        ? {
-            ...element,
-            ...patch,
-            x: patch.x === undefined ? element.x : clamp(roundSlideValue(patch.x), -SLIDE_WIDTH, SLIDE_WIDTH * 2),
-            y: patch.y === undefined ? element.y : clamp(roundSlideValue(patch.y), -SLIDE_HEIGHT, SLIDE_HEIGHT * 2),
-            width: patch.width === undefined ? element.width : Math.max(roundSlideValue(patch.width), MIN_ELEMENT_SIZE),
-            height: patch.height === undefined ? element.height : roundSlideValue(patch.height),
-          }
-        : element
-    )), { recordHistory: options.recordHistory !== false });
+  const selectElement = useCallback((elementId = "", additive = false) => {
+    setEditingElementId("");
+    if (!elementId) {
+      setSelectedElementIds([]);
+      return;
+    }
+    if (!additive) {
+      setSelectedElementIds([elementId]);
+      return;
+    }
+    setSelectedElementIds((previous) => (
+      previous.includes(elementId)
+        ? previous.filter((id) => id !== elementId)
+        : [...previous, elementId]
+    ));
+  }, []);
+
+  const updateElements = useCallback((elementIds, patcher, options = {}) => {
+    const ids = new Set(Array.isArray(elementIds) ? elementIds : [elementIds]);
+    if (!ids.size) return;
+    commitElements((page?.elements || []).map((element) => {
+      if (!ids.has(element.id)) return element;
+      const patch = typeof patcher === "function" ? patcher(element) : patcher;
+      return patchBuilderElement(element, patch || {});
+    }), { recordHistory: options.recordHistory !== false });
   }, [commitElements, page?.elements]);
+
+  const updateElement = useCallback((elementId, patch, options = {}) => {
+    updateElements([elementId], patch, options);
+  }, [updateElements]);
 
   const handleUndo = useCallback(() => {
     const previousPage = undoStack[undoStack.length - 1];
@@ -452,7 +565,8 @@ export default function CimNativeBuilderCanvas({
     setUndoStack((previous) => previous.slice(0, -1));
     setRedoStack((previous) => [...previous.slice(-49), clonePageSnapshot(preparePageForCommit(page))]);
     applyPageWithoutHistory(previousPage);
-    setSelectedElementId("");
+    setSelectedElementIds([]);
+    setEditingElementId("");
     setActiveTool("select");
   }, [applyPageWithoutHistory, page, undoStack]);
 
@@ -462,7 +576,8 @@ export default function CimNativeBuilderCanvas({
     setRedoStack((previous) => previous.slice(0, -1));
     setUndoStack((previous) => [...previous.slice(-49), clonePageSnapshot(preparePageForCommit(page))]);
     applyPageWithoutHistory(nextPage);
-    setSelectedElementId("");
+    setSelectedElementIds([]);
+    setEditingElementId("");
     setActiveTool("select");
   }, [applyPageWithoutHistory, page, redoStack]);
 
@@ -475,7 +590,8 @@ export default function CimNativeBuilderCanvas({
       ...overrides,
     });
     commitElements([...(page?.elements || []), element]);
-    setSelectedElementId(element.id);
+    setSelectedElementIds([element.id]);
+    setEditingElementId("");
     setActiveTool("select");
   }
 
@@ -490,30 +606,52 @@ export default function CimNativeBuilderCanvas({
     if (!file) return;
     const dataUrl = await readFileAsDataUrl(file);
     commitPage({ ...page, backgroundImage: dataUrl, backgroundImageOpacity: 1 });
-    setSelectedElementId("");
+    setSelectedElementIds([]);
+    setEditingElementId("");
     if (backgroundInputRef.current) backgroundInputRef.current.value = "";
   }
 
+  const handleAssetPlaceholderFile = useCallback(async (placeholder, file) => {
+    if (!file || !placeholder) return;
+
+    if (onAssetPlaceholderUpload && placeholder.cimAssetKey) {
+      await onAssetPlaceholderUpload({
+        elementId: placeholder.id,
+        assetKey: placeholder.cimAssetKey,
+        fieldId: placeholder.cimAssetFieldId,
+        name: placeholder.name,
+      }, file);
+    } else {
+      const dataUrl = await readFileAsDataUrl(file);
+      updateElement(placeholder.id, { src: dataUrl, name: file.name || placeholder.name || "Image" });
+    }
+  }, [onAssetPlaceholderUpload, updateElement]);
+
   const removeSelectedElement = useCallback(() => {
-    if (!selectedElementId) return;
-    commitElements((page?.elements || []).filter((element) => element.id !== selectedElementId));
-    setSelectedElementId("");
-  }, [commitElements, page?.elements, selectedElementId]);
+    if (!hasSelectedElements) return;
+    const ids = new Set(selectedElementIds);
+    commitElements((page?.elements || []).filter((element) => !ids.has(element.id)));
+    setSelectedElementIds([]);
+    setEditingElementId("");
+  }, [commitElements, hasSelectedElements, page?.elements, selectedElementIds]);
 
   const duplicateSelectedElement = useCallback(() => {
-    if (!selectedElement) return;
-    const copy = {
-      ...selectedElement,
-      id: makeBuilderId(selectedElement.type || "element"),
-      x: Number(selectedElement.x || 0) + 24,
-      y: Number(selectedElement.y || 0) + 24,
-      zIndex: Math.max(...elements.map((element) => Number(element.zIndex || 0)), 0) + 1,
+    if (!hasSelectedElements) return;
+    const maxZIndex = Math.max(...elements.map((element) => Number(element.zIndex || 0)), 0);
+    const copies = selectedElements.map((element, index) => ({
+      ...element,
+      id: makeBuilderId(element.type || "element"),
+      x: Number(element.x || 0) + 24,
+      y: Number(element.y || 0) + 24,
+      zIndex: maxZIndex + index + 1,
       cimFieldId: null,
       cimAssetKey: null,
-    };
-    commitElements([...(page?.elements || []), copy]);
-    setSelectedElementId(copy.id);
-  }, [commitElements, elements, page?.elements, selectedElement]);
+      cimAssetFieldId: null,
+    }));
+    commitElements([...(page?.elements || []), ...copies]);
+    setSelectedElementIds(copies.map((element) => element.id));
+    setEditingElementId("");
+  }, [commitElements, elements, hasSelectedElements, page?.elements, selectedElements]);
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -533,7 +671,13 @@ export default function CimNativeBuilderCanvas({
         return;
       }
 
-      if (!selectedElementId || deleted) return;
+      if (!hasSelectedElements || deleted) return;
+
+      if (event.key === "Enter" && selectedElementIds.length === 1 && selectedElement?.type === "text") {
+        event.preventDefault();
+        setEditingElementId(selectedElement.id);
+        return;
+      }
 
       if (event.key === "Delete" || event.key === "Backspace") {
         event.preventDefault();
@@ -551,27 +695,42 @@ export default function CimNativeBuilderCanvas({
         event.preventDefault();
         const step = event.shiftKey ? 10 : 1;
         const delta = {
-          ArrowUp: { x: Number(selectedElement?.x || 0), y: Number(selectedElement?.y || 0) - step },
-          ArrowDown: { x: Number(selectedElement?.x || 0), y: Number(selectedElement?.y || 0) + step },
-          ArrowLeft: { x: Number(selectedElement?.x || 0) - step, y: Number(selectedElement?.y || 0) },
-          ArrowRight: { x: Number(selectedElement?.x || 0) + step, y: Number(selectedElement?.y || 0) },
+          ArrowUp: { x: 0, y: -step },
+          ArrowDown: { x: 0, y: step },
+          ArrowLeft: { x: -step, y: 0 },
+          ArrowRight: { x: step, y: 0 },
         }[event.key];
-        updateElement(selectedElementId, delta);
+        updateElements(selectedElementIds, (element) => ({
+          x: Number(element.x || 0) + delta.x,
+          y: Number(element.y || 0) + delta.y,
+        }));
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [deleted, duplicateSelectedElement, handleRedo, handleUndo, removeSelectedElement, selectedElement, selectedElementId, updateElement]);
+  }, [deleted, duplicateSelectedElement, handleRedo, handleUndo, hasSelectedElements, removeSelectedElement, selectedElement, selectedElementIds, updateElements]);
 
   function bringForward() {
-    if (!selectedElement) return;
-    updateElement(selectedElement.id, { zIndex: Math.max(...elements.map((element) => Number(element.zIndex || 0)), 0) + 1 });
+    if (!hasSelectedElements) return;
+    const maxZIndex = Math.max(...elements.map((element) => Number(element.zIndex || 0)), 0);
+    updateElements(
+      selectedElements.map((element) => element.id),
+      (element) => ({
+        zIndex: maxZIndex + selectedElements.findIndex((selected) => selected.id === element.id) + 1,
+      }),
+    );
   }
 
   function sendBackward() {
-    if (!selectedElement) return;
-    updateElement(selectedElement.id, { zIndex: Math.min(...elements.map((element) => Number(element.zIndex || 0)), 0) - 1 });
+    if (!hasSelectedElements) return;
+    const minZIndex = Math.min(...elements.map((element) => Number(element.zIndex || 0)), 0);
+    updateElements(
+      selectedElements.map((element) => element.id),
+      (element) => ({
+        zIndex: minZIndex - (selectedElements.length - selectedElements.findIndex((selected) => selected.id === element.id)),
+      }),
+    );
   }
 
   function toSlidePoint(event) {
@@ -587,19 +746,41 @@ export default function CimNativeBuilderCanvas({
     if (deleted) return;
     event.preventDefault();
     event.stopPropagation();
+    if (event.shiftKey && action === "move") {
+      selectElement(element.id, true);
+      return;
+    }
     setActiveTool("select");
-    setSelectedElementId(element.id);
+    const isSelected = selectedIdSet.has(element.id);
+    const interactionElementIds = action === "move" && isSelected
+      ? selectedElements.map((selected) => selected.id)
+      : [element.id];
+    if (!isSelected || action !== "move") {
+      selectElement(element.id);
+    }
     const point = toSlidePoint(event);
+    const startElements = Object.fromEntries(
+      (page?.elements || [])
+        .filter((candidate) => interactionElementIds.includes(candidate.id))
+        .map((candidate) => [candidate.id, { ...candidate }]),
+    );
     interactionRef.current = {
       action,
       handle,
       elementId: element.id,
+      elementIds: interactionElementIds,
       startPoint: point,
+      startClientPoint: { x: event.clientX, y: event.clientY },
       startElement: { ...element },
+      startElements,
       startPage: clonePageSnapshot(page),
       historyRecorded: false,
+      dragStarted: false,
     };
-    event.currentTarget.setPointerCapture?.(event.pointerId);
+    const pointerTarget = event.target;
+    if (typeof pointerTarget?.setPointerCapture === "function") {
+      pointerTarget.setPointerCapture(event.pointerId);
+    }
   }
 
   function handlePointerMove(event) {
@@ -609,15 +790,26 @@ export default function CimNativeBuilderCanvas({
     const dx = point.x - interaction.startPoint.x;
     const dy = point.y - interaction.startPoint.y;
     const start = interaction.startElement;
+    if (!interaction.dragStarted) {
+      const hasIntentionalDrag = shouldStartCanvasDrag(
+        interaction.startClientPoint,
+        { x: event.clientX, y: event.clientY },
+      );
+      if (!hasIntentionalDrag) return;
+      interaction.dragStarted = true;
+    }
     if (!interaction.historyRecorded) {
       pushUndoSnapshot(interaction.startPage);
       interaction.historyRecorded = true;
     }
 
     if (interaction.action === "move") {
-      updateElement(interaction.elementId, {
-        x: start.x + dx,
-        y: start.y + dy,
+      updateElements(interaction.elementIds || [interaction.elementId], (element) => {
+        const startElement = interaction.startElements?.[element.id] || element;
+        return {
+          x: Number(startElement.x || 0) + dx,
+          y: Number(startElement.y || 0) + dy,
+        };
       }, { recordHistory: false });
       return;
     }
@@ -718,16 +910,16 @@ export default function CimNativeBuilderCanvas({
         <div className="h-6 w-px bg-border" />
 
         <div className="flex items-center gap-1">
-          <ToolbarButton title="Duplicate selected" disabled={!selectedElement} onClick={duplicateSelectedElement}>
+          <ToolbarButton title="Duplicate selected" disabled={!hasSelectedElements} onClick={duplicateSelectedElement}>
             <Copy size={15} />
           </ToolbarButton>
-          <ToolbarButton title="Bring forward" disabled={!selectedElement} onClick={bringForward}>
+          <ToolbarButton title="Bring forward" disabled={!hasSelectedElements} onClick={bringForward}>
             <ArrowUp size={15} />
           </ToolbarButton>
-          <ToolbarButton title="Send backward" disabled={!selectedElement} onClick={sendBackward}>
+          <ToolbarButton title="Send backward" disabled={!hasSelectedElements} onClick={sendBackward}>
             <ArrowDown size={15} />
           </ToolbarButton>
-          <ToolbarButton title="Delete selected element" disabled={!selectedElement} onClick={removeSelectedElement}>
+          <ToolbarButton title="Delete selected element" disabled={!hasSelectedElements} onClick={removeSelectedElement}>
             <Trash2 size={15} />
           </ToolbarButton>
         </div>
@@ -780,7 +972,10 @@ export default function CimNativeBuilderCanvas({
             onPointerMove={handlePointerMove}
             onPointerUp={endInteraction}
             onPointerCancel={endInteraction}
-            onClick={() => setSelectedElementId("")}
+            onClick={() => {
+              setSelectedElementIds([]);
+              setEditingElementId("");
+            }}
           >
             {page?.backgroundImage ? (
               <img
@@ -815,8 +1010,11 @@ export default function CimNativeBuilderCanvas({
                 transform: `scale(${scale})`,
               }}
             >
+              {/* eslint-disable-next-line react-hooks/refs -- Ref reads are only inside pointer/file event handlers used by each rendered element. */}
               {elements.map((element) => {
-                const selected = selectedElementId === element.id;
+                const selected = selectedIdSet.has(element.id);
+                const showResizeHandles = selected && selectedElementIds.length === 1;
+                const isAssetPlaceholder = element.type === "image" && !normalizeBuilderImageSource(element) && element.cimAssetKey;
                 const frame = getElementFrame(element, 1, true);
                 return (
                   <div
@@ -825,7 +1023,14 @@ export default function CimNativeBuilderCanvas({
                     onPointerDown={(event) => startInteraction(event, element, "move")}
                     onClick={(event) => {
                       event.stopPropagation();
-                      setSelectedElementId(element.id);
+                      if (event.shiftKey) return;
+                      selectElement(element.id);
+                    }}
+                    onDoubleClick={(event) => {
+                      event.stopPropagation();
+                      if (element.type !== "text") return;
+                      setSelectedElementIds([element.id]);
+                      setEditingElementId(element.id);
                     }}
                     style={{
                       position: "absolute",
@@ -839,13 +1044,14 @@ export default function CimNativeBuilderCanvas({
                   >
                     {renderBuilderElement(element, 1, {
                       selected,
-                      editable: true,
+                      editable: activeEditingElementId === element.id && selectedElementIds.length === 1,
                       positioned: false,
                       onTextChange: (text) => updateElement(element.id, { text }),
+                      onEditEnd: () => setEditingElementId(""),
                     })}
                     {selected ? (
                       <div className="pointer-events-none absolute inset-0 ring-2 ring-[#8BC53D]">
-                        {handlePositions.map(([handle, position]) => (
+                        {showResizeHandles ? handlePositions.map(([handle, position]) => (
                           <button
                             key={handle}
                             type="button"
@@ -853,8 +1059,27 @@ export default function CimNativeBuilderCanvas({
                             className={`pointer-events-auto absolute h-[10px] w-[10px] rounded-sm border border-white bg-[#476E2C] ${position}`}
                             onPointerDown={(event) => startInteraction(event, element, "resize", handle)}
                           />
-                        ))}
+                        )) : null}
                       </div>
+                    ) : null}
+                    {isAssetPlaceholder ? (
+                      <label
+                        className="absolute inset-0 cursor-pointer"
+                        title="Upload logo"
+                        aria-label="Upload logo"
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <input
+                          type="file"
+                          accept="image/png,image/jpeg"
+                          className="sr-only"
+                          onChange={(event) => {
+                            void handleAssetPlaceholderFile(element, event.target.files?.[0]);
+                            event.target.value = "";
+                          }}
+                        />
+                      </label>
                     ) : null}
                   </div>
                 );
@@ -867,12 +1092,22 @@ export default function CimNativeBuilderCanvas({
           <div className="mb-2 flex items-center justify-between">
             <div>
               <p className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#8A8F98]">Inspector</p>
-              <h3 className="text-sm font-bold text-[#111827]">{selectedElement ? "Selected element" : "Page"}</h3>
+              <h3 className="text-sm font-bold text-[#111827]">
+                {selectedElement
+                  ? "Selected element"
+                  : selectedElements.length > 1
+                    ? `${selectedElements.length} elements selected`
+                    : "Page"}
+              </h3>
             </div>
           </div>
 
           <div className="space-y-2.5">
-            {!selectedElement ? (
+            {selectedElements.length > 1 ? (
+              <div className="rounded-md border border-[#BFD99B] bg-[#F8FCF3] p-3 text-xs font-semibold leading-snug text-[#476E2C]">
+                Drag any selected element, use arrow keys, or use the toolbar to move, duplicate, layer, or delete the selected group.
+              </div>
+            ) : !selectedElement ? (
               <>
                 <InspectorInput
                   label="Background"
@@ -929,6 +1164,15 @@ export default function CimNativeBuilderCanvas({
 
                 {selectedElement.type === "text" ? (
                   <>
+                    <label className="block">
+                      <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.06em] text-[#8A8F98]">Text</span>
+                      <textarea
+                        value={selectedElement.text || ""}
+                        onChange={(event) => updateElement(selectedElement.id, { text: event.target.value })}
+                        className="h-20 w-full resize-none rounded-md border border-border bg-white px-2 py-1.5 text-xs font-semibold text-[#111827] outline-none focus:border-[#8BC53D]"
+                        spellCheck={false}
+                      />
+                    </label>
                     <div className="grid grid-cols-[1fr_84px] gap-2">
                       <InspectorInput
                         label="Text color"
@@ -945,14 +1189,10 @@ export default function CimNativeBuilderCanvas({
                         onChange={(value) => updateElement(selectedElement.id, { fontSize: value })}
                       />
                     </div>
-                    <label className="block">
-                      <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.06em] text-[#8A8F98]">Font</span>
-                      <input
-                        value={selectedElement.fontFamily || ""}
-                        onChange={(event) => updateElement(selectedElement.id, { fontFamily: event.target.value })}
-                        className="h-7 w-full rounded-md border border-border bg-white px-2 text-xs font-semibold text-[#111827] outline-none focus:border-[#8BC53D]"
-                      />
-                    </label>
+                    <FontFamilySelect
+                      value={selectedElement.fontFamily || ""}
+                      onChange={(fontFamily) => updateElement(selectedElement.id, { fontFamily })}
+                    />
                     <div className="grid grid-cols-3 gap-2">
                       <InspectorInput
                         label="Line"
