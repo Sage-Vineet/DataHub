@@ -581,13 +581,18 @@ async function parseTaxReturnWithGemini(buffer, fileName = '') {
 // (used by P&L and Balance Sheet extractors)
 // ---------------------------------------------------------------------------
 
-function flattenGeminiRows(nodes, sectionName = '', depth = 0) {
+function flattenGeminiRows(nodes, sectionName = '', depth = 0, ancestors = []) {
   const result = [];
   for (const node of nodes || []) {
-    result.push({ ...node, _section: sectionName || node.name, _depth: depth });
+    // _parent_path is the FULL ancestor chain (every enclosing node's own
+    // name, top-to-bottom) — Gemini's nested `children` tree already encodes
+    // real multi-level document structure; this preserves all of it, unlike
+    // _section which collapses everything down to a single nearest label.
+    result.push({ ...node, _section: sectionName || node.name, _depth: depth, _parent_path: ancestors });
     if (Array.isArray(node.children) && node.children.length > 0) {
       const childSection = (node.type === 'header') ? node.name : sectionName;
-      result.push(...flattenGeminiRows(node.children, childSection, depth + 1));
+      const childAncestors = [...ancestors, node.name];
+      result.push(...flattenGeminiRows(node.children, childSection, depth + 1, childAncestors));
     }
   }
   return result;

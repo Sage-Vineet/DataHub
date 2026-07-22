@@ -188,93 +188,6 @@ function buildTree(coaAccounts) {
 // buildMappings / buildFuzzyLookup / fuzzyMatch now live in accountNameMatching.js
 // (shared with coaMappingService — see the top-of-file import).
 
-// ─── Amount loading for leaf accounts ─────────────────────────────────────────
-
-/**
- * Load Map<coaLeafId, amount> from an entry table.
- * Only LEAF accounts receive amounts; category/group nodes stay at 0 (tree rollup fills them).
- * Summary rows (Gross Profit, Net Income, …) are skipped.
- */
-async function buildLeafAmountMap(_companyId, versionId, sourceTable, year, _allCoa, leaves, unmappedSet) {
-  const amountById = new Map(leaves.map(a => [a.id, 0]));
-
-  const entries = await fetchAllRows(() => {
-    let q = supabase
-      .from(sourceTable)
-      .select("account_name, account_number, amount")
-      .eq("version_id", versionId)
-      .or("is_total.eq.false,is_total.is.null");
-    if (year) q = q.eq("fiscal_year", year);
-    return q;
-  });
-  if (!entries?.length) {
-    console.warn(`[FinStmt][Entries][${sourceTable}] 0 rows for version=${versionId} year=${year}`);
-    return amountById;
-  }
-
-  // Aggregate by normalized name, skipping summary rows.
-  const entryTotals = new Map();
-  let skipped = 0;
-  for (const e of entries) {
-    if (isSummaryRow(e.account_name)) { skipped++; continue; }
-    const key = norm(e.account_name);
-    if (!key) continue;
-    if (!entryTotals.has(key)) entryTotals.set(key, { amount: 0, rawName: e.account_name, accountNumber: e.account_number });
-    entryTotals.get(key).amount += safeNum(e.amount);
-  }
-  console.log(`[FinStmt][Entries][${sourceTable}] ${entries.length} rows, ${skipped} summary rows skipped → ${entryTotals.size} unique accounts`);
-
-  // Build fuzzy lookup once — used in both the mapping-miss path and the no-mapping fallback.
-  const fuzzyLookup = buildFuzzyLookup(leaves);
-
-  // Primary: name/number map built from the COA leaves. Entries that miss the
-  // map are tried against fuzzy matching before being declared unmapped.
-  const mappings = buildMappings(leaves);
-  let matched = 0, missed = 0;
-  if (mappings && mappings.size > 0) {
-    for (const [normName, { amount, rawName, accountNumber }] of entryTotals) {
-      let ids = mappings.get(normName);
-      if (!ids?.length && accountNumber) ids = mappings.get(`__num__${String(accountNumber).trim()}`);
-      if (ids?.length) {
-        for (const id of ids) {
-          if (!amountById.has(id)) amountById.set(id, 0);
-          amountById.set(id, (amountById.get(id) || 0) + amount / ids.length);
-        }
-        matched++;
-      } else {
-        // Mapping missed — try fuzzy before discarding (handles normalisation edge cases).
-        const result = fuzzyMatch(fuzzyLookup, rawName || normName, accountNumber);
-        if (result && amountById.has(result.id)) {
-          amountById.set(result.id, (amountById.get(result.id) || 0) + amount);
-          matched++;
-        } else {
-          unmappedSet.add(normName);
-          missed++;
-        }
-      }
-    }
-    console.log(`[FinStmt][Map][${sourceTable}] ${matched} matched (incl. fuzzy), ${missed} unmapped via COA name map`);
-    return amountById;
-  }
-
-  // Fallback: no mappings at all — pure fuzzy name matching against leaf accounts.
-  console.warn(`[FinStmt][Map][${sourceTable}] no mappings — fuzzy name match`);
-  for (const [normName, { amount, rawName, accountNumber }] of entryTotals) {
-    const result = fuzzyMatch(fuzzyLookup, rawName, accountNumber);
-    if (result && amountById.has(result.id)) {
-      amountById.set(result.id, (amountById.get(result.id) || 0) + amount);
-      if (result.confidence < 1.0)
-        console.log(`[FinStmt][Fuzzy] "${rawName}" → ${result.id} (${(result.confidence * 100).toFixed(0)}%)`);
-      matched++;
-    } else {
-      unmappedSet.add(normName);
-      missed++;
-    }
-  }
-  console.log(`[FinStmt][Fuzzy][${sourceTable}] ${matched} matched, ${missed} unmapped`);
-  return amountById;
-}
-
 // ─── Tree rollup ──────────────────────────────────────────────────────────────
 
 /**
@@ -797,11 +710,32 @@ async function generateYearlyPl(_companyId, versionId, year, allCoa, unmappedSet
   const leafAmounts = new Map(plLeaves.map(a => [a.id, 0]));
   const gl = await loadGlAmountsYearly(versionId, year);
   if (gl) {
+    // gl's key is a coa_id whenever the GL row was linked (authoritative — see
+    // loadGlAmountsYearly); glMappings/fuzzyLookup are only the fallback for a
+    // key that's still a normalized name (row missing coa_id).
     const glMappings  = buildMappings(plLeaves);
     const fuzzyLookup = buildFuzzyLookup(plLeaves);
-    for (const [normKey, { rawName, accountNumber, total }] of gl) {
+    for (const [key, { rawName, accountNumber, total, linked }] of gl) {
       const totalAmt = total;
       if (Math.abs(totalAmt) < 0.005) continue;
+      if (leafAmounts.has(key)) {
+        leafAmounts.set(key, (leafAmounts.get(key) || 0) + totalAmt);
+        continue;
+      }
+      // CONFIRMED BUG this guard fixes: a row already linked to a real coa_id
+      // that simply isn't a P&L leaf (e.g. an asset account like "Furniture &
+      // Equipment") must be excluded from P&L, never re-attributed by name/
+      // fuzzy matching to a different, merely similarly-named P&L leaf (e.g.
+      // "Furniture & Equipment < 2500", a genuinely distinct account with its
+      // own coa_id). Confirmed live: this fuzzy match added $71,868 of real
+      // Balance Sheet asset activity onto an unrelated Expense leaf for
+      // FY2023, understating Net Income by exactly that amount. Name/fuzzy
+      // matching is only a legitimate fallback for a row that was NEVER
+      // linked at all (linked === false) — coa_id is the single source of
+      // truth for classification; a resolved-but-non-P&L account is never
+      // reclassified by text similarity.
+      if (linked) continue;
+      const normKey = norm(rawName);
       let ids = glMappings?.get(normKey);
       if (!ids?.length && accountNumber) ids = glMappings?.get(`__num__${String(accountNumber).trim()}`);
       if (ids?.length) {
@@ -979,33 +913,6 @@ async function generateMonthlyPlFromYearly(versionId, year, yearlyStatement) {
   });
 }
 
-// GL-direct P&L for one month — used when COA mapping produces all-zero results.
-function buildGlDirectPlStatement(byAccount, monthNum) {
-  const REVENUE_RE = /revenue|income|sales|fees earned|interest income|gross receipts|gain on sale|refund/i;
-  const revenue = [], expenses = [];
-  for (const { rawName, months } of byAccount.values()) {
-    const amt = months.get(monthNum) || 0;
-    if (Math.abs(amt) < 0.005) continue;
-    if (REVENUE_RE.test(rawName)) {
-      revenue.push({ name: rawName, amount: round2(Math.abs(amt)) });
-    } else {
-      expenses.push({ name: rawName, amount: round2(Math.abs(amt)) });
-    }
-  }
-  const totalRevenue  = round2(revenue.reduce((s, a) => s + a.amount, 0));
-  const totalExpenses = round2(expenses.reduce((s, a) => s + a.amount, 0));
-  const grossProfit   = totalRevenue;
-  const netIncome     = round2(totalRevenue - totalExpenses);
-  return {
-    revenue:          { label: "Total Revenue",  accounts: revenue,   total: totalRevenue },
-    costOfSales:      { label: "Cost of Sales",  accounts: [],        total: 0 },
-    grossProfit,
-    operatingExpenses: { label: "Total Expenses", groups: { "Operating Expenses": { label: "Operating Expenses", accounts: expenses, total: totalExpenses } }, total: totalExpenses },
-    operatingIncome:  netIncome,
-    netIncome,
-  };
-}
-
 /**
  * Yearly GL accumulation for generateYearlyPl.
  *
@@ -1028,7 +935,7 @@ async function loadGlAmountsYearly(versionId, year) {
     data = await fetchAllRows(() =>
       supabase
         .from("general_ledger_entries")
-        .select("account_name, split_account, account_number, amount, transaction_date")
+        .select("account_name, split_account, account_number, amount, transaction_date, coa_id, split_coa_id")
         .eq("version_id", versionId)
         .gte("transaction_date", `${year}-01-01`)
         .lte("transaction_date", `${year}-12-31`)
@@ -1037,35 +944,42 @@ async function loadGlAmountsYearly(versionId, year) {
   } catch (err) { console.warn(`[FinStmt][GL][${year}] yearly read failed: ${err.message}`); return null; }
   if (!data?.length) return null;
 
-  // norm(name) → { rawName, accountNumber, total }
+  // Keyed by coa_id when the row is linked (authoritative — no name matching);
+  // falls back to norm(name) only for a row still missing coa_id. `linked`
+  // records WHICH case produced this entry — the consumer (generateYearlyPl)
+  // must only attempt name/fuzzy matching when linked is false. A linked
+  // entry whose coa_id simply isn't a P&L leaf (e.g. an asset account) is a
+  // resolved, correct classification — it belongs on the Balance Sheet, not
+  // P&L — and must never be re-attributed to a different, merely
+  // similarly-named P&L leaf by the fuzzy fallback.
   const byAccount = new Map();
-  const namesWithOwnRow = new Set();
+  const coaIdsWithOwnRow = new Set();
   for (const row of data) {
     const rawName = String(row.account_name || "").trim();
     if (!rawName || isSummaryRow(rawName)) continue;
-    const key = norm(rawName);
-    namesWithOwnRow.add(key);
+    const key = row.coa_id || norm(rawName);
+    if (row.coa_id) coaIdsWithOwnRow.add(row.coa_id);
     if (!byAccount.has(key)) {
-      byAccount.set(key, { rawName, accountNumber: row.account_number, total: 0 });
+      byAccount.set(key, { rawName, accountNumber: row.account_number, total: 0, linked: Boolean(row.coa_id) });
     }
     byAccount.get(key).total += safeNum(row.amount);
   }
 
-  // split_account fallback — mirrors keyReportReportService.aggregateGLByAccount's
-  // plDistSeen rule: pick up an account that only ever appears via split_account
-  // this year (e.g. a partial GL export), attributed under its own name, but only
-  // if it doesn't already have its own account_name row (avoids double-counting).
-  // Kept identical in intent to the Balance Sheet/Cash Flow aggregator so P&L and
-  // Financial Statements agree on Net Income for the same version+year.
+  // split_coa_id fallback — mirrors keyReportReportService.aggregateGLByAccount's
+  // distCoaIdsSeen rule: pick up an account that only ever appears via
+  // split_coa_id this year (e.g. a partial GL export), attributed under its own
+  // coa_id, but only if it doesn't already have its own account_name row (avoids
+  // double-counting). Kept identical in intent to the Balance Sheet/Cash Flow
+  // aggregator so P&L and Financial Statements agree on Net Income for the same
+  // version+year.
   for (const row of data) {
+    if (!row.split_coa_id || coaIdsWithOwnRow.has(row.split_coa_id)) continue;
     const splitName = String(row.split_account || "").trim();
     if (!splitName || isSummaryRow(splitName)) continue;
-    const key = norm(splitName);
-    if (namesWithOwnRow.has(key)) continue;
-    if (!byAccount.has(key)) {
-      byAccount.set(key, { rawName: splitName, accountNumber: null, total: 0 });
+    if (!byAccount.has(row.split_coa_id)) {
+      byAccount.set(row.split_coa_id, { rawName: splitName, accountNumber: null, total: 0, linked: true });
     }
-    byAccount.get(key).total += safeNum(row.amount);
+    byAccount.get(row.split_coa_id).total += safeNum(row.amount);
   }
 
   console.log(`[FinStmt][GL][${year}] yearly: ${data.length} rows → ${byAccount.size} accounts`);
@@ -1083,7 +997,7 @@ async function loadGlAmountsByMonth(versionId, year) {
     data = await fetchAllRows(() =>
       supabase
         .from("general_ledger_entries")
-        .select("account_name, account_number, amount, transaction_date")
+        .select("account_name, account_number, amount, transaction_date, coa_id")
         .eq("version_id", versionId)
         .gte("transaction_date", `${year}-01-01`)
         .lte("transaction_date", `${year}-12-31`)
@@ -1092,7 +1006,8 @@ async function loadGlAmountsByMonth(versionId, year) {
   } catch (err) { console.warn(`[FinStmt][GL] ${err.message}`); return null; }
   if (!data?.length) return null;
 
-  // norm(name) → { rawName, accountNumber, months: Map<month, amount>, vendors: Map<vendorName, Map<month, amount>> }
+  // Keyed by coa_id when linked (authoritative); norm(name) fallback only for
+  // a row still missing coa_id. { rawName, accountNumber, months: Map<month, amount>, vendors: Map<vendorName, Map<month, amount>> }
   const byAccount   = new Map();
   const monthsFound = new Set();
 
@@ -1103,10 +1018,10 @@ async function loadGlAmountsByMonth(versionId, year) {
     const month   = parseInt(dateStr.slice(5, 7), 10);
     if (!(month >= 1 && month <= 12)) continue;
 
-    const key = norm(rawName);
+    const key = row.coa_id || norm(rawName);
     monthsFound.add(month);
     if (!byAccount.has(key)) {
-      byAccount.set(key, { rawName, accountNumber: row.account_number, months: new Map() });
+      byAccount.set(key, { rawName, accountNumber: row.account_number, months: new Map(), linked: Boolean(row.coa_id) });
     }
     const acc = byAccount.get(key);
     acc.months.set(month, (acc.months.get(month) || 0) + safeNum(row.amount));
@@ -1130,10 +1045,21 @@ async function generateMonthlyPl(_companyId, versionId, year, allCoa, unmappedSe
   const glMappings  = buildMappings(plLeaves);
   const fuzzyLookup = buildFuzzyLookup(plLeaves);
 
-  // Pre-pass: ensure all GL accounts are mapped in COA
-  for (const [normKey, { rawName, accountNumber, months: monthMap }] of gl.byAccount) {
+  // Pre-pass: ensure all GL accounts are mapped in COA. gl.byAccount's key is a
+  // coa_id whenever the row was linked (authoritative — see
+  // loadGlAmountsByMonth); glMappings/fuzzyLookup only cover a key that's still
+  // a normalized name (row missing coa_id).
+  const plLeafIds = new Set(plLeaves.map(a => a.id));
+  for (const [key, { rawName, accountNumber, months: monthMap, linked }] of gl.byAccount) {
+    if (plLeafIds.has(key)) continue;
+    // A linked row whose coa_id simply isn't a P&L leaf is correctly
+    // classified elsewhere (Balance Sheet) — never name/fuzzy-matched to a
+    // different P&L account. See generateYearlyPl's identical guard for the
+    // confirmed production bug this prevents.
+    if (linked) continue;
     const totalAmt = Array.from(monthMap.values()).reduce((s, v) => s + v, 0);
     if (Math.abs(totalAmt) < 0.005) continue;
+    const normKey = norm(rawName);
     let ids = glMappings?.get(normKey);
     if (!ids?.length && accountNumber) ids = glMappings?.get(`__num__${String(accountNumber).trim()}`);
     if (!ids?.length) {
@@ -1151,28 +1077,38 @@ async function generateMonthlyPl(_companyId, versionId, year, allCoa, unmappedSe
     // leafVendors: coaLeafId → vendorName → amount (for this month)
     const leafVendors = new Map();
 
-    for (const [normKey, { rawName, accountNumber, months: monthMap, vendors }] of gl.byAccount) {
+    for (const [key, { rawName, accountNumber, months: monthMap, vendors, linked }] of gl.byAccount) {
       const rawAmt = monthMap.get(monthNum) || 0;
       if (Math.abs(rawAmt) < 0.005) continue;
 
-      let ids = glMappings?.get(normKey);
-      if (!ids?.length && accountNumber) ids = glMappings?.get(`__num__${String(accountNumber).trim()}`);
-
       let mappedIds = null;
-      if (ids?.length) {
-        for (const id of ids) {
-          if (leafAmounts.has(id)) {
-            leafAmounts.set(id, (leafAmounts.get(id) || 0) + rawAmt / ids.length);
-          }
-        }
-        mappedIds = ids.filter(id => leafAmounts.has(id));
+      if (leafAmounts.has(key)) {
+        // key is this row's own coa_id — authoritative, no name matching.
+        leafAmounts.set(key, (leafAmounts.get(key) || 0) + rawAmt);
+        mappedIds = [key];
+      } else if (linked) {
+        // Linked to a real coa_id that isn't a P&L leaf (e.g. an asset
+        // account) — correctly excluded, never fuzzy-matched to a different
+        // P&L account by name. See generateYearlyPl's identical guard.
       } else {
-        const match = fuzzyMatch(fuzzyLookup, rawName, accountNumber);
-        if (match?.id && leafAmounts.has(match.id)) {
-          leafAmounts.set(match.id, (leafAmounts.get(match.id) || 0) + rawAmt);
-          mappedIds = [match.id];
+        const normKey = norm(rawName);
+        let ids = glMappings?.get(normKey);
+        if (!ids?.length && accountNumber) ids = glMappings?.get(`__num__${String(accountNumber).trim()}`);
+        if (ids?.length) {
+          for (const id of ids) {
+            if (leafAmounts.has(id)) {
+              leafAmounts.set(id, (leafAmounts.get(id) || 0) + rawAmt / ids.length);
+            }
+          }
+          mappedIds = ids.filter(id => leafAmounts.has(id));
         } else {
-          unmappedSet.add(normKey);
+          const match = fuzzyMatch(fuzzyLookup, rawName, accountNumber);
+          if (match?.id && leafAmounts.has(match.id)) {
+            leafAmounts.set(match.id, (leafAmounts.get(match.id) || 0) + rawAmt);
+            mappedIds = [match.id];
+          } else {
+            unmappedSet.add(normKey);
+          }
         }
       }
 
@@ -1191,17 +1127,9 @@ async function generateMonthlyPl(_companyId, versionId, year, allCoa, unmappedSe
       }
     }
 
-    // If COA mapping produced no amounts, fall back to direct GL classification.
-    const totalMapped = Array.from(leafAmounts.values()).reduce((s, v) => s + Math.abs(v), 0);
-    if (totalMapped < 0.01 && gl.byAccount.size > 0) {
-      return {
-        month: MONTH_NAMES[monthNum - 1], monthNumber: monthNum,
-        year: String(year), periodLabel: `${MONTH_NAMES[monthNum - 1]} ${year}`,
-        statement: buildGlDirectPlStatement(gl.byAccount, monthNum),
-        vendorsByAccount: {},
-      };
-    }
-
+    // If COA mapping produced no amounts, the tree still renders (all-zero,
+    // consistent with unmappedSet already tracking why) — never guess a
+    // revenue/expense split from the account name as a fallback.
     const { byId, roots, leaves } = buildTree(plAccounts);
     for (const root of roots) rollupNode(root, leafAmounts);
 
@@ -1262,7 +1190,7 @@ async function generateYearlyBs(_companyId, versionId, year, allCoa, unmappedSet
     let q = genFilter(
       supabase
         .from("balance_sheet_entries")
-        .select("account_name, account_number, amount, is_total")
+        .select("account_name, account_number, amount, is_total, coa_id")
         .eq("version_id", versionId),
     );
     return latestDate ? q.eq("as_of_date", latestDate) : q.eq("fiscal_year", year);
@@ -1304,12 +1232,19 @@ async function generateYearlyBs(_companyId, versionId, year, allCoa, unmappedSet
   }
 
   if (entries?.length) {
+    // coa_id-linked rows resolve directly (no name matching); only a row still
+    // missing coa_id falls through to the name/number/fuzzy fallback below.
     const entryTotals = new Map();
     for (const e of entries) {
       const isNI = /^net\s*(income|loss)/i.test(String(e.account_name || '').trim());
       // Skip calculated totals (is_total=true) UNLESS it's the Net Income equity line,
       // which QB exports mark as a total but which represents a real closing balance.
       if (e.is_total && !isNI) continue;
+      if (isNI) hasUploadedNetIncome = true;
+      if (e.coa_id && leafAmounts.has(e.coa_id)) {
+        leafAmounts.set(e.coa_id, (leafAmounts.get(e.coa_id) || 0) + safeNum(e.amount));
+        continue;
+      }
       // Skip P&L subtotals ("Net Operating Income", "Total Revenue", etc.)
       // but allow the "Net Income" equity account through.
       if (!isNI && isSummaryRow(e.account_name)) continue;
@@ -1317,7 +1252,6 @@ async function generateYearlyBs(_companyId, versionId, year, allCoa, unmappedSet
       if (!key) continue;
       if (!entryTotals.has(key)) entryTotals.set(key, { amount: 0, rawName: e.account_name, accountNumber: e.account_number });
       entryTotals.get(key).amount += safeNum(e.amount);
-      if (isNI) hasUploadedNetIncome = true;
     }
 
     const bsMappings  = buildMappings(bsLeaves);
@@ -1401,9 +1335,16 @@ async function generateMonthlyBsFromGL(_companyId, versionId, year, allCoa, bsLe
   for (const monthNum of months) {
     const { bsMap, netIncome: monthNI } = byMonth.get(monthNum);
 
-    // Add this month's BS account movements to cumulative totals
-    for (const [name, { net }] of bsMap) {
+    // Add this month's BS account movements to cumulative totals. bsMap is
+    // keyed by coa_id (see aggregateGLForBSByMonth) — when that key IS a real
+    // COA leaf id, use it directly (authoritative, no name matching needed);
+    // only the defensive `unlinked:name` fallback key still needs fuzzy match.
+    for (const [key, { name, net }] of bsMap) {
       if (Math.abs(net) < 0.005) continue;
+      if (cumLeafGL.has(key)) {
+        cumLeafGL.set(key, cumLeafGL.get(key) + net);
+        continue;
+      }
       const match = fuzzyMatch(fuzzyLookup, name, null);
       if (match?.id && cumLeafGL.has(match.id)) {
         cumLeafGL.set(match.id, cumLeafGL.get(match.id) + net);
@@ -1451,7 +1392,7 @@ async function generateMonthlyBs(companyId, versionId, year, allCoa, unmappedSet
   const allEntries = await fetchAllRows(() => {
     let q = supabase
       .from("balance_sheet_entries")
-      .select("account_name, account_number, amount, as_of_date")
+      .select("account_name, account_number, amount, as_of_date, coa_id")
       .eq("version_id", versionId)
       .eq("fiscal_year", year)
       .or("is_total.eq.false,is_total.is.null");
@@ -1471,14 +1412,21 @@ async function generateMonthlyBs(companyId, versionId, year, allCoa, unmappedSet
   // Only one (or zero) distinct dates → fall back to GL carry-forward monthly snapshots.
   if (byDate.size <= 1) return generateMonthlyBsFromGL(companyId, versionId, year, allCoa, bsLeaves, unmappedSet);
 
+  // Fallback matchers — only used for the rare row still missing coa_id
+  // (e.g. a not-yet-relinked upload). Every row Phase E's linkBsToCoa/
+  // generateMonthlyBalanceSheets already tagged resolves directly below.
   const bsMappings  = buildMappings(bsLeaves);
   const fuzzyLookup = buildFuzzyLookup(bsLeaves);
   const result      = [];
 
   for (const [dateKey, dateEntries] of Array.from(byDate).sort(([a], [b]) => a.localeCompare(b))) {
     const leafAmounts = new Map(bsLeaves.map(a => [a.id, 0]));
-    const entryTotals = new Map();
+    const entryTotals = new Map(); // used only for the coa_id-missing fallback path
     for (const e of dateEntries) {
+      if (e.coa_id && leafAmounts.has(e.coa_id)) {
+        leafAmounts.set(e.coa_id, (leafAmounts.get(e.coa_id) || 0) + safeNum(e.amount));
+        continue;
+      }
       const key = norm(e.account_name);
       if (!key) continue;
       if (!entryTotals.has(key)) entryTotals.set(key, { amount: 0, rawName: e.account_name, accountNumber: e.account_number });
@@ -1497,11 +1445,11 @@ async function generateMonthlyBs(companyId, versionId, year, allCoa, unmappedSet
         if (match?.id && leafAmounts.has(match.id)) {
           leafAmounts.set(match.id, (leafAmounts.get(match.id) || 0) + amount);
         } else {
-          // No COA match (account number / exact / normalized / fuzzy all
-          // missed). Per the client workflow, an unmapped account is NEVER
-          // given an invented hierarchy or keyword-guessed type mid-report —
-          // it is tracked here and excluded from the statement until a human
-          // maps it in the Chart of Accounts (needs_mapping).
+          // No COA match (coa_id / account number / exact / normalized /
+          // fuzzy all missed). Per the client workflow, an unmapped account
+          // is NEVER given an invented hierarchy or keyword-guessed type
+          // mid-report — it is tracked here and excluded from the statement
+          // until a human maps it in the Chart of Accounts (needs_mapping).
           unmappedSet.add(normKey);
         }
       }
@@ -1595,9 +1543,13 @@ function buildCfCategoryMap(allCoa) {
   const map = new Map();
   for (const a of allCoa || []) {
     if (a.metadata?.is_group) continue;
+    const entry = { cfCategory: a.cf_category || null, accountType: a.account_type || null };
+    // Keyed by coa_id (authoritative, no name matching) AND by normalized name
+    // (fallback for the rare `unlinked:name` synthetic-key case in bsMap/mData).
+    if (a.id) map.set(a.id, entry);
     for (const n of [a.account_name, a.adjusted_name, a.base_account]) {
       const k = norm(n);
-      if (k && !map.has(k)) map.set(k, { cfCategory: a.cf_category || null, accountType: a.account_type || null });
+      if (k && !map.has(k)) map.set(k, entry);
     }
   }
   return map;
@@ -1737,10 +1689,13 @@ async function generateMonthlyCf(versionId, year, allCoa) {
       let wcAdj = 0, investingTotal = 0, financingTotal = 0;
       const opAdjItems = [], invItems = [], finItems = [];
 
-      for (const [name, { net, type }] of mData.bsMap) {
+      // mData.bsMap is keyed by coa_id (see aggregateGLForBSByMonth) — look up
+      // cf_category directly by that id first (authoritative); norm(name) only
+      // covers the defensive `unlinked:name` synthetic-key case.
+      for (const [key, { name, net, type }] of mData.bsMap) {
         const amt = safeNum(net);
         if (!amt) continue;
-        const cfCategory = cfCategoryMap.get(norm(name))?.cfCategory;
+        const cfCategory = (cfCategoryMap.get(key) || cfCategoryMap.get(norm(name)))?.cfCategory;
         if (!cfCategory) continue; // cash account, or not yet classified in the COA
 
         if (cfCategory === "operating") {
@@ -2106,4 +2061,12 @@ async function getMonthlyPlFinancials(versionId) {
   return result;
 }
 
-module.exports = { generateFinancialStatements, getMonthlyPlFinancials };
+module.exports = {
+  generateFinancialStatements,
+  getMonthlyPlFinancials,
+  // Exported so keyReportReportService.js's getCashflowReport can delegate to
+  // this COA-driven (cf_category) engine instead of the legacy name/regex
+  // classifier in manualCashFlowService.js — one Cash Flow engine, not two.
+  loadCoa,
+  generateYearlyCf,
+};

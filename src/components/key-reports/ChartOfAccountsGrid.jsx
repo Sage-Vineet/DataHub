@@ -12,7 +12,15 @@ import {
 } from "../../lib/api";
 
 const STATEMENT_LABELS = { balance_sheet: "Balance Sheet", profit_loss: "P&L" };
-const METHOD_LABELS = { rule: "Rule", gemini: "AI", hybrid: "AI+Rules", manual: "Manual", gemini_category: "AI (category match)", bs_section: "Balance Sheet section" };
+const METHOD_LABELS = {
+  rule: "Rule", gemini: "AI", hybrid: "AI+Rules", manual: "Manual",
+  ai_hierarchy: "AI (full hierarchy)",
+  // Legacy values a previously-generated row can still carry until its next
+  // regenerate — kept so old rows still render a readable label instead of
+  // falling back to the raw method string.
+  gemini_category: "AI (category match)", existing_working_coa: "Existing COA",
+  bs_section: "Balance Sheet section", pl_section: "P&L section",
+};
 const MAX_LEVELS = 15;
 const LEVEL_INDEXES = Array.from({ length: MAX_LEVELS }, (_, i) => i);
 

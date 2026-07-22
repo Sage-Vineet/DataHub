@@ -49,25 +49,74 @@ async function glDateRange(companyId, versionId) {
   };
 }
 
-// Earliest/latest EXTRACTED (is_generated = false/null) balance-sheet snapshot.
-async function extractedBsBounds(companyId, versionId) {
-  const base = () =>
-    supabase
-      .from(TABLE_BS)
-      .select("as_of_date, fiscal_year")
-      .eq("company_id", companyId)
-      .eq("version_id", versionId)
-      .or("is_generated.eq.false,is_generated.is.null");
+// ============================================================================
+// Balance Sheet Coverage (replaces the old single earliest/latest-row model)
+//
+// The prior design asked "is THIS ONE row (the globally earliest/latest
+// balance_sheet_entries row) an Opening BS, or an Ending BS?" — an either/or
+// question that breaks the moment more than one Balance Sheet is uploaded, or
+// a single comparative Balance Sheet spans multiple years: a document
+// covering 2022-2025 IS the Opening BS for a 2023-2026 GL, but the old code
+// only ever looked at ONE globally-extreme row, so a second, later-dated
+// document (e.g. a 2026-only Ending BS) could hide that first document's
+// 2022 coverage from ever being seen at all.
+//
+// The new model asks a different question entirely: build every uploaded
+// Balance Sheet document's own YEAR COVERAGE (never its upload order, file
+// name, or an "opening"/"ending" label), then ask whether the UNION of all
+// of them reaches back far enough to seed the GL's start, and/or forward
+// enough to reconcile against the GL's end.
+async function buildBsCoverage(companyId, versionId) {
+  const { data, error } = await supabase
+    .from(TABLE_BS)
+    .select("source_file_id, as_of_date, fiscal_year")
+    .eq("company_id", companyId)
+    .eq("version_id", versionId)
+    .or("is_generated.eq.false,is_generated.is.null");
+  if (error || !data?.length) return { documents: [], coverageYears: [] };
 
-  const [{ data: earliest }, { data: latest }] = await Promise.all([
-    base().order("as_of_date", { ascending: true }).limit(1),
-    base().order("as_of_date", { ascending: false }).limit(1),
-  ]);
+  const bySource = new Map();
+  for (const row of data) {
+    const key = row.source_file_id || "__unlinked__";
+    if (!bySource.has(key)) bySource.set(key, []);
+    bySource.get(key).push(row);
+  }
 
-  return {
-    earliest: earliest?.[0] || null,
-    latest: latest?.[0] || null,
-  };
+  const documents = [];
+  for (const [documentId, rows] of bySource) {
+    const years = Array.from(new Set(rows.map((r) => Number(r.fiscal_year)).filter(Number.isInteger))).sort((a, b) => a - b);
+    if (!years.length) continue;
+    const latestRow = rows.slice().sort((a, b) => String(a.as_of_date || "").localeCompare(String(b.as_of_date || ""))).pop();
+    documents.push({
+      documentId,
+      years,
+      earliestYear: years[0],
+      latestYear: years[years.length - 1],
+      statementDate: latestRow?.as_of_date || null,
+      isComparative: years.length > 1,
+    });
+  }
+  documents.sort((a, b) => a.earliestYear - b.earliestYear);
+
+  const coverageYears = Array.from(new Set(documents.flatMap((d) => d.years))).sort((a, b) => a - b);
+  return { documents, coverageYears };
+}
+
+// The actual snapshot row(s) for one fiscal year — used once the coverage
+// analysis below has decided WHICH year to seed the opening/ending balance
+// from, to read its real as_of_date (needed by the roll-forward/back engines
+// and by the first_year_opening vs. prior_year_closing distinction).
+async function findBsSnapshotForYear(companyId, versionId, year) {
+  if (year == null) return null;
+  const { data } = await supabase
+    .from(TABLE_BS)
+    .select("as_of_date, fiscal_year")
+    .eq("company_id", companyId).eq("version_id", versionId)
+    .eq("fiscal_year", year)
+    .or("is_generated.eq.false,is_generated.is.null")
+    .order("as_of_date", { ascending: false })
+    .limit(1);
+  return data?.[0] || null;
 }
 
 async function glRowCount(companyId, versionId) {
@@ -197,10 +246,10 @@ async function classifyWorkflowDocuments(companyId, versionId) {
     };
   }
 
-  const [{ minDate, maxDate }, { earliest, latest }, plMappingCount] =
+  const [{ minDate, maxDate }, bsCoverage, plMappingCount] =
     await Promise.all([
       glDateRange(companyId, versionId),
-      extractedBsBounds(companyId, versionId),
+      buildBsCoverage(companyId, versionId),
       profitLossMappingCount(versionId),
     ]);
   const hasProfitLoss = plMappingCount > 0;
@@ -218,24 +267,92 @@ async function classifyWorkflowDocuments(companyId, versionId) {
   const glStartDate = minDate || (minYear ? `${minYear}-01-01` : null);
   const glEndDate = maxDate || (maxYear ? `${maxYear}-12-31` : null);
 
-  // See the two accepted forms documented above. Both are detected here and
-  // normalized into the same `openingBs` object — the fiscal year it actually
-  // carries (minYear-or-earlier vs. minYear itself) is what
-  // generateMonthlyBalanceSheets uses to seed the roll-forward, so no
-  // generation logic needs to know which form the client uploaded.
-  const priorYearClosing = Boolean(earliest && minYear && Number(earliest.fiscal_year) < minYear);
-  const firstYearOpening = Boolean(
-    earliest && minYear && Number(earliest.fiscal_year) === minYear &&
-      glStartDate && earliest.as_of_date && earliest.as_of_date <= glStartDate,
-  );
-  const hasOpeningBs = priorYearClosing || firstYearOpening;
-  const openingBsMode = priorYearClosing ? "prior_year_closing" : firstYearOpening ? "first_year_opening" : null;
+  // ── Opening / Ending Coverage ──────────────────────────────────────────────
+  // Never "is THIS document an Opening BS or an Ending BS" — a document can be
+  // both (a single 2022-2026 file), or coverage can come from the UNION of
+  // several documents (one 2022-2025 file + a separate 2026 file). Evaluated
+  // purely from bsCoverage.coverageYears (every uploaded Balance Sheet's own
+  // fiscal years) relative to the GL's own start/end — never upload order,
+  // file name, or an "opening"/"ending" label.
+  //
+  // Opening Coverage: some document's earliestYear reaches back to (or before)
+  // the GL's start year. To actually SEED the roll-forward we need one real
+  // year to open from, preferred in this order:
+  //   1. The closest year strictly BEFORE glStartYear that was uploaded (a
+  //      genuine prior-year CLOSING balance — e.g. FY2022 closing seeds a
+  //      2023 GL). Preferred over glStartYear itself even when a comparative
+  //      document also carries a glStartYear column, since that column is
+  //      almost always ALSO a closing balance (as of 12/31/glStartYear), which
+  //      would double-count glStartYear's own GL activity if used as its
+  //      opening seed.
+  //   2. glStartYear itself, but ONLY confirmed via its actual as_of_date
+  //      being at/before the GL's first transaction (first_year_opening) —
+  //      an actual "Opening Balance Sheet as of 1/1/<glStartYear>", not a
+  //      same-year closing snapshot.
+  const strictlyPriorYears = minYear != null ? bsCoverage.coverageYears.filter((y) => y < minYear) : [];
+  let openingFiscalYear = null;
+  let openingBsMode = null;
+  if (strictlyPriorYears.length) {
+    openingFiscalYear = Math.max(...strictlyPriorYears);
+    openingBsMode = "prior_year_closing";
+  } else if (minYear != null && bsCoverage.coverageYears.includes(minYear)) {
+    const candidate = await findBsSnapshotForYear(companyId, versionId, minYear);
+    if (candidate?.as_of_date && glStartDate && candidate.as_of_date <= glStartDate) {
+      openingFiscalYear = minYear;
+      openingBsMode = "first_year_opening";
+    }
+  }
+  // hasOpeningBs MUST mean exactly "openingFiscalYear/openingBs (below) is a
+  // real, usable beginning-of-period balance" — never broader than that.
+  //
+  // CONFIRMED BUG (previously fixed here): this used to also accept any
+  // document whose earliestYear <= glStartYear, even when neither of the two
+  // checks above actually resolved a year to seed from — e.g. a SINGLE
+  // Balance Sheet dated 12/31/<glStartYear> (a genuine CLOSING balance for
+  // the GL's first year, uploaded as the only "opening-ish" document). That
+  // document's own year equals glStartYear, so the broad rule counted it as
+  // opening coverage, while the stricter as_of_date check above correctly
+  // left openingFiscalYear/openingBs null (it's not really an opening
+  // snapshot). Downstream, generateMonthlyBalanceSheets trusted hasOpeningBs
+  // to mean "safe to run the forward engine" and then guessed a fallback
+  // year, producing "Closing<glStartYear> + GL<glStartYear> = wrong
+  // Closing<glStartYear>" — the exact double-count this function exists to
+  // prevent. Requiring hasOpeningBs === (openingFiscalYear != null) makes
+  // that state impossible: with no genuine opening year, hasOpeningBs is
+  // false, balanceSheetMode correctly falls to 'reverse' (below), and
+  // generateMonthlyBalanceSheetsReverse reconstructs every year — including
+  // glStartYear — backward from the Ending Balance Sheet instead.
+  const hasOpeningBs = openingFiscalYear != null;
 
-  // Ending BS = an extracted snapshot for (or after) the last GL year — the one
-  // reconciliation compares the generated ending balances against.
-  const hasEndingBs = Boolean(
-    latest && maxYear && Number(latest.fiscal_year) >= maxYear,
-  );
+  // Ending Coverage: some document's years include glEndYear itself, or
+  // reaches at/beyond it (a comparative document whose latest column is
+  // glEndYear or later, or an explicit future-year snapshot).
+  const endingCandidateYears = maxYear != null ? bsCoverage.coverageYears.filter((y) => y >= maxYear) : [];
+  const endingFiscalYear = endingCandidateYears.length
+    ? (endingCandidateYears.includes(maxYear) ? maxYear : Math.min(...endingCandidateYears))
+    : null;
+  const hasEndingBs = endingFiscalYear != null ||
+    bsCoverage.documents.some((d) => maxYear != null && d.latestYear >= maxYear);
+
+  const [openingBs, endingBs] = await Promise.all([
+    openingFiscalYear != null ? findBsSnapshotForYear(companyId, versionId, openingFiscalYear) : Promise.resolve(null),
+    endingFiscalYear != null ? findBsSnapshotForYear(companyId, versionId, endingFiscalYear) : Promise.resolve(null),
+  ]);
+
+  // Human-readable coverage summary — replaces the old "OpeningBS=yes/no,
+  // EndingBS=yes/no" line with the actual per-document years the decision was
+  // based on (see keyReportSyncService's log call site).
+  const coverageSummary = {
+    glRange: minYear != null && maxYear != null ? `${minYear}-${maxYear}` : null,
+    documents: bsCoverage.documents.map((d, i) => ({
+      label: `Document ${i + 1}`,
+      years: d.isComparative ? `${d.earliestYear}-${d.latestYear}` : String(d.earliestYear),
+      isComparative: d.isComparative,
+    })),
+    hasOpeningBs,
+    hasEndingBs,
+    coverageYears: bsCoverage.coverageYears,
+  };
 
   // A Balance Sheet is required for the roll-forward/back — EITHER a Starting
   // BS (forward engine, unchanged) OR an Ending BS (reverse engine) satisfies
@@ -269,6 +386,7 @@ async function classifyWorkflowDocuments(companyId, versionId) {
       hasEndingBs: false,
       hasProfitLoss,
       balanceSheetMode: null,
+      bsCoverage: coverageSummary,
       canGenerate: false,
       rows,
       haltReason: "balance_sheet_required",
@@ -296,13 +414,14 @@ async function classifyWorkflowDocuments(companyId, versionId) {
       glEndYear: maxYear,
       glStartDate,
       glEndDate,
-      openingBs: hasOpeningBs ? earliest : null,
+      openingBs,
       openingBsMode,
-      endingBs: hasEndingBs ? latest : null,
+      endingBs,
       hasOpeningBs,
       hasEndingBs,
       hasProfitLoss: false,
       balanceSheetMode,
+      bsCoverage: coverageSummary,
       canGenerate: false,
       rows,
       haltReason: "profit_loss_required",
@@ -326,13 +445,14 @@ async function classifyWorkflowDocuments(companyId, versionId) {
     glEndYear: maxYear,
     glStartDate,
     glEndDate,
-    openingBs: hasOpeningBs ? earliest : null,
+    openingBs,
     openingBsMode,
-    endingBs: hasEndingBs ? latest : null,
+    endingBs,
     hasOpeningBs,
     hasEndingBs,
     hasProfitLoss,
     balanceSheetMode,
+    bsCoverage: coverageSummary,
     canGenerate: true,
     rows,
   };
@@ -368,23 +488,43 @@ function monthEndDate(year, m) {
   return `${year}-${String(m).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
 }
 
-// Natural-sign accumulation. GL aggregation converts debit-minus-credit values
-// before they reach this running monthly balance map.
-function addRun(map, name, delta, type) {
-  const key = String(name || "").trim();
-  if (!key) return;
-  if (!map.has(key)) map.set(key, { name: key, balance: 0, type: type || "unknown" });
-  const e = map.get(key);
+// A running/snapshot map key is a real chart_of_accounts.id exactly when it
+// looks like a uuid — every other key is a synthetic control-account label
+// ("Retained Earnings" fallback, "unlinked:<name>") that has no COA leaf.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Natural-sign accumulation, keyed by coa_id (falls back to a synthetic string
+// key only for control accounts with no matching COA leaf — see
+// findControlAccountCoaId). GL aggregation (aggregateGLForBS/ByMonth) already
+// resolved coa_id and account_type from chart_of_accounts before this point;
+// this map never re-derives either from a name.
+function addRun(map, key, delta, type, name) {
+  const k = key == null ? "" : String(key);
+  if (!k) return;
+  if (!map.has(k)) map.set(k, { name: name || k, balance: 0, type: type || "unknown" });
+  const e = map.get(k);
   e.balance += Number(delta) || 0;
   if (type && (e.type === "unknown" || !e.type)) e.type = type;
 }
 
+// Find a COA leaf for a structural control account (Retained Earnings, Net
+// Income) by name+type. This is NOT per-transaction account classification —
+// it identifies one well-known closing/rollup account, once per version, so
+// its GL-sourced movements (if any) and its synthetic closing-entry movements
+// land under the SAME coa_id instead of splitting into two rows.
+function findControlAccountCoaId(coaById, namePattern, accountType) {
+  for (const [id, row] of coaById) {
+    if (row.accountType === accountType && namePattern.test(String(row.accountName || ""))) return id;
+  }
+  return null;
+}
+
 // Build the per-account balance_sheet_entries rows for one month-end snapshot
 // from the running natural-sign balances + the current-year cumulative Net Income.
-function snapshotRows({ versionId, companyId, year, asOfDate, running, cumulativeNetIncome, sortStart }) {
+function snapshotRows({ versionId, companyId, year, asOfDate, running, cumulativeNetIncome, sortStart, netIncomeCoaId }) {
   const rows = [];
   let sort = sortStart;
-  const push = (name, amount, type) => {
+  const push = (key, name, amount, type) => {
     if (Math.abs(round2(amount)) < 0.005) return;
     // No blind default: an unrecognized/"unknown" type (never classified by
     // Gemini or matched to an existing chart_of_accounts row) must not be
@@ -403,15 +543,18 @@ function snapshotRows({ versionId, companyId, year, asOfDate, running, cumulativ
       amount: round2(amount),
       hierarchy_level: 2,
       parent_account_id: null,
+      coa_id: key && UUID_RE.test(String(key)) ? key : null,
       sort_order: sort++,
       is_total: false,
       is_generated: true,
     });
   };
-  for (const v of running.values()) push(v.name, v.balance, v.type);
+  for (const [key, v] of running) push(key, v.name, v.balance, v.type);
   // Current-year cumulative Net Income is a separate equity line (not merged into RE
-  // until year-end close) — matches the bsBalancesForYear presentation.
-  if (Math.abs(round2(cumulativeNetIncome)) >= 0.005) push("Net Income", cumulativeNetIncome, "equity");
+  // until year-end close) — matches the bsBalancesForYear presentation. Usually has
+  // no coa_id of its own (it's a calculated rollup, not a posted ledger account)
+  // unless the COA happens to carry an explicit "Net Income" leaf.
+  if (Math.abs(round2(cumulativeNetIncome)) >= 0.005) push(netIncomeCoaId || null, "Net Income", cumulativeNetIncome, "equity");
   return { rows, nextSort: sort };
 }
 
@@ -489,26 +632,74 @@ async function generateMonthlyBalanceSheets(companyId, versionId, gate) {
     .eq("version_id", versionId)
     .eq("is_generated", true);
 
-  // Opening position: seed from whichever fiscal year the uploaded Starting
-  // Balance Sheet actually resolved to during validation (gate.openingBs) —
-  // either the prior year's closing (startYear - 1, the historical default)
-  // or the GL's own first fiscal year's opening snapshot (startYear itself,
-  // when the client only has an "Opening Balance Sheet as of 1/1/<startYear>").
-  // Both are the exact same point in time (instant before the GL's first
-  // transaction), so reusing whichever year the gate already validated —
-  // instead of re-deriving one here — makes the two forms behave identically
-  // without any change to bsBalancesForYear or the GL engines themselves.
-  const openingYear = gate?.openingBs?.fiscal_year ?? (startYear - 1);
+  const coaById = await loadCoaByIdMap(versionId);
+  const reCoaId = findControlAccountCoaId(coaById, /retained\s*earnings/i, "equity") || "Retained Earnings";
+  const niCoaId = findControlAccountCoaId(coaById, /net\s*(income|loss)/i, "equity");
+  // Opening balances come from bsBalancesForYear, which is still name-keyed
+  // (extracted balance_sheet_entries rows aren't coa_id-linked at read time
+  // yet — a Report Rendering concern, not this engine's). This lookup is the
+  // one legitimate bridge from that name-keyed world into this coa_id-keyed
+  // engine, built once per run from the COA itself (not per-account guessing).
+  const nameToCoaId = new Map();
+  for (const [id, row] of coaById) {
+    const k = String(row.accountName || "").trim().toLowerCase();
+    if (k && !nameToCoaId.has(k)) nameToCoaId.set(k, id);
+  }
+
+  // Opening position: seed EXCLUSIVELY from gate.openingBs — the year the
+  // validation gate itself already confirmed is a genuine beginning-of-period
+  // balance (either a real prior-year closing, or a confirmed
+  // before-the-GL's-first-transaction opening snapshot; see
+  // classifyWorkflowDocuments's openingFiscalYear derivation). Never guess a
+  // fallback year here.
+  //
+  // CONFIRMED BUG (fixed by removing the fallback below, not by adding
+  // another branch): this used to silently default to `startYear - 1` via
+  // `gate?.openingBs?.fiscal_year ?? (startYear - 1)` whenever gate.openingBs
+  // was null. That default is wrong whenever a Balance Sheet dated
+  // 12/31/<startYear> exists but ISN'T a genuine opening (a normal case:
+  // clients upload a closing balance for the GL's first year, not a
+  // 1/1/<startYear> opening snapshot) — classifyWorkflowDocuments correctly
+  // leaves gate.openingBs null in that case, but this function still went
+  // looking for `startYear - 1` data. If a generated/extracted snapshot for
+  // that guessed year happened to exist, its balances got used as the
+  // opening seed for `startYear` while THIS SAME YEAR's own GL activity was
+  // then replayed on top — "Closing<startYear> + GL<startYear> = wrong
+  // Closing<startYear>", exactly the reported symptom. Trusting only
+  // gate.openingBs (which classifyWorkflowDocuments/hasOpeningBs guarantee is
+  // consistent — see its own doc comment) makes that impossible: with no
+  // genuine opening year, this function is only ever reached in 'forward' or
+  // 'dual' mode when hasOpeningBs is true, so gate.openingBs is always
+  // populated; standalone calls (e.g. a manual regenerate) that lack a real
+  // gate.openingBs correctly start from zero instead of guessing.
+  const openingYear = gate?.openingBs?.fiscal_year ?? null;
   const running = new Map();
-  try {
-    const opening = await bsBalancesForYear(versionId, openingYear);
-    if (opening?.balances?.size) {
-      for (const v of opening.balances.values()) {
-        if (/^net\s+income$/i.test(String(v.name).trim())) addRun(running, "Retained Earnings", v.balance, "equity");
-        else addRun(running, v.name, v.balance, v.type);
+  if (openingYear == null) {
+    console.warn(`[generateMonthlyBalanceSheets] versionId=${versionId}: no opening balance snapshot from the validation gate — starting FY${startYear} from zero.`);
+  } else {
+    try {
+      const opening = await bsBalancesForYear(versionId, openingYear);
+      if (opening?.balances?.size) {
+        for (const v of opening.balances.values()) {
+          if (/^net\s+income$/i.test(String(v.name).trim())) {
+            addRun(running, reCoaId, v.balance, "equity", "Retained Earnings");
+          } else {
+            const key = nameToCoaId.get(String(v.name).trim().toLowerCase()) || `unlinked:${v.name}`;
+            addRun(running, key, v.balance, v.type, v.name);
+          }
+        }
       }
-    }
-  } catch (_e) { /* no opening → start from zero (gate already warned) */ }
+    } catch (_e) { /* no opening → start from zero (gate already warned) */ }
+  }
+
+  // NOTE: the reverse engine (generateMonthlyBalanceSheetsReverse) needs an
+  // analogous fix for an account missing from the uploaded Ending BS, because
+  // walking BACKWARD subtracts that account's GL delta against a seed that
+  // never included it, producing a negative balance. This forward engine does
+  // not share that symptom: an account with no opening-seed row simply starts
+  // at zero and accumulates its real GL activity normally via the per-month
+  // loop below (addRun auto-initializes a missing key) — there is nothing to
+  // fix here.
 
   const allRows = [];
   let sort = 0;
@@ -547,11 +738,11 @@ async function generateMonthlyBalanceSheets(companyId, versionId, gate) {
         if (asOf > monthEndCutoff) break; // don't fabricate months past the last GL activity
         const mData = byMonth.get(m);
         if (mData) {
-          for (const [name, acc] of mData.bsMap) addRun(running, name, acc.net, acc.type);
+          for (const [key, acc] of mData.bsMap) addRun(running, key, acc.net, acc.type, acc.name);
           cumulativeNetIncome += mData.netIncome;
         }
         const { rows, nextSort } = snapshotRows({
-          versionId, companyId, year, asOfDate: asOf, running, cumulativeNetIncome, sortStart: sort,
+          versionId, companyId, year, asOfDate: asOf, running, cumulativeNetIncome, sortStart: sort, netIncomeCoaId: niCoaId,
         });
         allRows.push(...rows);
         sort = nextSort;
@@ -564,14 +755,14 @@ async function generateMonthlyBalanceSheets(companyId, versionId, gate) {
       try {
         const agg = await aggregateGLForBS(versionId, year);
         if (agg?.bsMap) {
-          for (const [name, acc] of agg.bsMap) addRun(running, name, acc.net, acc.type);
+          for (const [key, acc] of agg.bsMap) addRun(running, key, acc.net, acc.type, acc.name);
           cumulativeNetIncome += agg.netIncome || 0;
         }
       } catch (_e) { /* leave running unchanged */ }
       const asOf = monthEndDate(year, 12);
       if (asOf <= monthEndCutoff) {
         const { rows, nextSort } = snapshotRows({
-          versionId, companyId, year, asOfDate: asOf, running, cumulativeNetIncome, sortStart: sort,
+          versionId, companyId, year, asOfDate: asOf, running, cumulativeNetIncome, sortStart: sort, netIncomeCoaId: niCoaId,
         });
         allRows.push(...rows);
         sort = nextSort;
@@ -582,8 +773,13 @@ async function generateMonthlyBalanceSheets(companyId, versionId, gate) {
 
     yearsStored.push(year);
     // Year-end close: roll the year's Net Income into Retained Earnings so the next
-    // year opens with a clean Net Income line (double-entry close).
-    if (Math.abs(round2(cumulativeNetIncome)) >= 0.005) addRun(running, "Retained Earnings", cumulativeNetIncome, "equity");
+    // year opens with a clean Net Income line (double-entry close). See the reverse
+    // engine's header comment above generateMonthlyBalanceSheetsReverse for a
+    // confirmed production case where Retained Earnings ALSO carries real,
+    // client-posted GL rows of its own (a separate closing event, e.g. rolling
+    // Distributions into Retained Earnings) — that does not double this step;
+    // the two are additive, not duplicates.
+    if (Math.abs(round2(cumulativeNetIncome)) >= 0.005) addRun(running, reCoaId, cumulativeNetIncome, "equity", "Retained Earnings");
   }
 
   if (allRows.length) await chunkedInsert("balance_sheet_entries", allRows);
@@ -609,14 +805,24 @@ async function generateMonthlyBalanceSheets(companyId, versionId, gate) {
 // the opposite direction (subtract instead of add, latest month first). No
 // GL aggregation logic is duplicated; only the traversal direction differs.
 //
-// Retained Earnings needs no special "unclose" step going backward: it only
-// ever changes via the explicit year-end close (never via GL deltas), so
-// subtracting a year's months never has to touch it — by the time the walk
-// reaches a new (earlier) year's December, `running`'s RE already correctly
-// reflects every year before that one, and cumulativeNetIncome is simply
-// reset to that year's own full-year total (computed from the same byMonth
-// map already being iterated) so it renders as a separate line exactly like
-// the forward engine presents an as-yet-unclosed year.
+// Retained Earnings needs an explicit "unclose" step going backward (the
+// exact inverse of the forward engine's year-end close): it is closed via
+// this synthetic step ONLY, never via GL deltas that represent Net Income
+// itself — Net Income has no GL leaf of its own in verified production data.
+//
+// CONFIRMED (production data, Davis Signs Utah LLC, 2026-07-21): the resolved
+// Retained Earnings COA leaf can ALSO carry real, client-posted GL rows of
+// its own (e.g. a QuickBooks-generated entry explicitly memoed "To roll
+// distributions to retained earnings", dated the 1st of each fiscal year).
+// These are a SEPARATE closing event (rolling Distributions into Retained
+// Earnings) from this engine's Net-Income close/unclose — attempting to skip
+// this synthetic step whenever such real postings exist (tried and reverted)
+// is WRONG: it breaks years that were previously correct (verified against
+// the uploaded FY2023 and FY2026 Balance Sheets) without fixing the
+// remaining imbalance. The two closing events are additive, not duplicates
+// of each other; the real FY2025 discrepancy has a different root cause,
+// still under investigation — see the "$12,800 FY2025" notes in this file's
+// git history / project memory before attempting another fix here.
 // ============================================================================
 
 /**
@@ -665,17 +871,89 @@ async function generateMonthlyBalanceSheetsReverse(companyId, versionId, gate, o
       .eq("is_generated", true);
   }
 
+  const coaById = await loadCoaByIdMap(versionId);
+  const reCoaId = findControlAccountCoaId(coaById, /retained\s*earnings/i, "equity") || "Retained Earnings";
+  const niCoaId = findControlAccountCoaId(coaById, /net\s*(income|loss)/i, "equity");
+  // Bridge from bsBalancesAtLatest's still-name-keyed result into this
+  // coa_id-keyed engine — see the forward engine's identical comment.
+  const nameToCoaId = new Map();
+  for (const [id, row] of coaById) {
+    const k = String(row.accountName || "").trim().toLowerCase();
+    if (k && !nameToCoaId.has(k)) nameToCoaId.set(k, id);
+  }
+
   // Seed = the uploaded (non-generated) Ending BS for endYear — reuses the
   // existing Phase 5 helper below, which already picks the single latest
   // as_of_date snapshot for a year.
-  const endingMap = await bsBalancesAtLatest(companyId, versionId, endYear, false);
+  const { balances: endingMap } = await bsBalancesAtLatest(companyId, versionId, endYear, false);
   if (!endingMap.size) return { stored: 0, months: 0, years: [], failedMonths: [] };
 
   const running = new Map();
   let cumulativeNetIncome = 0;
   for (const [, v] of endingMap) {
     if (/^net\s*(income|loss)/i.test(String(v.name).trim())) { cumulativeNetIncome += v.amount; continue; }
-    addRun(running, v.name, v.amount, v.type);
+    const key = nameToCoaId.get(String(v.name).trim().toLowerCase()) || `unlinked:${v.name}`;
+    addRun(running, key, v.amount, v.type, v.name);
+  }
+
+  // A real, GL-linked account can have genuine transaction activity but no
+  // leaf row of its own anywhere in the uploaded Ending BS document (its only
+  // trace there is a section header, e.g. "Fixed Assets" — never a postable
+  // line; see sectionHeaderNameToType in chartOfAccountsService.js for the
+  // classification-side counterpart of this same gap). CONFIRMED bug this
+  // fixes: such an account is silently absent from every snapshot after its
+  // first GL activity (never seeded) and goes NEGATIVE in every snapshot
+  // before it, once the month-walk below undoes its GL delta against a seed
+  // that never included it in the first place.
+  //
+  // MUST be scoped to accounts that were NEVER a real leaf row in ANY
+  // uploaded Balance Sheet (any year, not just endYear) — CONFIRMED case
+  // this guard prevents: a "(deleted)" QuickBooks account (e.g. "Capital
+  // Contributions (deleted)") is a real leaf in an EARLIER uploaded BS (2023)
+  // but correctly absent from the current Ending BS because QuickBooks
+  // merged/closed it into a surviving account by the time of the later
+  // snapshot — its lifetime GL total is NOT a gap to fill, it's already
+  // reflected in whatever absorbed it. Seeding it independently here would
+  // double-count that balance (confirmed live: introduced a NEW, uniform
+  // +$47,709.57 imbalance across every month before this guard was added).
+  // "Fixed Assets" is different in kind: it has NO leaf row in ANY uploaded
+  // BS, at any point in time — only ever a section header.
+  const { data: everBsLeafRows } = await supabase
+    .from("balance_sheet_entries")
+    .select("account_name")
+    .eq("version_id", versionId)
+    .eq("is_generated", false)
+    .not("account_name", "is", null);
+  const everBsLeafNames = new Set((everBsLeafRows || []).map((r) => String(r.account_name).trim().toLowerCase()));
+
+  const seededCoaIds = new Set(running.keys());
+  const lifetimeBalances = new Map(); // coaId -> { net, type, name }
+  for (let y = startYear; y <= endYear; y += 1) {
+    const agg = await aggregateGLForBS(versionId, y);
+    if (!agg?.bsMap) continue;
+    for (const [key, acc] of agg.bsMap) {
+      if (!lifetimeBalances.has(key)) lifetimeBalances.set(key, { net: 0, type: acc.type, name: acc.name });
+      lifetimeBalances.get(key).net += acc.net;
+    }
+  }
+  // "(deleted)" is QuickBooks' own naming convention for an account the
+  // client has since merged/deactivated — a generic, cross-company signal
+  // (not a hardcoded account name), same kind of structural marker as the
+  // canonical section-header vocabulary reused elsewhere in this codebase.
+  // CONFIRMED case this excludes: "Member 2 Draws (deleted)" has real GL
+  // activity but was NEVER a leaf in any uploaded BS at all (deleted before
+  // the earliest upload), so the everBsLeafNames guard above doesn't catch
+  // it — without this, its lifetime balance gets seeded as if still live,
+  // double-counting whatever surviving account absorbed it (confirmed live:
+  // a uniform +$45.86 imbalance across every month before this guard).
+  const DELETED_ACCOUNT_RE = /\(deleted\)\s*$/i;
+  for (const [key, acc] of lifetimeBalances) {
+    if (seededCoaIds.has(key)) continue;
+    if (!["asset", "liability", "equity"].includes(acc.type)) continue;
+    if (Math.abs(round2(acc.net)) < 0.005) continue;
+    if (everBsLeafNames.has(String(acc.name).trim().toLowerCase())) continue;
+    if (DELETED_ACCOUNT_RE.test(String(acc.name).trim())) continue;
+    addRun(running, key, acc.net, acc.type, acc.name);
   }
 
   const allRows = [];
@@ -721,7 +999,7 @@ async function generateMonthlyBalanceSheetsReverse(companyId, versionId, gate, o
     // that: it fires once per year-boundary crossing, using the year now
     // being entered.
     if (year !== endYear && Math.abs(round2(yearFullNetIncome)) >= 0.005) {
-      addRun(running, "Retained Earnings", -yearFullNetIncome, "equity");
+      addRun(running, reCoaId, -yearFullNetIncome, "equity", "Retained Earnings");
     }
 
     if (byMonth && byMonth.size) {
@@ -735,7 +1013,7 @@ async function generateMonthlyBalanceSheetsReverse(companyId, versionId, gate, o
         // `running` + `cumulativeNetIncome` right now represent END of month m
         // — snapshot BEFORE subtracting.
         const { rows, nextSort } = snapshotRows({
-          versionId, companyId, year, asOfDate: asOf, running, cumulativeNetIncome, sortStart: sort,
+          versionId, companyId, year, asOfDate: asOf, running, cumulativeNetIncome, sortStart: sort, netIncomeCoaId: niCoaId,
         });
         allRows.push(...rows);
         sort = nextSort;
@@ -745,7 +1023,7 @@ async function generateMonthlyBalanceSheetsReverse(companyId, versionId, gate, o
         // Undo month m's GL activity (if any) to step back to END of the PRIOR month.
         const mData = byMonth.get(m);
         if (mData) {
-          for (const [name, acc] of mData.bsMap) addRun(running, name, -acc.net, acc.type);
+          for (const [key, acc] of mData.bsMap) addRun(running, key, -acc.net, acc.type, acc.name);
           cumulativeNetIncome -= mData.netIncome;
         }
       }
@@ -757,14 +1035,14 @@ async function generateMonthlyBalanceSheetsReverse(companyId, versionId, gate, o
       const asOf = monthEndDate(year, 12);
       if (asOf <= monthEndCutoff) {
         const { rows, nextSort } = snapshotRows({
-          versionId, companyId, year, asOfDate: asOf, running, cumulativeNetIncome, sortStart: sort,
+          versionId, companyId, year, asOfDate: asOf, running, cumulativeNetIncome, sortStart: sort, netIncomeCoaId: niCoaId,
         });
         allRows.push(...rows);
         sort = nextSort;
         const failure = assertMonthBalances(rows, year, asOf);
         if (failure) failedMonths.push(failure);
       }
-      if (agg?.bsMap) for (const [name, acc] of agg.bsMap) addRun(running, name, -acc.net, acc.type);
+      if (agg?.bsMap) for (const [key, acc] of agg.bsMap) addRun(running, key, -acc.net, acc.type, acc.name);
     }
 
     cumulativeNetIncome = 0;
@@ -818,6 +1096,31 @@ function glAccountName(row) {
     || "";
 }
 
+// COA id → {accountName, accountNumber, accountType} — the primary lookup for
+// coa_id-based aggregation (generateTrialBalance). Every GL row that carries a
+// real coa_id (see linkGlToCoa) resolves its account identity and type
+// directly from here instead of a name lookup, so accounts that share a
+// canonical COA entry under differently-spelled GL names are correctly
+// grouped as one account rather than split across several trial-balance rows.
+async function loadCoaByIdMap(versionId) {
+  const map = new Map();
+  const { data } = await supabase
+    .from("chart_of_accounts")
+    .select("id, account_name, account_number, account_type, parent_account_id, cf_category, metadata")
+    .eq("version_id", versionId);
+  for (const r of data || []) {
+    if (r.metadata?.is_group) continue;
+    map.set(r.id, {
+      accountName: r.account_name,
+      accountNumber: r.account_number || null,
+      accountType: r.account_type || null,
+      parentAccountId: r.parent_account_id || null,
+      cfCategory: r.cf_category || null,
+    });
+  }
+  return map;
+}
+
 // COA name → account_type map (the COA is the master accounting dimension).
 async function coaTypeMap(versionId) {
   const map = new Map();
@@ -842,7 +1145,7 @@ async function fetchGlRowsForYear(companyId, versionId, year) {
   for (let page = 0; page < 1000; page += 1) {
     const { data, error } = await supabase
       .from(TABLE_GL)
-      .select("account_name, account_section, amount, running_balance, row_type, row_number, transaction_date")
+      .select("account_name, account_section, amount, running_balance, row_type, row_number, transaction_date, coa_id")
       .eq("company_id", companyId)
       .eq("version_id", versionId)
       // fiscal_year no longer exists (migration 069) — a plain transaction_date
@@ -901,34 +1204,46 @@ async function generateTrialBalance(companyId, versionId, gate) {
   const endYear = gate?.glEndYear;
   if (!startYear || !endYear) return { stored: 0, years: [], imbalancedYears: [] };
 
-  const typeMap = await coaTypeMap(versionId);
+  // coa_id is the primary grouping key (reliable now that linkGlToCoa uses
+  // keyset pagination — see its own doc comment); the name-based typeMap is
+  // only a fallback for a GL row that somehow still has no coa_id (logged,
+  // never silently merged into the wrong account).
+  const [typeMap, coaById] = await Promise.all([coaTypeMap(versionId), loadCoaByIdMap(versionId)]);
   const rowsToInsert = [];
   const yearsStored = [];
   const imbalancedYears = [];
+  let fallbackToNameCount = 0;
 
   for (let year = startYear; year <= endYear; year += 1) {
     const glRows = await fetchGlRowsForYear(companyId, versionId, year);
     if (!glRows.length) continue;
 
-    // name → { debits, credits, net, opening }
+    // groupKey (coa_id, or "name::"+name as a fallback) → { debits, credits, net, opening }
     const acc = new Map();
-    const get = (name) => {
-      if (!acc.has(name)) acc.set(name, { debits: 0, credits: 0, net: 0, opening: 0, hasOpening: false });
-      return acc.get(name);
+    const get = (key, displayName, accountType, accountNumber) => {
+      if (!acc.has(key)) acc.set(key, { debits: 0, credits: 0, net: 0, opening: 0, hasOpening: false, accountName: displayName, accountType, accountNumber });
+      return acc.get(key);
     };
 
     for (const r of glRows) {
       const name = glAccountName(r);
       if (!name) continue;
+      const coa = r.coa_id ? coaById.get(r.coa_id) : null;
+      if (!coa) fallbackToNameCount++;
+      const key = r.coa_id || `name::${name.toLowerCase()}`;
+      const displayName = coa?.accountName || name;
+      const accountType = coa?.accountType || typeMap.get(name.toLowerCase()) || null;
+      const accountNumber = coa?.accountNumber || null;
+
       const rowType = r.row_type || "TRANSACTION";
       if (rowType === "BEGINNING_BALANCE") {
-        const a = get(name);
+        const a = get(key, displayName, accountType, accountNumber);
         a.opening = Number(r.running_balance) || 0;
         a.hasOpening = true;
       } else if (rowType === "TRANSACTION" || !r.row_type) {
         const amt = Number(r.amount) || 0;
         if (Math.abs(amt) < 0.005) continue;
-        const a = get(name);
+        const a = get(key, displayName, accountType, accountNumber);
         a.net += amt;
         if (amt > 0) a.debits += amt;
         else a.credits += -amt;
@@ -937,15 +1252,15 @@ async function generateTrialBalance(companyId, versionId, gate) {
     }
 
     const yearRows = [];
-    for (const [name, a] of acc) {
+    for (const a of acc.values()) {
       if (Math.abs(a.debits) < 0.005 && Math.abs(a.credits) < 0.005 && !a.hasOpening) continue;
       yearRows.push({
         version_id: versionId,
         company_id: companyId,
         fiscal_year: year,
-        account_name: name,
-        account_number: null,
-        account_type: typeMap.get(name.toLowerCase()) || null,
+        account_name: a.accountName,
+        account_number: a.accountNumber,
+        account_type: a.accountType,
         total_debits: round2(a.debits),
         total_credits: round2(a.credits),
         net_balance: round2(a.net),
@@ -995,6 +1310,10 @@ async function generateTrialBalance(companyId, versionId, gate) {
     }
   }
 
+  if (fallbackToNameCount) {
+    console.warn(`[generateTrialBalance] versionId=${versionId}: ${fallbackToNameCount} GL row(s) had no coa_id — grouped by name as a fallback (run linkGlToCoa again if this is unexpectedly high).`);
+  }
+
   // Replace prior trial balance for this version.
   await supabase.from("trial_balance_entries").delete().eq("version_id", versionId);
   if (rowsToInsert.length) await chunkedInsert("trial_balance_entries", rowsToInsert);
@@ -1003,18 +1322,24 @@ async function generateTrialBalance(companyId, versionId, gate) {
 }
 
 // ============================================================================
-// PHASE 5 — Reconciliation (generated ending BS vs uploaded ending BS)
+// BALANCE SHEET RECONCILIATION (mandatory reconciliation layer)
 //
-// When an Ending Balance Sheet has been uploaded, compare it (per account)
-// against the GENERATED ending balances (the authoritative monthly roll-forward
-// for the final GL year). Reports missing accounts, balance differences and the
-// variance amounts. NEVER overwrites generated balances.
+// Runs BEFORE Monthly Balance Sheet generation (Phase 4) — moved earlier in
+// the redesigned pipeline so a reconciliation problem is visible before any
+// monthly report is generated, not discovered afterward. When an Ending
+// Balance Sheet has been uploaded, compares it (per account) against the
+// CALCULATED ending balances — Opening Balance Sheet + cumulative General
+// Ledger movements, computed live via bsBalancesForYear, independent of
+// whether Phase 4 has run yet. Reports missing accounts, balance differences,
+// and variance amounts (raw + percentage). NEVER overwrites generated
+// balances or the original extracted data.
 // ============================================================================
 
-const RECON_TOLERANCE = BALANCE_TOLERANCE; // alias — kept for readability at existing call sites
-
-// Latest-as-of balances for a year filtered by is_generated. Returns
-// Map<normName, { name, amount, type, section }>.
+// Latest-as-of balances for a year filtered by is_generated.
+// Returns { balances: Map<normName, {name, amount, type, section}>, excluded: Array<{name, amount}> }
+// — `excluded` holds subtotal/header rows (e.g. "Total Assets") that are
+// deliberately not compared account-by-account; the caller surfaces these
+// with an EXCLUDED reconciliation status instead of silently dropping them.
 async function bsBalancesAtLatest(companyId, versionId, year, generated) {
   const base = () =>
     supabase
@@ -1027,7 +1352,7 @@ async function bsBalancesAtLatest(companyId, versionId, year, generated) {
   dq = generated ? dq.eq("is_generated", true) : dq.or("is_generated.is.null,is_generated.eq.false");
   const { data: dr } = await dq.order("as_of_date", { ascending: false }).limit(1);
   const asOf = dr?.[0]?.as_of_date;
-  if (!asOf) return new Map();
+  if (!asOf) return { balances: new Map(), excluded: [] };
 
   let rq = supabase
     .from(TABLE_BS)
@@ -1040,26 +1365,48 @@ async function bsBalancesAtLatest(companyId, versionId, year, generated) {
   const { data } = await rq;
 
   const map = new Map();
+  const excluded = [];
   for (const e of data || []) {
     const name = String(e.account_name || "").trim();
     if (!name) continue;
     const isNI = /^net\s*(income|loss)/i.test(name);
-    if (e.is_total && !isNI) continue; // skip calculated totals (keep Net Income)
+    if (e.is_total && !isNI) {
+      excluded.push({ name, amount: Number(e.amount) || 0 });
+      continue; // skip calculated totals (keep Net Income) — surfaced via `excluded`, not silently dropped
+    }
     const key = name.toLowerCase();
     const type = e.account_type
       || (e.section === "assets" ? "asset" : e.section === "liabilities" ? "liability" : e.section === "equity" ? "equity" : null);
     if (!map.has(key)) map.set(key, { name, amount: 0, type, section: e.section || null });
     map.get(key).amount += Number(e.amount) || 0;
   }
-  return map;
+  return { balances: map, excluded };
+}
+
+function percentageDifference(variance, uploadedAmount, calculatedAmount) {
+  if (uploadedAmount !== 0) return Math.round((variance / uploadedAmount) * 10000) / 10000 * 100;
+  if (calculatedAmount !== 0) return 100;
+  return null;
 }
 
 /**
- * PHASE 5 — Reconcile the generated ending BS against the uploaded ending BS.
- * Only runs when an ending balance sheet is present (gate.hasEndingBs).
+ * BALANCE SHEET RECONCILIATION — "Opening Balance Sheet + General Ledger
+ * movements = Expected Closing Balance Sheet", compared account-by-account
+ * against the uploaded Ending Balance Sheet. Runs BEFORE Monthly Balance
+ * Sheet generation (Phase 4) in the redesigned pipeline — reuses
+ * bsBalancesForYear (keyReportReportService.js), which already computes this
+ * exact "opening + cumulative GL movements" chain purely from GL/extracted-BS
+ * data with no dependency on a Phase-4-persisted snapshot (it only PREFERS
+ * one when it already exists — at this point in the pipeline none does yet,
+ * so it correctly falls back to live GL computation). Only runs when an
+ * ending balance sheet is present (gate.hasEndingBs).
+ *
  * @returns {Promise<{ran:boolean, stored:number, year:number|null, summary:object}>}
  */
 async function generateReconciliation(companyId, versionId, gate) {
+  // Lazy require to avoid any load-order coupling (same pattern as the BS engines above).
+  const { bsBalancesForYear } = require("./keyReportReportService");
+
   // Always clear prior reconciliation for this version (idempotent).
   await supabase.from("bs_reconciliation_entries").delete().eq("version_id", versionId);
 
@@ -1068,8 +1415,8 @@ async function generateReconciliation(companyId, versionId, gate) {
     return { ran: false, stored: 0, year: year || null, summary: { reason: "no_ending_balance_sheet" } };
   }
 
-  const [generated, uploaded] = await Promise.all([
-    bsBalancesAtLatest(companyId, versionId, year, true),
+  const [calculated, { balances: uploaded, excluded: uploadedExcluded }] = await Promise.all([
+    bsBalancesForYear(versionId, year),
     bsBalancesAtLatest(companyId, versionId, year, false),
   ]);
 
@@ -1077,30 +1424,38 @@ async function generateReconciliation(companyId, versionId, gate) {
     return { ran: false, stored: 0, year, summary: { reason: "uploaded_ending_bs_empty" } };
   }
 
-  const keys = new Set([...generated.keys(), ...uploaded.keys()]);
+  // bsBalancesForYear keys its balances Map by raw account name (natural
+  // sign, opening + cumulative GL movements) — normalize to the same
+  // lowercase-trimmed key convention used everywhere else in this file.
+  const calcByKey = new Map();
+  for (const [name, v] of calculated?.balances || []) {
+    calcByKey.set(String(name).trim().toLowerCase(), { name: v.name, amount: v.balance, type: v.type });
+  }
+
+  const keys = new Set([...calcByKey.keys(), ...uploaded.keys()]);
   const rows = [];
-  const summary = { matched: 0, differences: 0, missingInGenerated: 0, missingInUploaded: 0, totalVariance: 0 };
+  const summary = { matched: 0, differences: 0, missingFromGl: 0, missingFromBs: 0, excluded: 0, totalVariance: 0 };
 
   for (const key of keys) {
-    const g = generated.get(key);
+    const c = calcByKey.get(key);
     const u = uploaded.get(key);
-    const gen = g ? round2(g.amount) : 0;
+    const calc = c ? round2(c.amount) : 0;
     const upl = u ? round2(u.amount) : 0;
-    const variance = round2(gen - upl);
-    const name = (g || u).name;
-    const type = (g || u).type || null;
-    const section = (g || u).section || (type ? SECTION_BY_TYPE[type] : null);
+    const variance = round2(calc - upl);
+    const name = (c || u).name;
+    const type = (c || u).type || null;
+    const section = (u && u.section) || (type ? SECTION_BY_TYPE[type] : null);
 
     let status;
-    if (!g) status = "missing_in_generated";
-    else if (!u) status = "missing_in_uploaded";
-    else status = Math.abs(variance) < RECON_TOLERANCE ? "match" : "difference";
+    if (!c) status = "MISSING_FROM_GL";
+    else if (!u) status = "MISSING_FROM_BS";
+    else status = Math.abs(variance) < BALANCE_TOLERANCE ? "MATCHED" : "DIFFERENCE";
 
-    const needsReview = status !== "match";
-    if (status === "match") summary.matched += 1;
-    else if (status === "difference") summary.differences += 1;
-    else if (status === "missing_in_generated") summary.missingInGenerated += 1;
-    else summary.missingInUploaded += 1;
+    const needsReview = status !== "MATCHED";
+    if (status === "MATCHED") summary.matched += 1;
+    else if (status === "DIFFERENCE") summary.differences += 1;
+    else if (status === "MISSING_FROM_GL") summary.missingFromGl += 1;
+    else summary.missingFromBs += 1;
     summary.totalVariance = round2(summary.totalVariance + Math.abs(variance));
 
     rows.push({
@@ -1110,16 +1465,38 @@ async function generateReconciliation(companyId, versionId, gate) {
       account_name: name,
       account_type: type,
       section,
-      generated_balance: gen,
+      generated_balance: calc,
       uploaded_balance: upl,
       variance,
+      percentage_difference: percentageDifference(variance, upl, calc),
       status,
       needs_review: needsReview,
     });
   }
 
+  // Subtotal/header rows from the uploaded document (e.g. "Total Assets") are
+  // deliberately not compared account-by-account — surfaced as EXCLUDED
+  // instead of silently vanishing (per "never silently disappear").
+  for (const ex of uploadedExcluded) {
+    rows.push({
+      version_id: versionId,
+      company_id: companyId,
+      fiscal_year: year,
+      account_name: ex.name,
+      account_type: null,
+      section: null,
+      generated_balance: 0,
+      uploaded_balance: round2(ex.amount),
+      variance: 0,
+      percentage_difference: null,
+      status: "EXCLUDED",
+      needs_review: false,
+    });
+    summary.excluded += 1;
+  }
+
   if (rows.length) await chunkedInsert("bs_reconciliation_entries", rows);
-  summary.balanced = summary.differences === 0 && summary.missingInGenerated === 0 && summary.missingInUploaded === 0;
+  summary.balanced = summary.differences === 0 && summary.missingFromGl === 0 && summary.missingFromBs === 0;
   return { ran: true, stored: rows.length, year, summary };
 }
 
@@ -1139,6 +1516,59 @@ async function generateReconciliation(companyId, versionId, gate) {
 // Non-leaf COA rows (is_group = true) are excluded.
 // ============================================================================
 
+// Batch link UPDATEs (linkGlToCoa/linkBsToCoa below) run over potentially
+// thousands of rows via a Supabase/PostgREST connection that already has its
+// own timeout/circuit-breaker (see db.js). A single batch occasionally aborts
+// transiently (AbortError, "fetch failed") with no fault of the data itself —
+// confirmed live. Previously that batch's rows were just left unlinked
+// (warned, not retried). Retry with backoff before giving up so a transient
+// network hiccup doesn't silently leave real rows unlinked.
+function isTransientLinkError(err) {
+  const msg = String(err?.message || err || "");
+  return msg.includes("AbortError") || msg.includes("aborted") || msg.includes("fetch failed") || msg.includes("ETIMEDOUT") || msg.includes("ECONNRESET");
+}
+
+async function updateBatchWithRetry(table, patch, ids, label, attempts = 3) {
+  let lastErr = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const { error } = await supabase.from(table).update(patch).in("id", ids);
+    if (!error) return true;
+    lastErr = error;
+    if (!isTransientLinkError(error) || attempt === attempts) break;
+    console.warn(`${label}: attempt ${attempt}/${attempts} failed (${error.message}) — retrying...`);
+    await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+  }
+  console.warn(`${label}: ${lastErr.message}${attempts > 1 ? ` (gave up after ${attempts} attempt(s))` : ""}`);
+  return false;
+}
+
+// Resolve a `split_account` string (the OTHER side of a journal entry, e.g.
+// "80950 Operational Expense: Background Check") to a COA leaf id using the
+// same normalized-name map as the primary account_name match, with two
+// fallbacks for QuickBooks-style "Parent:Child" split labels:
+//   1. exact match on the full string
+//   2. exact match on the last colon-segment ("Background Check")
+//   3. suffix match against every known COA leaf name — needed because the
+//      child segment after the colon often omits the parent's leading
+//      account-number prefix (e.g. "Background Check" vs the COA leaf
+//      "80950 Background Check").
+// Resolved ONCE here at link time and persisted to split_coa_id; report code
+// never re-derives this from text.
+function resolveSplitAccountCoaId(splitName, byName, norm) {
+  if (!splitName) return null;
+  const full = byName.get(norm(splitName));
+  if (full) return full;
+  const lastSegment = splitName.split(":").pop().trim();
+  if (!lastSegment) return null;
+  const lastSegmentNorm = norm(lastSegment);
+  const exact = byName.get(lastSegmentNorm);
+  if (exact) return exact;
+  for (const [key, id] of byName) {
+    if (key.endsWith(lastSegmentNorm)) return id;
+  }
+  return null;
+}
+
 async function linkGlToCoa(companyId, versionId) {
   // Fetch all COA leaf nodes for this version.
   const { data: coaRows, error: coaErr } = await supabase
@@ -1148,12 +1578,12 @@ async function linkGlToCoa(companyId, versionId) {
 
   if (coaErr) {
     console.warn(`[linkGlToCoa] COA fetch error: ${coaErr.message}`);
-    return { linked: 0, skipped: 0 };
+    return { linked: 0, skipped: 0, splitLinked: 0, splitSkipped: 0 };
   }
 
   if (!coaRows?.length) {
     console.log("[linkGlToCoa] No COA rows found — skipping coa_id population");
-    return { linked: 0, skipped: 0 };
+    return { linked: 0, skipped: 0, splitLinked: 0, splitSkipped: 0 };
   }
 
   // Build lookup maps: normalized name → coa id (leaf nodes only).
@@ -1169,36 +1599,151 @@ async function linkGlToCoa(companyId, versionId) {
 
   if (!byName.size) {
     console.log("[linkGlToCoa] No COA leaf nodes found — skipping coa_id population");
-    return { linked: 0, skipped: 0 };
+    return { linked: 0, skipped: 0, splitLinked: 0, splitSkipped: 0 };
   }
 
-  // Page through GL TRANSACTION rows for this version, batch-update coa_id.
+  // Page through GL TRANSACTION rows for this version, batch-update coa_id
+  // AND split_coa_id in the same pass.
+  //
+  // Keyset pagination (id > lastSeenId), NOT .range()/OFFSET: the query filters
+  // on rows still missing one of the two link columns, and every page's UPDATE
+  // removes rows from that exact filtered result set. An OFFSET-based .range()
+  // counts POSITION within a set that keeps shrinking underneath it — each
+  // successful page of matches permanently shifts every later OFFSET past rows
+  // that were never actually fetched, silently skipping most of the table
+  // (confirmed live: one real version linked only ~4% of its GL before this
+  // fix). Anchoring on the last row id actually seen has no such drift — a row
+  // is only ever skipped because it was fetched and found unmatched, never
+  // because of accounting arithmetic on a moving result set.
   const PAGE = 500;
-  let from = 0;
+  let lastId = 0;
   let linked = 0;
   let skipped = 0;
+  let splitLinked = 0;
+  let splitSkipped = 0;
 
   for (;;) {
     const { data: glRows, error: glErr } = await supabase
       .from(TABLE_GL)
-      .select("id, account_name")
+      .select("id, account_name, split_account, coa_id, split_coa_id")
       .eq("company_id", companyId)
       .eq("version_id", versionId)
       .or("row_type.eq.TRANSACTION,row_type.is.null")
-      .not("account_name", "is", null)
-      .is("coa_id", null)
+      .or("coa_id.is.null,split_coa_id.is.null")
+      .gt("id", lastId)
       .order("id", { ascending: true })
-      .range(from, from + PAGE - 1);
+      .limit(PAGE);
 
     if (glErr) {
       console.warn(`[linkGlToCoa] GL fetch error: ${glErr.message}`);
       break;
     }
     if (!glRows?.length) break;
+    lastId = glRows[glRows.length - 1].id;
 
-    // Group by coa_id to minimise UPDATE calls.
-    const byCoa = new Map(); // coaId → [glId]
+    // Group by target value to minimise UPDATE calls. A row may need both
+    // columns updated (two independent FKs) — it can appear in both maps.
+    const byCoa = new Map();      // coaId → [glId]      (account_name side)
+    const bySplitCoa = new Map(); // splitCoaId → [glId]  (split_account side)
+
     for (const row of glRows) {
+      if (row.coa_id == null && row.account_name) {
+        const coaId = byName.get(norm(row.account_name));
+        if (coaId) {
+          if (!byCoa.has(coaId)) byCoa.set(coaId, []);
+          byCoa.get(coaId).push(row.id);
+        } else {
+          skipped++;
+        }
+      }
+      if (row.split_coa_id == null && row.split_account) {
+        const splitCoaId = resolveSplitAccountCoaId(String(row.split_account).trim(), byName, norm);
+        if (splitCoaId) {
+          if (!bySplitCoa.has(splitCoaId)) bySplitCoa.set(splitCoaId, []);
+          bySplitCoa.get(splitCoaId).push(row.id);
+        } else {
+          splitSkipped++;
+        }
+      }
+    }
+
+    for (const [coaId, ids] of byCoa) {
+      const ok = await updateBatchWithRetry(TABLE_GL, { coa_id: coaId }, ids, `[linkGlToCoa] Update error for coa_id=${coaId}`);
+      if (ok) linked += ids.length;
+    }
+
+    for (const [splitCoaId, ids] of bySplitCoa) {
+      const ok = await updateBatchWithRetry(TABLE_GL, { split_coa_id: splitCoaId }, ids, `[linkGlToCoa] Update error for split_coa_id=${splitCoaId}`);
+      if (ok) splitLinked += ids.length;
+    }
+
+    if (glRows.length < PAGE) break;
+  }
+
+  console.log(`[linkGlToCoa] versionId=${versionId}: linked=${linked} skipped=${skipped} splitLinked=${splitLinked} splitSkipped=${splitSkipped}`);
+  return { linked, skipped, splitLinked, splitSkipped };
+}
+
+// Mirrors linkGlToCoa exactly, for balance_sheet_entries.coa_id — populates
+// the link for UPLOADED/EXTRACTED rows (is_generated=false/null). Generated
+// Monthly BS rows (Phase 4 engines below) get coa_id written directly at
+// creation time since they're already keyed by coa_id internally — this
+// function only needs to backfill rows that came from extraction.
+async function linkBsToCoa(companyId, versionId) {
+  const { data: coaRows, error: coaErr } = await supabase
+    .from("chart_of_accounts")
+    .select("id, account_name, base_account, adjusted_name, metadata")
+    .eq("version_id", versionId);
+
+  if (coaErr) {
+    console.warn(`[linkBsToCoa] COA fetch error: ${coaErr.message}`);
+    return { linked: 0, skipped: 0 };
+  }
+  if (!coaRows?.length) {
+    console.log("[linkBsToCoa] No COA rows found — skipping coa_id population");
+    return { linked: 0, skipped: 0 };
+  }
+
+  const norm = (s) => String(s || "").toLowerCase().trim();
+  const byName = new Map();
+  for (const row of coaRows) {
+    if (row.metadata?.is_group) continue;
+    for (const field of [row.account_name, row.base_account, row.adjusted_name]) {
+      const k = norm(field);
+      if (k && !byName.has(k)) byName.set(k, row.id);
+    }
+  }
+  if (!byName.size) {
+    console.log("[linkBsToCoa] No COA leaf nodes found — skipping coa_id population");
+    return { linked: 0, skipped: 0 };
+  }
+
+  const PAGE = 500;
+  let lastId = 0;
+  let linked = 0;
+  let skipped = 0;
+
+  for (;;) {
+    const { data: bsRows, error: bsErr } = await supabase
+      .from(TABLE_BS)
+      .select("id, account_name")
+      .eq("company_id", companyId)
+      .eq("version_id", versionId)
+      .not("account_name", "is", null)
+      .is("coa_id", null)
+      .gt("id", lastId)
+      .order("id", { ascending: true })
+      .limit(PAGE);
+
+    if (bsErr) {
+      console.warn(`[linkBsToCoa] BS fetch error: ${bsErr.message}`);
+      break;
+    }
+    if (!bsRows?.length) break;
+    lastId = bsRows[bsRows.length - 1].id;
+
+    const byCoa = new Map();
+    for (const row of bsRows) {
       const coaId = byName.get(norm(row.account_name));
       if (coaId) {
         if (!byCoa.has(coaId)) byCoa.set(coaId, []);
@@ -1209,22 +1754,14 @@ async function linkGlToCoa(companyId, versionId) {
     }
 
     for (const [coaId, ids] of byCoa) {
-      const { error: updErr } = await supabase
-        .from(TABLE_GL)
-        .update({ coa_id: coaId })
-        .in("id", ids);
-      if (updErr) {
-        console.warn(`[linkGlToCoa] Update error for coa_id=${coaId}: ${updErr.message}`);
-      } else {
-        linked += ids.length;
-      }
+      const ok = await updateBatchWithRetry(TABLE_BS, { coa_id: coaId }, ids, `[linkBsToCoa] Update error for coa_id=${coaId}`);
+      if (ok) linked += ids.length;
     }
 
-    if (glRows.length < PAGE) break;
-    from += PAGE;
+    if (bsRows.length < PAGE) break;
   }
 
-  console.log(`[linkGlToCoa] versionId=${versionId}: linked=${linked} skipped=${skipped}`);
+  console.log(`[linkBsToCoa] versionId=${versionId}: linked=${linked} skipped=${skipped}`);
   return { linked, skipped };
 }
 
@@ -1235,7 +1772,10 @@ module.exports = {
   generateMonthlyBalanceSheetsReverse,
   generateReconciliation,
   linkGlToCoa,
+  linkBsToCoa,
+  loadCoaByIdMap,
   glDateRange,
-  extractedBsBounds,
+  buildBsCoverage,
   monthEndDate,
+  coaTypeMap,
 };

@@ -1,23 +1,36 @@
 // ============================================================================
-// Chart of Accounts — AI account recognition (Key Reports redesign)
+// Chart of Accounts — AI classification for accounts the uploaded COA doesn't cover
 //
 // classifyAccountsWithAI(accounts)
-//   Single batched Gemini call that recognizes every unique GL account and
-//   returns ONLY:
+//   Single batched Gemini call — but ONLY for accounts chartOfAccountsService
+//   already tried and failed to match against the company's own uploaded
+//   Chart of Accounts (coaMappingService / coaAccountMatcher.js's 5-stage
+//   deterministic engine runs FIRST; this is the fallback, not the primary
+//   source). Returns:
 //     • accountType    — 6-type model (asset | liability | equity | income | cogs | expense)
 //     • normalizedName — clean display name
 //     • confidence     — 0–1 score; below AI_NEEDS_REVIEW_THRESHOLD the account is
 //                        flagged for manual review rather than forced into a type
 //     • isReportRow    — true for calculated totals / headers (Total Assets,
 //                        Net Income, etc.) — these must NOT be inserted into the COA
+//     • levels         — the account's FULL level_1..level_15 roll-up hierarchy,
+//                        reasoned out like a CPA building a chart of accounts
+//     • reasoning      — 1-2 sentence justification for the hierarchy chosen
 //
-// Gemini performs account RECOGNITION ONLY. It does not return section,
-// deeperLevels, hierarchy levels, hierarchy_path, or sort_order — hierarchy
-// placement is looked up by coaMappingService directly against other
-// chart_of_accounts rows (the only hierarchy table in the system), keyed on
-// accountType + normalizedName/accountNumber (Account Number > Exact Name >
-// Normalized Name > Fuzzy Match > Manual Review). No keyword / regex /
-// hardcoded classification logic remains.
+// An account arrives here for exactly one of two reasons (see
+// chartOfAccountsService.generateChartOfAccounts/ensureCoaComplete):
+//   1. It genuinely doesn't exist in the uploaded COA — Gemini reasons a
+//      fresh hierarchy from this company's own Balance Sheet/P&L section
+//      evidence and account name, never from another company's data.
+//   2. It matched MORE THAN ONE row in the uploaded COA and structural
+//      evidence (parent/type/level) couldn't disambiguate — the account
+//      carries an `ambiguousCandidates` list; Gemini picks the best-fitting
+//      one (reusing its hierarchy verbatim) or reasons fresh if none fit.
+// To keep siblings (e.g. multiple bank accounts newly discovered together)
+// converging on the same shared branch instead of drifting batch to batch,
+// each prompt is also given this company/version's own already-established
+// category paths (loadKnownCategoryPaths) and instructed to reuse them
+// verbatim whenever an account genuinely belongs there.
 //
 // This function is NON-FATAL: any failure (no API key, quota, malformed JSON,
 // timeout) resolves to an empty Map, and the caller marks affected accounts
@@ -33,10 +46,15 @@ const { supabase } = require("../../db");
 const GEMINI_MODELS = getGeminiModels(["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"]);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Maximum accounts per Gemini prompt.  Keeps token usage bounded.
-const CLASSIFY_BATCH_SIZE = 45;
+// Maximum accounts per Gemini prompt. Smaller than the old type-only batch
+// (45) because each account's output now includes a full 15-level hierarchy
+// array plus reasoning — roughly 4x the output per account — and token usage
+// must stay bounded.
+const CLASSIFY_BATCH_SIZE = 18;
 // Hard cap — cost/runaway guard.
 const MAX_ACCOUNTS = 600;
+// Hierarchy arrays are always this long (nulls pad unused deeper levels).
+const MAX_LEVELS = 15;
 
 // ── Classification reuse cache ────────────────────────────────────────────────
 // Confident AI classifications are cached per company by normalized account name
@@ -45,7 +63,10 @@ const MAX_ACCOUNTS = 600;
 // accounts are intentionally NOT cached so they are re-attempted and continue to
 // surface in Review & Adjust. Bump CLASSIFIER_CACHE_VERSION to invalidate all
 // cached classifications after any change to the prompt or output handling.
-const CLASSIFIER_CACHE_VERSION = "v4";
+// v5: cached shape grew from {isReportRow,accountType,normalizedName,confidence}
+// to also include {levels, reasoning} (full hierarchy generation) — every v4
+// entry is stale under the new shape and must be re-classified once.
+const CLASSIFIER_CACHE_VERSION = "v5";
 const CACHE_MIN_CONFIDENCE = 0.85;
 
 function coaCacheEnabled() {
@@ -53,7 +74,9 @@ function coaCacheEnabled() {
 }
 
 function isCacheableClassification(v) {
-  return Boolean(v && (v.isReportRow || (v.accountType && Number(v.confidence) >= CACHE_MIN_CONFIDENCE)));
+  if (!v) return false;
+  if (v.isReportRow) return true;
+  return Boolean(v.accountType && Number(v.confidence) >= CACHE_MIN_CONFIDENCE && Array.isArray(v.levels) && v.levels.some(Boolean));
 }
 
 // Fill `out` with any cached classifications for the given accounts and return
@@ -171,20 +194,43 @@ function normalizeAccountType(raw) {
 /**
  * Build the Gemini prompt for a batch of accounts.
  *
- * @param {Array<{key, accountName, accountNumber, bsSection}>} batch
+ * @param {Array<{key, accountName, accountNumber, bsSection, plSection, bsSubSection, ambiguousCandidates}>} batch
+ * @param {string[]} [knownPaths] — this company/version's own already-established
+ *   category paths (chartOfAccountsService.loadKnownCategoryPaths), " > "-joined
+ *   top-to-leaf-parent strings. Given so siblings converge on the same branch
+ *   across batches instead of drifting; never another company's data.
  */
-function buildClassifyPrompt(batch) {
+function buildClassifyPrompt(batch, knownPaths = []) {
   const lines = batch.map((a) => {
-    const num     = a.accountNumber ? ` [#${a.accountNumber}]`        : "";
-    const section = a.bsSection     ? ` [BS section: ${a.bsSection}]` : "";
-    return `- key="${a.key}" name="${a.accountName}"${num}${section}`;
+    const num       = a.accountNumber ? ` [#${a.accountNumber}]`          : "";
+    const bsSec     = a.bsSection     ? ` [BS section: ${a.bsSection}]`   : "";
+    const bsSub     = a.bsSubSection  ? ` [BS sub-section: ${a.bsSubSection}]` : "";
+    const plSec     = a.plSection     ? ` [P&L section: ${a.plSection}]` : "";
+    const candidates = a.ambiguousCandidates?.length
+      ? ` [UPLOADED COA CANDIDATES — this account matched more than one row in the company's own\n    uploaded Chart of Accounts and structural evidence couldn't tell them apart; pick the one\n    whose hierarchy genuinely fits this account and reuse ITS hierarchy verbatim as your\n    "levels" answer, or ignore all of them and reason a fresh hierarchy if none genuinely fit:\n${a.ambiguousCandidates.map((c, i) => `      ${i + 1}. "${c.accountName}" -> ${c.hierarchyPath}`).join("\n")}]`
+      : "";
+    return `- key="${a.key}" name="${a.accountName}"${num}${bsSec}${bsSub}${plSec}${candidates}`;
   });
+
+  const knownPathsBlock = knownPaths.length
+    ? `\n──────────────────────────────────────────────────────────────────────────────\nALREADY-ESTABLISHED CATEGORY PATHS for THIS company (reuse verbatim whenever an\naccount below genuinely belongs under one of these — never paraphrase, reorder,\nor invent a near-duplicate of one of these; only branch a genuinely new path\nwhen nothing here fits):\n${knownPaths.map((p, i) => `${i + 1}. ${p}`).join("\n")}\n`
+    : "";
 
   return `You are a Certified Public Accountant (CPA) with deep knowledge of GAAP, IFRS, and every major ERP system (QuickBooks, Xero, Sage, NetSuite, Dynamics, SAP).
 
-Recognize each General Ledger account below purely from its semantic meaning.
-You are performing ACCOUNT RECOGNITION ONLY — do not think about where this
-account sits in a reporting hierarchy; that is handled elsewhere.
+For each General Ledger account below, do TWO things: (1) recognize its
+account type from semantic meaning, and (2) build its full reporting
+hierarchy — the chain of increasingly broader parents a real accountant
+would use, from the most general roll-up down to this account's own leaf
+position — derived from this company's OWN Balance Sheet / P&L section
+evidence and account name, never from another company's chart of accounts,
+a generic template, or a hardcoded list.
+
+Every account below already failed to match cleanly against this company's
+own uploaded Chart of Accounts (or matched more than one row ambiguously) —
+that's exactly why you're being asked. Some accounts carry an "UPLOADED COA
+CANDIDATES" note: pick the best-fitting one and reuse its hierarchy verbatim,
+or reason a fresh one if truly none fit — see that note for the exact rule.
 
 ──────────────────────────────────────────────────────────────────────────────
 ACCOUNT TYPE — choose exactly one of these six values:
@@ -270,6 +316,43 @@ CONFIDENCE — 0.00 to 1.00.  Reflect genuine uncertainty; do not default to 0.9
   Low (< 0.70): genuinely ambiguous; reviewable by a human accountant
 
 ──────────────────────────────────────────────────────────────────────────────
+HIERARCHY — build the account's full roll-up path as an array of level strings,
+level 1 = broadest (e.g. "Total Assets" / "Total Liabilities and Equity" /
+"Total Income" / "Total Cost of Goods Sold" / "Total Expenses"), each
+subsequent level strictly more specific than the one before it, ending at
+this account's own immediate parent (do NOT include the account's own name
+as a level — that is appended separately).
+
+Think top-to-bottom like a real accountant building a reporting structure:
+  • Determine the financial statement (Balance Sheet or P&L) from accountType.
+  • Determine the reporting SECTION from real evidence — the [BS section] /
+    [BS sub-section] / [P&L section] tags on the account below when present
+    (e.g. Current Assets, Fixed Assets, Current Liabilities, Long-Term
+    Liabilities, Cost of Goods Sold, Operating Expenses, Other Income, Other
+    Expense) — these tags come directly from THIS company's own uploaded
+    documents and are authoritative; never invent a section that isn't
+    supported by the tag or by the account's own unambiguous meaning (e.g. an
+    obvious "Income Tax Payable" implies a Current Tax grouping even with no
+    tag; do not force a section when there is truly no evidence for one).
+  • Add increasingly specific parents only when you have real grounds for
+    them (e.g. "Cash and Cash Equivalents" above several bank/petty-cash
+    accounts; "Credit Cards" above several card-issuer accounts; "Current Tax
+    Payable" / "Deferred Tax Liability" as their own grouping when the account
+    is clearly a tax line; "Other Income" / "Non-Operating Income or Expense" /
+    "Other Comprehensive Income" as their own grouping when the account is
+    clearly one of those, not ordinary operating income/expense).
+  • Two accounts that are genuinely the same KIND of thing (e.g. two different
+    banks' checking accounts, two different credit card issuers) MUST receive
+    the IDENTICAL levels array up to the point their own names diverge — reuse
+    an already-established path from the list below rather than building a
+    slightly different one.
+  • Never place a Balance Sheet account (asset/liability/equity) under a P&L
+    root, or a P&L account (income/cogs/expense) under a Balance Sheet root.
+  • Never invent a level with no real accounting meaning just to fill space.
+    If the company's structure only naturally supports 3-4 real levels for an
+    account, return only those 3-4 — do not pad with placeholders.
+${knownPathsBlock}
+──────────────────────────────────────────────────────────────────────────────
 Return STRICT JSON only — no markdown, no prose, no commentary:
 {
   "accounts": [
@@ -278,7 +361,9 @@ Return STRICT JSON only — no markdown, no prose, no commentary:
       "isReportRow": false,
       "accountType": "<one of: asset|liability|equity|income|cogs|expense>",
       "normalizedName": "<clean display name>",
-      "confidence": 0.95
+      "confidence": 0.95,
+      "levels": ["Total Assets", "Current Assets", "Cash and Cash Equivalents"],
+      "reasoning": "<1-2 sentences: why this type and this hierarchy>"
     }
   ]
 }
@@ -287,34 +372,55 @@ Accounts to classify:
 ${lines.join("\n")}`;
 }
 
+// Sanitize the AI's raw `levels` array: trimmed non-empty strings only, never
+// includes the account's own name (that's appended by the caller), capped to
+// leave room for it.
+function sanitizeLevels(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((l) => (l == null ? "" : String(l).trim()))
+    .filter(Boolean)
+    .slice(0, MAX_LEVELS - 1);
+}
+
 /**
- * AI-driven account type + hierarchy classification.
+ * AI-driven account type + full hierarchy generation.
  *
  * Classifies unique GL account names into the 6-type model, detects report
- * rows (isReportRow), and provides a normalized display name and confidence
- * score. Account recognition only — no section, hierarchy levels, or
- * normal_balance; hierarchy placement is coaMappingService's job, and normal
- * balance is a fixed function of accountType (see chartOfAccountsService's
- * normalBalanceFor).
+ * rows (isReportRow), and generates each account's full level_1..level_15
+ * roll-up hierarchy directly from this company's own Balance Sheet/P&L
+ * section evidence and account name — reasoned like a CPA, not looked up
+ * from a fixed table or another company's chart of accounts. Normal balance
+ * remains a fixed function of accountType (see chartOfAccountsService's
+ * normalBalanceFor) and is not returned here.
  *
  * Non-fatal: any failure returns an empty Map so the caller can mark affected
  * accounts as needsReview rather than applying incorrect hardcoded fallbacks.
  *
- * @param {Array<{key, accountName, accountNumber, bsSection}>} accounts
+ * @param {Array<{key, accountName, accountNumber, bsSection, plSection, bsSubSection, ambiguousCandidates}>} accounts
  *   key         — normName(rawAccountName); must match the key used in addLeaf
  *   accountName — normalizeForGemini(rawName) (leading account codes stripped)
  *   accountNumber — optional GL account number string
  *   bsSection   — optional BS section label (authoritative when present)
+ *   plSection   — optional P&L section label
+ *   bsSubSection — optional BS sub-section (current/fixed/long_term/other)
+ * @param {{companyId?: string, categoryPaths?: string[]}} [opts]
+ *   categoryPaths — this company/version's own already-established category
+ *   path strings (chartOfAccountsService.loadKnownCategoryPaths(...).map(c => c.path)),
+ *   given as context so siblings reuse the same branch instead of drifting.
  * @returns {Promise<Map<string, {
  *   accountType: string,
  *   normalizedName: string|null,
  *   confidence: number,
- *   isReportRow: boolean
+ *   isReportRow: boolean,
+ *   levels: string[],
+ *   reasoning: string|null
  * }>>}
  */
 async function classifyAccountsWithAI(accounts, opts = {}) {
   const out = new Map();
   const companyId = opts.companyId || null;
+  const categoryPaths = Array.isArray(opts.categoryPaths) ? opts.categoryPaths : [];
   const list = (accounts || []).slice(0, MAX_ACCOUNTS);
   if (!list.length) return out;
 
@@ -345,7 +451,7 @@ async function classifyAccountsWithAI(accounts, opts = {}) {
   for (let i = 0; i < remaining.length; i += CLASSIFY_BATCH_SIZE) {
     const batch = remaining.slice(i, i + CLASSIFY_BATCH_SIZE);
     try {
-      const text = await callGeminiText(buildClassifyPrompt(batch));
+      const text = await callGeminiText(buildClassifyPrompt(batch, categoryPaths));
       const parsed = parseJsonFromText(text);
       const rows = Array.isArray(parsed?.accounts) ? parsed.accounts : [];
 
@@ -355,7 +461,7 @@ async function classifyAccountsWithAI(accounts, opts = {}) {
 
         const isReportRow = Boolean(r.isReportRow);
         if (isReportRow) {
-          const value = { isReportRow: true, accountType: "", normalizedName: null, confidence: 1 };
+          const value = { isReportRow: true, accountType: "", normalizedName: null, confidence: 1, levels: [], reasoning: null };
           out.set(key, value);
           if (isCacheableClassification(value) && cacheableKeys.has(key)) toStore.push({ key, classification: value });
           continue;
@@ -365,8 +471,10 @@ async function classifyAccountsWithAI(accounts, opts = {}) {
         const accountType = VALID_ACCOUNT_TYPES.has(rawType) ? rawType : "";
         const confidence = Math.min(1, Math.max(0, Number(r.confidence) || 0));
         const normalizedName = r.normalizedName ? String(r.normalizedName).trim() : null;
+        const levels = sanitizeLevels(r.levels);
+        const reasoning = r.reasoning ? String(r.reasoning).trim().slice(0, 500) : null;
 
-        const value = { isReportRow: false, accountType, normalizedName, confidence };
+        const value = { isReportRow: false, accountType, normalizedName, confidence, levels, reasoning };
         out.set(key, value);
         if (isCacheableClassification(value) && cacheableKeys.has(key)) toStore.push({ key, classification: value });
       }

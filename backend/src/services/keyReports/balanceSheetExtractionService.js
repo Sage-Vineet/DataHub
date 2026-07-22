@@ -144,7 +144,13 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
     // v3: added sub_section (current/fixed/long_term/other) alongside section
     // — bump again so previously-cached rows (which lack this field) get
     // re-extracted rather than silently missing it forever.
-    this.parserVersion = 'v3';
+    // v4: added parent_path (real N-level hierarchy read from the document's
+    // own indentation, e.g. ["Assets", "Current Assets", "Bank Accounts"]) —
+    // bump again for the same reason.
+    // v5: unrecognized intermediate headers (e.g. "Bank Accounts") are now
+    // also preserved in `rows` (node_type: hierarchy_group) instead of being
+    // silently dropped — bump again so cached parses get refreshed.
+    this.parserVersion = 'v5';
   }
 
   async extract({ fileName, fileBuffer }) {
@@ -210,10 +216,21 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
       // Only Gemini's own structural read of the document — never guessed
       // from the account's own name (see inferSection's doc comment).
       section: node._section || null,
+      // The full ancestor chain Gemini's own nested tree already encodes
+      // (flattenGeminiRows), e.g. ["Assets", "Current Assets", "Bank Accounts"]
+      // — real document structure, not a single collapsed section label.
+      parent_path: node._parent_path || [],
       amount: node.amount || 0,
       as_of_date: asOfDate,
       fiscal_year: fiscalYear,
       is_total: node.type === 'total',
+      // A Gemini 'header' node is a structural heading (recognized section OR
+      // an arbitrary intermediate grouping label) — never a postable account.
+      // Preserved in the row (never silently dropped) so the hierarchy is
+      // complete, but flagged the same way the Excel path flags one, so
+      // transformRows/filterRowsBeforeInsertion exclude it from the table.
+      is_section_header: node.type === 'header',
+      node_type: node.type === 'header' ? (inferSection(node.name) ? 'hierarchy_section' : 'hierarchy_group') : node.type === 'total' ? 'total' : 'account',
     }));
 
     this.logger.log(`PDF "${fileName}": ${rows.length} rows (as_of_date=${asOfDate})`);
@@ -275,31 +292,31 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
     const rows = [];
     let rowsDetected = 0, rowsRejected = 0;
 
+    // Real multi-level hierarchy, read from the document's OWN indentation —
+    // never a hardcoded level scheme. A stack of {indent, label} ancestors:
+    // a row less-indented-than-or-equal-to the stack's top pops it (sibling or
+    // uncle), so the surviving stack at any point is exactly that row's real
+    // ancestor chain, however deep. Every row (header or leaf) is pushed —
+    // whether it ever becomes someone's ancestor is decided by what follows it,
+    // not by whether it looked like a recognized section-header keyword. A
+    // flat file with no indentation naturally yields an empty parent_path for
+    // every row (degrades to the pre-existing section/sub_section-only behavior).
+    const ancestorStack = [];
+
     for (let i = headerIdx + 1; i < raw.length; i++) {
       const row = raw[i];
-      const rawName = String(row[acctIdx] || '').trim();
+      const cellRaw = String(row[acctIdx] ?? '');
+      const rawName = cellRaw.trim();
       if (!rawName) continue;
 
       rowsDetected++;
 
+      const indent = (cellRaw.match(/^[ \t]*/)[0] || '').replace(/\t/g, '    ').length;
+      while (ancestorStack.length && ancestorStack[ancestorStack.length - 1].indent >= indent) ancestorStack.pop();
+      const parentPath = ancestorStack.map((a) => a.label);
+
       // Detect section headers (ASSETS, LIABILITIES, EQUITY)
       const sectionMatch = inferSection(rawName);
-      if (sectionMatch && !parseAmount(row[row.length - 1])) {
-        // This row is a pure section header (no amount) — track section
-        currentSection = rawName;
-        // Still emit a header row so the hierarchy is preserved
-        rows.push({
-          account_name: rawName,
-          section: sectionMatch,
-          sub_section: inferSubSection(rawName),
-          amount: 0,
-          as_of_date: asOfDate,
-          fiscal_year: fiscalYear,
-          is_total: false,
-          is_section_header: true,
-        });
-        continue;
-      }
 
       // Find the rightmost numeric value as the amount
       let amount = null;
@@ -308,9 +325,58 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
         if (v !== null) { amount = v; break; }
       }
 
-      if (amount === null) { rowsRejected++; continue; }
+      if (sectionMatch && amount === null) {
+        // This row is a pure, RECOGNIZED section header (no amount) — track
+        // section. Still emit a header row so the hierarchy is preserved —
+        // NEVER inserted into the database as a postable account: see
+        // filterRowsBeforeInsertion (extractionService.base.js), which strips
+        // any row_type/is_heading-flagged row before insertRows, using this
+        // same structural metadata rather than a hardcoded keyword list.
+        currentSection = rawName;
+        rows.push({
+          account_name: rawName,
+          section: sectionMatch,
+          sub_section: inferSubSection(rawName),
+          parent_path: parentPath,
+          amount: 0,
+          as_of_date: asOfDate,
+          fiscal_year: fiscalYear,
+          is_total: false,
+          is_section_header: true,
+          is_heading: true,
+          node_type: 'hierarchy_section',
+        });
+        ancestorStack.push({ indent, label: rawName });
+        continue;
+      }
 
-      const accountName = rawName.replace(/^\s+/, '');
+      if (amount === null) {
+        // An UNRECOGNIZED intermediate grouping label (e.g. "Bank Accounts")
+        // — no section keyword match, no amount. Not itself a postable
+        // account, but a real ancestor for whatever is nested more deeply
+        // under it (the whole point of reading indentation instead of only
+        // fixed keywords) — still emitted (node_type: 'hierarchy_group') so
+        // the full document hierarchy is never silently discarded, but
+        // filterRowsBeforeInsertion strips it the same way as a recognized
+        // section header before it ever reaches balance_sheet_entries.
+        rows.push({
+          account_name: rawName,
+          section: currentSection ? inferSection(currentSection) : null,
+          sub_section: currentSection ? inferSubSection(currentSection) : null,
+          parent_path: parentPath,
+          amount: 0,
+          as_of_date: asOfDate,
+          fiscal_year: fiscalYear,
+          is_total: false,
+          is_section_header: false,
+          is_heading: true,
+          node_type: 'hierarchy_group',
+        });
+        ancestorStack.push({ indent, label: rawName });
+        continue;
+      }
+
+      const accountName = rawName;
       const isTotal = /^total\b/i.test(accountName) || /\btotal$/i.test(accountName);
 
       rows.push({
@@ -321,11 +387,18 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
         // name when no header has appeared yet (see inferSection's doc comment).
         section: currentSection ? inferSection(currentSection) : null,
         sub_section: currentSection ? inferSubSection(currentSection) : null,
+        // The row's real ancestor chain (e.g. ["Assets", "Current Assets",
+        // "Bank Accounts"]) read from indentation — independent of, and often
+        // deeper than, the flat section/sub_section pair above.
+        parent_path: parentPath,
         amount,
         as_of_date: asOfDate,
         fiscal_year: fiscalYear,
         is_total: isTotal,
+        is_heading: false,
+        node_type: isTotal ? 'total' : 'account',
       });
+      ancestorStack.push({ indent, label: accountName });
     }
 
     this.logger.log(`  "${fileName}": Rows detected=${rowsDetected}, extracted=${rows.length}, rejected=${rowsRejected}`);
@@ -366,10 +439,15 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
       account_type: null,
       section: row.section || null,
       sub_section: row.sub_section || null,
+      parent_path: Array.isArray(row.parent_path) && row.parent_path.length ? row.parent_path : null,
 
       amount: Number(row.amount) || 0,
 
-      hierarchy_level: row.is_section_header ? 0 : 1,
+      // 0 = a structural heading row (recognized section header OR an
+      // unrecognized intermediate grouping label like "Bank Accounts") —
+      // filterRowsBeforeInsertion strips every hierarchy_level=0 row before
+      // it reaches this table; 1 = a real postable account/total line.
+      hierarchy_level: (row.is_section_header || row.node_type === 'hierarchy_group') ? 0 : 1,
       sort_order: idx,
       is_total: Boolean(row.is_total),
 

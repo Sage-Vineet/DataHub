@@ -1,41 +1,37 @@
 // ============================================================================
-// COA Mapping Service (Key Reports redesign — client_chart_of_accounts is the
-// master hierarchy reference)
+// COA Mapping Service (uploaded Chart of Accounts is the single source of
+// truth when present)
 //
 // Hierarchy (level_1..level_15, hierarchy_path, sort_order, statement_type)
-// is never computed — it's looked up directly against client_chart_of_accounts,
-// the table imported once from the client's own COA workbook
-// (clientCoaImportService.js / migration 071). That import is the only way
-// hierarchy enters the system; this service only ever COPIES it.
+// is never computed for a matched account — it's looked up directly against
+// client_chart_of_accounts, the table imported once from the client's own
+// COA workbook (clientCoaImportService.js / migration 071). That import is
+// the only way hierarchy enters the system for a matched account; this
+// service only ever COPIES it.
 //
-// Matching priority: Account Number > Exact Name > Normalized Name >
-// (Adjusted Name alias) > Fuzzy Match > Manual Review (needs_mapping).
-// account_type and normal_balance are NOT in the source workbook and are not
-// looked up here — account_type always comes from Gemini, and normal_balance
-// is derived from it deterministically by chartOfAccountsService.normalBalanceFor.
+// Matching itself is delegated to coaAccountMatcher.js's 5-stage deterministic
+// engine (Account Number > Exact > Normalized > Alias > strict Fuzzy >= 95% >
+// Parent Validation for ties). account_type is NOT in the source workbook and
+// is not looked up here — for a Balance Sheet row it's derived unambiguously
+// from the matched row's OWN hierarchy position (accountTypeFromHierarchy);
+// normal_balance is derived from whichever type wins, deterministically, by
+// chartOfAccountsService.normalBalanceFor.
 //
-// A true miss (nothing matches, not even fuzzy) means no hierarchy is
-// assigned — the account is flagged needs_mapping and excluded from report
-// rollups until a human resolves it directly on its own chart_of_accounts row
-// (chartOfAccountsService.updateAccountHierarchy). That per-account fix does
-// NOT feed back into client_chart_of_accounts — the master only changes by
-// re-running the importer against a newer version of the source workbook.
+// A true miss (status 'unmatched') or a genuine tie neither exact/alias/fuzzy
+// NOR parent-validation can resolve (status 'ambiguous') is the ONLY case
+// that should ever reach AI classification — see chartOfAccountsService
+// .buildLeafHierarchies, which now matches against this service FIRST and
+// only spends an AI call on what's left.
 // ============================================================================
 
 "use strict";
 
 const { fetchAllRows } = require("./pagedFetch");
-const { buildFuzzyLookup, fuzzyMatch } = require("./accountNameMatching");
+const { matchAccountToCoa } = require("./coaAccountMatcher");
 const { supabase } = require("../../db");
 
 const LEVEL_KEYS = Array.from({ length: 15 }, (_, i) => `level_${i + 1}`);
 const TABLE = "client_chart_of_accounts";
-
-// Every row in client_chart_of_accounts is equally authoritative — it's a
-// curated import, not accumulated AI history — so every match from this
-// service is unconditionally trusted (see chartOfAccountsService
-// .buildLeafHierarchies' TRUSTED_MATCH_METHODS check).
-const CLIENT_WORKBOOK_METHOD = "client_workbook";
 
 /**
  * Rows imported from a COA workbook for THIS company only (migration 072).
@@ -47,7 +43,7 @@ const CLIENT_WORKBOOK_METHOD = "client_workbook";
 async function loadCandidateAccounts(companyId) {
   const cols = [
     "id", "system_id", "account_name", "adjusted_name", "account_number",
-    "account_id_name", "statement_type", "hierarchy_path", ...LEVEL_KEYS,
+    "account_id_name", "statement_type", "normal_balance", "hierarchy_path", ...LEVEL_KEYS,
   ].join(", ");
   return fetchAllRows(() => supabase.from(TABLE).select(cols).eq("company_id", companyId));
 }
@@ -57,14 +53,11 @@ async function loadCandidateAccounts(companyId) {
  * Sheet row its position in the copied hierarchy already determines it
  * unambiguously — asset accounts sit directly under "Total Assets", liability
  * under "Total Liabilities", equity under "Total Equity". Reading that back
- * off the SAME authoritative structure being copied is not a guess (it's
- * exactly how "Capital One - Credit Card" is confirmed a liability even when
- * Gemini, fresh or from a stale cache entry, classifies it as equity) — it's
+ * off the SAME authoritative structure being copied is not a guess — it's
  * different in kind from inventing a NEW hierarchy position, which this never
  * does. P&L accounts are left null: this workbook folds COGS and Expense into
  * the same "Total Expenses > Expenses" branch, so the two can't be told apart
- * from structure alone; only "income" (under "Total Revenue") is unambiguous,
- * and Gemini already gets that case right without contradiction from the workbook.
+ * from structure alone; only "income" (under "Total Revenue") is unambiguous.
  */
 function accountTypeFromHierarchy(statementType, level1, level2, hierarchyPath) {
   if (statementType === "Balance Sheet") {
@@ -94,17 +87,15 @@ function normalizeStatementType(raw) {
   return null;
 }
 
-function resultFromEntry(entry, matchTier, confidence) {
+function resultFromEntry(entry, matchTier, confidence, reason) {
   return {
     matched: true,
+    status: "matched",
     matchTier,
     confidence,
-    // Derived from the matched row's OWN hierarchy when unambiguous (see
-    // accountTypeFromHierarchy) — otherwise null, and the caller keeps
-    // Gemini's classification. normal_balance is derived from whichever
-    // wins by chartOfAccountsService.normalBalanceFor.
+    reason,
     accountType: accountTypeFromHierarchy(entry.statement_type, entry.level_1, entry.level_2, entry.hierarchy_path),
-    normalBalance: null,
+    normalBalance: entry.normal_balance || null,
     statementType: normalizeStatementType(entry.statement_type),
     systemId: entry.system_id,
     hierarchyPath: entry.hierarchy_path,
@@ -112,54 +103,78 @@ function resultFromEntry(entry, matchTier, confidence) {
     // Traceability back to the master row this hierarchy was copied from
     // (chart_of_accounts.client_account_id — migration 071).
     clientAccountId: entry.id,
-    // Always "client_workbook" — every row here is equally authoritative, so
-    // this always wins over a fresh AI classification on conflict (unlike a
-    // "gemini"-sourced candidate from the old cross-company chart_of_accounts
-    // search, which was just a prior, possibly-wrong, never-verified guess).
-    classificationMethod: CLIENT_WORKBOOK_METHOD,
+    classificationMethod: "client_workbook",
   };
 }
 
-/** One name/number lookup over a fixed set of candidate rows. */
-function buildSingleMapper(entries) {
-  const byId = new Map(entries.map((e) => [e.id, e]));
-  const fuzzyLookup = buildFuzzyLookup(entries);
-
+function ambiguousResult(candidateRows, reason) {
   return {
-    map({ normalizedName, accountNumber }) {
-      // 1. Exact account number.
-      if (accountNumber) {
-        const nk = String(accountNumber).trim();
-        if (fuzzyLookup.byNum.has(nk)) {
-          const entry = byId.get(fuzzyLookup.byNum.get(nk));
-          if (entry) return resultFromEntry(entry, "account_number", 1.0);
-        }
-      }
-      // 2-5. Exact normalized name / exact original name / adjusted-name alias /
-      // fuzzy similarity — accountNameMatching.fuzzyMatch already tries these
-      // tiers in order (normalized-exact, strict-alnum-exact — which indexes
-      // account_name AND adjusted_name as aliases of the same account — then
-      // Jaccard word-similarity with the accounting-modifier hard gate).
-      // accountNumber already checked above — pass null so it isn't re-checked.
-      const match = fuzzyMatch(fuzzyLookup, normalizedName, null);
-      if (!match) return { matched: false };
-      const entry = byId.get(match.id);
-      if (!entry) return { matched: false };
-      const matchTier = match.confidence >= 1.0 ? "exact_name" : match.confidence >= 0.95 ? "normalized_name" : "fuzzy";
-      return resultFromEntry(entry, matchTier, match.confidence);
+    matched: false,
+    status: "ambiguous",
+    matchTier: null,
+    confidence: 0,
+    reason,
+    candidates: candidateRows.map((c) => ({
+      clientAccountId: c.id,
+      accountName: c.account_name,
+      hierarchyPath: c.hierarchy_path,
+    })),
+  };
+}
+
+/** One name/number lookup over a fixed set of candidate rows for one company. */
+function buildSingleMapper(entries) {
+  return {
+    /**
+     * @param {{normalizedName: string, accountNumber?: string|null, bsSection?: string|null, plSection?: string|null}} account
+     */
+    map({ normalizedName, accountNumber, bsSection, plSection }) {
+      const result = matchAccountToCoa({ accountName: normalizedName, accountNumber, bsSection, plSection }, entries);
+      if (result.status === "matched") return resultFromEntry(result.entry, result.matchTier, result.confidence, result.reason);
+      if (result.status === "ambiguous") return ambiguousResult(result.candidates, result.reason);
+      return { matched: false, status: "unmatched", reason: result.reason };
     },
     entryCount: entries.length,
   };
 }
 
 /**
+ * Try each candidate name against client_chart_of_accounts in order, keeping
+ * the first confident match. Not a fallback guess — both names are already-
+ * known, verbatim data about this exact account (an AI-normalized display
+ * name, which expands abbreviations for display quality, and the raw
+ * original GL account name, which is often what the client's own reference
+ * workbook literally uses). Trying both only widens which already-existing
+ * string gets matched; it never invents a new one. An 'ambiguous' result
+ * from an earlier name is kept as a fallback if no later name matches
+ * cleanly — still far more informative than treating it as a flat miss.
+ *
+ * @param {{map: Function}} mapper
+ * @param {string[]} names
+ * @param {string|null} accountNumber
+ * @param {{bsSection?: string|null, plSection?: string|null}} [evidence]
+ */
+function matchAnyName(mapper, names, accountNumber, evidence = {}) {
+  const tried = new Set();
+  let bestAmbiguous = null;
+  for (const name of names) {
+    if (!name || tried.has(name)) continue;
+    tried.add(name);
+    const result = mapper.map({ normalizedName: name, accountNumber, bsSection: evidence.bsSection, plSection: evidence.plSection });
+    if (result.matched) return result;
+    if (result.status === "ambiguous" && !bestAmbiguous) bestAmbiguous = result;
+  }
+  return bestAmbiguous || { matched: false, status: "unmatched" };
+}
+
+/**
  * Build a reusable mapper for one classification run — strictly this
  * company's own uploaded COA (migration 072), if any. No cross-company or
  * global fallback: a company with no uploaded COA of its own simply gets no
- * match here, and falls through to the next classification priority
- * (Balance Sheet/P&L section evidence, GL analysis, the accounting rule
- * engine, then AI) — never another company's data, per the client's explicit
- * multi-tenant isolation requirement.
+ * match here, and every account falls through to AI classification (Balance
+ * Sheet/P&L section evidence still informs the AI's own reasoning, but never
+ * another company's data, per the client's explicit multi-tenant isolation
+ * requirement).
  *
  * @param {string} companyId
  */
@@ -172,23 +187,23 @@ async function createCoaMapper(companyId) {
   // directly in sync logs instead of requiring an ad hoc DB query to notice.
   console.log(
     `[CoaMapping] client_chart_of_accounts: ${companyEntries.length} row(s) for company=${companyId}.` +
-    (companyEntries.length === 0 ? ' No uploaded Chart of Accounts for this company — falling through to Balance Sheet/P&L/GL/rules/AI classification.' : ''),
+    (companyEntries.length === 0 ? ' No uploaded Chart of Accounts for this company — every account will be classified by AI.' : ''),
   );
 
   return {
     /**
-     * @param {{normalizedName: string, accountNumber?: string|null}} account
-     * @returns {{matched: false} | {matched: true, matchTier: string, confidence: number,
-     *   accountType: null, statementType: string, normalBalance: null, systemId: string,
-     *   hierarchyPath: string, levels: (string|null)[], clientAccountId: string,
-     *   classificationMethod: string}}
+     * @param {{normalizedName: string, accountNumber?: string|null, bsSection?: string|null, plSection?: string|null}} account
+     * @returns {{matched: false, status: 'unmatched'|'ambiguous', candidates?: Array} |
+     *   {matched: true, status: 'matched', matchTier: string, confidence: number, reason: string,
+     *    accountType: string|null, statementType: string|null, normalBalance: string|null, systemId: string,
+     *    hierarchyPath: string, levels: (string|null)[], clientAccountId: string, classificationMethod: string}}
      */
     map(account) {
-      if (!companyMapper) return { matched: false };
+      if (!companyMapper) return { matched: false, status: "unmatched", reason: "No uploaded Chart of Accounts for this company." };
       return companyMapper.map(account);
     },
     entryCount: companyEntries.length,
   };
 }
 
-module.exports = { createCoaMapper };
+module.exports = { createCoaMapper, matchAnyName, loadCandidateAccounts };

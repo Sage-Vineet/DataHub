@@ -163,38 +163,6 @@ function coaLookupKey(name, accountNumber = null) {
   return `${normalizedNumber}::${normalizedName}`;
 }
 
-async function loadCoaAccountTypeLookup(versionId) {
-  const lookup = new Map();
-  const { data, error } = await supabase
-    .from("chart_of_accounts")
-    .select("account_name, adjusted_name, base_account, account_number, account_type, metadata")
-    .eq("version_id", versionId);
-
-  if (error) {
-    console.warn(`[KeyReports][COA] Could not load account classification map: ${error.message}`);
-    return lookup;
-  }
-
-  for (const row of data || []) {
-    if (row.metadata?.is_group || !row.account_type) continue;
-    for (const name of [row.account_name, row.adjusted_name, row.base_account]) {
-      if (!String(name || '').trim()) continue;
-      const numberedKey = coaLookupKey(name, row.account_number);
-      const nameOnlyKey = coaLookupKey(name, null);
-      if (!lookup.has(numberedKey)) lookup.set(numberedKey, row.account_type);
-      if (!lookup.has(nameOnlyKey)) lookup.set(nameOnlyKey, row.account_type);
-    }
-  }
-  return lookup;
-}
-
-function classifyAccountFromLookup(lookup, name, accountNumber = null) {
-  if (!name) return 'unknown';
-  const rawType = lookup.get(coaLookupKey(name, accountNumber))
-    || lookup.get(coaLookupKey(name, null));
-  return resolveReportTypeFromCoaType(rawType);
-}
-
 // ─── Root Cause 8: temporary per-account diagnostic logging ───────────────────
 // Off by default (zero cost — no extra query, no console output) since a real
 // GL can have hundreds of accounts per year. Enable with
@@ -300,38 +268,66 @@ async function fetchAllGLRows(versionId, year, columns, rowType = 'TRANSACTION')
   return out;
 }
 
+// COA id → {accountName, accountType, parentAccountId, cfCategory} — the ONLY
+// account-identity lookup used by the GL aggregators below. Every GL row's
+// classification comes from its own stored coa_id/split_coa_id (populated
+// once by linkGlToCoa — see keyReportAccountingService.js), never from
+// matching the row's account_name/split_account text at read time.
+async function loadCoaByIdMap(versionId) {
+  const map = new Map();
+  const { data } = await supabase
+    .from('chart_of_accounts')
+    .select('id, account_name, account_type, parent_account_id, cf_category, metadata')
+    .eq('version_id', versionId);
+  for (const r of data || []) {
+    if (r.metadata?.is_group) continue;
+    map.set(r.id, {
+      accountName: r.account_name,
+      accountType: r.account_type || null,
+      parentAccountId: r.parent_account_id || null,
+      cfCategory: r.cf_category || null,
+    });
+  }
+  return map;
+}
+
+/** account_type from a joined COA row → the coarse revenue/expense/cogs/asset/liability/equity bucket used by these aggregators. */
+function resolveReportType(coaRow) {
+  return resolveReportTypeFromCoaType(coaRow?.accountType);
+}
+
 /**
  * Read TRANSACTION GL rows for EXACTLY one fiscal year, aggregated per
- * account_name. Used for P&L report generation (existing callers).
- * Returns { accounts: Map(name→{net,type}), rowsRead }.
+ * coa_id. Used for P&L report generation (existing callers).
+ * Returns { accounts: Map(coaId→{name,net,type}), rowsRead }.
  */
 async function aggregateGLByAccount(versionId, year) {
   const rows = await fetchAllGLRows(
     versionId, year,
-    'account_name, split_account, amount, running_balance, row_type, transaction_date, account_number',
+    'account_name, split_account, amount, running_balance, row_type, transaction_date, coa_id, split_coa_id',
   );
 
-  const coaTypes = await loadCoaAccountTypeLookup(versionId);
-  const coaDiagLookup = await loadCoaDiagnosticLookup(versionId);
+  const coaById = await loadCoaByIdMap(versionId);
 
-  // Accounts that already post their own account_name row this year — the
-  // split_account fallback below only fires for revenue/expense accounts that
-  // don't. Mirrors aggregateGLForBS's plDistSeen rule exactly so the P&L total
-  // and the Balance Sheet/Cash Flow Net Income agree for the same version+year.
-  const plDistSeen = new Set();
+  // coa_ids that already post their own account_name row this year — the
+  // split_coa_id fallback below only fires for revenue/expense accounts that
+  // don't. Mirrors aggregateGLForBS's distCoaIdsSeen rule exactly so the P&L
+  // total and the Balance Sheet/Cash Flow Net Income agree for the same
+  // version+year.
+  const distCoaIdsSeen = new Set();
   for (const row of rows) {
-    const n = glAccountName(row);
-    if (!n) continue;
-    const t = classifyAccountFromLookup(coaTypes, n, row.account_number);
-    if (t === 'revenue' || t === 'expense') plDistSeen.add(n);
+    if (!row.coa_id) continue;
+    const t = resolveReportType(coaById.get(row.coa_id));
+    if (t === 'revenue' || t === 'expense') distCoaIdsSeen.add(row.coa_id);
   }
 
   const accounts = new Map();
   const unclassified = [];
   for (const row of rows) {
-    const name = glAccountName(row);
+    const coaRow = row.coa_id ? coaById.get(row.coa_id) : null;
+    const type = resolveReportType(coaRow);
+    const name = coaRow?.accountName || glAccountName(row);
     if (!name) continue;
-    const type = classifyAccountFromLookup(coaTypes, name, row.account_number);
     if (type === 'unknown') {
       unclassified.push({
         transaction_date: row.transaction_date,
@@ -341,18 +337,20 @@ async function aggregateGLByAccount(versionId, year) {
         running_balance: row.running_balance,
       });
     }
-    if (!accounts.has(name)) accounts.set(name, { name, net: 0, type });
-    accounts.get(name).net += glNetMovement(row);
+    const key = row.coa_id || `unlinked:${name}`;
+    if (!accounts.has(key)) accounts.set(key, { name, net: 0, type });
+    accounts.get(key).net += glNetMovement(row);
 
     // P&L split fallback — same rule as aggregateGLForBS: pick up a
-    // revenue/expense account that only appears via split_account this year
-    // (e.g. a partial GL export), attributed as its own line under that name.
-    const splitName = (row.split_account && String(row.split_account).trim()) || '';
-    if (!splitName) continue;
-    const splitType = classifyAccountFromLookup(coaTypes, splitName, null);
-    if ((splitType === 'revenue' || splitType === 'expense') && !plDistSeen.has(splitName)) {
-      if (!accounts.has(splitName)) accounts.set(splitName, { name: splitName, net: 0, type: splitType });
-      accounts.get(splitName).net += safeNum(row.amount);
+    // revenue/expense account that only appears via split_coa_id this year
+    // (e.g. a partial GL export), attributed as its own line.
+    if (!row.split_coa_id) continue;
+    const splitCoaRow = coaById.get(row.split_coa_id);
+    const splitType = resolveReportType(splitCoaRow);
+    if ((splitType === 'revenue' || splitType === 'expense') && !distCoaIdsSeen.has(row.split_coa_id)) {
+      const splitName = splitCoaRow?.accountName || (row.split_account && String(row.split_account).trim()) || '';
+      if (!accounts.has(row.split_coa_id)) accounts.set(row.split_coa_id, { name: splitName, net: 0, type: splitType });
+      accounts.get(row.split_coa_id).net += safeNum(row.amount);
     }
   }
   if (unclassified.length) {
@@ -360,12 +358,13 @@ async function aggregateGLByAccount(versionId, year) {
       unclassified.map(u => `${u.account_name} (split:${u.split_account}) amt=${u.amount} rb=${u.running_balance}`).join(' | '));
   }
   if (diagnosticLogEnabled()) {
+    const coaDiagLookup = await loadCoaDiagnosticLookup(versionId);
     for (const acc of accounts.values()) {
       const includedInNi = acc.type === 'revenue' || acc.type === 'expense';
       const reason = acc.type === 'revenue' ? 'revenue account — adds to Net Income'
         : acc.type === 'expense' ? 'expense account — reduces Net Income'
         : acc.type === 'cogs' ? 'cogs account — reduces Net Income'
-        : acc.type === 'unknown' ? 'no Chart of Accounts match — excluded from this per-account P&L view (see aggregateGLForBS for the Net Income override)'
+        : acc.type === 'unknown' ? 'no Chart of Accounts link — excluded from this per-account P&L view (see aggregateGLForBS for the Net Income override)'
         : `${acc.type} account — Balance Sheet item, not part of Net Income`;
       logGlAccountDiagnostic(versionId, year, acc.name, null, coaDiagLookup, acc.net, includedInNi, reason);
     }
@@ -379,18 +378,17 @@ async function aggregateGLByAccount(versionId, year) {
 async function aggregateGLForBSByMonth(versionId, year) {
   const rows = await fetchAllGLRows(
     versionId, year,
-    'account_name, split_account, amount, row_type, transaction_date, account_number',
+    'account_name, split_account, amount, row_type, transaction_date, coa_id, split_coa_id',
   );
   if (!rows.length) return null;
 
-  const coaTypes = await loadCoaAccountTypeLookup(versionId);
+  const coaById = await loadCoaByIdMap(versionId);
 
-  const plDistSeen = new Set();
+  const distCoaIdsSeen = new Set();
   for (const row of rows) {
-    const n = (row.account_name && String(row.account_name).trim()) || '';
-    if (!n) continue;
-    const t = classifyAccountFromLookup(coaTypes, n, row.account_number);
-    if (t === 'revenue' || t === 'expense') plDistSeen.add(n);
+    if (!row.coa_id) continue;
+    const t = resolveReportType(coaById.get(row.coa_id));
+    if (t === 'revenue' || t === 'expense') distCoaIdsSeen.add(row.coa_id);
   }
 
   const byMonth = new Map();
@@ -403,22 +401,24 @@ async function aggregateGLForBSByMonth(versionId, year) {
     hasDateData = true;
 
     if (!byMonth.has(monthNum)) byMonth.set(monthNum, { bsMap: new Map(), netIncome: 0 });
-    const mData    = byMonth.get(monthNum);
-    const distName = (row.account_name && String(row.account_name).trim()) || '';
-    const splitName= (row.split_account && String(row.split_account).trim()) || '';
+    const mData   = byMonth.get(monthNum);
+    const coaRow  = row.coa_id ? coaById.get(row.coa_id) : null;
+    const distType = resolveReportType(coaRow);
+    const distName = coaRow?.accountName || (row.account_name && String(row.account_name).trim()) || '';
     const amount   = safeNum(row.amount);
-    const distType = distName ? classifyAccountFromLookup(coaTypes, distName, row.account_number) : 'unknown';
-    const splitType= splitName ? classifyAccountFromLookup(coaTypes, splitName, null) : 'unknown';
+    const splitCoaRow = row.split_coa_id ? coaById.get(row.split_coa_id) : null;
+    const splitType   = resolveReportType(splitCoaRow);
 
     if (distType === 'asset' || distType === 'liability' || distType === 'equity') {
-      if (!mData.bsMap.has(distName)) mData.bsMap.set(distName, { net: 0, type: distType });
-      mData.bsMap.get(distName).net += naturalBalanceMovement(distType, amount);
+      const key = row.coa_id || `unlinked:${distName}`;
+      if (!mData.bsMap.has(key)) mData.bsMap.set(key, { name: distName, net: 0, type: distType });
+      mData.bsMap.get(key).net += naturalBalanceMovement(distType, amount);
     } else if (distType === 'revenue' || distType === 'expense') {
       mData.netIncome += netIncomeMovement(distType, amount);
     }
 
     // P&L split fallback
-    if (splitName && (splitType === 'revenue' || splitType === 'expense') && !plDistSeen.has(splitName)) {
+    if (row.split_coa_id && (splitType === 'revenue' || splitType === 'expense') && !distCoaIdsSeen.has(row.split_coa_id)) {
       mData.netIncome += amount;
     }
   }
@@ -429,18 +429,16 @@ async function aggregateGLForBSByMonth(versionId, year) {
 async function aggregateGLForBS(versionId, year) {
   const rows = await fetchAllGLRows(
     versionId, year,
-    'account_name, split_account, amount, running_balance, row_type, transaction_date, account_number',
+    'account_name, split_account, amount, running_balance, row_type, transaction_date, coa_id, split_coa_id',
   );
 
-  const coaTypes = await loadCoaAccountTypeLookup(versionId);
-  const coaDiagLookup = await loadCoaDiagnosticLookup(versionId);
+  const coaById = await loadCoaByIdMap(versionId);
 
-  const plDistSeen = new Set();
+  const distCoaIdsSeen = new Set();
   for (const row of rows) {
-    const n = (row.account_name && String(row.account_name).trim()) || '';
-    if (!n) continue;
-    const t = classifyAccountFromLookup(coaTypes, n, row.account_number);
-    if (t === 'revenue' || t === 'expense') plDistSeen.add(n);
+    if (!row.coa_id) continue;
+    const t = resolveReportType(coaById.get(row.coa_id));
+    if (t === 'revenue' || t === 'expense') distCoaIdsSeen.add(row.coa_id);
   }
 
   const bsMap = new Map();
@@ -449,23 +447,18 @@ async function aggregateGLForBS(versionId, year) {
   const unclassifiedNetByName = new Map(); // diagnostic-only accumulator, see below
 
   for (const row of rows) {
-    const distName = (row.account_name && String(row.account_name).trim()) || '';
-    const splitName = (row.split_account && String(row.split_account).trim()) || '';
+    const coaRow  = row.coa_id ? coaById.get(row.coa_id) : null;
+    const distType = resolveReportType(coaRow);
+    const distName = coaRow?.accountName || (row.account_name && String(row.account_name).trim()) || '';
     const amount = safeNum(row.amount);
-
-    const distType = distName ? classifyAccountFromLookup(coaTypes, distName, row.account_number) : 'unknown';
-    const splitType = splitName ? classifyAccountFromLookup(coaTypes, splitName, null) : 'unknown';
+    const splitCoaRow = row.split_coa_id ? coaById.get(row.split_coa_id) : null;
+    const splitType   = resolveReportType(splitCoaRow);
 
     // ── account_name (primary posting account) ─────────────────────────────
-    if (distType === 'asset') {
-      if (!bsMap.has(distName)) bsMap.set(distName, { net: 0, type: 'asset' });
-      bsMap.get(distName).net += naturalBalanceMovement(distType, amount);
-    } else if (distType === 'liability') {
-      if (!bsMap.has(distName)) bsMap.set(distName, { net: 0, type: 'liability' });
-      bsMap.get(distName).net += naturalBalanceMovement(distType, amount);
-    } else if (distType === 'equity') {
-      if (!bsMap.has(distName)) bsMap.set(distName, { net: 0, type: 'equity' });
-      bsMap.get(distName).net += naturalBalanceMovement(distType, amount);
+    if (distType === 'asset' || distType === 'liability' || distType === 'equity') {
+      const key = row.coa_id || `unlinked:${distName}`;
+      if (!bsMap.has(key)) bsMap.set(key, { name: distName, net: 0, type: distType });
+      bsMap.get(key).net += naturalBalanceMovement(distType, amount);
     } else if (distType === 'revenue') {
       // Revenue credits are positive in QB's natural-balance GL export → add to NI.
       netIncome += netIncomeMovement(distType, amount);
@@ -473,13 +466,14 @@ async function aggregateGLForBS(versionId, year) {
       // Expense debits are positive → subtract from NI.
       netIncome += netIncomeMovement(distType, amount);
     } else {
-      // Root Cause 5 fix: an account absent from chart_of_accounts (not
-      // classified as asset/liability/equity/revenue/expense) must still
-      // contribute to Net Income — money must never silently disappear.
-      // Confirmed live: "Augusta Rule", 20 real transactions across 3 fiscal
-      // years, previously entirely excluded from Net Income. Defaults to the
-      // same natural-balance treatment as expense (debit-positive reduces
-      // NI) — empirically verified correct for this exact case; a genuinely
+      // Root Cause 5 fix: an account not linked to a chart_of_accounts leaf
+      // (no coa_id, or a coa_id whose classification isn't
+      // asset/liability/equity/revenue/expense) must still contribute to Net
+      // Income — money must never silently disappear. Confirmed live:
+      // "Augusta Rule", 20 real transactions across 3 fiscal years,
+      // previously entirely excluded from Net Income. Defaults to the same
+      // natural-balance treatment as expense (debit-positive reduces NI) —
+      // empirically verified correct for this exact case; a genuinely
       // revenue-like unclassified account would show as an unusually large
       // negative contribution here, which is still visible in `unclassified`
       // below for manual review, never silently gone.
@@ -501,8 +495,8 @@ async function aggregateGLForBS(versionId, year) {
     // own account_name rows, so applying the inverse here causes double-counting.
     // P&L: contribute to Net Income only as a fallback for P&L accounts that
     // have no account_name row in this year's GL (e.g. partial exports).
-    if (!splitName) continue;
-    if ((splitType === 'revenue' || splitType === 'expense') && !plDistSeen.has(splitName)) {
+    if (!row.split_coa_id) continue;
+    if ((splitType === 'revenue' || splitType === 'expense') && !distCoaIdsSeen.has(row.split_coa_id)) {
       // splitAmount = -amount; netIncome += -(splitAmount) = amount
       netIncome += amount;
     }
@@ -519,12 +513,13 @@ async function aggregateGLForBS(versionId, year) {
   }
 
   if (diagnosticLogEnabled()) {
-    for (const [name, acc] of bsMap) {
-      logGlAccountDiagnostic(versionId, year, name, null, coaDiagLookup, acc.net, false, `${acc.type} account — Balance Sheet item, not part of Net Income`);
+    const coaDiagLookup = await loadCoaDiagnosticLookup(versionId);
+    for (const acc of bsMap.values()) {
+      logGlAccountDiagnostic(versionId, year, acc.name, null, coaDiagLookup, acc.net, false, `${acc.type} account — Balance Sheet item, not part of Net Income`);
     }
     for (const [name, netAmount] of unclassifiedNetByName) {
       logGlAccountDiagnostic(versionId, year, name, null, coaDiagLookup, netAmount, true,
-        'no Chart of Accounts match — Root Cause 5 override: included in Net Income (treated as expense-like, natural-balance), excluded from Balance Sheet, flagged for manual review');
+        'no Chart of Accounts link — Root Cause 5 override: included in Net Income (treated as expense-like, natural-balance), excluded from Balance Sheet, flagged for manual review');
     }
   }
 
@@ -539,52 +534,6 @@ function slug(name) {
     .replace(/\s+/g, '_')
     .replace(/[^a-z0-9_]/g, '')
     .slice(0, 40);
-}
-
-/**
- * Build a single-year P&L tree purely from this year's GL transactions.
- * Revenue accounts (credit balances) render as positive income; expense accounts
- * (debit balances) render as positive expense. Only rows with fiscal_year = year
- * are used (spec #8) — guaranteed by aggregateGLByAccount.
- */
-function buildPLFromGL(accounts, year) {
-  const col = `y${year}`;
-  const mk = (prefix, name, type, amount) => ({
-    id: `${prefix}-${slug(name)}`,
-    name,
-    type,
-    amount,
-    amounts: { [col]: amount },
-  });
-
-  const revenue = [];
-  const expense = [];
-  for (const acc of accounts.values()) {
-    // acc.type was already resolved from the COA by aggregateGLByAccount — no
-    // second classification pass needed.
-    if (acc.type === 'revenue') revenue.push({ name: acc.name, amount: acc.net });
-    else if (acc.type === 'expense') expense.push({ name: acc.name, amount: acc.net });
-  }
-  const totalIncome = revenue.reduce((s, a) => s + a.amount, 0);
-  const totalExpense = expense.reduce((s, a) => s + a.amount, 0);
-  const netIncome = totalIncome - totalExpense;
-
-  const incomeSection = {
-    ...mk('section', 'Income', 'header', totalIncome),
-    children: [
-      ...revenue.map((r) => mk('entry', r.name, 'data', r.amount)),
-      mk('total', 'Total Income', 'total', totalIncome),
-    ],
-  };
-  const expenseSection = {
-    ...mk('section', 'Expenses', 'header', totalExpense),
-    children: [
-      ...expense.map((r) => mk('entry', r.name, 'data', r.amount)),
-      mk('total', 'Total Expenses', 'total', totalExpense),
-    ],
-  };
-
-  return [incomeSection, expenseSection, mk('total', 'Net Income', 'total', netIncome)];
 }
 
 /** Accumulate a signed balance into a name→{name,balance,type} map. */
@@ -724,13 +673,15 @@ async function bsBalancesForYear(versionId, year, depth = 0) {
   const { bsMap, netIncome, unclassified, rowsRead: glRows } = await aggregateGLForBS(versionId, year);
   rowsRead += glRows;
 
-  for (const [name, acc] of bsMap) {
+  // bsMap is keyed by coa_id (not name) — acc.name carries the account's
+  // real/canonical name for this name-keyed balances map.
+  for (const acc of bsMap.values()) {
     // QB GL uses natural-balance convention: assets, liabilities, and equity all store
     // their movements as positive when the balance increases. No sign flip needed here —
     // netting at bsMap level already captures both debits and credits correctly.
-    if (acc.type === 'asset') addBalance(balances, name, acc.net, 'asset');
-    else if (acc.type === 'liability') addBalance(balances, name, acc.net, 'liability');
-    else if (acc.type === 'equity') addBalance(balances, name, acc.net, 'equity');
+    if (acc.type === 'asset') addBalance(balances, acc.name, acc.net, 'asset');
+    else if (acc.type === 'liability') addBalance(balances, acc.name, acc.net, 'liability');
+    else if (acc.type === 'equity') addBalance(balances, acc.name, acc.net, 'equity');
   }
   // Current-year Net Income is a separate equity line — NOT merged into Retained Earnings.
   // RE = accumulated prior-year earnings; Net Income = this year only (matches QB presentation).
@@ -740,62 +691,6 @@ async function bsBalancesForYear(versionId, year, depth = 0) {
 }
 
 /** Single-year BS tree from a natural-sign balances map (shape matches buildBSHierarchicalRows). */
-function buildBSFromBalances(balances, year) {
-  const col = `y${year}`;
-  const groups = { assets: [], liabilities: [], equity: [] };
-  for (const acc of balances.values()) {
-    const section =
-      acc.type === 'asset' ? 'assets' : acc.type === 'liability' ? 'liabilities' : acc.type === 'equity' ? 'equity' : null;
-    if (!section) continue;
-    if (Math.abs(acc.balance) < 0.005) continue;
-    groups[section].push({ name: acc.name, amount: acc.balance });
-  }
-
-  const hierarchicalRows = [];
-  const sectionTotals = { assets: 0, liabilities: 0, equity: 0 };
-
-  for (const section of BS_SECTION_ORDER) {
-    const items = groups[section];
-    const total = items.reduce((s, i) => s + i.amount, 0);
-    sectionTotals[section] = total;
-    if (!items.length) continue;
-
-    const children = items.map((i) => ({
-      id: `bs-${section}-${slug(i.name)}`,
-      name: i.name,
-      type: 'data',
-      amount: i.amount,
-      amounts: { [col]: i.amount },
-    }));
-    children.push({
-      id: `bs-${section}-total`,
-      name: `Total ${BS_SECTION_LABELS[section]}`,
-      type: 'total',
-      amount: total,
-      amounts: { [col]: total },
-    });
-    hierarchicalRows.push({
-      id: section,
-      name: BS_SECTION_LABELS[section],
-      type: 'header',
-      amount: total,
-      amounts: { [col]: total },
-      children,
-    });
-  }
-
-  const le = sectionTotals.liabilities + sectionTotals.equity;
-  hierarchicalRows.push({
-    id: 'total-le',
-    name: 'Total Liabilities and Equity',
-    type: 'total',
-    amount: le,
-    amounts: { [col]: le },
-  });
-
-  return { hierarchicalRows, sectionTotals };
-}
-
 
 // ─── Month-view aggregation (spec #9) ─────────────────────────────────────────
 
@@ -810,24 +705,26 @@ const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep
 async function aggregateGLByAccountMonth(versionId, year) {
   const rows = await fetchAllGLRows(
     versionId, year,
-    'account_name, amount, transaction_date, row_type, account_number',
+    'account_name, amount, transaction_date, row_type, coa_id',
   );
 
-  const coaTypes = await loadCoaAccountTypeLookup(versionId);
+  const coaById = await loadCoaByIdMap(versionId);
 
   const byAccount = new Map();
   const monthsPresent = new Set();
   for (const row of rows) {
-    const name = glAccountName(row);
+    const coaRow = row.coa_id ? coaById.get(row.coa_id) : null;
+    const name = coaRow?.accountName || glAccountName(row);
     if (!name || !row.transaction_date) continue;
     const month = parseInt(String(row.transaction_date).slice(5, 7), 10);
     if (!(month >= 1 && month <= 12)) continue;
     monthsPresent.add(month);
-    if (!byAccount.has(name)) {
-      const type = classifyAccountFromLookup(coaTypes, name, row.account_number);
-      byAccount.set(name, { name, type, months: new Map() });
+    const key = row.coa_id || `unlinked:${name}`;
+    if (!byAccount.has(key)) {
+      const type = resolveReportType(coaRow);
+      byAccount.set(key, { name, type, months: new Map() });
     }
-    const acc = byAccount.get(name);
+    const acc = byAccount.get(key);
     acc.months.set(month, (acc.months.get(month) || 0) + glNetMovement(row));
   }
   return { byAccount, monthsPresent, rowsRead: rows.length };
@@ -1596,14 +1493,36 @@ function mergeCfByYear(treesByYear, years) {
   return union(years.map((y) => treesByYear[y] || []));
 }
 
+// Adapts financialStatementService.generateYearlyCf's statement shape
+// ({operatingActivities: {label, items: [{name, amount}], total}, ...}) into
+// the flat shape manualCashFlowService.generatedCfToRows expects
+// ({operatingActivities: [{label, value}], totalOperating, beginningCash, ...}) —
+// a display-format translation only; the underlying cf_category-driven
+// classification is untouched, never re-derived here.
+function finStmtCfStatementToLegacyShape(statement) {
+  const toItems = (section) => (section?.items || []).map((i) => ({ label: i.name, value: i.amount }));
+  return {
+    operatingActivities: toItems(statement.operatingActivities),
+    investingActivities: toItems(statement.investingActivities),
+    financingActivities: toItems(statement.financingActivities),
+    totalOperating: statement.operatingActivities?.total || 0,
+    totalInvesting: statement.investingActivities?.total || 0,
+    totalFinancing: statement.financingActivities?.total || 0,
+    netCashIncrease: statement.netCashIncrease || 0,
+    beginningCash: statement.openingCash || 0,
+    endingCash: statement.endingCash || 0,
+  };
+}
+
 /**
  * GET /key-reports/versions/:versionId/reports/cashflow
  *
  * Builds a GAAP indirect-method Cash Flow statement from this version's
- * general_ledger_entries (P&L net income, derived via buildPLFromGL) + the
- * balance_sheet_entries deltas (Operating / Investing / Financing classification
- * via the shared buildCashFlow engine). Reads are version-isolated and never touch
- * Manual GL staging, batches, or qb_synced_reports.
+ * general_ledger_entries, classified by financialStatementService's
+ * COA-driven (chart_of_accounts.cf_category) engine — the SAME engine
+ * /reports/financial-statements uses — never the legacy name/regex
+ * classifier. Reads are version-isolated and never touch Manual GL staging,
+ * batches, or qb_synced_reports.
  */
 async function getCashflowReport(versionId, {
   year, startDate, endDate, forceGenerate = false, persist = false, companyId = null,
@@ -1642,35 +1561,22 @@ async function getCashflowReport(versionId, {
   let rowsRead = 0;
   const treesByYear = {};
 
+  // Lazy require to avoid a load-order circular dependency (financialStatement
+  // Service.js itself requires bsBalancesForYear/aggregateGLForBSByMonth from
+  // THIS module at its own top level).
+  //
+  // Cash Flow classification now delegates entirely to financialStatementService
+  // .generateYearlyCf — the COA-driven engine keyed on chart_of_accounts.cf_category
+  // (assigned once at COA-generation time, see cfCategoryRules.js), NOT the legacy
+  // manualCashFlowService.buildCashFlow regex/name-pattern classifier. One Cash
+  // Flow engine for the whole pipeline, not two that can disagree.
+  const { loadCoa, generateYearlyCf } = require("./financialStatementService");
+  const allCoa = await loadCoa(versionId);
+
   for (const y of years) {
-    // Build single-year BS trees (current + prior) and the P&L tree, then run the
-    // shared indirect-method engine. Prior-year BS is optional (deltas → 0 when absent).
-    // P&L is derived from the General Ledger (no profit_loss_entries table).
-    // Balance Sheets come from the authoritative balances source (generated monthly
-    // snapshot preferred via bsBalancesForYear), so cash flow is built from GL P&L
-    // + the stored monthly Balance Sheets — not raw uploaded rows.
-    const [bsCurr, bsPrev, plAgg] = await Promise.all([
-      bsBalancesForYear(versionId, y),
-      bsBalancesForYear(versionId, y - 1),
-      profitLossTreesByYear?.[y]
-        ? Promise.resolve({ accounts: null, rowsRead: 0 })
-        : aggregateGLByAccount(versionId, y),
-    ]);
-    rowsRead += (bsCurr.rowsRead || 0) + (bsPrev.rowsRead || 0) + (plAgg.rowsRead || 0);
-
-    const bsCurrTree = buildBSFromBalances(bsCurr.balances, y).hierarchicalRows;
-    const bsPrevTree = bsPrev.balances?.size
-      ? buildBSFromBalances(bsPrev.balances, y - 1).hierarchicalRows
-      : [];
-    const plTree = profitLossTreesByYear?.[y] || buildPLFromGL(plAgg.accounts, y) || [];
-
-    const cf = buildCashFlow({
-      bsPrevRows: bsPrevTree,
-      bsCurrRows: bsCurrTree,
-      plRows: plTree,
-      year: y,
-    });
-    treesByYear[y] = generatedCfToRows(cf);
+    const yearlyCf = await generateYearlyCf(versionId, y, allCoa);
+    treesByYear[y] = generatedCfToRows(finStmtCfStatementToLegacyShape(yearlyCf.statement));
+    rowsRead += 1;
   }
 
   const yearCols = years.map((y, i) => ({ key: `y${y}`, label: `FY ${y}`, isCurrent: i === years.length - 1 }));

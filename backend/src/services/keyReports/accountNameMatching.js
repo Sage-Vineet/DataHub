@@ -33,6 +33,14 @@ const ABBREVIATION_MAP = [
   [/\bp\s*&\s*l\b/g, "profit and loss"],
   [/\bcapex\b/g, "capital expenditure"],
   [/\bopex\b/g, "operating expense"],
+  // Matched BEFORE the generic "&" -> " and " step below turns "F&F"/"M&E"
+  // into "f and f"/"m and e" — these are initialisms, not real word pairs,
+  // so they need their own literal expansion rather than falling through to
+  // the generic ampersand rule.
+  [/\bf\s*&\s*f\b/g, "furniture and fixtures"],
+  [/\bm\s*&\s*e\b/g, "machinery and equipment"],
+  [/\baccum\.?\s+dep\.?\b/g, "accumulated depreciation"],
+  [/\baccum\.?\s+depr\.?\b/g, "accumulated depreciation"],
 ];
 function expandAbbreviations(s) {
   let out = s;
@@ -42,17 +50,28 @@ function expandAbbreviations(s) {
 
 /**
  * Primary normalization applied to BOTH sides of every name lookup.
+ * `expandAlias` gated so a caller (coaAccountMatcher) can tell whether two
+ * names only converged BECAUSE of an alias expansion (F&F -> Furniture and
+ * Fixtures) versus converging on punctuation/whitespace alone — used to
+ * report the correct match-stage diagnostic, not just whether they match.
  */
-const norm = (s) => {
+function normCore(s, expandAlias) {
   let out = stripDeletedSuffix(s).toLowerCase();
   out = out.replace(/'/g, ""); // "Sam's" -> "Sams" (removed, not spaced) so it matches a raw "Sams" spelling of the same name
+  // Abbreviations expanded BEFORE the generic "&" -> " and " substitution below —
+  // several entries (F&F, M&E, P&L) match a literal "&" and would never fire
+  // if the ampersand were already gone by the time expandAbbreviations runs.
+  if (expandAlias) out = expandAbbreviations(out);
   out = out.replace(/&/g, " and ");
-  out = expandAbbreviations(out);
   return out
     .replace(/[^a-z0-9\s]/g, " ") // dashes/parentheses/other punctuation → space, not deleted — "Non-Current" stays two words, not "noncurrent"
     .replace(/\s+/g, " ")
     .trim();
-};
+}
+const norm = (s) => normCore(s, true);
+// Same normalization, WITHOUT abbreviation expansion — lets a caller detect
+// whether a match only succeeded because of the alias stage.
+const normNoAlias = (s) => normCore(s, false);
 
 const normStrict = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 
@@ -191,6 +210,7 @@ function fuzzyMatch(lookup, name, accountNumber) {
 
 module.exports = {
   norm,
+  normNoAlias,
   normStrict,
   extractModifiers,
   sameModifiers,

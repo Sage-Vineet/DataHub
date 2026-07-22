@@ -61,6 +61,39 @@ function matchSectionHeader(label) {
   return null;
 }
 
+// CONFIRMED ROOT CAUSE of a real production bug: a row's `section` used to
+// come from `currentSection`, a single FLAT variable updated only when a
+// header row's OWN text matched one of SECTION_HEADER_PATTERNS. That is
+// fragile in two ways: (1) an intermediate header that ISN'T one of those
+// literal patterns (e.g. "Payroll Expenses", "Store Expenses", "Department
+// Expenses" — an arbitrary company-specific grouping) simply leaves
+// currentSection unchanged, which only happens to be correct if no OTHER
+// branch of the document was visited in between; (2) once the row-walk moves
+// through a sibling branch under a DIFFERENT recognized header,
+// currentSection is left pointing at that sibling's section — a later
+// return to an unrecognized-header branch then inherits the WRONG section
+// from wherever the walk last was, not from that row's own real ancestry.
+// Confirmed live: expense/COGS accounts nested under a non-standard
+// intermediate header came back with account_type = NULL.
+//
+// The fix: every row already carries its own real ancestor chain
+// (`parentPath`, built from the document's own indentation — see
+// ancestorStack below). Walking that chain from the ROOT (outermost, index 0)
+// downward and taking the FIRST label that matches one of the same fixed
+// anchors is self-contained per row — immune to sibling-branch pollution,
+// and correct regardless of how many unrecognized intermediate headers sit
+// between the leaf and its true section, since intermediate labels that
+// don't match are simply skipped over, never assigned a type of their own.
+// No new patterns, no regex beyond the existing SECTION_HEADER_PATTERNS, no
+// hardcoded company-specific names.
+function sectionFromAncestry(parentPath) {
+  for (const label of parentPath || []) {
+    const key = matchSectionHeader(label);
+    if (key) return key;
+  }
+  return null;
+}
+
 function lc(v) { return String(v || '').toLowerCase().trim(); }
 
 function parseAmount(v) {
@@ -128,7 +161,22 @@ class ProfitLossExtractionService extends ExtractionServiceBase {
     // otherwise already-cached extractions (keyed by parser_version) keep serving
     // pre-fix section assignments forever. Bumped for Root Cause 2 (Other
     // Income/Other Expense section recognition).
-    this.parserVersion = 'v2';
+    // v3: added parent_path (real N-level hierarchy read from the document's
+    // own indentation, e.g. ["Expenses", "Payroll and Labor"]) — bump so
+    // previously-cached parses (which lack this field) get re-extracted.
+    // v4: header/group/subtotal rows are now preserved in `rows` (node_type:
+    // hierarchy_section/hierarchy_group/subtotal/total/account) instead of
+    // being silently dropped — bump again so cached parses get refreshed.
+    // v5: `section` is now derived per-row from that row's own real ancestor
+    // chain (sectionFromAncestry over parent_path) instead of a single flat
+    // `currentSection` variable that could be polluted by a sibling branch or
+    // left unset by a non-standard intermediate header — confirmed root
+    // cause of P&L accounts (Expense/COGS nested under a company-specific
+    // header) getting account_type=NULL. Also fixes the PDF/Gemini path,
+    // which previously never produced a usable `section` at all. Bump so
+    // every cached P&L parse — which carries the OLD, wrong section — is
+    // re-extracted rather than serving stale NULLs forever.
+    this.parserVersion = 'v5';
   }
 
   async extract({ fileName, fileBuffer }) {
@@ -193,11 +241,31 @@ class ProfitLossExtractionService extends ExtractionServiceBase {
 
     const rows = flatNodes.map((node) => ({
       account_name: node.name,
-      account_type: node._section || null,
+      account_type: null,
+      // CONFIRMED BUG (fixed here): this used to be `node._section || null`
+      // written into `account_type` directly — node._section is just the
+      // RAW text of the nearest enclosing header (e.g. "Payroll and Labor"),
+      // never a canonical revenue/cost_of_sales/expense key, and
+      // buildDocHierarchyLookups (chartOfAccountsService.js) reads `.section`
+      // via plSectionToType, not `.account_type` — so every PDF-sourced P&L
+      // row reached the COA generator with a meaningless account_type and no
+      // usable section at all. Same ancestry-walk fix as the Excel path:
+      // node._parent_path is Gemini's own real ancestor chain (see
+      // flattenGeminiRows), walked from the root for the first recognized
+      // anchor — intermediate non-matching headers are simply skipped over.
+      section: sectionFromAncestry(node._parent_path),
+      // Gemini's own nested tree, flattened to its full ancestor chain (see
+      // flattenGeminiRows) — e.g. ["Expenses", "Payroll and Labor"].
+      parent_path: node._parent_path || [],
       amount: node.amount || 0,
       fiscal_year: fiscalYear,
       is_total: node.type === 'total',
       is_header: node.type === 'header',
+      node_type: node.type === 'header'
+        ? (matchSectionHeader(node.name) ? 'hierarchy_section' : 'hierarchy_group')
+        : node.type === 'total'
+          ? (/^(gross profit|net operating income|net other income|operating income|net income|net loss)$/i.test(String(node.name || '').trim()) ? 'subtotal' : 'total')
+          : 'account',
     }));
 
     this.logger.log(`PDF "${fileName}": ${rows.length} rows from Gemini (fiscal_year=${fiscalYear})`);
@@ -258,13 +326,29 @@ class ProfitLossExtractionService extends ExtractionServiceBase {
     // only to tag rows for later validation, never to build hierarchy.
     let currentSection = null;
 
+    // Real multi-level hierarchy, read from the document's own indentation —
+    // same stack discipline as balanceSheetExtractionService.js: a row whose
+    // indent is <= the stack's top pops it, so what's left is that row's real
+    // ancestor chain, however deep (e.g. ["Expenses", "Payroll and Labor"]).
+    // A bare header row (no amount) still pushes onto the stack — it never
+    // becomes its own data row, but real accounts nested under it must still
+    // see it as an ancestor.
+    const ancestorStack = [];
+
     for (let i = headerIdx + 1; i < raw.length; i++) {
       const row = raw[i];
-      const rawName = String(row[acctIdx] || '').trim();
-      if (!rawName) continue; // blank label → skip
+      const cellRaw = String(row[acctIdx] ?? '');
+      const accountName = cellRaw.trim();
+      if (!accountName) continue; // blank label → skip
 
-      const accountName = rawName.replace(/^\s+/, ''); // strip indent spaces
+      const indent = (cellRaw.match(/^[ \t]*/)[0] || '').replace(/\t/g, '    ').length;
+      while (ancestorStack.length && ancestorStack[ancestorStack.length - 1].indent >= indent) ancestorStack.pop();
+      const parentPath = ancestorStack.map((a) => a.label);
+
       const isTotal = /^total\b/i.test(accountName) || /\btotal$/i.test(accountName) || /\bnet income\b/i.test(accountName);
+      // A computed statement-level subtotal (as opposed to a "Total for X"
+      // group rollup) — the document's own literal label, never guessed.
+      const isSubtotal = /^(gross profit|net operating income|net other income|operating income|net income|net loss)$/i.test(accountName);
 
       // A bare section-header row has a label but no amount in ANY column and
       // isn't itself a total line — e.g. "Income", "Cost of Goods Sold".
@@ -273,7 +357,30 @@ class ProfitLossExtractionService extends ExtractionServiceBase {
         : row.slice(acctIdx + 1).some((v) => parseAmount(v) !== null);
       if (!hasAnyAmount && !isTotal) {
         const headerKey = matchSectionHeader(accountName);
-        if (headerKey) { currentSection = headerKey; continue; }
+        ancestorStack.push({ indent, label: accountName });
+        if (headerKey) currentSection = headerKey;
+        // Preserved (never silently dropped) so the full document hierarchy
+        // reaches the COA generator — recognized (headerKey) or not (e.g. an
+        // arbitrary group like "Payroll and Labor"), same node_type
+        // convention as balanceSheetExtractionService.js. P&L has no
+        // persisted table (never reaches filterRowsBeforeInsertion), so this
+        // is purely additive; keyReportSyncService's plAccountRows already
+        // filters out is_header rows before they reach COA leaf-building.
+        const headerYears = yearCols.length > 0 ? yearCols.map((yc) => yc.year) : [fiscalYears[0].year];
+        for (const year of headerYears) {
+          rows.push({
+            account_name: accountName,
+            account_type: null,
+            section: headerKey || sectionFromAncestry(parentPath) || currentSection,
+            parent_path: parentPath,
+            amount: 0,
+            fiscal_year: year,
+            is_total: false,
+            is_header: true,
+            node_type: headerKey ? 'hierarchy_section' : 'hierarchy_group',
+          });
+        }
+        continue;
       }
 
       rowsDetected++;
@@ -286,11 +393,13 @@ class ProfitLossExtractionService extends ExtractionServiceBase {
           rows.push({
             account_name: accountName,
             account_type: null,
-            section: currentSection,
+            section: sectionFromAncestry(parentPath) || currentSection,
+            parent_path: parentPath,
             amount: amount ?? 0,
             fiscal_year: year,
             is_total: isTotal,
             is_header: false,
+            node_type: isSubtotal ? 'subtotal' : isTotal ? 'total' : 'account',
           });
         }
       } else {
@@ -308,13 +417,16 @@ class ProfitLossExtractionService extends ExtractionServiceBase {
         rows.push({
           account_name: accountName,
           account_type: null,
-          section: currentSection,
+          section: sectionFromAncestry(parentPath) || currentSection,
+          parent_path: parentPath,
           amount,
           fiscal_year: year,
           is_total: isTotal,
           is_header: false,
+          node_type: isSubtotal ? 'subtotal' : isTotal ? 'total' : 'account',
         });
       }
+      ancestorStack.push({ indent, label: accountName });
     }
 
     this.logger.log(`  "${fileName}": Rows detected=${rowsDetected}, extracted=${rows.length}, rejected=${rowsRejected}`);

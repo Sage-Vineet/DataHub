@@ -110,9 +110,11 @@ async function accountLevelReconciliationDiff(versionId, year, validRows) {
   // Unfiltered — every GL account for the year regardless of resolved type,
   // so a P&L account that COA misclassified as a Balance Sheet type is still
   // findable (needed for the classification_mismatch reason).
+  // aggregateGLByAccount's Map is keyed by coa_id (not name) — acc.name holds
+  // the account's real/canonical name for this name-based reconciliation view.
   const glAllByName = new Map();
-  for (const [name, acc] of glAccounts) {
-    glAllByName.set(normName(name), { accountName: name, amount: acc.net, type: acc.type });
+  for (const acc of glAccounts.values()) {
+    glAllByName.set(normName(acc.name), { accountName: acc.name, amount: acc.net, type: acc.type });
   }
   // Revenue/expense/unknown only — same filter as before, used for the
   // reportable amount (a Balance-Sheet-typed account never contributes a P&L amount).
@@ -149,9 +151,212 @@ async function accountLevelReconciliationDiff(versionId, year, validRows) {
   return diffs; // full set — caller decides how many to surface, never silently drops the rest
 }
 
-const { generateChartOfAccounts, validateChartOfAccounts, ensureCoaComplete } = require('../chartOfAccountsService');
+function percentageDifference(variance, uploadedAmount, generatedAmount) {
+  if (uploadedAmount !== 0) return Math.round((variance / uploadedAmount) * 10000) / 10000 * 100;
+  if (generatedAmount !== 0) return 100;
+  return null;
+}
+
+// The uploaded document's OWN stated subtotal lines — read directly rather
+// than re-summed from individual rows, so a footnote/rounding adjustment in
+// the client's own P&L is respected instead of silently overridden.
+const PL_SUBTOTAL_PATTERNS = {
+  revenue: /^total income$|^total revenue$/i,
+  cogs: /^total cost of (goods sold|sales)$/i,
+  grossProfit: /^gross profit$/i,
+  operatingExpenses: /^total expenses$/i,
+  netIncome: /^net income$/i,
+};
+
+function uploadedSubtotalsByYear(validRows) {
+  const byYear = new Map();
+  for (const row of validRows) {
+    if (!row.is_total) continue;
+    const name = String(row.account_name || '').trim();
+    for (const [key, pattern] of Object.entries(PL_SUBTOTAL_PATTERNS)) {
+      if (!pattern.test(name)) continue;
+      if (!byYear.has(row.fiscal_year)) byYear.set(row.fiscal_year, {});
+      const y = byYear.get(row.fiscal_year);
+      y[key] = (y[key] || 0) + (Number(row.amount) || 0);
+    }
+  }
+  return byYear;
+}
+
+// GL-calculated subtotals for the same 5 lines, using the account's RAW COA
+// type (coaTypeMap — asset/liability/equity/income/cogs/expense) rather than
+// aggregateGLByAccount's coarser revenue/expense/unknown, since only the raw
+// type distinguishes COGS from Operating Expenses.
+//
+// Other Income / Other Expense are deliberately NOT broken out as separate
+// subtotals here: chart_of_accounts today collapses other_income→income and
+// other_expense→expense at the account_type level (a known, previously
+// documented gap — see chartOfAccountsService.js typeFromPlSection), so this
+// codebase cannot yet reliably tell "Other Income" apart from "Revenue" or
+// "Other Expense" apart from "Operating Expenses". Faking that distinction
+// without the underlying data would be exactly the kind of speculative code
+// this reconciliation layer exists to avoid.
+async function calculatedSubtotalsForYear(versionId, year) {
+  const [{ accounts }, typeMap] = await Promise.all([
+    keyReportReportService.aggregateGLByAccount(versionId, year),
+    coaTypeMap(versionId),
+  ]);
+  let revenue = 0;
+  let cogs = 0;
+  let operatingExpenses = 0;
+  for (const acc of accounts.values()) {
+    const rawType = String(typeMap.get(normName(acc.name)) || '').toLowerCase();
+    if (rawType === 'cogs') cogs += acc.net;
+    else if (/expense/.test(rawType)) operatingExpenses += acc.net;
+    else if (/income|revenue/.test(rawType)) revenue += acc.net;
+    // Anything else (asset/liability/equity/unclassified) contributes to no
+    // named P&L subtotal — an unclassified account still shows up as its own
+    // missing_in_gl/unknown_account row from accountLevelReconciliationDiff.
+  }
+  const grossProfit = revenue - cogs;
+  const netIncome = grossProfit - operatingExpenses;
+  return { revenue, cogs, grossProfit, operatingExpenses, netIncome };
+}
+
+const SUBTOTAL_LABEL = {
+  revenue: 'Total Revenue', cogs: 'Total Cost of Goods Sold', grossProfit: 'Gross Profit',
+  operatingExpenses: 'Total Operating Expenses', netIncome: 'Net Income',
+};
+
+/**
+ * PROFIT & LOSS RECONCILIATION (mandatory reconciliation layer) — generates
+ * the P&L entirely from the General Ledger and compares it against the
+ * uploaded Profit & Loss, account-by-account AND at the subtotal level
+ * (Revenue/COGS/Gross Profit/Operating Expenses/Net Income). Runs BEFORE
+ * Monthly Balance Sheet / Monthly P&L / Cash Flow generation in the
+ * redesigned pipeline. Persists every row to pl_reconciliation_entries —
+ * previously this comparison only produced a transient validation-row
+ * summary with no durable per-account audit trail.
+ *
+ * Reuses accountLevelReconciliationDiff unchanged for the per-account numbers
+ * and reason codes (already verified this session) — this function only adds
+ * persistence and the subtotal rollups.
+ *
+ * @returns {Promise<{
+ *   summaryByYear: Map<number, {matched:number, differences:number, missingFromGl:number, missingFromPl:number, totalVariance:number}>,
+ *   fileResults: Array<{fileName:string, year:number, uploadedNetIncome:number, glNetIncome:number,
+ *     diff:number, matches:boolean, topDiffs:Array, totalDiffs:number}>,
+ * }>}
+ */
+async function persistProfitLossReconciliation(companyId, versionId, plParsedByFile) {
+  await supabase.from('pl_reconciliation_entries').delete().eq('version_id', versionId);
+
+  const summaryByYear = new Map();
+  const fileResults = [];
+  const rows = [];
+
+  for (const { fileName, validRows, error } of plParsedByFile) {
+    if (error || !validRows?.length) continue;
+
+    const uploadedSubtotals = uploadedSubtotalsByYear(validRows);
+    const years = [...new Set(validRows.map((r) => r.fiscal_year))].filter((y) => Number.isInteger(y) && y > 0);
+
+    for (const year of years) {
+      if (!summaryByYear.has(year)) {
+        summaryByYear.set(year, { matched: 0, differences: 0, missingFromGl: 0, missingFromPl: 0, totalVariance: 0 });
+      }
+      const summary = summaryByYear.get(year);
+      const typeMap = await coaTypeMap(versionId);
+
+      const diffs = await accountLevelReconciliationDiff(versionId, year, validRows);
+      for (const d of diffs) {
+        let status;
+        if (d.reason === 'missing_in_gl') status = 'MISSING_FROM_GL';
+        else if (d.reason === 'missing_in_uploaded') status = 'MISSING_FROM_PL';
+        else status = Math.abs(d.diff) < 1.0 ? 'MATCHED' : 'DIFFERENCE';
+
+        if (status === 'MATCHED') summary.matched += 1;
+        else if (status === 'MISSING_FROM_GL') summary.missingFromGl += 1;
+        else if (status === 'MISSING_FROM_PL') summary.missingFromPl += 1;
+        else summary.differences += 1;
+        summary.totalVariance = Math.round((summary.totalVariance + Math.abs(d.diff)) * 100) / 100;
+
+        // accountLevelReconciliationDiff's own `diff` is (uploaded - generated)
+        // — its established, already-verified convention for log/message text.
+        // The PERSISTED variance column instead matches bs_reconciliation_
+        // entries' convention (generated - uploaded), so the two reconciliation
+        // tables agree on sign — only the stored column is flipped here, the
+        // log-facing `d.diff` used elsewhere (fileResults/topDiffs) is untouched.
+        const persistedVariance = -d.diff;
+        rows.push({
+          version_id: versionId,
+          company_id: companyId,
+          fiscal_year: year,
+          account_name: d.accountName,
+          account_type: typeMap.get(normName(d.accountName)) || null,
+          section: null,
+          generated_amount: d.glAmount,
+          uploaded_amount: d.uploadedAmount,
+          variance: persistedVariance,
+          percentage_difference: percentageDifference(persistedVariance, d.uploadedAmount, d.glAmount),
+          reason: d.reason,
+          status,
+          needs_review: status !== 'MATCHED',
+          is_subtotal: false,
+        });
+      }
+
+      // Subtotal rollup rows — uploaded side from the document's own stated
+      // totals (when present), GL side always computed (never absent).
+      const uploaded = uploadedSubtotals.get(year) || {};
+      const calculated = await calculatedSubtotalsForYear(versionId, year);
+      for (const key of Object.keys(SUBTOTAL_LABEL)) {
+        const hasUploaded = uploaded[key] !== undefined;
+        const upl = hasUploaded ? Math.round(uploaded[key] * 100) / 100 : 0;
+        const calc = Math.round(calculated[key] * 100) / 100;
+        const variance = Math.round((calc - upl) * 100) / 100;
+        const status = !hasUploaded ? 'MISSING_FROM_PL' : Math.abs(variance) < 1.0 ? 'MATCHED' : 'DIFFERENCE';
+        rows.push({
+          version_id: versionId,
+          company_id: companyId,
+          fiscal_year: year,
+          account_name: SUBTOTAL_LABEL[key],
+          account_type: null,
+          section: null,
+          generated_amount: calc,
+          uploaded_amount: upl,
+          variance,
+          percentage_difference: percentageDifference(variance, upl, calc),
+          reason: hasUploaded ? 'amount_difference' : 'missing_in_uploaded',
+          status,
+          needs_review: status !== 'MATCHED',
+          is_subtotal: true,
+        });
+      }
+
+      const uploadedNetIncome = uploaded.netIncome !== undefined ? Math.round(uploaded.netIncome * 100) / 100 : null;
+      const glNetIncome = Math.round(calculated.netIncome * 100) / 100;
+      if (uploadedNetIncome !== null) {
+        const niDiff = Math.round((uploadedNetIncome - glNetIncome) * 100) / 100;
+        fileResults.push({
+          fileName, year, uploadedNetIncome, glNetIncome, diff: niDiff,
+          matches: Math.abs(niDiff) < 1.0,
+          topDiffs: diffs.slice(0, 15),
+          totalDiffs: diffs.length,
+        });
+      }
+    }
+  }
+
+  if (rows.length) await chunkedInsertGeneric('pl_reconciliation_entries', rows);
+  return { summaryByYear, fileResults };
+}
+
+async function chunkedInsertGeneric(table, rows, chunk = 500) {
+  for (let i = 0; i < rows.length; i += chunk) {
+    const { error } = await supabase.from(table).insert(rows.slice(i, i + chunk));
+    if (error) throw error;
+  }
+}
+
+const { generateChartOfAccounts, validateChartOfAccounts, ensureCoaComplete, printCoaValidationBlock } = require('../chartOfAccountsService');
 const { replaceValidationResults } = require('./keyReportValidationService');
-const { classifyWorkflowDocuments, generateTrialBalance, generateMonthlyBalanceSheets, generateMonthlyBalanceSheetsReverse, generateReconciliation, linkGlToCoa } = require('./keyReportAccountingService');
+const { classifyWorkflowDocuments, generateTrialBalance, generateMonthlyBalanceSheets, generateMonthlyBalanceSheetsReverse, generateReconciliation, linkGlToCoa, linkBsToCoa, coaTypeMap } = require('./keyReportAccountingService');
 const keyReportService = require('./keyReportService');
 const keyReportReportService = require('./keyReportReportService');
 const { performance } = require('perf_hooks');
@@ -588,6 +793,25 @@ async function generateFinancialTables(version, opts = {}) {
     `ProfitLoss=${gate.hasProfitLoss ? 'yes' : 'no'}, ` +
     `canGenerate=${gate.canGenerate}`,
   );
+  // Balance Sheet Coverage — replaces the old binary "OpeningBS=yes/no,
+  // EndingBS=yes/no" summary with the actual per-document years the
+  // opening/ending decision was derived from (see
+  // keyReportAccountingService.buildBsCoverage), never upload order/file
+  // name/an "opening"/"ending" label.
+  if (gate.bsCoverage) {
+    const bc = gate.bsCoverage;
+    logger.log(
+      "Balance Sheet Coverage\n\n" +
+      `GL Range: ${bc.glRange || "n/a"}\n\n` +
+      (bc.documents.length
+        ? bc.documents.map((d) => `${d.label}\nYears: ${d.years}`).join("\n\n") + "\n\n"
+        : "No Balance Sheet documents uploaded.\n\n") +
+      "Coverage\n" +
+      `Opening Coverage : ${bc.hasOpeningBs ? "YES" : "NO"}\n` +
+      `Ending Coverage : ${bc.hasEndingBs ? "YES" : "NO"}\n\n` +
+      `Coverage Years\n${bc.coverageYears.length ? bc.coverageYears.join("\n") : "(none)"}`,
+    );
+  }
   if (gate.canGenerate) {
     logger.log(`  ✓ Validation passed. Generation mode: ${GENERATION_MODE_LOG_LABEL[gate.balanceSheetMode] || gate.balanceSheetMode} (${gate.balanceSheetMode}).`);
   }
@@ -674,9 +898,16 @@ async function generateFinancialTables(version, opts = {}) {
   // grouping hint, never used for Balance Sheet accounts, never inventing
   // deeper hierarchy) → AI selection among existing categories → needs_mapping.
   logger.log('--- Step 6: Chart of Accounts ---');
+  // The ONLY correct "was a COA uploaded" signal: a chart_of_accounts document
+  // actually linked to THIS version's own file mappings — never whether
+  // client_chart_of_accounts happens to have rows (company-scoped, not
+  // version-scoped; a stale prior-version upload must never leak into a
+  // version that never linked a COA at all).
+  const hasLinkedCoaDocument = (mappingsByCategory.chart_of_accounts || []).length > 0;
+  logger.log(`  Uploaded COA linked to this version: ${hasLinkedCoaDocument ? 'YES' : 'NO'}`);
   let coaSummary = null;
   try {
-    coaSummary = await generateChartOfAccounts(companyId, versionId, null, { plRows: plAccountRows });
+    coaSummary = await generateChartOfAccounts(companyId, versionId, null, { plRows: plAccountRows, hasLinkedCoaDocument });
     logger.log(`  ✓ Chart of Accounts: ${coaSummary.leafCount || 0} accounts classified (${coaSummary.inserted || 0} new, ${coaSummary.updated || 0} updated, ${coaSummary.deleted || 0} removed)`);
     if (coaSummary.sourceCounts) {
       const sc = coaSummary.sourceCounts;
@@ -713,7 +944,7 @@ async function generateFinancialTables(version, opts = {}) {
   // resolve every GL account via in-memory lookup without any DB writes.
   logger.log('--- Phase 2c: Complete COA from unlinked GL accounts ---');
   try {
-    const completionResult = await ensureCoaComplete(companyId, versionId);
+    const completionResult = await ensureCoaComplete(companyId, versionId, plAccountRows, hasLinkedCoaDocument);
     logger.log(`  ✓ COA completion: ${completionResult.added} account(s) added, ${completionResult.skipped} already present`);
     if (completionResult.added > 0) {
       // Re-run GL→COA linking so newly added accounts get their coa_id
@@ -724,7 +955,23 @@ async function generateFinancialTables(version, opts = {}) {
   } catch (completionErr) {
     logger.warn(`  COA completion failed: ${completionErr.message}`);
   }
+
+  // Link uploaded/extracted balance_sheet_entries rows to their COA leaf too —
+  // mirrors linkGlToCoa exactly, run once COA generation/completion is final so
+  // both entry tables carry coa_id before any report reads them.
+  try {
+    const bsLinkResult = await linkBsToCoa(companyId, versionId);
+    logger.log(`  ✓ BS → COA: linked=${bsLinkResult.linked} skipped=${bsLinkResult.skipped}`);
+  } catch (bsLinkErr) {
+    logger.warn(`  BS → COA link failed: ${bsLinkErr.message}`);
+  }
   mark('coa_linking');
+
+  try {
+    await printCoaValidationBlock(companyId, versionId);
+  } catch (validationBlockErr) {
+    logger.warn(`  COA Validation block failed: ${validationBlockErr.message}`);
+  }
 
   // ── PHASE 3: Trial Balance (generated directly from the General Ledger) ─────
   logger.log('--- Phase 3: Trial Balance ---');
@@ -795,6 +1042,52 @@ async function generateFinancialTables(version, opts = {}) {
     };
   }
 
+  // ── RECONCILIATION LAYER (mandatory — runs BEFORE Monthly Balance Sheet /
+  // Monthly P&L / Cash Flow generation) ───────────────────────────────────────
+  // "Opening Balance Sheet + General Ledger movements = Expected Closing
+  // Balance Sheet" (BS Reconciliation) and "P&L generated entirely from the
+  // General Ledger vs. uploaded P&L" (P&L Reconciliation) both run live off
+  // GL data — neither depends on Monthly Balance Sheet/P&L having been
+  // generated yet. Always runs, always reports (per-account + subtotal-level
+  // for P&L), never blocks Monthly BS/P&L generation by itself — only a Trial
+  // Balance imbalance (already handled above) halts the pipeline. A real
+  // reconciliation difference is expected and normal (timing/rounding, an
+  // account not yet mapped) and is reported, not hidden — matching how
+  // QuickBooks/Xero/NetSuite always render statements alongside open
+  // reconciling items.
+  logger.log('--- Reconciliation Layer: Balance Sheet Reconciliation ---');
+  let reconciliationSummary = null;
+  try {
+    const recon = await generateReconciliation(companyId, versionId, gate);
+    reconciliationSummary = recon;
+    if (recon.ran) {
+      const s = recon.summary;
+      logger.log(`  ✓ BS Reconciliation (FY ${recon.year}): ${recon.stored} row(s) — ${s.matched} matched, ${s.differences} differ, ${s.missingFromBs} missing-from-BS, ${s.missingFromGl} missing-from-GL, ${s.excluded} excluded`);
+    } else {
+      logger.log(`  – BS Reconciliation skipped (${recon.summary?.reason || 'no ending balance sheet'})`);
+    }
+  } catch (recErr) {
+    logger.warn(`  BS Reconciliation failed: ${recErr.message}`);
+    reconciliationSummary = { ran: false, error: recErr.message };
+  }
+  mark('bs_reconciliation');
+
+  logger.log('--- Reconciliation Layer: Profit & Loss Reconciliation ---');
+  let plReconciliation = { summaryByYear: new Map(), fileResults: [] };
+  if (plMappings.length) {
+    try {
+      plReconciliation = await persistProfitLossReconciliation(companyId, versionId, plParsedByFile);
+      for (const [year, s] of plReconciliation.summaryByYear) {
+        logger.log(`  ✓ P&L Reconciliation FY${year}: ${s.matched} matched, ${s.differences} differ, ${s.missingFromPl} missing-from-P&L, ${s.missingFromGl} missing-from-GL, total variance=${s.totalVariance}`);
+      }
+    } catch (plReconErr) {
+      logger.warn(`  P&L Reconciliation failed: ${plReconErr.message}`);
+    }
+  } else {
+    logger.log('  – P&L Reconciliation skipped (no Profit & Loss file linked)');
+  }
+  mark('pl_reconciliation');
+
   // ── PHASE 4: Monthly Balance Sheet engine ──────────────────────────────────
   // gate.balanceSheetMode picks the engine: 'forward' (Starting BS — opening
   // + monthly GL activity, unchanged), 'reverse' (Ending BS only — reconstruct
@@ -822,26 +1115,6 @@ async function generateFinancialTables(version, opts = {}) {
     monthlyBsSummary = { error: mbsErr.message, stored: 0, months: 0, years: [] };
   }
   mark('monthly_balance_sheets');
-
-  // ── PHASE 5: Reconciliation (generated ending BS vs uploaded ending BS) ─────
-  // Only runs when an Ending Balance Sheet was uploaded. Never overwrites the
-  // generated balances — produces a separate per-account variance report.
-  logger.log('--- Phase 5: Reconciliation ---');
-  let reconciliationSummary = null;
-  try {
-    const recon = await generateReconciliation(companyId, versionId, gate);
-    reconciliationSummary = recon;
-    if (recon.ran) {
-      const s = recon.summary;
-      logger.log(`  ✓ Reconciliation (FY ${recon.year}): ${recon.stored} account(s) — ${s.matched} match, ${s.differences} differ, ${s.missingInUploaded} missing-in-uploaded, ${s.missingInGenerated} missing-in-generated`);
-    } else {
-      logger.log(`  – Reconciliation skipped (${recon.summary?.reason || 'no ending balance sheet'})`);
-    }
-  } catch (recErr) {
-    logger.warn(`  Reconciliation failed: ${recErr.message}`);
-    reconciliationSummary = { ran: false, error: recErr.message };
-  }
-  mark('reconciliation');
 
   // P&L and Cash Flow are generated after the authoritative monthly Balance
   // Sheets exist, then persisted as render-ready JSON. They are not accounting
@@ -940,95 +1213,51 @@ async function generateFinancialTables(version, opts = {}) {
     logger.warn(`  COA validation failed: ${vErr.message}`);
   }
 
-  // Step 7b: Profit & Loss reconciliation — validation-only, never persisted,
-  // never a hierarchy source beyond the shallow Priority-3 grouping applied in
-  // Step 6. The General Ledger remains the sole transactional source of truth
-  // (client requirement, migration 056); reuses the Step 5b parse to cross-check
-  // each file's own stated Net Income against the GL-derived Net Income
-  // (aggregateGLForBS) — nothing is written to any table.
+  // Step 7b: Profit & Loss reconciliation validation rows — formats the
+  // results already computed (and persisted to pl_reconciliation_entries)
+  // earlier in the Reconciliation Layer, before Monthly BS/P&L/Cash Flow were
+  // generated. No recomputation here — accountLevelReconciliationDiff and
+  // aggregateGLForBS already ran once, inside persistProfitLossReconciliation.
   if (plMappings.length) {
-    logger.log(`--- Step 7b: Profit & Loss reconciliation (${plMappings.length} file(s), validation-only) ---`);
-    for (const { fileName, validRows, error } of plParsedByFile) {
+    logger.log(`--- Step 7b: Profit & Loss reconciliation validation rows (${plMappings.length} file(s)) ---`);
+    const REASON_LABEL = {
+      missing_in_gl: 'missing in GL',
+      missing_in_uploaded: 'missing in uploaded P&L',
+      classification_mismatch: 'wrong classification',
+      unknown_account: 'unknown account',
+      sign_issue: 'sign issue',
+      amount_difference: 'amount difference',
+    };
+    for (const { fileName, error } of plParsedByFile) {
       if (error) {
         validationRows.push({
           dataType: 'profit_loss_reconciliation', year: null, status: 'error', severity: 'error',
           message: `Uploaded Profit & Loss "${fileName}" could not be parsed: ${error}`,
           metadata: { fileName, error },
         });
-        continue;
       }
-
-      // Read the document's OWN explicitly labeled "Net Income" total line(s) —
-      // no section/account-type classification is performed, so this never
-      // touches hierarchy or account grouping. A monthly-column P&L emits one
-      // "Net Income" total row per month (all sharing the same fiscal_year, no
-      // separate period field survives extraction) rather than one annual row,
-      // so sum every occurrence for a year to get the annual total.
-      const uploadedNetIncomeByYear = new Map();
-      for (const row of validRows) {
-        if (row.is_total && /\bnet income\b/i.test(row.account_name)) {
-          const prev = uploadedNetIncomeByYear.get(row.fiscal_year) || 0;
-          uploadedNetIncomeByYear.set(row.fiscal_year, prev + (Number(row.amount) || 0));
-        }
+    }
+    if (!plReconciliation.fileResults.length) {
+      logger.warn('  No file produced a comparable "Net Income" total line — reconciliation skipped.');
+    }
+    for (const fr of plReconciliation.fileResults) {
+      const accountsResponsible = fr.matches ? [] : fr.topDiffs;
+      logger.log(`  ${fr.fileName} FY${fr.year}: uploaded Net Income=${fr.uploadedNetIncome}, GL-derived=${fr.glNetIncome.toFixed(2)}, diff=${fr.diff} → ${fr.matches ? 'MATCH' : 'MISMATCH'}`);
+      if (accountsResponsible.length) {
+        logger.log(`    Accounts responsible (${fr.totalDiffs} total, showing top ${accountsResponsible.length}): ` +
+          accountsResponsible.map((a) => `"${a.accountName}" (${a.diff >= 0 ? '+' : ''}${a.diff.toFixed(2)}, ${REASON_LABEL[a.reason] || a.reason})`).join(', '));
       }
-
-      if (!uploadedNetIncomeByYear.size) {
-        logger.warn(`  ${fileName}: parsed ${validRows.length} row(s) but found no "Net Income" total line — reconciliation skipped for this file.`);
-        validationRows.push({
-          dataType: 'profit_loss_reconciliation', year: null, status: 'warning', severity: 'warning',
-          message: `Uploaded Profit & Loss "${fileName}" parsed but no Net Income total line was found — reconciliation skipped.`,
-          metadata: { fileName, rowsParsed: validRows.length },
-        });
-        continue;
-      }
-
-      for (const [year, uploadedNI] of uploadedNetIncomeByYear) {
-        const { netIncome: glNetIncome } = await keyReportReportService.aggregateGLForBS(versionId, year);
-        const diff = Math.round((uploadedNI - glNetIncome) * 100) / 100;
-        const matches = Math.abs(diff) < 1.0;
-
-        // Root Cause 6: don't just report the total difference — attribute it
-        // to the specific account(s) responsible, the same way the manual
-        // root-cause investigation did, so a future mismatch is immediately
-        // explainable from the reconciliation screen instead of requiring a
-        // fresh manual investigation each time.
-        let accountsResponsible = [];
-        let accountsResponsibleTotal = 0;
-        if (!matches) {
-          try {
-            const allDiffs = await accountLevelReconciliationDiff(versionId, year, validRows);
-            accountsResponsibleTotal = allDiffs.length;
-            accountsResponsible = allDiffs.slice(0, 15); // top contributors — enough to explain without flooding the UI; total kept in metadata, never silently hidden
-          } catch (diffErr) {
-            logger.warn(`  ${fileName} FY${year}: account-level diff attribution failed: ${diffErr.message}`);
-          }
-        }
-
-        const REASON_LABEL = {
-          missing_in_gl: 'missing in GL',
-          missing_in_uploaded: 'missing in uploaded P&L',
-          classification_mismatch: 'wrong classification',
-          unknown_account: 'unknown account',
-          sign_issue: 'sign issue',
-          amount_difference: 'amount difference',
-        };
-        logger.log(`  ${fileName} FY${year}: uploaded Net Income=${uploadedNI}, GL-derived=${glNetIncome.toFixed(2)}, diff=${diff} → ${matches ? 'MATCH' : 'MISMATCH'}`);
-        if (accountsResponsible.length) {
-          logger.log(`    Accounts responsible (${accountsResponsibleTotal} total, showing top ${accountsResponsible.length}): ` +
-            accountsResponsible.map((a) => `"${a.accountName}" (${a.diff >= 0 ? '+' : ''}${a.diff.toFixed(2)}, ${REASON_LABEL[a.reason] || a.reason})`).join(', '));
-        }
-        validationRows.push({
-          dataType: 'profit_loss_reconciliation', year, status: matches ? 'success' : 'warning', severity: matches ? 'success' : 'warning',
-          message: matches
-            ? `Uploaded Profit & Loss Net Income for ${year} matches the GL-derived Net Income (${uploadedNI.toLocaleString()}).`
-            : `Uploaded Profit & Loss Net Income for ${year} (${uploadedNI.toLocaleString()}) differs from the GL-derived Net Income (${glNetIncome.toLocaleString()}) by ${Math.abs(diff).toLocaleString()}.` +
-              (accountsResponsible.length
-                ? ` Accounts responsible: ${accountsResponsible.map((a) => `${a.accountName} (${a.diff >= 0 ? '+' : ''}${a.diff.toFixed(2)} — ${REASON_LABEL[a.reason] || a.reason})`).join(', ')}` +
-                  (accountsResponsibleTotal > accountsResponsible.length ? ` (+${accountsResponsibleTotal - accountsResponsible.length} more)` : '') + '.'
-                : ''),
-          metadata: { fileName, uploadedNetIncome: uploadedNI, glDerivedNetIncome: glNetIncome, diff, accountsResponsible, accountsResponsibleTotal },
-        });
-      }
+      validationRows.push({
+        dataType: 'profit_loss_reconciliation', year: fr.year, status: fr.matches ? 'success' : 'warning', severity: fr.matches ? 'success' : 'warning',
+        message: fr.matches
+          ? `Uploaded Profit & Loss Net Income for ${fr.year} matches the GL-derived Net Income (${fr.uploadedNetIncome.toLocaleString()}).`
+          : `Uploaded Profit & Loss Net Income for ${fr.year} (${fr.uploadedNetIncome.toLocaleString()}) differs from the GL-derived Net Income (${fr.glNetIncome.toLocaleString()}) by ${Math.abs(fr.diff).toLocaleString()}.` +
+            (accountsResponsible.length
+              ? ` Accounts responsible: ${accountsResponsible.map((a) => `${a.accountName} (${a.diff >= 0 ? '+' : ''}${a.diff.toFixed(2)} — ${REASON_LABEL[a.reason] || a.reason})`).join(', ')}` +
+                (fr.totalDiffs > accountsResponsible.length ? ` (+${fr.totalDiffs - accountsResponsible.length} more)` : '') + '.'
+              : ''),
+        metadata: { fileName: fr.fileName, uploadedNetIncome: fr.uploadedNetIncome, glDerivedNetIncome: fr.glNetIncome, diff: fr.diff, accountsResponsible, accountsResponsibleTotal: fr.totalDiffs },
+      });
     }
   } else {
     logger.log('  Step 7b: no Profit & Loss file linked — reconciliation skipped (not required).');
@@ -1174,4 +1403,4 @@ async function generateFinancialTables(version, opts = {}) {
   };
 }
 
-module.exports = { generateFinancialTables, accountLevelReconciliationDiff };
+module.exports = { generateFinancialTables, accountLevelReconciliationDiff, persistProfitLossReconciliation };
