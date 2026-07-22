@@ -144,6 +144,15 @@ const BASIC_DETAIL_FIELDS = BASIC_DETAIL_FIELD_DEFINITIONS.map(({ key, label }) 
 
 const PREVIEW_SLIDES = TEMPLATE_SLIDES;
 
+const CIM_BUILDER_GLOBAL_DETAIL_KEYS = new Set(BASIC_DETAIL_FIELD_DEFINITIONS.map(({ key }) => key));
+
+const SLIDE_1_GLOBAL_DETAIL_KEY_BY_ORDER = new Map([
+  [6, "projectName"],
+  [7, "descriptor"],
+  [11, "companyName"],
+  [12, "monthYear"],
+]);
+
 const CHART_TYPES = [
   ["bar", "Bar"],
   ["line", "Line"],
@@ -1219,7 +1228,7 @@ function createDefaultGlobalDetails(company = null) {
   return {
     companyName,
     companyLegalName: companyName,
-    projectName: company?.project_name || companyName,
+    projectName: company?.project_name || "",
     descriptor: company?.industry ? `${company.industry} business` : "",
     monthYear: getDefaultMonthYear(),
     advisorFirm: "",
@@ -2101,13 +2110,20 @@ function normalizeSlide1CompanyName(layout) {
       }
 
       if (order !== 11 || !/\[Company Legal Name\]/i.test(String(element.text || ""))) return element;
+      const bbox = Array.isArray(element.bbox) ? [...element.bbox] : element.bbox;
+      if (bbox) bbox[3] = Math.max(Number(bbox[3] || 0), 70.08);
       return {
         ...element,
+        bbox,
         resolvedFontSize: 30,
         resolvedTextStyle: {
           ...(element.resolvedTextStyle || {}),
           fontSize: 30,
+          verticalAlignment: "top",
         },
+        textLayout: element.textLayout
+          ? { ...element.textLayout, lineCount: Math.max(Number(element.textLayout.lineCount || 0), 2) }
+          : element.textLayout,
         paragraphs: (element.paragraphs || []).map((paragraph) => ({
           ...paragraph,
           runs: (paragraph.runs || []).map((run) => ({ ...run, fontSize: 30 })),
@@ -2287,7 +2303,9 @@ export function extractTemplateFields(slideNumber, layout) {
         style: getElementStyle(element),
         sourceText: element.text,
       };
+      const globalDetailKey = getSlideGlobalDetailKey(slideNumber, element);
       const pptTextField = fieldKind === "text" &&
+        !globalDetailKey &&
         !isSlide1DescriptorElement(slideNumber, element) &&
         isPptTextEditableElement(element)
         ? [buildPptTextField(slideNumber, element, baseField)]
@@ -2552,7 +2570,7 @@ function tokenValue(token, details, sourceText = "") {
 
   if (key === "company name" || key === "company") return companyName;
   if (key === "company legal name") return companyName;
-  if (key === "name") return details.projectName || companyName;
+  if (key === "name") return details.projectName || "";
   if (key === "month year") return details.monthYear || "";
   if (key === "one-line company descriptor - industry, geography, business model") {
     return details.descriptor || "";
@@ -2695,8 +2713,21 @@ function isSlide1DescriptorElement(slideNumber, element) {
     clean.includes("company descriptor");
 }
 
+function getSlideGlobalDetailKey(slideNumber, element) {
+  if (Number(slideNumber || 0) !== 1) return "";
+  return SLIDE_1_GLOBAL_DETAIL_KEY_BY_ORDER.get(Number(element?.order || 0)) || "";
+}
+
+function getGlobalDetailElementText(globalDetailKey, element, globalDetails = {}) {
+  const value = globalDetailKey === "companyName"
+    ? globalDetails.companyName || globalDetails.companyLegalName || ""
+    : globalDetails[globalDetailKey] || "";
+  return normalizeText(value) ? value : applyGlobalDetails(element?.text || "", globalDetails);
+}
+
 function shouldUseDirectEditorTextField(slideNumber, element, pptTextField) {
   if (!pptTextField || !element?.text) return false;
+  if (getSlideGlobalDetailKey(slideNumber, element)) return false;
   if (isTopRightSlideNumberElement(element)) return false;
   if (isSlide1DescriptorElement(slideNumber, element)) return false;
   if (getFieldKind(element.text) !== "text") return false;
@@ -3392,6 +3423,7 @@ export function buildCimBuilderElementSpecs(slideNumber, layout, fields, fieldVa
     ));
     const editableLinkedElementFields = linkedElementFields.filter((candidate) => !candidate.hidden);
     const pptTextField = editableElementFields.find(isPptTextField);
+    const globalDetailKey = getSlideGlobalDetailKey(slideNumber, element);
     const inlineTokenField = editableLinkedElementFields.length === 1 && isWholeElementToken(element, editableLinkedElementFields[0])
       ? editableLinkedElementFields[0]
       : null;
@@ -3560,6 +3592,7 @@ export function buildCimBuilderElementSpecs(slideNumber, layout, fields, fieldVa
       type: "text",
       cimKind: "text",
       cimFieldId: inlineTextField ? getFieldValueKey(inlineTextField) : null,
+      cimGlobalKey: globalDetailKey || null,
       cimLinkedFieldIds: linkedElementFields.map(getFieldValueKey).filter(Boolean),
       x: left, y: top, width, height,
       text: displayText,
@@ -3584,7 +3617,7 @@ export function buildCimBuilderElementSpecs(slideNumber, layout, fields, fieldVa
       stroke: element.lineColor ? cssColor(element.lineColor, "transparent") : "transparent",
       strokeWidth: element.lineColor ? Math.max(Number(element.lineWidth || 0), 0) : 0,
       zIndex: Number(element.order || 1),
-      editable: Boolean(inlineTextField),
+      editable: Boolean(inlineTextField || globalDetailKey),
     });
   });
 
@@ -3600,6 +3633,23 @@ export function applyCimBuilderElementsToFieldValues(builderElements = []) {
     if (element.type === "text") fieldValues[cimFieldId] = element.text ?? "";
   });
   return fieldValues;
+}
+
+export function applyCimBuilderElementsToGlobalDetails(builderElements = [], baseElements = []) {
+  const globalDetails = {};
+  const baseElementById = new Map(
+    (baseElements || []).filter((element) => element?.id).map((element) => [String(element.id), element]),
+  );
+  (builderElements || []).forEach((element) => {
+    const cimGlobalKey = element?.cimGlobalKey;
+    if (!cimGlobalKey || !CIM_BUILDER_GLOBAL_DETAIL_KEYS.has(cimGlobalKey)) return;
+    if (element.type !== "text") return;
+    const baseElement = baseElementById.get(String(element.id || ""));
+    if (baseElement && String(baseElement.text ?? "") === String(element.text ?? "")) return;
+    globalDetails[cimGlobalKey] = element.text ?? "";
+    if (cimGlobalKey === "companyName") globalDetails.companyLegalName = element.text ?? "";
+  });
+  return globalDetails;
 }
 
 function getChartDataUrl(field, chartValues, fieldValues = {}, styleProfile = null) {
@@ -5138,6 +5188,8 @@ function getElementDisplayText(slideNumber, element, fieldsById, fieldValues, gl
   if (isTopRightSlideNumberElement(element)) return String(displaySlideNumber);
   const elementOverride = fieldValues?.[getElementAutofillKey("element_override", slideNumber, element.order)];
   if (normalizeText(elementOverride)) return elementOverride;
+  const globalDetailKey = getSlideGlobalDetailKey(slideNumber, element);
+  if (globalDetailKey) return getGlobalDetailElementText(globalDetailKey, element, globalDetails);
   const elementFields = getElementFields(slideNumber, element, fieldsById);
   const pptTextField = elementFields.find(isPptTextField);
   if (pptTextField && hasStoredFieldValue(pptTextField, fieldValues)) {
@@ -7424,6 +7476,7 @@ function sanitizeCimBuilderElement(element = {}) {
     subType: element.subType || (element.type === "ellipse" ? "ellipse" : "rect"),
     cimKind: element.cimKind || type,
     cimFieldId: element.cimFieldId || null,
+    cimGlobalKey: element.cimGlobalKey || null,
     cimLinkedFieldIds: Array.from(new Set(element.cimLinkedFieldIds || [])).filter(Boolean).map(String),
     cimAssetKey: element.cimAssetKey || null,
     cimAssetFieldId: element.cimAssetFieldId || null,
@@ -7627,7 +7680,11 @@ function getComparableCimBuilderElement(element = {}) {
 }
 
 function isCimBuilderTextLinked(element = {}) {
-  return Boolean(element.cimFieldId || (Array.isArray(element.cimLinkedFieldIds) && element.cimLinkedFieldIds.length));
+  return Boolean(
+    element.cimFieldId ||
+    element.cimGlobalKey ||
+    (Array.isArray(element.cimLinkedFieldIds) && element.cimLinkedFieldIds.length)
+  );
 }
 
 export function buildCimBuilderPage(baseElements = [], pageState = {}, fallbackBackground = "#FFFFFF") {
@@ -8616,14 +8673,26 @@ export default function WorkspaceCimPrep() {
         const payload = await getCompanyRequest(clientId);
         if (cancelled) return;
         setCompany(payload);
-        setGlobalDetails((previous) => ({
-          ...createDefaultGlobalDetails(payload),
-          ...previous,
-          companyName: previous.companyName || payload?.name || "",
-          companyLegalName: previous.companyName || payload?.name || "",
-          projectName: previous.projectName || payload?.project_name || payload?.name || "",
-          descriptor: previous.descriptor || (payload?.industry ? `${payload.industry} business` : ""),
-        }));
+        setGlobalDetails((previous) => {
+          const payloadCompanyName = payload?.name || "";
+          const payloadProjectName = payload?.project_name || "";
+          const previousProjectName = normalizeText(previous.projectName);
+          const cleanPayloadCompanyName = normalizeText(payloadCompanyName);
+          const cleanPayloadProjectName = normalizeText(payloadProjectName);
+          let projectName = previous.projectName || payloadProjectName;
+          if (previousProjectName === cleanPayloadCompanyName && cleanPayloadProjectName !== previousProjectName) {
+            projectName = payloadProjectName;
+          }
+
+          return {
+            ...createDefaultGlobalDetails(payload),
+            ...previous,
+            companyName: previous.companyName || payloadCompanyName,
+            companyLegalName: previous.companyName || payloadCompanyName,
+            projectName,
+            descriptor: previous.descriptor || (payload?.industry ? `${payload.industry} business` : ""),
+          };
+        });
       } catch {
         if (!cancelled) setCompany(null);
       }
@@ -9331,13 +9400,27 @@ export default function WorkspaceCimPrep() {
     setFieldValues((previous) => ({ ...previous, [fieldId]: value }));
   }, []);
 
-  const syncBuilderFieldValues = useCallback((elements = []) => {
+  const syncBuilderFieldValues = useCallback((elements = [], baseElements = []) => {
     const updates = applyCimBuilderElementsToFieldValues(elements);
     Object.entries(updates).forEach(([fieldId, value]) => {
       setFieldValues((previous) => (
         previous[fieldId] === value ? previous : { ...previous, [fieldId]: value }
       ));
     });
+    const globalUpdates = applyCimBuilderElementsToGlobalDetails(elements, baseElements);
+    const globalEntries = Object.entries(globalUpdates);
+    if (globalEntries.length) {
+      setGlobalDetails((previous) => {
+        const nextDetails = { ...previous };
+        let changed = false;
+        globalEntries.forEach(([key, value]) => {
+          if (nextDetails[key] === value) return;
+          nextDetails[key] = value;
+          changed = true;
+        });
+        return changed ? nextDetails : previous;
+      });
+    }
   }, []);
 
   const buildActiveBuilderBaseElements = useCallback(() => buildCimBuilderElementSpecs(
@@ -9363,13 +9446,13 @@ export default function WorkspaceCimPrep() {
   const handleBuilderPageChange = useCallback((nextPage) => {
     const key = getCimBuilderSlideKey(activeSlide, activeSlideInstance);
     const safePage = sanitizeCimBuilderPage(nextPage);
-    syncBuilderFieldValues(safePage.elements);
+    const activeBaseElements = activeBuilderPageIndex === 0 ? buildActiveBuilderBaseElements() : [];
+    syncBuilderFieldValues(safePage.elements, activeBaseElements);
 
     setCimBuilderState((previous) => {
       const normalized = normalizeCimBuilderState(previous);
       if (activeBuilderPageIndex === 0) {
-        const baseElements = buildActiveBuilderBaseElements();
-        const pageState = extractCimBuilderPageState(baseElements, safePage);
+        const pageState = extractCimBuilderPageState(activeBaseElements, safePage);
         return {
           ...normalized,
           pagesByKey: {

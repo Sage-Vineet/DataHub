@@ -645,6 +645,7 @@ export default function CimNativeBuilderCanvas({
       y: Number(element.y || 0) + 24,
       zIndex: maxZIndex + index + 1,
       cimFieldId: null,
+      cimGlobalKey: null,
       cimAssetKey: null,
       cimAssetFieldId: null,
     }));

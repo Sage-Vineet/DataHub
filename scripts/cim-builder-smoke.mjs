@@ -143,7 +143,56 @@ async function main() {
       {},
       null,
     );
-    assert.equal(slide1BuilderElements.find((element) => element.id === "template:1:12")?.fontSize, 30);
+    const slide1CompanyNameElement = slide1BuilderElements.find((element) => element.id === "template:1:12");
+    assert.equal(slide1CompanyNameElement?.fontSize, 30);
+    assert.ok(slide1CompanyNameElement?.height >= 70, "slide 1 company-name box should reserve two editor lines");
+    assert.equal(slide1CompanyNameElement?.cimGlobalKey, "companyName");
+    assert.equal(slide1CompanyNameElement?.cimFieldId, null);
+
+    const slide1ProjectName = "Allstate";
+    const slide1CompanyName = "Allstate India Private Limited";
+    const slide1NameElements = workspaceModule.buildCimBuilderElementSpecs(
+      1,
+      slide1PreparedLayout,
+      slide1BuilderFields,
+      {
+        "1:sh/54zidony:ppt-text": slide1CompanyName,
+      },
+      {},
+      {},
+      {
+        companyName: slide1CompanyName,
+        companyLegalName: slide1CompanyName,
+        projectName: slide1ProjectName,
+        descriptor: "Technology & Software business",
+        monthYear: "July 2026",
+      },
+      null,
+    );
+    const slide1ProjectTitleElement = slide1NameElements.find((element) => element.id === "template:1:7");
+    const slide1LogoCaptionElement = slide1NameElements.find((element) => element.id === "template:1:12");
+    assert.equal(slide1ProjectTitleElement?.text, slide1ProjectName);
+    assert.equal(slide1ProjectTitleElement?.cimGlobalKey, "projectName");
+    assert.equal(slide1ProjectTitleElement?.cimFieldId, null);
+    assert.equal(slide1LogoCaptionElement?.text, slide1CompanyName);
+    assert.deepEqual(
+      workspaceModule.applyCimBuilderElementsToGlobalDetails([
+        { ...slide1ProjectTitleElement, text: "Project Allstate" },
+        { ...slide1LogoCaptionElement, text: "Allstate India Legal Entity" },
+      ]),
+      {
+        projectName: "Project Allstate",
+        companyName: "Allstate India Legal Entity",
+        companyLegalName: "Allstate India Legal Entity",
+      },
+    );
+    assert.deepEqual(
+      workspaceModule.applyCimBuilderElementsToGlobalDetails(
+        [slide1ProjectTitleElement, slide1LogoCaptionElement],
+        [slide1ProjectTitleElement, slide1LogoCaptionElement],
+      ),
+      {},
+    );
     const fetchedDescriptor = "B2B software platform serving North America";
     const slide1DescriptorElements = workspaceModule.buildCimBuilderElementSpecs(
       1,
