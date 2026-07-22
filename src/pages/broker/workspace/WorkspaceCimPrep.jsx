@@ -2037,7 +2037,21 @@ function restructureSlide30TaxTable(layout) {
   };
 }
 
-function getSlide30TaxFiscalYears(currentPeriod) {
+function getSlide30TaxFiscalYears(currentPeriod, fallbackYears = []) {
+  const startFiscalYear = Number(currentPeriod?.startFiscalYear || 0);
+  const endFiscalYear = Number(currentPeriod?.fiscalYear || 0);
+  if (startFiscalYear && endFiscalYear && endFiscalYear >= startFiscalYear) {
+    return Array.from(
+      { length: endFiscalYear - startFiscalYear + 1 },
+      (_, index) => startFiscalYear + index,
+    ).slice(-(SLIDE_30_TAX_TABLE_COLUMN_COUNT - 2));
+  }
+
+  const cleanFallbackYears = Array.from(new Set(
+    (fallbackYears || []).map(Number).filter((year) => Number.isInteger(year) && year > 0),
+  )).sort((a, b) => a - b);
+  if (cleanFallbackYears.length) return cleanFallbackYears.slice(-(SLIDE_30_TAX_TABLE_COLUMN_COUNT - 2));
+
   const startDate = currentPeriod?.startDate;
   const endDate = currentPeriod?.endDate;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(startDate || "")) || !/^\d{4}-\d{2}-\d{2}$/.test(String(endDate || ""))) {
@@ -2051,6 +2065,43 @@ function getSlide30TaxFiscalYears(currentPeriod) {
   const years = [];
   for (let year = startYear; year <= lastCompleteYear; year += 1) years.push(year);
   return years.slice(-(SLIDE_30_TAX_TABLE_COLUMN_COUNT - 2));
+}
+
+function parseSlide30TaxNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const negative = /^\(.+\)$/.test(raw) || raw.startsWith("-");
+  const parsed = Number(raw.replace(/[($,%)]/g, "").replace(/,/g, ""));
+  if (!Number.isFinite(parsed)) return null;
+  return negative ? -Math.abs(parsed) : parsed;
+}
+
+function getSlide30TaxRowValue(row) {
+  if (!row) return null;
+  if (row.hasTaxReturn === false && row.hasPl === false) return null;
+  const taxReturn = parseSlide30TaxNumber(row.taxReturn ?? row.tax_return);
+  const pl = parseSlide30TaxNumber(row.pl ?? row.book ?? row.bookAmount);
+  if (row.hasTaxReturn && (Math.abs(taxReturn || 0) > 0.0001 || !row.hasPl)) return taxReturn;
+  if (row.hasPl) return pl;
+  return parseSlide30TaxNumber(row.amount ?? row.value) ?? taxReturn ?? pl;
+}
+
+function getSlide30TaxMetricFallback(label, metrics = {}) {
+  const clean = normalizeText(label).toLowerCase();
+  if (clean === "total revenue") return metrics.totalRevenue;
+  if (clean === "total cost of goods sold") return metrics.costOfGoodsSold;
+  if (clean === "gross profit") return metrics.hasGrossProfitData ? metrics.grossProfit : null;
+  if (clean === "net income") return metrics.netProfit;
+  return null;
+}
+
+function formatSlide30TaxValue(value) {
+  const numeric = parseSlide30TaxNumber(value);
+  if (numeric === null) return "-";
+  if (Math.abs(numeric) < 0.0001) return "0";
+  return formatAutoFillMillions(numeric) || "0";
 }
 
 function normalizeSlide35InitiativeDescriptions(layout) {
@@ -4461,7 +4512,7 @@ function getAutoFillChartData(snapshot, years = snapshot?.years || [], valueKeys
     .join("\n");
 }
 
-function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
+export function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   const fields = Object.values(fieldsBySlide || {}).flat();
   const fieldByToken = new Map();
   const chartFieldByOrder = new Map();
@@ -4793,7 +4844,7 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   add(30, 21, 0, currentLongDate);
 
   const taxReconciliation = snapshot?.taxReconciliation || {};
-  const taxYears = getSlide30TaxFiscalYears(snapshot?.currentPeriod);
+  const taxYears = getSlide30TaxFiscalYears(snapshot?.currentPeriod, taxReconciliation.periods || snapshot?.years || []);
   const taxRowsByYearLower = {};
   taxYears.forEach((year) => {
     taxRowsByYearLower[year] = new Map(
@@ -4808,8 +4859,8 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   const taxDataRows = SLIDE_30_TAX_ROW_DEFS.map(({ label, matchKeys }) => {
     const values = taxYears.map((year) => {
       const row = matchKeys.map((key) => taxRowsByYearLower[year]?.get(key)).find(Boolean);
-      const value = row ? Number(row.taxReturn ?? row.tax_return ?? row.amount ?? 0) : null;
-      return value === null || !Number.isFinite(value) ? "-" : formatAutoFillMillions(value);
+      const value = getSlide30TaxRowValue(row) ?? getSlide30TaxMetricFallback(label, getAutoFillYearMetrics(snapshot, year));
+      return formatSlide30TaxValue(value);
     });
     return [label, ...values, "-"].join(" | ");
   });

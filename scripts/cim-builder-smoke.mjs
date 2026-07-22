@@ -33,6 +33,7 @@ async function main() {
     const exportModule = await vite.ssrLoadModule("/src/lib/cimPptxExport.js");
     const interactionModule = await vite.ssrLoadModule("/src/lib/cimNativeBuilderInteraction.js");
     const modelModule = await vite.ssrLoadModule("/src/lib/cimNativeBuilderModel.js");
+    const autofillModule = await vite.ssrLoadModule("/src/services/cimFinancialAutofillService.js");
     const workspaceModule = await vite.ssrLoadModule("/src/pages/broker/workspace/WorkspaceCimPrep.jsx");
 
     assert.equal(
@@ -273,6 +274,63 @@ async function main() {
       const editableElement = slide8TemplateElements.find((element) => element.id === elementId);
       assert.ok(editableElement?.cimFieldId?.endsWith(":ppt-text"), `${elementId} should support direct full-text editing`);
     }
+
+    const slide30TaxReconciliation = autofillModule.normalizeTaxReconciliationSnapshot(
+      {
+        years: {
+          2023: { data: [{ label: "Total Revenue", taxReturn: 0 }] },
+          2024: { data: [{ label: "Net Income", taxReturn: 310000 }] },
+        },
+      },
+      {
+        years: {
+          2023: {
+            data: [
+              { label: "Total Revenue", pl: 1200000 },
+              { label: "Total Cost of Goods Sold", pl: 450000 },
+              { label: "Gross Profit", pl: 750000 },
+            ],
+          },
+          2024: {
+            data: [
+              { label: "Total Revenue", pl: 1400000 },
+              { label: "Net Income", pl: 280000 },
+            ],
+          },
+          2025: {
+            data: [
+              { label: "Total Revenue", pl: 1500000 },
+              { label: "Net Income", pl: 260000 },
+            ],
+          },
+        },
+      },
+    );
+    assert.equal(slide30TaxReconciliation.hasData, true);
+    assert.deepEqual(slide30TaxReconciliation.periods, [2023, 2024, 2025]);
+    assert.equal(
+      slide30TaxReconciliation.rowsByYear[2025].find((row) => row.label === "Total Revenue")?.pl,
+      1500000,
+    );
+    const slide30Autofill = workspaceModule.buildCimFinancialAutofillValues({}, {
+      years: [2023, 2024, 2025],
+      latestYear: 2025,
+      currentPeriod: {
+        startDate: "2023-01-01",
+        endDate: "2025-12-31",
+        startFiscalYear: 2023,
+        fiscalYear: 2025,
+        periodType: "calendar",
+      },
+      metricsByYear: {},
+      trailingMetrics: {},
+      taxReconciliation: slide30TaxReconciliation,
+      validation: { sourceLedger: { sourceLabel: "Quality of Earnings Report" } },
+    });
+    const slide30TaxTable = slide30Autofill.fieldValues["__cim_element_override__:30:28"];
+    assert.match(slide30TaxTable, /Item \| FY2023 \| FY2024 \| FY2025 \| LTM/);
+    assert.match(slide30TaxTable, /Total Revenue \| 1\.2 \| 1\.4 \| 1\.5 \| -/);
+    assert.match(slide30TaxTable, /Net Income \| - \| 0\.31 \| 0\.26 \| -/);
 
     for (let slideNumber = 1; slideNumber <= workspaceModule.TEMPLATE_SLIDE_COUNT; slideNumber += 1) {
       const sourceLayout = JSON.parse(readFileSync(

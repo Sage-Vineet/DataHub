@@ -20,8 +20,11 @@ import {
   getKeyReportVersion,
   getKeyReportVersions,
   getCimBankReconciliationRequest,
+  getCimProfitLossForTaxRequest,
   getCimTaxReconciliationRequest,
   getManualStageFilterOptions,
+  getManualStagedProfitLossSummary,
+  getKeyReportVersionReport,
   getReportSources,
   listManualGlDatasetVersions,
 } from "../lib/api";
@@ -400,6 +403,103 @@ function sortYearsDescending(years = []) {
       .map((year) => Number(year))
       .filter((year) => Number.isInteger(year) && year > 0),
   )).sort((a, b) => b - a);
+}
+
+const TAX_RECONCILIATION_LINE_ITEM_LABELS = [
+  "Total Revenue",
+  "Total Cost of Goods Sold",
+  "Gross Profit",
+  "Officer Wages",
+  "Depreciation Expense",
+  "Amortization Expense",
+  "Total Interest Expense",
+  "All Other Expenses",
+  "All Other Income",
+  "Net Income",
+];
+
+function normalizeTaxLineItemKey(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function getCanonicalTaxLineItemLabel(value) {
+  const key = normalizeTaxLineItemKey(value);
+  if (!key) return "";
+  const aliases = [
+    ["Total Revenue", ["total revenue", "total income", "net revenue", "total sales", "gross receipts"]],
+    ["Total Cost of Goods Sold", ["total cost of goods sold", "cost of goods sold", "cost of sales", "total cogs", "cogs"]],
+    ["Gross Profit", ["gross profit", "gross margin"]],
+    ["Officer Wages", ["officer wages", "officer compensation", "officer salary", "officer pay", "guaranteed payments", "s corp officer"]],
+    ["Depreciation Expense", ["depreciation expense", "depreciation and amortization", "depreciation"]],
+    ["Amortization Expense", ["amortization expense", "amortization"]],
+    ["Total Interest Expense", ["total interest expense", "interest expense", "loan interest"]],
+    ["All Other Expenses", ["all other expenses", "total other expenses", "other expenses", "total expenses"]],
+    ["All Other Income", ["all other income", "total other income", "other income", "other revenue"]],
+    ["Net Income", ["net income", "net loss", "net earnings", "net profit"]],
+  ];
+  return aliases.find(([, patterns]) =>
+    patterns.some((pattern) => key.includes(normalizeTaxLineItemKey(pattern)) || normalizeTaxLineItemKey(pattern).includes(key)),
+  )?.[0] || value;
+}
+
+function flattenTaxProfitLossRows(rows = [], depth = 0) {
+  return (rows || []).flatMap((row) => {
+    const label = String(row.name || row.label || row.account || "").trim();
+    const amount = row.amount ?? row.value ?? row.total ?? row.pl ?? 0;
+    const current = label
+      ? [{
+        label,
+        value: toNumber(amount, 0),
+        depth,
+        type: String(row.type || row.rowType || "data").toLowerCase(),
+      }]
+      : [];
+    const children = Array.isArray(row.children) ? flattenTaxProfitLossRows(row.children, depth + 1) : [];
+    return [...current, ...children];
+  });
+}
+
+function findTaxProfitLossAmount(flatRows, patterns, preferTotal = true) {
+  const normalizedPatterns = patterns.map(normalizeTaxLineItemKey);
+  const matches = flatRows.filter((row) => {
+    const key = normalizeTaxLineItemKey(row.label);
+    return normalizedPatterns.some((pattern) => key.includes(pattern) || pattern.includes(key));
+  });
+  if (!matches.length) return 0;
+  if (preferTotal) {
+    const totals = matches.filter((row) => row.type === "total");
+    if (totals.length) return totals[totals.length - 1].value;
+  }
+  return matches[matches.length - 1].value;
+}
+
+function extractTaxRowsFromProfitLossRows(rows = []) {
+  const flatRows = flattenTaxProfitLossRows(rows);
+  const officerWages = findTaxProfitLossAmount(flatRows, ["officer compensation", "officer wages", "officer salary", "officer pay", "s-corp officer"], false);
+  const depreciation = findTaxProfitLossAmount(flatRows, ["depreciation expense", "depreciation & amortization", "depreciation"], false);
+  const amortization = findTaxProfitLossAmount(flatRows, ["amortization expense", "amortization"], false);
+  const interestExpense = findTaxProfitLossAmount(flatRows, ["total interest expense", "interest expense", "loan interest"], false);
+  const totalExpenses = findTaxProfitLossAmount(flatRows, ["total expenses", "total operating expenses", "total expense"]);
+  const allOtherExpenses = totalExpenses > 0
+    ? Math.max(0, totalExpenses - officerWages - depreciation - amortization - interestExpense)
+    : 0;
+
+  return [
+    { label: "Total Revenue", pl: findTaxProfitLossAmount(flatRows, ["total income", "total revenue", "net revenue", "total sales"]) },
+    { label: "Total Cost of Goods Sold", pl: findTaxProfitLossAmount(flatRows, ["total cost of goods sold", "cost of goods sold", "cost of sales", "total cogs"]) },
+    { label: "Gross Profit", pl: findTaxProfitLossAmount(flatRows, ["gross profit", "gross margin"]) },
+    { label: "Officer Wages", pl: officerWages },
+    { label: "Depreciation Expense", pl: depreciation },
+    { label: "Amortization Expense", pl: amortization },
+    { label: "Total Interest Expense", pl: interestExpense },
+    { label: "All Other Expenses", pl: allOtherExpenses },
+    { label: "All Other Income", pl: findTaxProfitLossAmount(flatRows, ["total other income", "other income", "other revenue"]) },
+    { label: "Net Income", pl: findTaxProfitLossAmount(flatRows, ["net income", "net loss", "net earnings", "net profit"]) },
+  ];
 }
 
 function detectReportFileYear(file) {
@@ -1573,19 +1673,162 @@ function normalizeBankReconciliationSnapshot(payload = {}, endDate = "") {
   };
 }
 
-function normalizeTaxReconciliationSnapshot(payload = {}) {
-  const yearsPayload = payload?.years && typeof payload.years === "object"
-    ? payload.years
-    : payload?.year
-      ? { [payload.year]: { data: payload.data || [] } }
-      : {};
-  const periods = Object.keys(yearsPayload).map(Number).filter(Boolean).sort((a, b) => a - b);
+function getTaxReconciliationYearsPayload(payload = {}) {
+  if (payload?.years && typeof payload.years === "object") return payload.years;
+  if (payload?.year || payload?.taxYear) {
+    const year = payload.year || payload.taxYear;
+    return { [year]: { data: payload.data || payload.rows || [] } };
+  }
+  return {};
+}
+
+function getTaxReconciliationRowsFromPayload(value = {}) {
+  if (Array.isArray(value)) return value;
+  return value.data || value.rows || value.lineItems || [];
+}
+
+function mergeTaxReconciliationRows(plRows = [], taxRows = []) {
+  const merged = new Map(TAX_RECONCILIATION_LINE_ITEM_LABELS.map((label) => [
+    label,
+    { label, pl: 0, taxReturn: 0, variance: 0, hasPl: false, hasTaxReturn: false },
+  ]));
+
+  const ensureRow = (label) => {
+    const canonical = getCanonicalTaxLineItemLabel(label);
+    if (!canonical) return null;
+    if (!merged.has(canonical)) {
+      merged.set(canonical, { label: canonical, pl: 0, taxReturn: 0, variance: 0, hasPl: false, hasTaxReturn: false });
+    }
+    return merged.get(canonical);
+  };
+
+  const applyPlRow = (row) => {
+    const target = ensureRow(row.label || row.name || row.account);
+    if (!target) return;
+    const rawValue = row.pl ?? row.book ?? row.bookAmount ?? row.amount ?? row.value;
+    const value = toNumber(rawValue, Number.NaN);
+    if (!Number.isFinite(value)) return;
+    target.pl = value;
+    target.hasPl = true;
+  };
+
+  const applyTaxRow = (row) => {
+    const target = ensureRow(row.label || row.name || row.account);
+    if (!target) return;
+    if (row.pl !== undefined || row.book !== undefined || row.bookAmount !== undefined) applyPlRow(row);
+    const rawValue = row.taxReturn ?? row.tax_return ?? row.returnAmount ?? row.amount ?? row.value;
+    const value = toNumber(rawValue, Number.NaN);
+    if (!Number.isFinite(value)) return;
+    target.taxReturn = value;
+    target.hasTaxReturn = true;
+  };
+
+  plRows.forEach(applyPlRow);
+  taxRows.forEach(applyTaxRow);
+
+  return Array.from(merged.values()).map((row) => ({
+    ...row,
+    amount: row.hasTaxReturn ? row.taxReturn : row.hasPl ? row.pl : 0,
+    variance: row.taxReturn - row.pl,
+  }));
+}
+
+export function normalizeTaxReconciliationSnapshot(taxPayload = {}, plPayload = {}) {
+  const taxYearsPayload = getTaxReconciliationYearsPayload(taxPayload);
+  const plYearsPayload = getTaxReconciliationYearsPayload(plPayload);
+  const periods = Array.from(new Set([
+    ...Object.keys(taxYearsPayload),
+    ...Object.keys(plYearsPayload),
+  ].map(Number).filter(Boolean))).sort((a, b) => a - b);
   const rowsByYear = {};
   periods.forEach((year) => {
-    const value = yearsPayload[year] || yearsPayload[String(year)] || {};
-    rowsByYear[year] = Array.isArray(value) ? value : value.data || value.rows || [];
+    const taxRows = getTaxReconciliationRowsFromPayload(taxYearsPayload[year] || taxYearsPayload[String(year)] || {});
+    const plRows = getTaxReconciliationRowsFromPayload(plYearsPayload[year] || plYearsPayload[String(year)] || {});
+    rowsByYear[year] = mergeTaxReconciliationRows(plRows, taxRows);
   });
-  return { hasData: periods.some((year) => rowsByYear[year]?.length), periods, rowsByYear };
+  return {
+    hasData: periods.some((year) =>
+      rowsByYear[year]?.some((row) => row.hasTaxReturn || row.hasPl || Math.abs(toNumber(row.amount, 0)) > 0.0001),
+    ),
+    periods,
+    rowsByYear,
+  };
+}
+
+async function loadCimTaxReconciliationProfitLossPayload({
+  clientId,
+  sourceKey,
+  datasetVersion,
+  keyReportVersionId,
+  years = [],
+} = {}) {
+  const cleanYears = sortYearsDescending(years).reverse();
+
+  if (keyReportVersionId) {
+    const entries = await Promise.all(cleanYears.map(async (year) => {
+      try {
+        const response = await getKeyReportVersionReport(
+          keyReportVersionId,
+          "profit-loss",
+          { year: String(year), period: "year" },
+        );
+        const rows = response?.hierarchicalRows || response?.rows || [];
+        const data = extractTaxRowsFromProfitLossRows(rows);
+        return data.some((row) => Math.abs(toNumber(row.pl, 0)) > 0.0001)
+          ? [year, { year, data }]
+          : null;
+      } catch {
+        return null;
+      }
+    }));
+    return { success: true, years: Object.fromEntries(entries.filter(Boolean)) };
+  }
+
+  if (sourceKey === REPORT_SOURCE_KEYS.MANUAL_GL) {
+    const versionParam = datasetVersion ? { datasetVersion } : {};
+    const entries = await Promise.all(cleanYears.map(async (year) => {
+      try {
+        const response = await getManualStagedProfitLossSummary({
+          clientId,
+          params: {
+            fiscalYear: [String(year)],
+            ...versionParam,
+          },
+        });
+        const rows = response?.hierarchicalRows || response?.rows || [];
+        const data = extractTaxRowsFromProfitLossRows(rows);
+        return data.some((row) => Math.abs(toNumber(row.pl, 0)) > 0.0001)
+          ? [year, { year, data }]
+          : null;
+      } catch {
+        return null;
+      }
+    }));
+    return { success: true, years: Object.fromEntries(entries.filter(Boolean)) };
+  }
+
+  if (sourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) {
+    return getCimProfitLossForTaxRequest({
+      clientId,
+      datasetVersion,
+      keyReportVersionId,
+    }).catch(() => null);
+  }
+
+  if (sourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
+    const dashboard = await loadCimDashboardOnce(sourceKey, clientId).catch(() => null);
+    const reports = dashboard?._raw?.reports || {};
+    const yearsPayload = Object.fromEntries(cleanYears.map((year) => {
+      const rows = reports[String(year)]?.profitAndLoss?.rows ||
+        reports[String(year)]?.profit_loss?.rows ||
+        reports[String(year)]?.rows ||
+        [];
+      return [year, { year, data: extractTaxRowsFromProfitLossRows(rows) }];
+    }).filter(([, value]) => value.data.some((row) => Math.abs(toNumber(row.pl, 0)) > 0.0001)));
+    return { success: true, years: yearsPayload };
+  }
+
+  return { success: true, years: {} };
 }
 
 // Fixed priority tier for auto-selecting a financial data source when the
@@ -1828,7 +2071,7 @@ export async function loadCimFinancialAutofillSnapshot({
   const sortedAscending = sortYearsDescending(selectedYears).reverse();
   const latestYear = selectedFiscalYear || sortedAscending[sortedAscending.length - 1] || new Date().getFullYear();
   const sourceLedger = await sourceLedgerPromise;
-  const [bankPayload, taxPayload] = await Promise.all([
+  const [bankPayload, taxPayload, taxProfitLossPayload] = await Promise.all([
     getCimBankReconciliationRequest({
       clientId,
       sourceKey: normalizedSource,
@@ -1853,6 +2096,13 @@ export async function loadCimFinancialAutofillSnapshot({
         datasetVersion,
         keyReportVersionId: selectedReportVersionId,
       }).catch(() => null),
+    loadCimTaxReconciliationProfitLossPayload({
+      clientId,
+      sourceKey: normalizedSource,
+      datasetVersion,
+      keyReportVersionId: selectedReportVersionId,
+      years: sortedAscending,
+    }).catch(() => null),
   ]);
   reportProgress(90, "Validating accounting consistency and source support");
   const validation = buildCimFinancialValidation({
@@ -1891,7 +2141,7 @@ export async function loadCimFinancialAutofillSnapshot({
     trailingMetrics,
     adjustments,
     bankReconciliation: normalizeBankReconciliationSnapshot(bankPayload || {}, selectedRange?.endDate),
-    taxReconciliation: normalizeTaxReconciliationSnapshot(taxPayload || {}),
+    taxReconciliation: normalizeTaxReconciliationSnapshot(taxPayload || {}, taxProfitLossPayload || {}),
     validation,
   };
   cimAutofillSnapshotCache.set(cacheKey, { cachedAt: Date.now(), snapshot });
