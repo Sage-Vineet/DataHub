@@ -697,15 +697,32 @@ function mergePeriods(periodResults, periods) {
       return collected;
     }
 
+    // Tries each target in priority order, searching the WHOLE tree for that
+    // one target before falling back to the next. This matters because
+    // nameTargets mixes specific destinations ("liabilities") with broader
+    // fallbacks ("liabilities and equity") for trees that lack the specific
+    // one — searching all targets at once lets a shallow, broad match (e.g.
+    // the top-level "Liabilities and Equity" wrapper) win over a deeper,
+    // more specific match (the nested "Liabilities" section) purely because
+    // it's encountered first in traversal order, silently misplacing nodes
+    // (e.g. Long-Term Liabilities ending up a sibling of Liabilities instead
+    // of inside it).
     function findSection(nodes, nameTargets) {
+      for (const target of nameTargets) {
+        const found = findSectionForTarget(nodes, target);
+        if (found) return found;
+      }
+      return null;
+    }
+
+    function findSectionForTarget(nodes, target) {
       if (!nodes) return null;
       for (let i = 0; i < nodes.length; i++) {
-        const norm = normalizeName(nodes[i].name);
-        if (nameTargets.includes(norm)) {
+        if (normalizeName(nodes[i].name) === target) {
           return nodes[i];
         }
         if (nodes[i].children) {
-          const found = findSection(nodes[i].children, nameTargets);
+          const found = findSectionForTarget(nodes[i].children, target);
           if (found) return found;
         }
       }

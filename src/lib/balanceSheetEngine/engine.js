@@ -139,7 +139,9 @@ function resolveMetadataLayers(items, accountNumberRanges) {
 // ─── Phase 3 — Layer 9 (neighboring accounts), scoped to sibling groups ───
 
 function resolveNeighborLayer(bySection) {
-  for (const items of Object.values(bySection)) {
+  // Explicit section keys only — bySection may also carry an `unrecognized`
+  // list of raw (non-item-shaped) nodes that this phase must never touch.
+  for (const items of [bySection[SECTION.ASSETS], bySection[SECTION.LIABILITIES], bySection[SECTION.EQUITY]]) {
     const byScope = new Map();
     for (const item of items) {
       if (!byScope.has(item.scopeId)) byScope.set(item.scopeId, []);
@@ -352,19 +354,27 @@ function runDeterministicPhases(rows, options) {
   if (!list.length) return null;
 
   const bySection = collectItems(list);
-  const allItems = [...bySection[SECTION.ASSETS], ...bySection[SECTION.LIABILITIES], ...bySection[SECTION.EQUITY]];
+  const classifiedItems = [...bySection[SECTION.ASSETS], ...bySection[SECTION.LIABILITIES], ...bySection[SECTION.EQUITY]];
+  // Nodes the walk couldn't place under any section at all (e.g. an upstream
+  // bug left one as a stray sibling instead of nested where it belongs).
+  // They skip classification entirely — there's no section to classify them
+  // INTO — but they still ride along into `allItems` purely so validation
+  // catches them as "missing" from the final tree and repairs them into the
+  // Unclassified bucket, instead of the alternative: silently vanishing.
+  const unrecognizedItems = (bySection.unrecognized || []).map((node) => ({ node }));
+  const allItems = [...classifiedItems, ...unrecognizedItems];
   if (!allItems.length) return null;
 
-  allItems.forEach((item) => {
+  classifiedItems.forEach((item) => {
     if (item.categoryHint) item._classifiedBy = "existing-hierarchy";
   });
 
   const cache = options.historyCache || createHistoryCache({ scope: options.cacheScope });
 
-  resolveMetadataLayers(allItems, options.accountNumberRanges); // Layers 2–6
+  resolveMetadataLayers(classifiedItems, options.accountNumberRanges); // Layers 2–6
   resolveNeighborLayer(bySection); // Layer 9
-  resolveHistoryLayer(allItems, cache); // Layer 10
-  resolveLexiconLayer(allItems); // Layer 11
+  resolveHistoryLayer(classifiedItems, cache); // Layer 10
+  resolveLexiconLayer(classifiedItems); // Layer 11
 
   return { list, bySection, allItems, cache };
 }
@@ -416,7 +426,12 @@ export async function restructureBalanceSheetTreeAsync(rows, options = {}) {
     const state = runDeterministicPhases(rows, options);
     if (!state) return Array.isArray(rows) ? rows : [];
 
-    const stillUnresolved = state.allItems.filter((item) => !item.categoryHint);
+    // `item.section` excludes the orphaned, section-less items described
+    // above (see runDeterministicPhases) — AI has no section to classify
+    // them into, and any result couldn't be placed in the tree anyway, so
+    // sending them would just waste a call. They still get surfaced via the
+    // Unclassified repair bucket in finalizeFromState below.
+    const stillUnresolved = state.allItems.filter((item) => !item.categoryHint && item.section);
     if (stillUnresolved.length) {
       const classifyWithAI = options.classifyWithAI || noopAIClassifier;
       const aiResults = await runAIClassificationLayer(stillUnresolved, classifyWithAI, state.cache, historyCacheKey);
