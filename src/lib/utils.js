@@ -36,6 +36,18 @@ export function formatCurrency(amount) {
   return formatNumber(amount, 2);
 }
 
+/**
+ * A row is a structural container (folder) rather than a leaf value when it has
+ * children or is explicitly typed as a grouping row. Its own amount cells must
+ * stay blank — the aggregate already lives on its "Total …" child/sibling row,
+ * so showing a number here would duplicate that total. Total rows are exempt
+ * even if they happen to carry children.
+ */
+export function isReportGroupRow(line, hasChildren, isTotal) {
+  const type = line?.type;
+  return Boolean(!isTotal && (hasChildren || type === "header" || type === "group" || type === "section"));
+}
+
 export function formatDate(dateStr) {
   return new Date(dateStr || Date.now()).toLocaleDateString("en-US", {
     month: "short",

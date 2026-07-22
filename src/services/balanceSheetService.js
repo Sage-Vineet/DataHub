@@ -1175,6 +1175,21 @@ export async function getBalanceSheetDetail(
     const s = new Date(startDate + "T00:00:00");
     const e = new Date(endDate + "T00:00:00");
     let yr = s.getFullYear(), mo = s.getMonth();
+    // A wide range (e.g. "All Dates") would otherwise fire one live QuickBooks
+    // request per calendar month with no upper bound — cap to the most recent
+    // MAX_MONTHLY_PERIODS months so it stays bounded and fast, keeping the
+    // period closest to "now" since that's what users actually monitor.
+    const MAX_MONTHLY_PERIODS = 120;
+    const endMonthIndex = e.getFullYear() * 12 + e.getMonth();
+    let startMonthIndex = yr * 12 + mo;
+    if (endMonthIndex - startMonthIndex + 1 > MAX_MONTHLY_PERIODS) {
+      console.warn(
+        `[BalanceSheet] Month mode range (${startDate} to ${endDate}) spans more than ${MAX_MONTHLY_PERIODS} months — trimming to the most recent ${MAX_MONTHLY_PERIODS}.`,
+      );
+      startMonthIndex = endMonthIndex - MAX_MONTHLY_PERIODS + 1;
+      yr = Math.floor(startMonthIndex / 12);
+      mo = startMonthIndex % 12;
+    }
     while (yr < e.getFullYear() || (yr === e.getFullYear() && mo <= e.getMonth())) {
       const mm = String(mo + 1).padStart(2, "0");
       const lastDay = new Date(yr, mo + 1, 0).getDate();

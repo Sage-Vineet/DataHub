@@ -1,6 +1,11 @@
-import { useRef, useEffect, useState } from "react";
+import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { cn, formatCurrency } from "../../../lib/utils";
+import { cn, formatCurrency, isReportGroupRow } from "../../../lib/utils";
+import FrozenPaneTable from "../shared/FrozenPaneTable";
+
+const NAME_COL_WIDTH = "320px";
+const AMOUNT_COL_WIDTH = "140px";
+const YEAR_COL_WIDTH = "90px";
 
 function CashflowRow({
   line,
@@ -11,6 +16,8 @@ function CashflowRow({
   const hasChildren = Boolean(line.children?.length);
   const isCategory = line.type === "header";
   const isTotal = line.type === "total";
+  const isGroup = isReportGroupRow(line, hasChildren, isTotal);
+  const stickyColBg = isTotal ? "bg-bg-page" : (isCategory && depth === 0) ? "bg-bg-page" : "bg-bg-card";
 
   const toggle = (e) => {
     if (!hasChildren) return;
@@ -30,12 +37,7 @@ function CashflowRow({
           isCategory && depth === 0 && "bg-bg-page/30 border-t border-border"
         )}
       >
-        <td className={cn(
-          "py-2.5 px-4 text-left z-10 min-w-[320px] sticky left-0",
-          isTotal ? "bg-bg-page"
-            : (isCategory && depth === 0) ? "bg-bg-page"
-            : "bg-bg-card",
-        )}>
+        <td className={cn("py-2.5 px-4 text-left z-10 sticky left-0", stickyColBg)}>
           <div className="flex items-center">
             <div className="flex shrink-0">
               {Array.from({ length: depth }).map((_, index) => (
@@ -67,17 +69,17 @@ function CashflowRow({
           columns.yearCols.map((col) => (
             <td key={col.key} className={cn(
               "py-2.5 px-3 text-right tabular-nums text-[14px] font-medium whitespace-nowrap",
-              (line.amounts?.[col.key] || 0) < 0 ? "text-status-error" : "text-text-primary"
+              !isGroup && (line.amounts?.[col.key] || 0) < 0 ? "text-status-error" : "text-text-primary"
             )}>
-              {formatCurrency(line.amounts?.[col.key] || 0)}
+              {isGroup ? "" : formatCurrency(line.amounts?.[col.key] || 0)}
             </td>
           ))
         ) : (
           <td className={cn(
             "py-2.5 px-4 text-right tabular-nums text-[14px] font-medium whitespace-nowrap",
-            (line.amount || 0) < 0 ? "text-status-error" : "text-text-primary"
+            !isGroup && (line.amount || 0) < 0 ? "text-status-error" : "text-text-primary"
           )}>
-            {formatCurrency(line.amount || 0)}
+            {isGroup ? "" : formatCurrency(line.amount || 0)}
           </td>
         )}
       </tr>
@@ -105,61 +107,41 @@ export default function CashflowSummary({
   }),
 }) {
   const hasColumns = columns && columns.yearCols && columns.yearCols.length > 0;
-  const tableRef = useRef(null);
-  const theadRef = useRef(null);
-  useEffect(() => {
-    const mainEl = document.querySelector("main");
-    if (!mainEl) return;
-    const onScroll = () => {
-      if (!tableRef.current || !theadRef.current) return;
-      const tableTop = tableRef.current.getBoundingClientRect().top;
-      const mainTop = mainEl.getBoundingClientRect().top;
-      if (tableTop < mainTop) {
-        const offset = Math.min(mainTop - tableTop, tableRef.current.offsetHeight - theadRef.current.offsetHeight);
-        theadRef.current.style.transform = `translateY(${Math.max(0, offset)}px)`;
-      } else {
-        theadRef.current.style.transform = "";
-      }
-    };
-    mainEl.addEventListener("scroll", onScroll, { passive: true });
-    return () => mainEl.removeEventListener("scroll", onScroll);
-  }, []);
+  const columnWidths = [NAME_COL_WIDTH, ...(hasColumns ? columns.yearCols.map(() => YEAR_COL_WIDTH) : [AMOUNT_COL_WIDTH])];
+
+  const headerRow = (
+    <tr className="border-b-2 border-text-primary">
+      <th className="sticky left-0 z-20 bg-bg-card pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider">
+        Cash Flow Classification
+      </th>
+      {hasColumns ? (
+        columns.yearCols.map((col) => (
+          <th key={col.key} className="bg-bg-card pb-3 pt-2 px-3 text-right text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider">
+            {col.label}
+          </th>
+        ))
+      ) : (
+        <th className="bg-bg-card pb-3 pt-2 px-4 text-right text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider">
+          Amount (USD)
+        </th>
+      )}
+    </tr>
+  );
+
   const tableEl = (
-    <div className="overflow-x-auto w-full">
-      <table ref={tableRef} className="min-w-full border-collapse">
-        <thead ref={theadRef} style={{ position: "relative", zIndex: 20 }}>
-          <tr className="border-b-2 border-text-primary">
-            <th className="sticky top-0 left-0 z-30 bg-bg-card pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[320px]">
-              Cash Flow Classification
-            </th>
-            {hasColumns ? (
-              columns.yearCols.map((col) => (
-                <th key={col.key} className="sticky top-0 z-20 bg-bg-card pb-3 pt-2 px-3 text-right text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[90px]">
-                  {col.label}
-                </th>
-              ))
-            ) : (
-              <th className="sticky top-0 z-20 bg-bg-card pb-3 pt-2 px-4 text-right text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider">
-                Amount (USD)
-              </th>
-            )}
-          </tr>
-        </thead>
-        <tbody>
-          {Array.isArray(data) && data.length > 0 ? (
-            data.map((category, index) => (
-              <CashflowRow key={category.id || `cashflow-category-${index}`} line={category} depth={0} columns={columns} />
-            ))
-          ) : (
-            <tr>
-              <td colSpan={hasColumns ? columns.yearCols.length + 1 : 2} className="py-20 text-center text-text-muted italic">
-                No report data found for this period.
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-    </div>
+    <FrozenPaneTable columnWidths={columnWidths} headerRows={headerRow}>
+      {Array.isArray(data) && data.length > 0 ? (
+        data.map((category, index) => (
+          <CashflowRow key={category.id || `cashflow-category-${index}`} line={category} depth={0} columns={columns} />
+        ))
+      ) : (
+        <tr>
+          <td colSpan={hasColumns ? columns.yearCols.length + 1 : 2} className="py-20 text-center text-text-muted italic">
+            No report data found for this period.
+          </td>
+        </tr>
+      )}
+    </FrozenPaneTable>
   );
 
   if (isPreview) {

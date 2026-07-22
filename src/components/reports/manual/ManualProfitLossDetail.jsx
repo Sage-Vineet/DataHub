@@ -1,6 +1,11 @@
 import { Fragment, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, FileText } from "lucide-react";
 import { cn, formatCurrency } from "../../../lib/utils";
+import FrozenPaneTable from "../shared/FrozenPaneTable";
+
+const NAME_COL_WIDTH = "260px";
+const YEAR_COL_WIDTH = "110px";
+const TOTAL_COL_WIDTH = "130px";
 
 function buildCategoryVendorRows(accounts) {
   const vendorMap = new Map();
@@ -81,7 +86,7 @@ function VendorRow({ vendor, years, isOpen, onToggle }) {
           isOpen ? "bg-bg-card/30" : "hover:bg-bg-page/50",
         )}
       >
-        <td className="px-4 py-2.5">
+        <td className="px-4 py-2.5 sticky left-0 z-10 bg-bg-card border-r border-border-light">
           <div className="flex items-center gap-2">
             {isOpen ? (
               <ChevronDown size={13} className="shrink-0 text-text-muted group-hover:text-primary transition-colors" />
@@ -105,7 +110,7 @@ function VendorRow({ vendor, years, isOpen, onToggle }) {
             key={`${account.accountNumber}::${account.accountName}`}
             className="border-b border-border/40 bg-bg-page/20 hover:bg-bg-page/50 transition-colors"
           >
-            <td className="px-4 py-1.5 pl-10 text-[12px] text-text-secondary">
+            <td className="px-4 py-1.5 pl-10 text-[12px] text-text-secondary sticky left-0 z-10 bg-bg-page border-r border-border-light">
               {account.accountName || <span className="italic text-text-muted">—</span>}
             </td>
             {years.map((year) => (
@@ -139,7 +144,7 @@ function CategorySection({ category, years, openVendors, onToggle }) {
     <Fragment>
       {/* Category section header */}
       <tr className="border-b border-border bg-bg-page/60">
-        <td className="px-4 py-2.5 text-[13px] font-bold text-text-primary">
+        <td className="px-4 py-2.5 text-[13px] font-bold text-text-primary sticky left-0 z-10 bg-bg-page border-r border-border-light">
           {category.category}
         </td>
         {years.map((yr) => (
@@ -196,8 +201,29 @@ export default function ManualProfitLossDetail({
 
   const colSpanAll = years.length + 2;
 
+  const columnWidths = [NAME_COL_WIDTH, ...years.map(() => YEAR_COL_WIDTH), TOTAL_COL_WIDTH];
+
+  const headerRow = (
+    <tr className="bg-bg-page border-b-2 border-border">
+      <th className="sticky left-0 z-20 bg-bg-page px-4 py-3 text-left text-[12px] font-semibold text-text-primary uppercase tracking-wider border-r border-border-light">
+        Vendor / Account
+      </th>
+      {years.map((year) => (
+        <th
+          key={year}
+          className="bg-bg-page px-4 py-3 text-right text-[12px] font-semibold text-text-primary uppercase tracking-wider"
+        >
+          {year}
+        </th>
+      ))}
+      <th className="bg-bg-page px-4 py-3 text-right text-[12px] font-semibold text-text-primary uppercase tracking-wider">
+        Grand Total
+      </th>
+    </tr>
+  );
+
   return (
-    <div className="flex-1 overflow-y-auto bg-bg-page/50 p-10 lg:p-16 font-inter">
+    <div className="bg-bg-page/50 p-10 lg:p-16 font-inter">
       <div className="max-w-[1300px] mx-auto card-base p-10 min-h-[900px] flex flex-col rounded-sm shadow-xl">
 
         {/* Report header */}
@@ -214,54 +240,31 @@ export default function ManualProfitLossDetail({
           )}
         </div>
 
-        <div className="overflow-x-auto rounded-lg border border-border">
-          <table className="w-full border-collapse">
-            <thead>
-              <tr className="bg-bg-page border-b-2 border-border sticky top-0 z-10">
-                <th className="px-4 py-3 text-left text-[12px] font-semibold text-text-primary uppercase tracking-wider min-w-[260px]">
-                  Vendor / Account
-                </th>
-                {years.map((year) => (
-                  <th
-                    key={year}
-                    className="px-4 py-3 text-right text-[12px] font-semibold text-text-primary uppercase tracking-wider min-w-[110px]"
-                  >
-                    {year}
-                  </th>
-                ))}
-                <th className="px-4 py-3 text-right text-[12px] font-semibold text-text-primary uppercase tracking-wider min-w-[110px]">
-                  Grand Total
-                </th>
-              </tr>
-            </thead>
+        <FrozenPaneTable columnWidths={columnWidths} headerRows={headerRow} className="rounded-lg border border-border">
+          {categories.map((category) => (
+            <CategorySection
+              key={category.category}
+              category={category}
+              years={years}
+              openVendors={openVendors}
+              onToggle={toggleVendor}
+            />
+          ))}
 
-            <tbody>
-              {categories.map((category) => (
-                <CategorySection
-                  key={category.category}
-                  category={category}
-                  years={years}
-                  openVendors={openVendors}
-                  onToggle={toggleVendor}
-                />
-              ))}
-
-              {categories.length === 0 && (
-                <tr>
-                  <td
-                    colSpan={colSpanAll}
-                    className="px-4 py-20 text-center text-text-muted italic"
-                  >
-                    <div className="flex flex-col items-center gap-2">
-                      <FileText size={40} className="text-border mb-2" />
-                      <span>No detailed report data found for the selected filters.</span>
-                    </div>
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+          {categories.length === 0 && (
+            <tr>
+              <td
+                colSpan={colSpanAll}
+                className="px-4 py-20 text-center text-text-muted italic"
+              >
+                <div className="flex flex-col items-center gap-2">
+                  <FileText size={40} className="text-border mb-2" />
+                  <span>No detailed report data found for the selected filters.</span>
+                </div>
+              </td>
+            </tr>
+          )}
+        </FrozenPaneTable>
       </div>
     </div>
   );
