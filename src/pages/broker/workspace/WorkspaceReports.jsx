@@ -384,7 +384,7 @@ export default function WorkspaceReports() {
     storedState?.reportType || "Summary",
   );
   const [dateRange, setDateRange] = useState(
-    storedState?.dateRange || "This Month",
+    storedState?.dateRange || "This year to date",
   );
   const [customRange, setCustomRange] = useState({
     start:
@@ -557,7 +557,7 @@ export default function WorkspaceReports() {
       setReportType(nextState.reportType || "Summary");
       setReportPeriod(nextState.reportPeriod || "Month");
       setReportPeriod(nextState.reportPeriod || "Month");
-      setDateRange(nextState.dateRange || "This Month");
+      setDateRange(nextState.dateRange || "This year to date");
       setCustomRange({
         start: nextState.customRange?.start || defaultCustomStart,
         end: nextState.customRange?.end || todayString,
@@ -1511,11 +1511,21 @@ export default function WorkspaceReports() {
         if (fromDate) effectiveStartDate = fromDate;
         if (toDate) effectiveEndDate = toDate;
       }
-      // Month mode for QB Online: use the user's FROM/TO dates directly so the
-      // service generates monthly columns for exactly the selected range.
-      if (!isYearMode && selectedSourceMode === "quickbooks" && userStart && userEnd) {
-        effectiveStartDate = userStart;
-        effectiveEndDate = userEnd;
+      // Month mode for QB Online: the Date From / Date To pickers (typed
+      // directly by the user) are more specific than the Date Range dropdown,
+      // so they take priority whenever set. Otherwise fall back to the
+      // dropdown-derived range so the service generates monthly columns for
+      // exactly the selected range.
+      if (!isYearMode && selectedSourceMode === "quickbooks") {
+        const fromDate = String(appliedManualFilters?.fromDate || "").trim();
+        const toDate = String(appliedManualFilters?.toDate || "").trim();
+        if (fromDate || toDate) {
+          effectiveStartDate = fromDate || userStart;
+          effectiveEndDate = toDate || userEnd;
+        } else if (userStart && userEnd) {
+          effectiveStartDate = userStart;
+          effectiveEndDate = userEnd;
+        }
       }
       // For manual_upload Cash Flow: period must reflect the selected CF year,
       // not the QB date-range picker (which is hidden on this tab).
@@ -2440,35 +2450,7 @@ export default function WorkspaceReports() {
                       className="h-9 min-w-[150px] rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
                     />
                   </div>
-              // Date-range filters for non-manual sources. Hidden in Year mode
-                  // (the From Year / To Year selectors drive the range instead).
-                  reportPeriod !== "Year" && (
-                  <>
-                    <div className="flex flex-col gap-1.5">
-                      <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
-                        Date From
-                      </label>
-                      <input
-                        type="date"
-                        value={manualFilters.fromDate || ""}
-                        onChange={(e) => handleDateFromChange(e.target.value)}
-                        className="h-9 min-w-[150px] rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                      />
-                    </div>
 
-                    <div className="flex flex-col gap-1.5">
-                      <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
-                        Date To
-                      </label>
-                      <input
-                        type="date"
-                        value={manualFilters.toDate || ""}
-                        onChange={(e) => handleDateToChange(e.target.value)}
-                        className="h-9 min-w-[150px] rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                      />
-                    </div>
-                  </>
-                  )
                   <div className="flex flex-col gap-1.5">
                     <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
                       Date To
