@@ -134,12 +134,15 @@ function computeInlineBoundaryHints(nodes, section) {
  * item bucketed by top-level section, each carrying whatever the tree
  * structure has already told us (subsectionHint / categoryHint). Total
  * nodes are dropped everywhere (they are regenerated fresh by the engine).
- * Unrecognized top-level nodes are silently skipped here — engine.js's
- * validation pass is responsible for ensuring nothing this walk missed is
- * ever lost.
+ *
+ * Top-level nodes this walk can't place under a recognized section (e.g. a
+ * node an upstream bug left as a stray sibling instead of correctly nested)
+ * are NEVER silently skipped — they're returned in `unrecognized` so the
+ * engine can still surface them (via its validation/repair pass) rather than
+ * lose them outright.
  */
 export function collectItems(rows) {
-  const acc = { [SECTION.ASSETS]: [], [SECTION.LIABILITIES]: [], [SECTION.EQUITY]: [] };
+  const acc = { [SECTION.ASSETS]: [], [SECTION.LIABILITIES]: [], [SECTION.EQUITY]: [], unrecognized: [] };
   let scopeCounter = 0;
 
   function walk(nodes, section, subsectionHint) {
@@ -166,7 +169,8 @@ export function collectItems(rows) {
           walk(node.children, null, null);
           return;
         }
-        return; // Unrecognized (or childless) top-level node — left for the engine's safety net.
+        acc.unrecognized.push(node); // Never placed anywhere — the engine's repair pass surfaces it instead of losing it.
+        return;
       }
 
       const wrapperHint = hasChildren(node) ? detectSubsectionWrapper(norm, section) : null;

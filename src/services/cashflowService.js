@@ -283,12 +283,34 @@ function mergeFileNodes(nodeArraysByFile, fileKeys) {
   });
 }
 
+// Builds the merged row tree as a UNION of every period's rows, not just the
+// latest period's. A line item that only had activity in an earlier period
+// (e.g. a loan account closed out before the most recent year) still exists
+// in that period's API response and must not disappear from the report just
+// because the latest period's response happens to omit it.
+function mergeCashflowRowTrees(periodResults) {
+  const masterRows = [];
+  const mergeInto = (dest, src) => {
+    for (const srcNode of (src || [])) {
+      const norm = normalizeName(srcNode.name);
+      if (!norm) continue;
+      const existing = dest.find((n) => normalizeName(n.name) === norm);
+      if (existing) {
+        if (srcNode.children?.length) {
+          if (!existing.children) existing.children = [];
+          mergeInto(existing.children, srcNode.children);
+        }
+      } else {
+        dest.push({ ...srcNode, children: srcNode.children ? srcNode.children.map((c) => ({ ...c })) : undefined });
+      }
+    }
+  };
+  for (const rows of periodResults) mergeInto(masterRows, rows || []);
+  return masterRows;
+}
+
 function mergeCashflowPeriods(periodResults, periods) {
-  const currentYearKey = periods
-    .filter((p) => !p.key.includes("_ytd"))
-    .pop()?.key;
-  const masterIndex = periods.findIndex((p) => p.key === currentYearKey);
-  const masterRows = periodResults[masterIndex] || periodResults[periodResults.length - 1] || [];
+  const masterRows = mergeCashflowRowTrees(periodResults);
 
   if (masterRows.length === 0) return [];
 
