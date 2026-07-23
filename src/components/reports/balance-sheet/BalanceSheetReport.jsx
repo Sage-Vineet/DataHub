@@ -2,7 +2,6 @@ import { memo } from "react";
 import BalanceSheetSummary from "./BalanceSheetSummary";
 import BalanceSheetQBSummary from "./BalanceSheetQBSummary";
 import ManualBalanceSheetMonthlyDetail from "../manual/ManualBalanceSheetMonthlyDetail";
-import { restructureBalanceSheetTree } from "../../../lib/balanceSheetEngine";
 
 function BalanceSheetReport({
   reportType,
@@ -59,7 +58,7 @@ function BalanceSheetReport({
       const rows = Array.isArray(detailedData?.rows) ? detailedData.rows : (Array.isArray(detailedData) ? detailedData : []);
       return (
         <BalanceSheetQBSummary
-          data={restructureBalanceSheetTree(rows)}
+          data={rows}
           columns={detailedData?.columns}
           title="Balance Sheet"
           subtitle={summarySubtitle}
@@ -76,7 +75,7 @@ function BalanceSheetReport({
 
     return (
       <BalanceSheetSummary
-        data={restructureBalanceSheetTree(rows)}
+        data={rows}
         columns={columns}
         endDate={endDate}
         title="Balance Sheet"
@@ -92,7 +91,7 @@ function BalanceSheetReport({
   // Summary View: QuickBooks-style Summary report
   return (
     <BalanceSheetQBSummary
-      data={restructureBalanceSheetTree(summaryRows)}
+      data={summaryRows}
       columns={summaryColumns}
       title="Balance Sheet"
       subtitle={summarySubtitle}
