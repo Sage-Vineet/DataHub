@@ -745,39 +745,61 @@ function mergePeriods(periodResults, periods) {
 
     for (const move of moves) {
       const extracted = extractAllNodes(tree, move.target);
+      if (extracted.length === 0) continue;
       // Reverse extracted array to preserve original relative ordering when unshifting
       extracted.reverse();
-      for (const nodeToMove of extracted) {
-        let destNode = findSection(tree, move.dest);
-        if (destNode && destNode.children) {
-          destNode.children.unshift(nodeToMove);
+
+      // Different comparative periods can represent the "same" section at
+      // different depths in QuickBooks' own response (e.g. Long-Term
+      // Liabilities nested under Liabilities in one period's snapshot, a
+      // flat top-level sibling in another). extractAllNodes finds every
+      // occurrence by name across the WHOLE tree, so more than one node can
+      // come back here for the same move target. They must be consolidated
+      // into a single node before insertion — if each surviving duplicate
+      // were reinserted as its own sibling, recompute() below would sum
+      // every duplicate's contribution independently, over- or
+      // under-stating the parent total depending on which child accounts
+      // happen to share names across the mismatched structures (this is
+      // what produced the wrong Total Assets / Total Liabilities & Equity
+      // figures reported against a correct raw QuickBooks response).
+      const nodeToMove = extracted[0];
+      for (let i = 1; i < extracted.length; i++) {
+        const dupe = extracted[i];
+        if (dupe.children?.length) {
+          if (!nodeToMove.children) nodeToMove.children = [];
+          mergeInto(nodeToMove.children, dupe.children);
+        }
+      }
+
+      let destNode = findSection(tree, move.dest);
+      if (destNode && destNode.children) {
+        destNode.children.unshift(nodeToMove);
+        structureChanged = true;
+      } else {
+        let parentNode = findSection(tree, move.parentFallback || []);
+        if (parentNode && parentNode.children) {
+          // Create the missing destination section
+          const newSectionName = move.dest[0].split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+          const newDestNode = {
+            id: "created-section-" + move.dest[0].replace(/\s+/g, '-'),
+            name: newSectionName,
+            type: "header",
+            children: [
+              nodeToMove,
+              {
+                id: "total-created-" + move.dest[0].replace(/\s+/g, '-'),
+                name: "Total " + newSectionName,
+                type: "total",
+                amounts: {}
+              }
+            ],
+            amounts: {}
+          };
+          parentNode.children.unshift(newDestNode);
           structureChanged = true;
         } else {
-          let parentNode = findSection(tree, move.parentFallback);
-          if (parentNode && parentNode.children) {
-            // Create the missing destination section
-            const newSectionName = move.dest[0].split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
-            const newDestNode = {
-              id: "created-section-" + move.dest[0].replace(/\s+/g, '-'),
-              name: newSectionName,
-              type: "header",
-              children: [
-                nodeToMove,
-                {
-                  id: "total-created-" + move.dest[0].replace(/\s+/g, '-'),
-                  name: "Total " + newSectionName,
-                  type: "total",
-                  amounts: {}
-                }
-              ],
-              amounts: {}
-            };
-            parentNode.children.unshift(newDestNode);
-            structureChanged = true;
-          } else {
-            tree.unshift(nodeToMove);
-            structureChanged = true;
-          }
+          tree.unshift(nodeToMove);
+          structureChanged = true;
         }
       }
     }
