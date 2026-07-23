@@ -2,11 +2,14 @@ import { Fragment, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { buildDetailPreview } from "../../../lib/detail-preview";
 import { cn, formatCurrency } from "../../../lib/utils";
+import FrozenPaneTable from "./FrozenPaneTable";
+
+const COLUMN_WIDTHS = ["110px", "100px", "90px", "180px", "220px", "160px", "120px", "120px"];
 
 function TransactionRow({ transaction }) {
   return (
     <tr className="border-b border-border-light transition-colors hover:bg-bg-page/50">
-      <td className="min-w-[100px] px-4 py-2.5 text-[13px] text-text-secondary">{transaction.date}</td>
+      <td className="px-4 py-2.5 text-[13px] text-text-secondary sticky left-0 z-10 bg-bg-card border-r border-border-light">{transaction.date}</td>
       <td className="px-4 py-2.5 text-[13px] font-medium text-text-secondary">{transaction.type}</td>
       <td className="px-4 py-2.5 text-[13px] text-text-secondary">{transaction.num}</td>
       <td className="px-4 py-2.5 text-[13px] font-semibold text-text-primary">{transaction.name}</td>
@@ -41,8 +44,8 @@ function AccountSection({ account }) {
         onClick={() => setIsOpen((previous) => !previous)}
         className="cursor-pointer border-b border-border-light bg-bg-page/30 transition-colors hover:bg-bg-page/50"
       >
-        <td colSpan={6} className="px-4 py-3">
-          <div className="ml-4 flex items-center gap-2">
+        <td className="px-4 py-3 sticky left-0 z-10 bg-bg-page border-r border-border-light">
+          <div className="flex items-center gap-2">
             {isOpen ? (
               <ChevronDown size={14} className="text-text-muted" />
             ) : (
@@ -51,6 +54,7 @@ function AccountSection({ account }) {
             <span className="text-[14px] font-semibold text-text-primary">{account.name}</span>
           </div>
         </td>
+        <td colSpan={5} />
         <td colSpan={2} />
       </tr>
 
@@ -86,8 +90,21 @@ export default function ReportDetailView({ data, title, subtitle, sourceLabel })
   const { previewData, totalRecords, visibleRecords, isTruncated } =
     buildDetailPreview(data);
 
+  const headerRow = (
+    <tr>
+      <th className="sticky left-0 z-20 bg-text-primary px-4 py-3.5 text-left text-[12px] font-medium text-white uppercase tracking-wider">Date</th>
+      <th className="bg-text-primary px-4 py-3.5 text-left text-[12px] font-medium text-white uppercase tracking-wider">Type</th>
+      <th className="bg-text-primary px-4 py-3.5 text-left text-[12px] font-medium text-white uppercase tracking-wider">Num</th>
+      <th className="bg-text-primary px-4 py-3.5 text-left text-[12px] font-medium text-white uppercase tracking-wider">Name</th>
+      <th className="bg-text-primary px-4 py-3.5 text-left text-[12px] font-medium text-white uppercase tracking-wider">Memo</th>
+      <th className="bg-text-primary px-4 py-3.5 text-left text-[12px] font-medium text-white uppercase tracking-wider">Split</th>
+      <th className="bg-text-primary px-4 py-3.5 text-right text-[12px] font-medium text-white uppercase tracking-wider">Amount</th>
+      <th className="bg-text-primary px-4 py-3.5 text-right text-[12px] font-medium text-white uppercase tracking-wider">Balance</th>
+    </tr>
+  );
+
   return (
-    <div className="flex-1 overflow-y-auto bg-bg-page/50 p-6 lg:p-10">
+    <div className="bg-bg-page/50 p-6 lg:p-10">
       <div className="mx-auto flex min-h-[1000px] max-w-6xl flex-col rounded-sm border border-border bg-bg-card shadow-card-hover transition-all">
         <div className="relative mb-8 flex flex-col items-center overflow-hidden border-b border-border/60 py-12">
           <div className="absolute left-0 top-0 h-1 w-full bg-primary" />
@@ -112,59 +129,43 @@ export default function ReportDetailView({ data, title, subtitle, sourceLabel })
           </button>
         </div>
 
-        <div className="flex-1 overflow-x-auto">
-          <table className="w-full border-collapse">
-            <thead className="sticky top-0 z-10 bg-text-primary text-white">
-              <tr>
-                <th className="px-4 py-3.5 text-left text-[12px] font-medium uppercase tracking-wider">Date</th>
-                <th className="px-4 py-3.5 text-left text-[12px] font-medium uppercase tracking-wider">Type</th>
-                <th className="px-4 py-3.5 text-left text-[12px] font-medium uppercase tracking-wider">Num</th>
-                <th className="px-4 py-3.5 text-left text-[12px] font-medium uppercase tracking-wider">Name</th>
-                <th className="px-4 py-3.5 text-left text-[12px] font-medium uppercase tracking-wider">Memo</th>
-                <th className="px-4 py-3.5 text-left text-[12px] font-medium uppercase tracking-wider">Split</th>
-                <th className="px-4 py-3.5 text-right text-[12px] font-medium uppercase tracking-wider">Amount</th>
-                <th className="px-4 py-3.5 text-right text-[12px] font-medium uppercase tracking-wider">Balance</th>
+        <FrozenPaneTable columnWidths={COLUMN_WIDTHS} headerRows={headerRow} headerClassName="bg-text-primary">
+          {previewData.groups.map((group) => (
+            <Fragment key={group.id}>
+              <tr className="border-b border-border bg-bg-page/40">
+                <td colSpan={8} className="px-6 py-4">
+                  <span className="text-[15px] font-bold text-text-primary">{group.name}</span>
+                </td>
               </tr>
-            </thead>
-            <tbody className="bg-bg-card">
-              {previewData.groups.map((group) => (
-                <Fragment key={group.id}>
-                  <tr className="border-b border-border bg-bg-page/40">
-                    <td colSpan={8} className="px-6 py-4">
-                      <span className="text-[15px] font-bold text-text-primary">{group.name}</span>
-                    </td>
-                  </tr>
-                  {group.accounts.map((account) => (
-                    <AccountSection key={account.id} account={account} />
-                  ))}
-                  <tr className="border-b-2 border-text-primary bg-bg-page/60">
-                    <td colSpan={6} className="px-6 py-4 text-right">
-                      <span className="text-[14px] font-semibold text-text-primary">
-                        Total for {group.name}
-                      </span>
-                    </td>
-                    <td
-                      className={cn(
-                        "px-4 py-4 text-right text-[15px] font-bold tabular-nums",
-                        Number(group.total) < 0 ? "text-status-error" : "text-text-primary",
-                      )}
-                    >
-                      {formatCurrency(group.total)}
-                    </td>
-                    <td />
-                  </tr>
-                </Fragment>
+              {group.accounts.map((account) => (
+                <AccountSection key={account.id} account={account} />
               ))}
-              {isTruncated ? (
-                <tr className="border-t-2 border-amber-200 bg-amber-50">
-                  <td colSpan={8} className="px-6 py-4 text-center text-[13px] font-medium text-amber-800">
-                    report is too loong please download pdf
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
+              <tr className="border-b-2 border-text-primary bg-bg-page/60">
+                <td colSpan={6} className="px-6 py-4 text-right">
+                  <span className="text-[14px] font-semibold text-text-primary">
+                    Total for {group.name}
+                  </span>
+                </td>
+                <td
+                  className={cn(
+                    "px-4 py-4 text-right text-[15px] font-bold tabular-nums",
+                    Number(group.total) < 0 ? "text-status-error" : "text-text-primary",
+                  )}
+                >
+                  {formatCurrency(group.total)}
+                </td>
+                <td />
+              </tr>
+            </Fragment>
+          ))}
+          {isTruncated ? (
+            <tr className="border-t-2 border-amber-200 bg-amber-50">
+              <td colSpan={8} className="px-6 py-4 text-center text-[13px] font-medium text-amber-800">
+                report is too loong please download pdf
+              </td>
+            </tr>
+          ) : null}
+        </FrozenPaneTable>
 
         <div className="mt-auto border-t border-border bg-bg-page p-10 text-center">
           <p className="mb-4 text-[12px] font-medium text-text-muted">AccountHub Financial Intelligence Engine</p>

@@ -424,7 +424,7 @@ export async function getProfitAndLoss(
 ) {
   const keyReportVersionId = options?.keyReportVersionId || null;
 
-  // Key Reports: read ONLY from profit_loss_entries — never from Manual GL staging.
+  // Key Reports: read the GL-derived P&L endpoint, never Manual GL staging.
   if (keyReportVersionId) {
     try {
       const manualFilters = options?.manualFilters || {};
@@ -438,7 +438,7 @@ export async function getProfitAndLoss(
         period: "year",
       });
       const hierarchicalRows = response?.hierarchicalRows || response?.rows || [];
-      console.log("[KeyReports][PL][Summary] Loaded", hierarchicalRows.length, "rows from profit_loss_entries for version", keyReportVersionId);
+      console.log("[KeyReports][PL][Summary] Loaded", hierarchicalRows.length, "GL-derived rows for version", keyReportVersionId);
       return {
         hierarchicalRows,
         rows: hierarchicalRows,
@@ -449,7 +449,7 @@ export async function getProfitAndLoss(
         noDataText: hierarchicalRows.length > 0 ? null : "No Profit & Loss data in Key Reports. Run Sync first.",
       };
     } catch (err) {
-      console.warn("[KeyReports][PL][Summary] Entry table fetch failed:", err.message);
+      console.warn("[KeyReports][PL][Summary] Report fetch failed:", err.message);
       return {
         hierarchicalRows: [],
         rows: [],
@@ -677,6 +677,21 @@ function generateMonthlyPeriods(startDate, endDate) {
   let month = s.getMonth();
   const endYear = e.getFullYear();
   const endMonth = e.getMonth();
+  // A wide range (e.g. "All Dates") would otherwise fire one live QuickBooks
+  // request per calendar month with no upper bound — cap to the most recent
+  // MAX_MONTHLY_PERIODS months so it stays bounded and fast, keeping the
+  // period closest to "now" since that's what users actually monitor.
+  const MAX_MONTHLY_PERIODS = 120;
+  const endMonthIndex = endYear * 12 + endMonth;
+  let startMonthIndex = year * 12 + month;
+  if (endMonthIndex - startMonthIndex + 1 > MAX_MONTHLY_PERIODS) {
+    console.warn(
+      `[ProfitAndLoss] Month mode range (${startDate} to ${endDate}) spans more than ${MAX_MONTHLY_PERIODS} months — trimming to the most recent ${MAX_MONTHLY_PERIODS}.`,
+    );
+    startMonthIndex = endMonthIndex - MAX_MONTHLY_PERIODS + 1;
+    year = Math.floor(startMonthIndex / 12);
+    month = startMonthIndex % 12;
+  }
   while (year < endYear || (year === endYear && month <= endMonth)) {
     const mm = String(month + 1).padStart(2, "0");
     const lastDay = new Date(year, month + 1, 0).getDate();

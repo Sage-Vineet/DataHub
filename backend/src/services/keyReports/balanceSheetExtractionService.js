@@ -285,7 +285,12 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
       sort_order: idx,
       is_total: Boolean(row.is_total),
 
-      row_hash: this.computeRowHash({ versionId: metadata.versionId, accountName: row.account_name, asOfDate: row.as_of_date, amount: row.amount }),
+      // Include documentId + the row's position so rows that share the same
+      // account name, date, and amount (e.g. multiple 0.00 lines, or an account
+      // repeated across sections) don't collapse to one hash and violate the
+      // idx_balance_sheet_entries_hash unique constraint — which previously failed
+      // the whole BS insert and halted generation. Mirrors the P&L row_hash.
+      row_hash: this.computeRowHash({ versionId: metadata.versionId, documentId: metadata.documentId, accountName: row.account_name, asOfDate: row.as_of_date, amount: row.amount, sortOrder: idx }),
       extracted_at: new Date().toISOString(),
     }));
   }

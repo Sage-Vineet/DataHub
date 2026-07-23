@@ -4,12 +4,15 @@
  * Falls back gracefully — callers should catch and fall back to text extraction.
  */
 const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { getGeminiModels } = require("../config/geminiModels");
 
-const GEMINI_MODELS = [
+// Dynamically selected via GEMINI_MODELS / GEMINI_MODEL env; this array is the
+// default fallback order used when no override is configured.
+const GEMINI_MODELS = getGeminiModels([
   "gemini-2.5-flash-lite",
   "gemini-2.5-flash",
   "gemini-2.0-flash",
-];
+]);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 

@@ -1,17 +1,22 @@
-import { useRef, useEffect, useState } from "react";
+import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { cn, formatCurrency } from "../../../lib/utils";
+import { cn, formatCurrency, isReportGroupRow } from "../../../lib/utils";
+import FrozenPaneTable from "../shared/FrozenPaneTable";
+
+const NAME_COL_WIDTH = "400px";
+const AMOUNT_COL_WIDTH = "130px";
 
 const QBRow = ({ line, depth = 0, columns, isMonthly }) => {
   const [isOpen, setIsOpen] = useState(true);
   const hasChildren = Boolean(line.children?.length);
   const isHeader = line.type === "header";
   const isTotal = line.type === "total" || line.name.toLowerCase().startsWith("total");
+  const isGroup = isReportGroupRow(line, hasChildren, isTotal);
   const yearCols = columns?.yearCols;
 
-  // Header rows intentionally render a blank amount (the section's value lives on
-  // its "Total …" child), so we never show "-" there.
-  const cellText = (value) => (isHeader ? "" : formatCurrency(value));
+  // Group/container rows intentionally render a blank amount (the section's
+  // value lives on its "Total …" child), so we never show "-" there.
+  const cellText = (value) => (isGroup ? "" : formatCurrency(value));
 
   const toggle = (e) => {
     if (!hasChildren) return;
@@ -31,7 +36,7 @@ const QBRow = ({ line, depth = 0, columns, isMonthly }) => {
         )}
       >
         <td className={cn(
-          "py-2.5 px-4 text-left z-10 min-w-[400px] sticky left-0 border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]",
+          "py-2.5 px-4 text-left z-10 sticky left-0 border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]",
           (isTotal || (isHeader && depth === 0)) ? "bg-bg-page" : "bg-bg-card",
         )}>
           <div className="flex items-center">
@@ -69,8 +74,8 @@ const QBRow = ({ line, depth = 0, columns, isMonthly }) => {
                 key={col.key}
                 className={cn(
                   "py-2.5 px-4 text-right tabular-nums text-[14px] font-medium whitespace-nowrap",
-                  !isHeader && Number(value) < 0 ? "text-status-error" : "text-text-primary",
-                  isHeader && "text-transparent",
+                  !isGroup && Number(value) < 0 ? "text-status-error" : "text-text-primary",
+                  isGroup && "text-transparent",
                 )}
               >
                 {cellText(value)}
@@ -81,8 +86,8 @@ const QBRow = ({ line, depth = 0, columns, isMonthly }) => {
           <td
             className={cn(
               "py-2.5 px-4 text-right tabular-nums text-[14px] font-medium",
-              !isHeader && Number(line.amount) < 0 ? "text-status-error" : "text-text-primary",
-              isHeader && "text-transparent",
+              !isGroup && Number(line.amount) < 0 ? "text-status-error" : "text-text-primary",
+              isGroup && "text-transparent",
             )}
           >
             {cellText(line.amount)}
@@ -99,6 +104,11 @@ const QBRow = ({ line, depth = 0, columns, isMonthly }) => {
   );
 };
 
+function buildColumnWidths(hasColumns, columns, amountColCount) {
+  const count = hasColumns ? (columns?.yearCols?.length || 0) : amountColCount;
+  return [NAME_COL_WIDTH, ...Array(count).fill(AMOUNT_COL_WIDTH)];
+}
+
 export default function BalanceSheetQBSummary({
   data = [],
   columns,
@@ -113,25 +123,6 @@ export default function BalanceSheetQBSummary({
 }) {
   const hasColumns = Array.isArray(columns?.yearCols) && columns.yearCols.length > 0;
   const totalColCount = hasColumns ? columns.yearCols.length + 1 : 2;
-  const tableRef = useRef(null);
-  const theadRef = useRef(null);
-  useEffect(() => {
-    const mainEl = document.querySelector("main");
-    if (!mainEl) return;
-    const onScroll = () => {
-      if (!tableRef.current || !theadRef.current) return;
-      const tableTop = tableRef.current.getBoundingClientRect().top;
-      const mainTop = mainEl.getBoundingClientRect().top;
-      if (tableTop < mainTop) {
-        const offset = Math.min(mainTop - tableTop, tableRef.current.offsetHeight - theadRef.current.offsetHeight);
-        theadRef.current.style.transform = `translateY(${Math.max(0, offset)}px)`;
-      } else {
-        theadRef.current.style.transform = "";
-      }
-    };
-    mainEl.addEventListener("scroll", onScroll, { passive: true });
-    return () => mainEl.removeEventListener("scroll", onScroll);
-  }, []);
   const resolvedSourceLabel =
     sourceLabel ||
     (source === "MANUAL_UPLOAD"
@@ -142,45 +133,42 @@ export default function BalanceSheetQBSummary({
           ? "Generated from QuickBooks"
           : null);
 
-  const tableEl = (
-    <div className="overflow-x-auto w-full">
-      <table ref={tableRef} className="min-w-full border-collapse">
-        <thead ref={theadRef} style={{ position: "relative", zIndex: 20 }}>
-          <tr className="text-text-muted">
-            <th className="sticky top-0 left-0 z-30 bg-bg-card pb-3 pt-2 px-4 text-left text-[12px] font-medium whitespace-nowrap uppercase tracking-wider min-w-[400px] border-b-2 border-text-primary">
-              Account
-            </th>
-            {hasColumns ? (
-              columns.yearCols.map((col) => (
-                <th key={col.key} className="sticky top-0 z-20 bg-bg-card pb-3 pt-2 px-4 text-right text-[12px] font-medium whitespace-nowrap uppercase tracking-wider min-w-[110px] border-b-2 border-text-primary">
-                  {col.label}
-                </th>
-              ))
-            ) : (
-              <th className="sticky top-0 z-20 bg-bg-card pb-3 pt-2 px-4 text-right text-[12px] font-medium whitespace-nowrap uppercase tracking-wider border-b-2 border-text-primary">
-                Total
-              </th>
-            )}
-          </tr>
-        </thead>
-        <tbody>
-          {data.map((row, index) => (
-            <QBRow key={row.id || index} line={row} depth={0} columns={hasColumns ? columns : undefined} />
-          ))}
-          {data.length === 0 && (
-            <tr>
-              <td colSpan={totalColCount} className="py-20 text-center text-text-muted italic">
-                {noDataText}
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-    </div>
+  const bodyRows = (
+    <>
+      {data.map((row, index) => (
+        <QBRow key={row.id || index} line={row} depth={0} columns={hasColumns ? columns : undefined} isMonthly={isMonthly} />
+      ))}
+      {data.length === 0 && (
+        <tr>
+          <td colSpan={totalColCount} className="py-20 text-center text-text-muted italic">
+            {noDataText}
+          </td>
+        </tr>
+      )}
+    </>
   );
 
   // Compact in-page view — no document wrapper, header inline
   if (isPreview) {
+    const previewHeader = (
+      <tr className="text-text-muted">
+        <th className="sticky left-0 z-20 bg-bg-card pb-3 pt-2 px-4 text-left text-[12px] font-medium whitespace-nowrap uppercase tracking-wider border-b-2 border-text-primary">
+          Account
+        </th>
+        {hasColumns ? (
+          columns.yearCols.map((col) => (
+            <th key={col.key} className="bg-bg-card pb-3 pt-2 px-4 text-right text-[12px] font-medium whitespace-nowrap uppercase tracking-wider border-b-2 border-text-primary">
+              {col.label}
+            </th>
+          ))
+        ) : (
+          <th className="bg-bg-card pb-3 pt-2 px-4 text-right text-[12px] font-medium whitespace-nowrap uppercase tracking-wider border-b-2 border-text-primary">
+            Total
+          </th>
+        )}
+      </tr>
+    );
+
     return (
       <div className="font-inter">
         <div className="mb-4 flex flex-col items-center text-center">
@@ -188,15 +176,41 @@ export default function BalanceSheetQBSummary({
           <span className="text-[13px] font-medium text-text-secondary mt-0.5">{title}</span>
           {subtitle && <span className="text-[12px] text-text-muted mt-0.5">{subtitle}</span>}
         </div>
-        {tableEl}
+        <FrozenPaneTable columnWidths={buildColumnWidths(hasColumns, columns, 1)} headerRows={previewHeader}>
+          {bodyRows}
+        </FrozenPaneTable>
       </div>
     );
   }
 
   // Document / export view — full paper layout
+  const docYearCols = hasColumns ? columns.yearCols.filter((col) => !isMonthly || col.label.toLowerCase() !== "total") : [];
+  const docHeader = (
+    <tr className="text-text-muted">
+      <th className="sticky left-0 z-20 bg-bg-card pb-4 pt-2.5 px-4 text-left text-[12px] font-medium whitespace-nowrap uppercase tracking-wider border-b-2 border-text-primary border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]">
+        Account
+      </th>
+      {hasColumns ? (
+        docYearCols.map((col) => (
+          <th key={col.key} className="bg-bg-card pb-4 pt-2.5 px-4 text-right text-[12px] font-medium whitespace-nowrap uppercase tracking-wider border-b-2 border-text-primary">
+            {col.label}
+          </th>
+        ))
+      ) : !isMonthly ? (
+        <th className="bg-bg-card pb-4 pt-2.5 px-4 text-right text-[12px] font-medium whitespace-nowrap uppercase tracking-wider border-b-2 border-text-primary">
+          Total
+        </th>
+      ) : null}
+    </tr>
+  );
+  const docColumnWidths = [
+    NAME_COL_WIDTH,
+    ...(hasColumns ? docYearCols.map(() => AMOUNT_COL_WIDTH) : (!isMonthly ? [AMOUNT_COL_WIDTH] : [])),
+  ];
+
   return (
     <div className="bg-bg-page/50 p-4 lg:p-8 font-inter">
-      <div className="card-base p-6 min-h-[800px] rounded-sm shadow-xl">
+      <div className="card-base p-6 rounded-sm shadow-xl">
         <div className="flex flex-col items-center mb-12 relative">
           <div className="w-12 h-1 bg-primary rounded-full mb-6" />
           <h1 className="text-[22px] font-bold text-text-primary tracking-tight leading-none mb-2">
@@ -221,41 +235,9 @@ export default function BalanceSheetQBSummary({
 
         </div>
 
-        <div className="overflow-x-auto w-full relative">
-          <table ref={tableRef} className={cn("border-collapse", hasColumns ? "min-w-max" : "w-full")}>
-            <thead ref={theadRef} style={{ position: "relative", zIndex: 20 }}>
-              <tr className="text-text-muted">
-                <th className="sticky top-0 left-0 z-30 bg-bg-card pb-4 pt-2.5 px-4 text-left text-[12px] font-medium whitespace-nowrap uppercase tracking-wider min-w-[400px] border-b-2 border-text-primary border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]">
-                  Account
-                </th>
-                {hasColumns ? (
-                  columns.yearCols.filter(col => !isMonthly || col.label.toLowerCase() !== "total").map((col) => (
-                    <th key={col.key} className="sticky top-0 z-20 bg-bg-card pb-4 pt-2.5 px-4 text-right text-[12px] font-medium whitespace-nowrap uppercase tracking-wider min-w-[110px] border-b-2 border-text-primary">
-                      {col.label}
-                    </th>
-                  ))
-                ) : !isMonthly ? (
-                  <th className="sticky top-0 z-20 bg-bg-card pb-4 pt-2.5 px-4 text-right text-[12px] font-medium whitespace-nowrap uppercase tracking-wider border-b-2 border-text-primary">
-                    Total
-                  </th>
-                ) : null}
-              </tr>
-            </thead>
-            <tbody>
-              {data.map((row, index) => (
-                <QBRow key={row.id || index} line={row} depth={0} columns={hasColumns ? columns : undefined} isMonthly={isMonthly} />
-              ))}
-              {data.length === 0 && (
-                <tr>
-                  <td colSpan={totalColCount} className="py-20 text-center text-text-muted italic">
-                    {noDataText}
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-        {tableEl}
+        <FrozenPaneTable columnWidths={docColumnWidths} headerRows={docHeader}>
+          {bodyRows}
+        </FrozenPaneTable>
       </div>
     </div>
   );

@@ -234,6 +234,37 @@ export function loadSavedQBBankActivityRequest(clientId) {
   return request(`/qb-bank-activity/saved?${params}`);
 }
 
+export function getCimBankReconciliationRequest({
+  clientId,
+  sourceKey,
+  datasetVersion,
+  keyReportVersionId,
+} = {}) {
+  const params = new URLSearchParams();
+  if (clientId) params.append('clientId', clientId);
+  if (datasetVersion) params.append('datasetVersion', String(datasetVersion));
+  if (keyReportVersionId) params.append('keyReportVersionId', String(keyReportVersionId));
+  if (sourceKey) params.append('source', sourceKey);
+  if (sourceKey === 'quickbooks' || sourceKey === 'quickbooks_online') {
+    return request(`/qb-bank-activity/saved?${params}`);
+  }
+  if (sourceKey === 'manual_upload' || sourceKey === 'manual_upload_excel_pdf') {
+    return request(`/manual-upload/bank-data?${params}`);
+  }
+  if (sourceKey === 'quickbooks_manual') return request(`/manual-report-uploads/qms-bank-data?${params}`);
+  return request(`/extract-bank-pdf-records?${params}`);
+}
+
+export function getCimTaxReconciliationRequest({ clientId, sourceKey, datasetVersion, keyReportVersionId, year } = {}) {
+  const params = new URLSearchParams();
+  if (clientId) params.append('clientId', clientId);
+  if (datasetVersion) params.append('datasetVersion', String(datasetVersion));
+  if (keyReportVersionId) params.append('keyReportVersionId', String(keyReportVersionId));
+  if (year) params.append('start_date', `${year}-01-01`);
+  const isQuickBooks = sourceKey === 'quickbooks' || sourceKey === 'quickbooks_online';
+  return request(`${isQuickBooks ? '/tax-data' : '/manual-report-uploads/tax-data'}?${params}`);
+}
+
 export function brokerSignupRequest(payload) {
   return fetch(buildUrl('/auth/broker/signup'), {
     method: 'POST',
@@ -459,6 +490,18 @@ export function saveWorkspacePageStateRequest(pageKey, state, options = {}) {
   });
 }
 
+export function getCimStyleProfilesRequest(options = {}) {
+  return request('/cim-style-profiles', options);
+}
+
+export function saveCimStyleProfilesRequest(state, options = {}) {
+  return request('/cim-style-profiles', {
+    ...options,
+    method: 'PUT',
+    body: { state },
+  });
+}
+
 export function getCimQuestionnaireRequest(options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
   const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
@@ -473,6 +516,28 @@ export function saveCimQuestionnaireRequest(state, options = {}) {
     method: 'PUT',
     body: { state },
   });
+}
+
+export function getCimReviewRequest(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/cim-review${query}`, options);
+}
+
+export function saveCimReviewRequest(state, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/cim-review${query}`, {
+    ...options,
+    method: 'PUT',
+    body: { state },
+  });
+}
+
+export function getCimReviewContentRequest(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/cim-review/content${query}`, options);
 }
 
 export async function uploadFile(file, options = {}) {
@@ -1209,7 +1274,10 @@ export function getLatestManualUploadedReport(statementType, options = {}) {
 
 export function getAllManualUploadedReports(statementType, options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  const params = new URLSearchParams();
+  if (clientId) params.set("clientId", clientId);
+  if (options.keyReportVersionId) params.set("keyReportVersionId", options.keyReportVersionId);
+  const query = params.toString() ? `?${params}` : "";
   return request(
     `/manual-report-uploads/reports/${encodeURIComponent(statementType)}/all${query}`,
     options,
@@ -1218,7 +1286,10 @@ export function getAllManualUploadedReports(statementType, options = {}) {
 
 export function getAllQMSUploadedReports(statementType, options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  const params = new URLSearchParams();
+  if (clientId) params.set("clientId", clientId);
+  if (options.keyReportVersionId) params.set("keyReportVersionId", options.keyReportVersionId);
+  const query = params.toString() ? `?${params}` : "";
   return request(
     `/manual-report-uploads/qms-reports/${encodeURIComponent(statementType)}/all${query}`,
     options,
@@ -1420,6 +1491,15 @@ export function syncKeyReportVersion(versionId) {
   return request(`/key-reports/versions/${versionId}/sync`, { method: 'POST', body: {} });
 }
 
+/**
+ * Single-click full workflow: AI Processing → COA → Financial Reports →
+ * Snapshots → Validation. Calls the /generate endpoint (semantic alias for
+ * /sync). Returns the same shape as syncKeyReportVersion.
+ */
+export function generateKeyReportVersion(versionId) {
+  return request(`/key-reports/versions/${versionId}/generate`, { method: 'POST', body: {} });
+}
+
 export async function getActiveKeyReportMappings() {
   const res = await getKeyReportVersions();
   const versions = res?.versions || [];
@@ -1477,6 +1557,56 @@ export function getKeyReportPopupPreference() {
 
 export function setKeyReportPopupPreference(dismissed) {
   return request('/key-reports/popup-preference', { method: 'PUT', body: { dismissed } });
+}
+
+export async function exportKeyReportData(versionId) {
+  if (!versionId) {
+    throw new Error('versionId is required');
+  }
+
+  const token = getStoredToken();
+  const clientId = resolveClientIdFromLocation();
+  const headers = {
+    'Cache-Control': 'no-store',
+    ...(clientId ? { 'X-Client-Id': clientId } : {}),
+  };
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const url = buildUrl(`/key-reports/versions/${versionId}/export`);
+  const response = await fetch(url, {
+    method: 'GET',
+    headers,
+    credentials: 'omit',
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(text || `Export failed: ${response.status}`);
+  }
+
+  // Get filename from Content-Disposition header
+  const contentDisposition = response.headers.get('Content-Disposition');
+  let fileName = 'KeyReports_Data.xlsx';
+  if (contentDisposition) {
+    const match = contentDisposition.match(/filename="([^"]+)"/);
+    if (match) fileName = match[1];
+  }
+
+  const blob = await response.blob();
+
+  // Trigger download
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(link.href);
+
+  return { success: true, fileName };
 }
 
 // ---- Chart of Accounts -----------------------------------------------------

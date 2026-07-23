@@ -320,6 +320,9 @@ router.get("/api/auth/quickbooks", requireAuth, async (req, res) => {
           await supabase.from("user_companies").upsert({ user_id: req.user.id, company_id: clientId }, { onConflict: "user_id,company_id" });
           req.user.company_id = clientId; // Update local session object
           req.user.company_ids = Array.from(new Set([...(req.user.company_ids || []), clientId]));
+          if (Array.isArray(req.user.direct_company_ids)) {
+            req.user.direct_company_ids = Array.from(new Set([...req.user.direct_company_ids, clientId]));
+          }
         }
       }
     } catch (err) {

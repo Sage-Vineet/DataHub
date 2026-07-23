@@ -29,6 +29,18 @@ const REPORT_CATEGORIES = {
 };
 const VALID_CATEGORIES = new Set(Object.values(REPORT_CATEGORIES));
 
+// Entry table that holds a category's extracted rows, keyed by (version_id,
+// source_file_id). Mirrors each extraction service's `tableName` — kept here
+// too so removeMapping can clean up without loading the extraction services.
+// profit_loss has no entry table (dropped by migration 056; P&L is generated
+// from the General Ledger).
+const ENTRY_TABLE_BY_CATEGORY = {
+  [REPORT_CATEGORIES.GENERAL_LEDGER]: "general_ledger_entries",
+  [REPORT_CATEGORIES.BALANCE_SHEET]: "balance_sheet_entries",
+  [REPORT_CATEGORIES.BANK_STATEMENT]: "bank_statement_entries",
+  [REPORT_CATEGORIES.TAX_RETURN]: "tax_return_entries",
+};
+
 function normalizeVersion(row) {
   if (!row) return null;
   return {
@@ -77,7 +89,12 @@ async function listVersions(companyId) {
     .eq("company_id", companyId)
     .order("version_number", { ascending: false });
   if (error) throw error;
-  return (data || []).map(normalizeVersion);
+  return (data || [])
+    .map(normalizeVersion)
+    // QA/perf-testing clones are never real client data — exclude them at the
+    // source so no consumer (Key Reports page, EBITDA, Reports, etc.) ever
+    // has to filter them out client-side.
+    .filter((v) => !String(v.versionName || "").toUpperCase().includes("PERF-TEST"));
 }
 
 async function getVersion(versionId) {
@@ -309,6 +326,22 @@ async function removeMapping(mappingId) {
   if (error) throw error;
 
   if (row.document_id) {
+    // Delete this document's already-extracted rows for THIS category so a
+    // future replace/delete doesn't leave stale data mixed into the version's
+    // aggregates (glRowCount, COA generation, Trial Balance, etc. all filter
+    // by version_id only, not by which documents are still mapped).
+    const entryTable = ENTRY_TABLE_BY_CATEGORY[row.report_category];
+    if (entryTable) {
+      const { error: entryErr } = await supabase
+        .from(entryTable)
+        .delete()
+        .eq("version_id", row.version_id)
+        .eq("source_file_id", row.document_id);
+      if (entryErr) {
+        console.warn(`[KeyReports] removeMapping: failed to delete ${entryTable} rows for document ${row.document_id}: ${entryErr.message}`);
+      }
+    }
+
     const { data: remaining } = await supabase
       .from("key_report_file_mappings")
       .select("id")
@@ -355,7 +388,26 @@ async function validateVersion(versionId) {
 // Sync: persist mappings (already persisted), validate, generate backend
 // financial tables, and update sync status. Idempotent + re-syncable.
 // Table generation is delegated to keyReportSyncService (Step 5).
+// Single-flight guard: prevents a double-clicked "Run AI Processing" (or a
+// frontend retry) from launching a second full extraction/report pipeline for
+// the same version. Concurrent callers share the in-flight job's result. The
+// entry is always cleared in finally, and an in-memory map naturally recovers
+// after a process restart, so a crashed job never leaves a permanent lock.
+const _inFlightSyncs = new Map();
+
 async function syncVersion(versionId, userId = null, opts = {}) {
+  if (_inFlightSyncs.has(versionId)) {
+    console.log(`[KeyReports] Sync already in progress for version ${versionId} — reusing in-flight job`);
+    return _inFlightSyncs.get(versionId);
+  }
+  const job = _syncVersionInner(versionId, userId, opts).finally(() => {
+    _inFlightSyncs.delete(versionId);
+  });
+  _inFlightSyncs.set(versionId, job);
+  return job;
+}
+
+async function _syncVersionInner(versionId, userId = null, opts = {}) {
   const version = await getVersion(versionId);
   if (!version) throw new Error("Version not found.");
 
@@ -631,16 +683,9 @@ async function getActiveLinkedDocuments(companyId, reportCategory) {
 
 // ---- Extracted data viewer --------------------------------------------------
 
+// NOTE: no `profit_loss` entry — there is no profit_loss_entries table. P&L is
+// generated live from the General Ledger and is not browsable as raw extracted data.
 const ENTRY_TABLE_CONFIG = {
-  profit_loss: {
-    table: 'profit_loss_entries',
-    yearCol: 'fiscal_year',
-    yearIsDate: false,
-    searchCols: ['account_name', 'account_number', 'category'],
-    selectCols: 'id,fiscal_year,account_name,account_number,account_type,category,sub_category,amount,hierarchy_level,is_total,sort_order',
-    orderCol: 'sort_order',
-    orderSecondary: 'id',
-  },
   balance_sheet: {
     table: 'balance_sheet_entries',
     yearCol: 'fiscal_year',
@@ -654,8 +699,8 @@ const ENTRY_TABLE_CONFIG = {
     table: 'general_ledger_entries',
     yearCol: 'fiscal_year',
     yearIsDate: false,
-    searchCols: ['account_section', 'distribution_account', 'memo_description', 'split_account', 'transaction_name', 'transaction_num'],
-    selectCols: 'id,row_type,row_number,fiscal_year,transaction_date,account_section,distribution_account,transaction_type,transaction_num,transaction_name,memo_description,split_account,amount,running_balance',
+    searchCols: ['account_name', 'account_section', 'memo', 'split_account', 'transaction_number'],
+    selectCols: 'id,row_type,row_number,fiscal_year,fiscal_month,transaction_date,account_section,account_name,account_number,transaction_type,transaction_number,memo,split_account,amount,debit_amount,credit_amount,running_balance,coa_id',
     orderCol: 'row_number',
     orderSecondary: 'id',
   },

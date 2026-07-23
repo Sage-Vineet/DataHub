@@ -4,6 +4,7 @@ const path = require("path");
 const axios = require("axios");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const tokenManager = require("../../../tokenManager");
+const { getGeminiModels } = require("../../../config/geminiModels");
 
 const router = express.Router();
 
@@ -14,11 +15,13 @@ const DEFAULT_PDF_PATH =
   process.env.GEMINI_PDF_TEST_PATH ||
   "C:\\Users\\adiko\\Downloads\\Example QoE Documents\\Example QoE Documents\\Tax Return\\Tax Return 2.pdf";
 
-const GEMINI_MODELS = [
+// Dynamically selected via GEMINI_MODELS / GEMINI_MODEL env; this array is the
+// default fallback order used when no override is configured.
+const GEMINI_MODELS = getGeminiModels([
   "gemini-2.5-flash-lite",
   "gemini-2.5-flash",
   "gemini-2.0-flash",
-];
+]);
 
 /* ===========================
    QUICKBOOKS CALL

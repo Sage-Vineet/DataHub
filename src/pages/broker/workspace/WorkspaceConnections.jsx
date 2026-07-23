@@ -113,6 +113,7 @@ function SourceCard({
   actionLabel,
   onAction,
   onSelect,
+  onDisconnect,
   disabled = false,
   isBusy = false,
   comingSoon = false,
@@ -216,6 +217,20 @@ function SourceCard({
             )}
           </span>
         </button>
+
+        {isActive && onDisconnect ? (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onDisconnect(); }}
+            disabled={isBusy}
+            className={cn(
+              "w-full rounded-xl border border-red-200 bg-white py-2.5 text-[13px] font-bold text-red-600 transition-colors hover:bg-red-50",
+              isBusy && "cursor-not-allowed opacity-60",
+            )}
+          >
+            Disconnect
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -471,15 +486,20 @@ export default function WorkspaceConnections() {
 
         setSourceState(next);
         setLocalActiveSource(clientId, resolvedSourceKey);
-        const nextView =
-          resolvedSourceKey === REPORT_SOURCE_KEYS.MANUAL_GL
-            ? "manual"
-            : resolvedSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD
-              ? "manual_upload"
-              : resolvedSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL
-                ? "quickbooks_manual"
-                : "quickbooks";
-        navigateToView(nextView);
+        // Key Reports has no card/view on this page (it is the default source,
+        // activated from the Key Reports page). Leave the current view untouched
+        // when disconnecting to it; otherwise sync the view to the chosen card.
+        if (resolvedSourceKey !== REPORT_SOURCE_KEYS.KEY_REPORTS) {
+          const nextView =
+            resolvedSourceKey === REPORT_SOURCE_KEYS.MANUAL_GL
+              ? "manual"
+              : resolvedSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD
+                ? "manual_upload"
+                : resolvedSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL
+                  ? "quickbooks_manual"
+                  : "quickbooks";
+          navigateToView(nextView);
+        }
 
         emitWorkspaceDataSourceUpdated({
           clientId,
@@ -590,6 +610,24 @@ export default function WorkspaceConnections() {
       switchOptions: { confirmSwitch: true },
     });
   }, [activeSourceKey, quickbooksConnected]);
+
+  // Disconnect the currently-active connection. There is always exactly one
+  // active connection; disconnecting reverts the workspace to the default
+  // Key Reports source (and soft-disconnects QuickBooks when it was active).
+  const requestDisconnect = useCallback((sourceKey) => {
+    const normalized = normalizeReportSourceKey(sourceKey);
+    const label = getReportSourceLabel(normalized);
+    const isQB = normalized === REPORT_SOURCE_KEYS.QUICKBOOKS;
+    setSourceSwitchModal({
+      isOpen: true,
+      title: `Disconnect ${label}?`,
+      message: isQB
+        ? "This disconnects QuickBooks and reverts this workspace to the default Key Reports source. You can reconnect anytime."
+        : `This stops using ${label} and reverts this workspace to the default Key Reports source.`,
+      targetSourceKey: REPORT_SOURCE_KEYS.KEY_REPORTS,
+      switchOptions: { confirmSwitch: true, forceDisconnectQuickbooks: isQB },
+    });
+  }, []);
 
   const quickbooksStatusLabel = useMemo(() => {
     if (quickbooksConnected && activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS) {
@@ -712,6 +750,7 @@ export default function WorkspaceConnections() {
             }
             onAction={requestQuickBooksSwitch}
             onSelect={() => navigateToView("quickbooks")}
+            onDisconnect={() => requestDisconnect(REPORT_SOURCE_KEYS.QUICKBOOKS)}
             disabled={activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS}
             isBusy={
               isSwitchingSource &&
@@ -736,6 +775,7 @@ export default function WorkspaceConnections() {
             }
             onAction={requestManualSwitch}
             onSelect={() => navigateToView("manual")}
+            onDisconnect={() => requestDisconnect(REPORT_SOURCE_KEYS.MANUAL_GL)}
             disabled={activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_GL}
             isBusy={
               isSwitchingSource &&
@@ -760,6 +800,7 @@ export default function WorkspaceConnections() {
             }
             onAction={requestManualUploadSwitch}
             onSelect={() => navigateToView("manual_upload")}
+            onDisconnect={() => requestDisconnect(REPORT_SOURCE_KEYS.MANUAL_UPLOAD)}
             disabled={activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD}
             isBusy={
               isSwitchingSource &&
@@ -784,6 +825,7 @@ export default function WorkspaceConnections() {
             }
             onAction={requestQMSSwitch}
             onSelect={() => navigateToView("quickbooks_manual")}
+            onDisconnect={() => requestDisconnect(REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL)}
             disabled={activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL}
             isBusy={
               isSwitchingSource &&
