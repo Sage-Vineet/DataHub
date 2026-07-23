@@ -575,6 +575,29 @@ function normalizeKey(name) {
   return BS_SECTION_SYNONYMS[basic] || basic;
 }
 
+function isTotalRow(node) {
+  return node?.type === "total" || String(node?.name || "").toLowerCase().startsWith("total");
+}
+
+// Guarantees a "Total X" row always renders as the LAST child within its
+// parent, matching the universal accounting convention (a subtotal follows
+// the items it sums). Applied as a final normalization pass over the whole
+// tree so it holds regardless of the order the multi-period merge or the
+// GAAP-hierarchy relocation ("moves") logic above happened to leave things
+// in — both operate on unions of several QuickBooks snapshots and neither
+// guarantees per-section ordering on its own.
+function ensureTotalsLast(nodes) {
+  if (!Array.isArray(nodes)) return nodes;
+  const rest = [];
+  const totals = [];
+  for (const node of nodes) {
+    const next = node.children ? { ...node, children: ensureTotalsLast(node.children) } : node;
+    if (isTotalRow(next)) totals.push(next);
+    else rest.push(next);
+  }
+  return [...rest, ...totals];
+}
+
 function mergeFileNodes(nodeArraysByFile, fileKeys) {
   const orderedKeys = [];
   const nodeMap = new Map();
@@ -841,7 +864,7 @@ function mergePeriods(periodResults, periods) {
   }
 
   const enrichedRows = masterRows.map(enrich);
-  return restructureGAAPTree(enrichedRows);
+  return ensureTotalsLast(restructureGAAPTree(enrichedRows));
 }
 
 function fileYear(file) {
