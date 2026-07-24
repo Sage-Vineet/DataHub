@@ -111,7 +111,24 @@ async function loadCoa(versionId) {
     .select(cols)
     .eq("version_id", versionId)
     .eq("is_active", true)
-    .order("sort_order", { ascending: true });
+    // CONFIRMED ROOT CAUSE (fixed here) of non-reproducible Balance Sheet
+    // figures (Net Income / Retained Earnings differing between identical,
+    // repeated report-generation calls): sort_order is NOT guaranteed unique
+    // (confirmed live: 52 of 289 chart_of_accounts rows for one real version
+    // shared a sort_order value with another row). Ordering by sort_order
+    // ALONE leaves ties unresolved, so Postgres/PostgREST does not guarantee
+    // a stable relative order between two same-sort_order rows across
+    // separate query executions — the array order of COA leaves could differ
+    // call to call. generateYearlyBs's GL-carry-forward fallback maps
+    // balances onto leaves via first-match-wins fuzzy matching
+    // (buildFuzzyLookup/fuzzyMatch), so an unstable leaf order could silently
+    // redirect a real balance to a different account on different runs,
+    // corrupting Net Income and (since Retained Earnings is the balancing
+    // residual) Retained Earnings along with it. `id` is a real, unique,
+    // stable tie-breaker — never changes the intended sort_order ordering,
+    // only resolves ties within it deterministically.
+    .order("sort_order", { ascending: true })
+    .order("id", { ascending: true });
 
   if (error) throw new Error(`COA load: ${error.message}`);
   const all = data || [];
@@ -779,27 +796,36 @@ async function distinctYears(versionId) {
   // its server-side "Max Rows" setting (commonly 1000) regardless of the client
   // .limit() value, which was silently truncating multi-thousand-row General
   // Ledgers to their first page and losing every year after the first ~1000 rows.
+  // CONFIRMED ROOT CAUSE class (see loadCoa's doc comment for the full
+  // writeup) — every fetchAllRows call in this file needs an explicit,
+  // unique-tie-broken .order() so its .range() pagination can never
+  // skip/duplicate a row across a page boundary. `id` is added purely as a
+  // stable pagination tie-breaker; it never changes which rows are returned,
+  // only guarantees every page boundary lands in the same place every call.
   let bsData;
   try {
     bsData = await fetchAllRows(() =>
-      supabase.from("balance_sheet_entries").select("fiscal_year")
+      supabase.from("balance_sheet_entries").select("id, fiscal_year")
         .eq("version_id", versionId)
-        .or("is_generated.is.null,is_generated.eq.false"),
+        .or("is_generated.is.null,is_generated.eq.false")
+        .order("id", { ascending: true }),
     );
   } catch (err) {
     console.warn(`[FinStmt][Years] BS query error: ${err.message} — falling back to unfiltered`);
     bsData = await fetchAllRows(() =>
-      supabase.from("balance_sheet_entries").select("fiscal_year").eq("version_id", versionId),
+      supabase.from("balance_sheet_entries").select("id, fiscal_year").eq("version_id", versionId)
+        .order("id", { ascending: true }),
     );
     console.log("[FinStmt][Years] BS unfiltered fallback succeeded");
   }
 
   const glRows = await fetchAllRows(() =>
     supabase.from("general_ledger_entries")
-      .select("transaction_date, source_file_id, account_name")
+      .select("id, transaction_date, source_file_id, account_name")
       .eq("version_id", versionId)
       .or("row_type.eq.TRANSACTION,row_type.is.null")
-      .not("transaction_date", "is", null),
+      .not("transaction_date", "is", null)
+      .order("id", { ascending: true }),
   );
 
   const glYearOf = (row) => parseInt(String(row.transaction_date || "").slice(0, 4), 10);
@@ -957,12 +983,14 @@ async function generateMonthlyPlFromYearly(versionId, year, yearlyStatement) {
       let q = genFilter(
         supabase
           .from("balance_sheet_entries")
-          .select("account_name, amount, as_of_date")
+          .select("id, account_name, amount, as_of_date")
           .eq("version_id", versionId)
           .eq("fiscal_year", year)
           .or("is_total.eq.false,is_total.is.null")
       );
-      return q.order("as_of_date", { ascending: true });
+      // id tie-breaker — see loadCoa's doc comment for the confirmed root
+      // cause this class of fix addresses (unstable pagination across calls).
+      return q.order("as_of_date", { ascending: true }).order("id", { ascending: true });
     });
   } catch (_e) { return []; }
 
@@ -1092,14 +1120,25 @@ async function generateMonthlyPlFromYearly(versionId, year, yearlyStatement) {
 async function loadGlAmountsYearly(versionId, year) {
   let data;
   try {
+    // CONFIRMED ROOT CAUSE (fixed here) of non-reproducible Net Income /
+    // Retained Earnings: this query had NO .order() at all — fetchAllRows'
+    // .range() pagination over an unordered result set has no guarantee two
+    // separate calls partition the same rows onto the same pages, so a real
+    // GL row could be silently skipped on one call and included on the next,
+    // corrupting the yearly total those calls fed into P&L Net Income (and
+    // from there, via reconcileEquityYearly/balanceRetainedEarnings, into
+    // Retained Earnings). `id` is a stable, unique tie-breaker — it never
+    // changes the SUM (order doesn't affect addition), only guarantees every
+    // page boundary lands in the same place every call.
     data = await fetchAllRows(() =>
       supabase
         .from("general_ledger_entries")
-        .select("account_name, split_account, account_number, amount, transaction_date, coa_id, split_coa_id")
+        .select("id, account_name, split_account, account_number, amount, transaction_date, coa_id, split_coa_id")
         .eq("version_id", versionId)
         .gte("transaction_date", `${year}-01-01`)
         .lte("transaction_date", `${year}-12-31`)
-        .or("row_type.eq.TRANSACTION,row_type.is.null"),
+        .or("row_type.eq.TRANSACTION,row_type.is.null")
+        .order("id", { ascending: true }),
     );
   } catch (err) { console.warn(`[FinStmt][GL][${year}] yearly read failed: ${err.message}`); return null; }
   if (!data?.length) return null;
@@ -1154,14 +1193,17 @@ async function loadGlAmountsByMonth(versionId, year) {
   // with a sentinel date (see loadGlAmountsYearly's docstring).
   let data;
   try {
+    // See loadGlAmountsYearly's identical fix — an id tie-breaker keeps
+    // pagination stable across calls (never changes the per-month sums).
     data = await fetchAllRows(() =>
       supabase
         .from("general_ledger_entries")
-        .select("account_name, account_number, amount, transaction_date, coa_id")
+        .select("id, account_name, account_number, amount, transaction_date, coa_id")
         .eq("version_id", versionId)
         .gte("transaction_date", `${year}-01-01`)
         .lte("transaction_date", `${year}-12-31`)
-        .or("row_type.eq.TRANSACTION,row_type.is.null"),
+        .or("row_type.eq.TRANSACTION,row_type.is.null")
+        .order("id", { ascending: true }),
     );
   } catch (err) { console.warn(`[FinStmt][GL] ${err.message}`); return null; }
   if (!data?.length) return null;
@@ -1346,14 +1388,20 @@ async function generateYearlyBs(_companyId, versionId, year, allCoa, unmappedSet
   // Load ALL rows (including is_total=true) so Net Income in the equity section of
   // an uploaded BS is not silently dropped. The is_total filter is applied in code below,
   // where we make an exception for the Net Income line.
+  // CONFIRMED ROOT CAUSE (fixed here) of non-reproducible Retained Earnings:
+  // this query had NO .order() at all — see loadCoa's doc comment for the
+  // full writeup of why that makes fetchAllRows' pagination unstable across
+  // repeated calls. This is the direct feed for a real uploaded Balance
+  // Sheet's own Retained Earnings/Net Income figures.
   const entries = await fetchAllRows(() => {
     let q = genFilter(
       supabase
         .from("balance_sheet_entries")
-        .select("account_name, account_number, amount, is_total, coa_id")
+        .select("id, account_name, account_number, amount, is_total, coa_id")
         .eq("version_id", versionId),
     );
-    return latestDate ? q.eq("as_of_date", latestDate) : q.eq("fiscal_year", year);
+    q = latestDate ? q.eq("as_of_date", latestDate) : q.eq("fiscal_year", year);
+    return q.order("id", { ascending: true });
   });
 
   let hasUploadedNetIncome = false;
@@ -1552,14 +1600,15 @@ async function generateMonthlyBs(companyId, versionId, year, allCoa, unmappedSet
   const allEntries = await fetchAllRows(() => {
     let q = supabase
       .from("balance_sheet_entries")
-      .select("account_name, account_number, amount, as_of_date, coa_id")
+      .select("id, account_name, account_number, amount, as_of_date, coa_id")
       .eq("version_id", versionId)
       .eq("fiscal_year", year)
       .or("is_total.eq.false,is_total.is.null");
     q = hasGen
       ? q.eq("is_generated", true)
       : q.or("is_generated.is.null,is_generated.eq.false");
-    return q.order("as_of_date", { ascending: true });
+    // id tie-breaker — see loadCoa's doc comment for the confirmed root cause.
+    return q.order("as_of_date", { ascending: true }).order("id", { ascending: true });
   });
 
   const byDate = new Map();
@@ -1729,12 +1778,13 @@ async function generateMonthlyCfFromBSDeltas(versionId, year, allCoa) {
       let q = genFilter(
         supabase
           .from("balance_sheet_entries")
-          .select("account_name, amount, as_of_date")
+          .select("id, account_name, amount, as_of_date")
           .eq("version_id", versionId)
           .eq("fiscal_year", year)
           .or("is_total.eq.false,is_total.is.null")
       );
-      return q.order("as_of_date", { ascending: true });
+      // id tie-breaker — see loadCoa's doc comment for the confirmed root cause.
+      return q.order("as_of_date", { ascending: true }).order("id", { ascending: true });
     });
   } catch (_e) { return []; }
 
