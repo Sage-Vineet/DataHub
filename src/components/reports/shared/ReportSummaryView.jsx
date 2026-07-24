@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { cn, formatCurrency } from "../../../lib/utils";
+import { cn, formatCurrency, isReportGroupRow } from "../../../lib/utils";
 
 function SummaryRow({ line, depth = 0 }) {
   const [isOpen, setIsOpen] = useState(true);
   const hasChildren = Boolean(line.children?.length);
   const isCategory = line.type === "header";
   const isTotal = line.type === "total";
+  const isGroup = isReportGroupRow(line, hasChildren, isTotal);
 
   const toggle = (event) => {
     if (!hasChildren) return;
@@ -70,10 +71,10 @@ function SummaryRow({ line, depth = 0 }) {
             isTotal
               ? "border-t border-text-muted pt-0.5 font-semibold"
               : "font-medium text-text-primary",
-            Number(line.amount) < 0 ? "font-semibold text-status-error" : "text-text-primary",
+            !isGroup && Number(line.amount) < 0 ? "font-semibold text-status-error" : "text-text-primary",
           )}
         >
-          {formatCurrency(line.amount)}
+          {isGroup ? "" : formatCurrency(line.amount)}
         </div>
       </div>
 
@@ -100,7 +101,7 @@ export default function ReportSummaryView({
   footerText = "This report provides a granular financial summary.",
 }) {
   return (
-    <div className="flex-1 overflow-y-auto bg-bg-page/50 p-10 lg:p-16">
+    <div className="bg-bg-page/50 p-10 lg:p-16">
       <div className="card-base mx-auto flex min-h-[1000px] max-w-4xl flex-col rounded-sm p-10">
         <div className="relative mb-12 flex flex-col items-center">
           <div className="mb-6 h-1 w-12 rounded-full bg-primary" />

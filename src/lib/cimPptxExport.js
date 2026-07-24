@@ -1,4 +1,5 @@
 import { strToU8, zipSync } from "fflate";
+import { normalizeCimStyleProfile } from "./cimTemplateStyleProfiles";
 
 const EMU_PER_PX = 9525;
 // Font sizes in the layout data are authored in the same 96-DPI canvas-px unit as bbox
@@ -173,10 +174,15 @@ function getElementStyle(element) {
     typeface: firstRun.typeface || resolved.typeface || "Calibri",
     bold: Boolean(firstRun.bold || runs.some((run) => run.bold)),
     italic: Boolean(firstRun.italic),
+    underline: Boolean(firstRun.underline),
     color: parseColor(firstRun.color, "333333"),
     align: paragraphStyle.alignment || resolved.alignment || "left",
     vertical: resolved.verticalAlignment || "top",
     insets: resolved.insets || { top: 0, right: 0, bottom: 0, left: 0 },
+    lineHeight: Number(paragraphStyle.lineSpacing || resolved.lineSpacing || 1.08),
+    paragraphSpacing: Number(paragraphStyle.paragraphSpacing || resolved.paragraphSpacing || 0),
+    letterSpacing: Number(firstRun.letterSpacing || 0),
+    wrap: resolved.wrap !== false,
   };
 }
 
@@ -209,16 +215,19 @@ function parseTableText(text = "", rows = 0, cols = 0) {
 function paragraphXml(text, style) {
   const align = style.align === "center" ? "ctr" : style.align === "right" ? "r" : "l";
   const lines = String(text || "").split(/\n/);
+  const lineSpacing = Math.round(Math.max(0.85, Math.min(1.8, Number(style.lineHeight || 1.08))) * 100000);
+  const paragraphSpacing = Math.round(Math.max(0, Math.min(28, Number(style.paragraphSpacing || 0))) * PX_TO_PT * 100);
+  const letterSpacing = Math.round(Math.max(-0.5, Math.min(3, Number(style.letterSpacing || 0))) * 1000);
 
   return lines.map((line) => `
         <a:p>
           <a:pPr algn="${align}" marL="0" indent="0">
-            <a:lnSpc><a:spcPct val="108000"/></a:lnSpc>
+            <a:lnSpc><a:spcPct val="${lineSpacing}"/></a:lnSpc>
             <a:spcBef><a:spcPts val="0"/></a:spcBef>
-            <a:spcAft><a:spcPts val="0"/></a:spcAft>
+            <a:spcAft><a:spcPts val="${paragraphSpacing}"/></a:spcAft>
           </a:pPr>
           <a:r>
-            <a:rPr lang="en-US" sz="${Math.round(style.fontSize * 100)}"${style.bold ? ' b="1"' : ""}${style.italic ? ' i="1"' : ""}>
+            <a:rPr lang="en-US" sz="${Math.round(style.fontSize * 100)}"${style.bold ? ' b="1"' : ""}${style.italic ? ' i="1"' : ""}${style.underline ? ' u="sng"' : ""}${letterSpacing ? ` spc="${letterSpacing}"` : ""}>
               <a:solidFill><a:srgbClr val="${style.color}"/></a:solidFill>
               <a:latin typeface="${escapeXml(style.typeface)}"/>
             </a:rPr>
@@ -240,6 +249,8 @@ function shapeXml(element, index, text) {
   const geometry = element.geometry === "ellipse" ? "ellipse" : "rect";
   const hasText = typeof text === "string" && text.length > 0;
   const insets = style.insets || {};
+  const rotation = Number(element.rotation || 0);
+  const rotationAttr = rotation ? ` rot="${Math.round(rotation * 60000)}"` : "";
   // Match the browser preview's text model exactly: a fixed-size box rendered at the
   // element's literal font size, with overflow clipped rather than auto-shrunk. The
   // previous universal normAutofit(65%) had no relationship to actual content length,
@@ -248,7 +259,7 @@ function shapeXml(element, index, text) {
   // relative to) the in-app preview, which never shrinks text.
   const textBody = hasText
     ? `<p:txBody>
-        <a:bodyPr wrap="square" vertOverflow="clip" horzOverflow="clip" anchor="${style.vertical === "middle" ? "ctr" : style.vertical === "bottom" ? "b" : "t"}" lIns="${toEmu(insets.left)}" rIns="${toEmu(insets.right)}" tIns="${toEmu(insets.top)}" bIns="${toEmu(insets.bottom)}">
+        <a:bodyPr wrap="${style.wrap === false ? "none" : "square"}" vertOverflow="clip" horzOverflow="clip" anchor="${style.vertical === "middle" ? "ctr" : style.vertical === "bottom" ? "b" : "t"}" lIns="${toEmu(insets.left)}" rIns="${toEmu(insets.right)}" tIns="${toEmu(insets.top)}" bIns="${toEmu(insets.bottom)}">
           <a:noAutofit/>
         </a:bodyPr>
         <a:lstStyle/>
@@ -264,7 +275,7 @@ function shapeXml(element, index, text) {
           <p:nvPr/>
         </p:nvSpPr>
         <p:spPr>
-          <a:xfrm>
+          <a:xfrm${rotationAttr}>
             <a:off x="${left}" y="${top}"/>
             <a:ext cx="${Math.max(width, EMU_PER_PX)}" cy="${Math.max(height, EMU_PER_PX)}"/>
           </a:xfrm>
@@ -331,17 +342,44 @@ function tableXml(element, index, text, content = {}) {
   }).join("");
 }
 
-function getContainedImageBox(element, media = {}) {
+function getImagePlacement(element, media = {}) {
   const [rawLeft = 0, rawTop = 0, rawWidth = 0, rawHeight = 0] = element.bbox || [];
   const imageWidth = Number(media.width || 0);
   const imageHeight = Number(media.height || 0);
+  const imageFit = element.imageFit || element.fit || "contain";
 
   if (rawWidth <= 0 || rawHeight <= 0 || imageWidth <= 0 || imageHeight <= 0) {
     return { left: rawLeft, top: rawTop, width: rawWidth, height: rawHeight };
   }
 
+  if (imageFit === "stretch" || imageFit === "fill") {
+    return { left: rawLeft, top: rawTop, width: rawWidth, height: rawHeight };
+  }
+
   const boxAspect = rawWidth / rawHeight;
   const imageAspect = imageWidth / imageHeight;
+
+  if (imageFit === "cover") {
+    if (imageAspect > boxAspect) {
+      const crop = Math.round(((1 - boxAspect / imageAspect) / 2) * 100000);
+      return {
+        left: rawLeft,
+        top: rawTop,
+        width: rawWidth,
+        height: rawHeight,
+        sourceRect: { left: crop, right: crop, top: 0, bottom: 0 },
+      };
+    }
+
+    const crop = Math.round(((1 - imageAspect / boxAspect) / 2) * 100000);
+    return {
+      left: rawLeft,
+      top: rawTop,
+      width: rawWidth,
+      height: rawHeight,
+      sourceRect: { left: 0, right: 0, top: crop, bottom: crop },
+    };
+  }
 
   if (imageAspect > boxAspect) {
     const height = rawWidth / imageAspect;
@@ -363,7 +401,18 @@ function getContainedImageBox(element, media = {}) {
 }
 
 function pictureXml(element, index, media, name = "Image") {
-  const { left, top, width, height } = getContainedImageBox(element, media);
+  const { left, top, width, height, sourceRect } = getImagePlacement(element, media);
+  const opacity = Math.max(0, Math.min(1, Number(element.opacity ?? element.imageOpacity ?? 1)));
+  const alphaXml = opacity < 0.999 ? `<a:alphaModFix amt="${Math.round(opacity * 100000)}"/>` : "";
+  const sourceRectXml = sourceRect
+    ? `<a:srcRect l="${sourceRect.left}" r="${sourceRect.right}" t="${sourceRect.top}" b="${sourceRect.bottom}"/>`
+    : "";
+  const geometry = Number(element.imageCornerRadius || 0) > 0 ? "roundRect" : "rect";
+  const rotation = Number(element.rotation || 0);
+  const rotationAttr = rotation ? ` rot="${Math.round(rotation * 60000)}"` : "";
+  const shadowXml = element.imageShadow
+    ? `<a:effectLst><a:outerShdw blurRad="38100" dist="19050" dir="5400000" algn="ctr" rotWithShape="0"><a:srgbClr val="000000"><a:alpha val="18000"/></a:srgbClr></a:outerShdw></a:effectLst>`
+    : "";
 
   return `
       <p:pic>
@@ -373,21 +422,42 @@ function pictureXml(element, index, media, name = "Image") {
           <p:nvPr/>
         </p:nvPicPr>
         <p:blipFill>
-          <a:blip r:embed="${media.relationshipId}"/>
+          <a:blip r:embed="${media.relationshipId}">${alphaXml}</a:blip>
+          ${sourceRectXml}
           <a:stretch><a:fillRect/></a:stretch>
         </p:blipFill>
         <p:spPr>
-          <a:xfrm>
+          <a:xfrm${rotationAttr}>
             <a:off x="${toEmu(left)}" y="${toEmu(top)}"/>
             <a:ext cx="${Math.max(toEmu(width), EMU_PER_PX)}" cy="${Math.max(toEmu(height), EMU_PER_PX)}"/>
           </a:xfrm>
-          <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+          <a:prstGeom prst="${geometry}"><a:avLst/></a:prstGeom>
+          ${lineXml(element.imageBorderColor || element.lineColor, element.imageBorderWidth ?? element.lineWidth ?? 0)}
+          ${shadowXml}
         </p:spPr>
       </p:pic>`;
 }
 
 function slideBackgroundXml(layout) {
   const color = layout?.slide?.backgroundColor || "#FFFFFF";
+  if (layout?.slide?.backgroundMode === "gradient") {
+    const from = parseColor(layout.slide.gradientFrom || color, "FFFFFF");
+    const to = parseColor(layout.slide.gradientTo || color, "F7F8FA");
+    const angle = Math.round(Number(layout.slide.gradientAngle || 0) * 60000);
+    return `
+    <p:bg>
+      <p:bgPr>
+        <a:gradFill flip="none" rotWithShape="1">
+          <a:gsLst>
+            <a:gs pos="0"><a:srgbClr val="${from}"/></a:gs>
+            <a:gs pos="100000"><a:srgbClr val="${to}"/></a:gs>
+          </a:gsLst>
+          <a:lin ang="${angle}" scaled="1"/>
+        </a:gradFill>
+        <a:effectLst/>
+      </p:bgPr>
+    </p:bg>`;
+  }
 
   return `
     <p:bg>
@@ -396,6 +466,14 @@ function slideBackgroundXml(layout) {
         <a:effectLst/>
       </p:bgPr>
     </p:bg>`;
+}
+
+function slideTransitionXml(layout) {
+  const transition = layout?.slide?.transition;
+  if (transition === "fade") return `<p:transition><p:fade/></p:transition>`;
+  if (transition === "push-left") return `<p:transition><p:push dir="l"/></p:transition>`;
+  if (transition === "wipe-right") return `<p:transition><p:wipe dir="r"/></p:transition>`;
+  return "";
 }
 
 function hasSameBbox(first, second, tolerance = 1) {
@@ -439,6 +517,16 @@ function shouldSkipLogoPlaceholderShape(elements, index, slideRef, getElementCon
 
 function slideXml(layout, slideRef, displaySlideNumber, getElementContent, mediaAllocator) {
   const elements = layout?.elements || [];
+  const backgroundImage = layout?.slide?.backgroundImage?.dataUrl
+    ? mediaAllocator(layout.slide.backgroundImage.dataUrl)
+    : null;
+  const backgroundPicture = backgroundImage
+      ? pictureXml({
+        bbox: [0, 0, SLIDE_WIDTH_PX, SLIDE_HEIGHT_PX],
+        opacity: layout.slide.backgroundImageOpacity,
+        imageFit: "cover",
+      }, 9000, backgroundImage, "Slide background")
+    : "";
   const shapes = elements
     .map((element, index) => {
       if (shouldSkipLogoPlaceholderShape(elements, index, slideRef, getElementContent)) {
@@ -456,7 +544,8 @@ function slideXml(layout, slideRef, displaySlideNumber, getElementContent, media
       if ((content.kind === "image" || content.kind === "chart") && content.dataUrl) {
         const media = mediaAllocator(content.dataUrl);
         if (media) {
-          return pictureXml(effectiveElement, index, media, content.name || content.alt || content.kind);
+          const shapeName = content.name || content.alt || content.kind;
+          return pictureXml(effectiveElement, index, media, shapeName);
         }
       }
       return shapeXml(effectiveElement, index, content.text ?? "");
@@ -481,10 +570,12 @@ function slideXml(layout, slideRef, displaySlideNumber, getElementContent, media
           <a:chExt cx="0" cy="0"/>
         </a:xfrm>
       </p:grpSpPr>
+      ${backgroundPicture}
       ${shapes}
     </p:spTree>
   </p:cSld>
   <p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>
+  ${slideTransitionXml(layout)}
 </p:sld>`;
 }
 
@@ -619,18 +710,37 @@ function slideLayoutRelsXml() {
 </Relationships>`;
 }
 
-function themeXml() {
+function themeXml(styleProfile) {
+  const profile = styleProfile ? normalizeCimStyleProfile(styleProfile) : null;
+  const colors = profile?.colors || {
+    title: "#000000",
+    background: "#FFFFFF",
+    body: "#44546A",
+    highlight: "#E7E6E6",
+    secondary: "#8BC53D",
+    primary: "#476E2C",
+    accent: "#A5A5A5",
+    muted: "#6D6E71",
+    divider: "#243F18",
+    tableAltRow: "#F7F8FA",
+    hyperlink: "#0563C1",
+  };
+  const titleFont = profile?.isDefault
+    ? "Calibri Light"
+    : profile?.typography?.roles?.title?.fontFamily || "Calibri Light";
+  const bodyFont = profile?.typography?.roles?.body?.fontFamily || "Calibri";
+
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="DataHub CIM">
   <a:themeElements>
     <a:clrScheme name="DataHub CIM">
-      <a:dk1><a:srgbClr val="000000"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1>
-      <a:dk2><a:srgbClr val="44546A"/></a:dk2><a:lt2><a:srgbClr val="E7E6E6"/></a:lt2>
-      <a:accent1><a:srgbClr val="8BC53D"/></a:accent1><a:accent2><a:srgbClr val="476E2C"/></a:accent2><a:accent3><a:srgbClr val="A5A5A5"/></a:accent3>
-      <a:accent4><a:srgbClr val="6D6E71"/></a:accent4><a:accent5><a:srgbClr val="243F18"/></a:accent5><a:accent6><a:srgbClr val="F7F8FA"/></a:accent6>
-      <a:hlink><a:srgbClr val="0563C1"/></a:hlink><a:folHlink><a:srgbClr val="954F72"/></a:folHlink>
+      <a:dk1><a:srgbClr val="${parseColor(colors.title, "000000")}"/></a:dk1><a:lt1><a:srgbClr val="${parseColor(colors.background, "FFFFFF")}"/></a:lt1>
+      <a:dk2><a:srgbClr val="${parseColor(colors.body, "44546A")}"/></a:dk2><a:lt2><a:srgbClr val="${parseColor(colors.highlight, "E7E6E6")}"/></a:lt2>
+      <a:accent1><a:srgbClr val="${parseColor(colors.secondary, "8BC53D")}"/></a:accent1><a:accent2><a:srgbClr val="${parseColor(colors.primary, "476E2C")}"/></a:accent2><a:accent3><a:srgbClr val="${parseColor(colors.accent, "A5A5A5")}"/></a:accent3>
+      <a:accent4><a:srgbClr val="${parseColor(colors.muted, "6D6E71")}"/></a:accent4><a:accent5><a:srgbClr val="${parseColor(colors.divider, "243F18")}"/></a:accent5><a:accent6><a:srgbClr val="${parseColor(colors.tableAltRow, "F7F8FA")}"/></a:accent6>
+      <a:hlink><a:srgbClr val="${parseColor(colors.hyperlink, "0563C1")}"/></a:hlink><a:folHlink><a:srgbClr val="954F72"/></a:folHlink>
     </a:clrScheme>
-    <a:fontScheme name="Office"><a:majorFont><a:latin typeface="Calibri Light"/></a:majorFont><a:minorFont><a:latin typeface="Calibri"/></a:minorFont></a:fontScheme>
+    <a:fontScheme name="Office"><a:majorFont><a:latin typeface="${escapeXml(titleFont)}"/></a:majorFont><a:minorFont><a:latin typeface="${escapeXml(bodyFont)}"/></a:minorFont></a:fontScheme>
     <a:fmtScheme name="Office">
       <a:fillStyleLst>
         <a:solidFill><a:schemeClr val="phClr"/></a:solidFill>
@@ -668,7 +778,7 @@ function downloadBlob(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
-export function buildCimPptxBlob({ layouts, slideNumbers, getElementText, getElementContent }) {
+export function buildCimPptxBlob({ layouts, slideNumbers, getElementText, getElementContent, styleProfile }) {
   const resolveContent = getElementContent || ((slideNumber, element) => getElementText?.(slideNumber, element) || "");
   const mediaFiles = [];
   const slideMedia = {};
@@ -709,7 +819,7 @@ export function buildCimPptxBlob({ layouts, slideNumbers, getElementText, getEle
     "ppt/slideMasters/_rels/slideMaster1.xml.rels": strToU8(slideMasterRelsXml()),
     "ppt/slideLayouts/slideLayout1.xml": strToU8(slideLayoutXml()),
     "ppt/slideLayouts/_rels/slideLayout1.xml.rels": strToU8(slideLayoutRelsXml()),
-    "ppt/theme/theme1.xml": strToU8(themeXml()),
+    "ppt/theme/theme1.xml": strToU8(themeXml(styleProfile)),
   };
 
   slideNumbers.forEach((sourceSlideNumber, index) => {
@@ -727,7 +837,7 @@ export function buildCimPptxBlob({ layouts, slideNumbers, getElementText, getEle
   });
 }
 
-export function exportCimPptx({ layouts, slideNumbers, getElementText, getElementContent, filename }) {
-  const blob = buildCimPptxBlob({ layouts, slideNumbers, getElementText, getElementContent });
+export function exportCimPptx({ layouts, slideNumbers, getElementText, getElementContent, filename, styleProfile }) {
+  const blob = buildCimPptxBlob({ layouts, slideNumbers, getElementText, getElementContent, styleProfile });
   downloadBlob(blob, filename || "cim-prep.pptx");
 }

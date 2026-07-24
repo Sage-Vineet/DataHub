@@ -2,6 +2,7 @@ const express = require("express");
 const { requireAuth } = require("../middleware/auth");
 const { canAccessCompany } = require("../services/permissionService");
 const keyReportService = require("../services/keyReports/keyReportService");
+const keyReportProgress = require("../services/keyReports/keyReportProgress");
 const fileReferenceService = require("../services/fileReferenceService");
 const userPreferenceService = require("../services/userPreferenceService");
 const chartOfAccountsService = require("../services/chartOfAccountsService");
@@ -359,6 +360,22 @@ router.get("/key-reports/versions/:versionId/sync-logs", async (req, res) => {
     return res.json({ success: true, syncLogs: logs });
   } catch (error) {
     return handleError(res, error, "GET sync-logs");
+  }
+});
+
+// ---- Generate progress (live, in-memory) -----------------------------------
+// Lightweight poll target for the Generate Workflow progress bar. Returns the
+// stage the sync pipeline is currently on (derived from its log markers, from
+// "=== Sync started ===" to "=== Sync complete ==="). In-memory only — no DB
+// table; `progress` is null when no run is tracked for this version.
+router.get("/key-reports/versions/:versionId/generate-progress", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const progress = keyReportProgress.getProgress(version.id);
+    return res.json({ success: true, progress });
+  } catch (error) {
+    return handleError(res, error, "GET generate-progress");
   }
 });
 

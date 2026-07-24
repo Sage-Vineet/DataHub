@@ -265,6 +265,14 @@ export function getCimTaxReconciliationRequest({ clientId, sourceKey, datasetVer
   return request(`${isQuickBooks ? '/tax-data' : '/manual-report-uploads/tax-data'}?${params}`);
 }
 
+export function getCimProfitLossForTaxRequest({ clientId, datasetVersion, keyReportVersionId } = {}) {
+  const params = new URLSearchParams();
+  if (clientId) params.append('clientId', clientId);
+  if (datasetVersion) params.append('datasetVersion', String(datasetVersion));
+  if (keyReportVersionId) params.append('keyReportVersionId', String(keyReportVersionId));
+  return request(`/manual-report-uploads/pl-for-tax?${params}`);
+}
+
 export function brokerSignupRequest(payload) {
   return fetch(buildUrl('/auth/broker/signup'), {
     method: 'POST',
@@ -484,6 +492,18 @@ export function getWorkspacePageStateRequest(pageKey, options = {}) {
 
 export function saveWorkspacePageStateRequest(pageKey, state, options = {}) {
   return request(`/workspace-page-state/${encodeURIComponent(pageKey)}`, {
+    ...options,
+    method: 'PUT',
+    body: { state },
+  });
+}
+
+export function getCimStyleProfilesRequest(options = {}) {
+  return request('/cim-style-profiles', options);
+}
+
+export function saveCimStyleProfilesRequest(state, options = {}) {
+  return request('/cim-style-profiles', {
     ...options,
     method: 'PUT',
     body: { state },
@@ -1499,6 +1519,15 @@ export async function getActiveKeyReportMappings() {
 
 export function getKeyReportSyncLogs(versionId) {
   return request(`/key-reports/versions/${versionId}/sync-logs`);
+}
+
+/**
+ * Live generation progress for the Generate Workflow bar. Returns
+ * { progress: { stage, done, updatedAt } | null }. Polled while a generation is
+ * in flight so the bar reflects the real pipeline stage instead of a timer.
+ */
+export function getKeyReportGenerateProgress(versionId) {
+  return request(`/key-reports/versions/${versionId}/generate-progress`);
 }
 
 /**

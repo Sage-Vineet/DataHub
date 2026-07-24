@@ -86,6 +86,46 @@ function generatedCfToRows(cf) {
   ];
 }
 
+// One column per calendar month between startDate and endDate. Mirrors
+// generateMonthlyPeriods in balanceSheetService.js / profitAndLossService.js
+// so all three report types cap an unbounded range (e.g. "All Dates") the
+// same way, keeping the most recent MAX_MONTHLY_PERIODS months.
+function generateCashflowMonthlyPeriods(startDate, endDate) {
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const periods = [];
+  const s = new Date(startDate + "T00:00:00");
+  const e = new Date(endDate + "T00:00:00");
+  let yr = s.getFullYear();
+  let mo = s.getMonth();
+  const MAX_MONTHLY_PERIODS = 120;
+  const endMonthIndex = e.getFullYear() * 12 + e.getMonth();
+  let startMonthIndex = yr * 12 + mo;
+  if (endMonthIndex - startMonthIndex + 1 > MAX_MONTHLY_PERIODS) {
+    console.warn(
+      `[CashFlow] Month mode range (${startDate} to ${endDate}) spans more than ${MAX_MONTHLY_PERIODS} months — trimming to the most recent ${MAX_MONTHLY_PERIODS}.`,
+    );
+    startMonthIndex = endMonthIndex - MAX_MONTHLY_PERIODS + 1;
+    yr = Math.floor(startMonthIndex / 12);
+    mo = startMonthIndex % 12;
+  }
+  while (yr < e.getFullYear() || (yr === e.getFullYear() && mo <= e.getMonth())) {
+    const mm = String(mo + 1).padStart(2, "0");
+    const lastDay = new Date(yr, mo + 1, 0).getDate();
+    periods.push({
+      key: `m${yr}_${mm}`,
+      label: `${MONTHS[mo]} ${yr}`,
+      start: `${yr}-${mm}-01`,
+      end: `${yr}-${mm}-${String(lastDay).padStart(2, "0")}`,
+    });
+    mo++;
+    if (mo > 11) {
+      mo = 0;
+      yr++;
+    }
+  }
+  return periods;
+}
+
 /**
  * Generates periods for Cash Flow Comparative Summary.
  * We need:
@@ -283,12 +323,34 @@ function mergeFileNodes(nodeArraysByFile, fileKeys) {
   });
 }
 
+// Builds the merged row tree as a UNION of every period's rows, not just the
+// latest period's. A line item that only had activity in an earlier period
+// (e.g. a loan account closed out before the most recent year) still exists
+// in that period's API response and must not disappear from the report just
+// because the latest period's response happens to omit it.
+function mergeCashflowRowTrees(periodResults) {
+  const masterRows = [];
+  const mergeInto = (dest, src) => {
+    for (const srcNode of (src || [])) {
+      const norm = normalizeName(srcNode.name);
+      if (!norm) continue;
+      const existing = dest.find((n) => normalizeName(n.name) === norm);
+      if (existing) {
+        if (srcNode.children?.length) {
+          if (!existing.children) existing.children = [];
+          mergeInto(existing.children, srcNode.children);
+        }
+      } else {
+        dest.push({ ...srcNode, children: srcNode.children ? srcNode.children.map((c) => ({ ...c })) : undefined });
+      }
+    }
+  };
+  for (const rows of periodResults) mergeInto(masterRows, rows || []);
+  return masterRows;
+}
+
 function mergeCashflowPeriods(periodResults, periods) {
-  const currentYearKey = periods
-    .filter((p) => !p.key.includes("_ytd"))
-    .pop()?.key;
-  const masterIndex = periods.findIndex((p) => p.key === currentYearKey);
-  const masterRows = periodResults[masterIndex] || periodResults[periodResults.length - 1] || [];
+  const masterRows = mergeCashflowRowTrees(periodResults);
 
   if (masterRows.length === 0) return [];
 
@@ -641,6 +703,29 @@ export async function getCashflowDetail(
       endYear: options.endYear,
       yearMode: options.yearMode,
     });
+  }
+
+  // Month mode: one column per calendar month between startDate and endDate.
+  // Previously this branch didn't exist at all, so selecting "Month" on the
+  // Cash Flow tab silently fell through to the fixed trailing-4-year/YTD
+  // comparison below regardless of the Month/Year toggle or chosen date
+  // range — each individual QuickBooks request was correct, but the
+  // rendered columns never reflected what the user actually selected.
+  if (options.monthMode && startDate && endDate) {
+    const periods = generateCashflowMonthlyPeriods(startDate, endDate);
+    const results = await Promise.all(
+      periods.map((p) =>
+        fetchSinglePeriodCashflow(p.start, p.end, accountingMethod, sourceMode, { ...options, keyReportVersionId }),
+      ),
+    );
+    const rows = mergeCashflowPeriods(results, periods);
+    return {
+      rows,
+      columns: {
+        yearCols: periods.map((p, i) => ({ key: p.key, label: p.label, isCurrent: i === periods.length - 1 })),
+        ytdComparison: null,
+      },
+    };
   }
 
   const periods = getCashflowComparativePeriods(4, options.startYear || null, options.endYear || null);
