@@ -26,6 +26,11 @@ const REPORT_CATEGORIES = {
   GENERAL_LEDGER: "general_ledger",
   BANK_STATEMENT: "bank_statement",
   TAX_RETURN: "tax_return",
+  // Optional: a company's own Chart of Accounts workbook (migration 072).
+  // When linked, it becomes that company's highest-priority hierarchy source
+  // (see coaMappingService.createCoaMapper) — above the shared global
+  // reference and above AI category selection.
+  CHART_OF_ACCOUNTS: "chart_of_accounts",
 };
 const VALID_CATEGORIES = new Set(Object.values(REPORT_CATEGORIES));
 
@@ -33,7 +38,10 @@ const VALID_CATEGORIES = new Set(Object.values(REPORT_CATEGORIES));
 // source_file_id). Mirrors each extraction service's `tableName` — kept here
 // too so removeMapping can clean up without loading the extraction services.
 // profit_loss has no entry table (dropped by migration 056; P&L is generated
-// from the General Ledger).
+// from the General Ledger). chart_of_accounts also has none here on purpose:
+// client_chart_of_accounts is scoped by company_id, not version_id/
+// source_file_id, so unlinking the document doesn't revoke the company's
+// parsed reference — only a fresh upload replaces it (clientCoaImportService).
 const ENTRY_TABLE_BY_CATEGORY = {
   [REPORT_CATEGORIES.GENERAL_LEDGER]: "general_ledger_entries",
   [REPORT_CATEGORIES.BALANCE_SHEET]: "balance_sheet_entries",
@@ -395,6 +403,47 @@ async function validateVersion(versionId) {
 // after a process restart, so a crashed job never leaves a permanent lock.
 const _inFlightSyncs = new Map();
 
+// CONFIRMED BUG this fixes: the _inFlightSyncs guard above is an in-memory JS
+// Map, so it only prevents a second concurrent sync call within THIS Node
+// process. Two SEPARATE processes syncing the same version (e.g. the live
+// app server and an ad-hoc script, or two app server instances) can each
+// independently run extractAndStore's DELETE-then-INSERT for the same
+// document — if one process's DELETE lands after the other's INSERT has
+// already committed, both processes' inserted rows survive side by side.
+// Confirmed live: this produced 10,875 duplicated general_ledger_entries
+// rows for one version in a single extraction batch. sync_locked_at/
+// sync_locked_by (migration 079) implement a cross-process lease: one atomic
+// UPDATE ... WHERE (unlocked OR stale) ... RETURNING means exactly one
+// concurrent caller across ANY process ever succeeds in claiming it.
+const SYNC_LOCK_STALE_MS = 15 * 60 * 1000; // generous — a full extraction+COA+report run is observed to take several minutes, never this long
+
+async function acquireSyncLock(versionId) {
+  const token = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const staleThreshold = new Date(Date.now() - SYNC_LOCK_STALE_MS).toISOString();
+  const { data, error } = await supabase
+    .from("key_report_versions")
+    .update({ sync_locked_at: new Date().toISOString(), sync_locked_by: token })
+    .eq("id", versionId)
+    .or(`sync_locked_at.is.null,sync_locked_at.lt.${staleThreshold}`)
+    .select("id");
+  if (error) {
+    // Migration 079 not applied yet on this environment — degrade to the
+    // in-memory-only guard rather than blocking every sync outright.
+    console.warn(`[KeyReports] Sync lock unavailable (${error.message}) — falling back to in-process guard only.`);
+    return { token: null, acquired: true, degraded: true };
+  }
+  return { token, acquired: Boolean(data && data.length) };
+}
+
+async function releaseSyncLock(versionId, token) {
+  if (!token) return;
+  await supabase
+    .from("key_report_versions")
+    .update({ sync_locked_at: null, sync_locked_by: null })
+    .eq("id", versionId)
+    .eq("sync_locked_by", token);
+}
+
 async function syncVersion(versionId, userId = null, opts = {}) {
   if (_inFlightSyncs.has(versionId)) {
     console.log(`[KeyReports] Sync already in progress for version ${versionId} — reusing in-flight job`);
@@ -411,6 +460,22 @@ async function _syncVersionInner(versionId, userId = null, opts = {}) {
   const version = await getVersion(versionId);
   if (!version) throw new Error("Version not found.");
 
+  const lock = await acquireSyncLock(versionId);
+  if (!lock.acquired) {
+    throw Object.assign(
+      new Error(`Sync already in progress for version ${versionId} in another process — try again shortly.`),
+      { status: 409, retryable: true },
+    );
+  }
+
+  try {
+    return await _syncVersionLocked(version, versionId, userId, opts);
+  } finally {
+    await releaseSyncLock(versionId, lock.token);
+  }
+}
+
+async function _syncVersionLocked(version, versionId, userId = null, opts = {}) {
   const { data: logRow, error: logErr } = await supabase
     .from("key_report_sync_logs")
     .insert({
@@ -697,10 +762,13 @@ const ENTRY_TABLE_CONFIG = {
   },
   general_ledger: {
     table: 'general_ledger_entries',
-    yearCol: 'fiscal_year',
-    yearIsDate: false,
+    // fiscal_year/fiscal_month no longer exist (migration 069 — date_dimension
+    // refactor); transaction_date is always populated (including for
+    // BEGINNING_BALANCE/TOTAL_ROW sentinel dates), so a date-range filter works.
+    yearCol: 'transaction_date',
+    yearIsDate: true,
     searchCols: ['account_name', 'account_section', 'memo', 'split_account', 'transaction_number'],
-    selectCols: 'id,row_type,row_number,fiscal_year,fiscal_month,transaction_date,account_section,account_name,account_number,transaction_type,transaction_number,memo,split_account,amount,debit_amount,credit_amount,running_balance,coa_id',
+    selectCols: 'id,row_type,row_number,transaction_date,date_id,account_section,account_name,account_number,transaction_type,transaction_number,memo,split_account,vendor,customer,entity_type,amount,debit_amount,credit_amount,running_balance,coa_id',
     orderCol: 'row_number',
     orderSecondary: 'id',
   },

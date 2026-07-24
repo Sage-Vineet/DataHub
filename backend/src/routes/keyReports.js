@@ -380,16 +380,6 @@ async function loadAccountWithAccess(req, res) {
   return row;
 }
 
-// The standardized hierarchy taxonomy (reference data for UI level filters).
-router.get("/key-reports/hierarchy-levels", async (req, res) => {
-  try {
-    const levels = await chartOfAccountsService.getHierarchyLevels();
-    return res.json({ success: true, levels });
-  } catch (error) {
-    return handleError(res, error, "GET hierarchy-levels");
-  }
-});
-
 // Fetch a version's COA as a deep tree + flat list (15-level hierarchy).
 router.get("/key-reports/versions/:versionId/chart-of-accounts", async (req, res) => {
   try {
@@ -567,18 +557,6 @@ router.get("/key-reports/versions/:versionId/reports/profit-loss", async (req, r
     return res.json({ success: true, ...result });
   } catch (error) {
     return handleError(res, error, "GET reports/profit-loss");
-  }
-});
-
-router.get("/key-reports/versions/:versionId/reports/balance-sheet", async (req, res) => {
-  try {
-    const version = await loadVersionWithAccess(req, res);
-    if (!version) return;
-    const { year, startDate, endDate, period } = parseReportQuery(req.query);
-    const result = await keyReportReportService.getBalanceSheetReport(version.id, { year, startDate, endDate, period });
-    return res.json({ success: true, ...result });
-  } catch (error) {
-    return handleError(res, error, "GET reports/balance-sheet");
   }
 });
 

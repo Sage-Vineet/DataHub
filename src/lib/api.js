@@ -1657,11 +1657,6 @@ export function getChartOfAccountsHistory(versionId) {
   return request(`/key-reports/versions/${versionId}/chart-of-accounts/history`);
 }
 
-// Standardized hierarchy taxonomy (reference data for UI filters).
-export function getHierarchyLevels() {
-  return request(`/key-reports/hierarchy-levels`);
-}
-
 // COA-mapped financial statements (monthly + yearly P&L and Balance Sheet).
 export function getFinancialStatements(versionId, { year, currency } = {}) {
   const params = new URLSearchParams();
