@@ -127,10 +127,10 @@ function StageRow({ stage, stageStatus, errorMessage }) {
     stageStatus === "done"
       ? "bg-emerald-500"
       : stageStatus === "active"
-      ? "bg-primary"
-      : stageStatus === "error"
-      ? "bg-red-500"
-      : "bg-gray-200";
+        ? "bg-primary"
+        : stageStatus === "error"
+          ? "bg-red-500"
+          : "bg-gray-200";
 
   return (
     <div
@@ -167,10 +167,10 @@ function StageRow({ stage, stageStatus, errorMessage }) {
             stageStatus === "done"
               ? "text-emerald-700"
               : stageStatus === "active"
-              ? "text-primary"
-              : stageStatus === "error"
-              ? "text-red-700"
-              : "text-text-muted"
+                ? "text-primary"
+                : stageStatus === "error"
+                  ? "text-red-700"
+                  : "text-text-muted"
           )}
         >
           {label}
@@ -226,13 +226,13 @@ export default function GenerateProgressPanel({
   const currentStageIdx = isGenerating
     ? computeStageIndex(pct)
     : isDone
-    ? STAGES.length - 1
-    : isError
-    ? (() => {
-        const idx = STAGES.findIndex((s) => s.key === errorStage);
-        return idx >= 0 ? idx : 2; // default to ai_processing
-      })()
-    : -1;
+      ? STAGES.length - 1
+      : isError
+        ? (() => {
+          const idx = STAGES.findIndex((s) => s.key === errorStage);
+          return idx >= 0 ? idx : 2; // default to ai_processing
+        })()
+        : -1;
 
   const stageStatusOf = (i) => {
     if (status === "idle") return "idle";
@@ -253,10 +253,10 @@ export default function GenerateProgressPanel({
     isGenerating && currentStageIdx >= 0
       ? STAGES[currentStageIdx]?.label
       : isDone
-      ? "All stages complete"
-      : isError
-      ? "Generation stopped"
-      : "";
+        ? "All stages complete"
+        : isError
+          ? "Generation stopped"
+          : "";
 
   return (
     <div className="space-y-4">
@@ -293,10 +293,10 @@ export default function GenerateProgressPanel({
                 {isGenerating
                   ? "Generating…"
                   : isDone
-                  ? "Generation Complete"
-                  : isError
-                  ? "Generation Failed"
-                  : ""}
+                    ? "Generation Complete"
+                    : isError
+                      ? "Generation Failed"
+                      : ""}
               </h2>
             </div>
           </div>
@@ -318,10 +318,10 @@ export default function GenerateProgressPanel({
           {isGenerating
             ? "Your data is being generated. This may take a few minutes. The application will automatically update when processing completes."
             : isDone
-            ? "All financial reports are ready. Click Open Reports to view them."
-            : isError
-            ? "A stage failed. Review the error below and click Retry."
-            : ""}
+              ? "All financial reports are ready. Click Open Reports to view them."
+              : isError
+                ? "A stage failed. Review the error below and click Retry."
+                : ""}
         </p>
 
         {/* Timestamps */}

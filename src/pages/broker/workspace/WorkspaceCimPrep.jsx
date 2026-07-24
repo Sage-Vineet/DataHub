@@ -16,6 +16,7 @@ import {
   ImagePlus,
   Loader2,
   MessageSquareText,
+  Palette,
   PanelLeft,
   Plus,
   RefreshCw,
@@ -30,26 +31,43 @@ import {
 import {
   getCimQuestionnaireRequest,
   getCimReviewRequest,
+  getCimStyleProfilesRequest,
   getCompanyRequest,
   getWorkspacePageStateRequest,
   listUsersRequest,
   saveCimQuestionnaireRequest,
   saveCimReviewRequest,
+  saveCimStyleProfilesRequest,
   saveWorkspacePageStateRequest,
 } from "../../../lib/api";
 import { exportCimPptx } from "../../../lib/cimPptxExport";
+import {
+  DEFAULT_CIM_STYLE_PROFILE,
+  DEFAULT_CIM_STYLE_PROFILE_ID,
+  applyCimTemplateStyleProfile,
+  applyCimTemplateStyleProfilesToLayouts,
+  getActiveCimStyleProfile,
+  isDefaultCimStyleProfile,
+  normalizeCimStyleProfilesState,
+} from "../../../lib/cimTemplateStyleProfiles";
 import { useAuth } from "../../../context/AuthContext";
 import { useDataSource } from "../../../context/DataSourceContext";
 import { useToast } from "../../../context/ToastContext";
 import { CLIENT_SUB_ROLES } from "../../../lib/roles";
-import { REPORT_SOURCE_KEYS, normalizeReportSourceKey } from "../../../lib/report-source";
+import { REPORT_SOURCE_KEYS, getReportSourceLabel, normalizeReportSourceKey } from "../../../lib/report-source";
 import { loadCimFinancialAutofillSnapshot } from "../../../services/cimFinancialAutofillService";
 import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
 import { useKeyReportContextStore } from "../../../store/useKeyReportContextStore";
 import Modal from "../../../components/common/Modal";
 import CimFieldNoteThread from "../../../components/cim/CimFieldNoteThread";
+import CimTemplateStyleEditor from "../../../components/cim/CimTemplateStyleEditor";
+import CimNativeBuilderCanvas, {
+  CimBuilderPagePreview,
+} from "../../../components/cim/CimNativeBuilderCanvas";
+import { createBlankBuilderPage, normalizeBuilderImageSource } from "../../../lib/cimNativeBuilderModel";
 
 const SLIDE_WIDTH = 1280;
+const SLIDE_HEIGHT = 720;
 const PAGE_KEY = "cim-prep";
 const SLIDE_25_BRIDGE_FIELD_ID = "25:structured:ebitda-bridge";
 const SLIDE_27_CASHFLOW_FIELD_ID = "27:structured:cashflow-statement";
@@ -126,6 +144,15 @@ const BASIC_DETAIL_FIELDS = BASIC_DETAIL_FIELD_DEFINITIONS.map(({ key, label }) 
 
 const PREVIEW_SLIDES = TEMPLATE_SLIDES;
 
+const CIM_BUILDER_GLOBAL_DETAIL_KEYS = new Set(BASIC_DETAIL_FIELD_DEFINITIONS.map(({ key }) => key));
+
+const SLIDE_1_GLOBAL_DETAIL_KEY_BY_ORDER = new Map([
+  [6, "projectName"],
+  [7, "descriptor"],
+  [11, "companyName"],
+  [12, "monthYear"],
+]);
+
 const CHART_TYPES = [
   ["bar", "Bar"],
   ["line", "Line"],
@@ -134,6 +161,33 @@ const CHART_TYPES = [
 ];
 
 const CHART_COLORS = ["#8BC53D", "#476E2C", "#A5A5A5", "#6D6E71", "#243F18"];
+
+function getCimChartStyle(styleProfile = null) {
+  if (!styleProfile || isDefaultCimStyleProfile(styleProfile)) {
+    return {
+      palette: CHART_COLORS,
+      backgroundColor: "#FFFFFF",
+      gridColor: "#E5E7EB",
+      labelColor: "#6D6E71",
+      titleColor: "#476E2C",
+      axisFontFamily: "Calibri",
+      legendPosition: "right",
+    };
+  }
+  const profile = normalizeCimStyleProfilesState({
+    activeProfileId: styleProfile.id,
+    profiles: [DEFAULT_CIM_STYLE_PROFILE, styleProfile],
+  }).profiles.find((item) => item.id === styleProfile.id) || styleProfile;
+  return {
+    palette: profile.charts?.palette?.length ? profile.charts.palette : CHART_COLORS,
+    backgroundColor: profile.charts?.backgroundColor || "#FFFFFF",
+    gridColor: profile.charts?.gridColor || "#E5E7EB",
+    labelColor: profile.charts?.labelColor || "#6D6E71",
+    titleColor: profile.charts?.titleColor || "#476E2C",
+    axisFontFamily: profile.charts?.axisFontFamily || profile.typography?.roles?.body?.fontFamily || "Calibri",
+    legendPosition: profile.charts?.legendPosition || "right",
+  };
+}
 
 const QUESTIONNAIRE_STATUS_META = {
   open: { label: "Open", color: "#A86F0B", bg: "#FEF3C7" },
@@ -1174,7 +1228,7 @@ function createDefaultGlobalDetails(company = null) {
   return {
     companyName,
     companyLegalName: companyName,
-    projectName: company?.project_name || companyName,
+    projectName: company?.project_name || "",
     descriptor: company?.industry ? `${company.industry} business` : "",
     monthYear: getDefaultMonthYear(),
     advisorFirm: "",
@@ -1189,6 +1243,24 @@ function createDefaultGlobalDetails(company = null) {
     coAdvisorEmail: "",
     coAdvisorPhone: "",
   };
+}
+
+function getLegacySlide1DescriptorFieldValue(fieldValues = {}) {
+  const exactKeys = [
+    "1:sh/u9knih4b:ppt-text",
+    "1:8:ppt-text",
+    "1:sh/u9knih4b:token:0:one-line-company-descriptor-industry-geography-business-model",
+    "1:8:token:0:one-line-company-descriptor-industry-geography-business-model",
+  ];
+
+  for (const key of exactKeys) {
+    if (normalizeText(fieldValues?.[key])) return String(fieldValues[key]);
+  }
+
+  const matched = Object.entries(fieldValues || {}).find(([key, value]) => (
+    key.includes("one-line-company-descriptor") && normalizeText(value)
+  ));
+  return matched ? String(matched[1]) : "";
 }
 
 function getBrokerAdvisorDefaults(user = null) {
@@ -1539,6 +1611,11 @@ function containsTemplateToken(text) {
   return /\[[^\]]+\]/.test(String(text || ""));
 }
 
+function hasEditableTextBounds(element) {
+  const [left = 0, top = 0, width = 0, height = 0] = element?.bbox || [];
+  return width > 12 && height > 8 && left >= 0 && top >= 0;
+}
+
 function cssColor(value, fallback = "#333333") {
   if (!value || value === "tx1") return fallback;
   if (String(value).startsWith("rgba(")) return value;
@@ -1565,11 +1642,15 @@ function getElementStyle(element) {
     fontFamily: `${firstRun.typeface || resolved.typeface || "Calibri"}, Calibri, Aptos, Arial, sans-serif`,
     fontWeight: firstRun.bold || runs.some((run) => run.bold) ? 700 : 400,
     fontStyle: firstRun.italic ? "italic" : "normal",
+    textDecoration: firstRun.underline ? "underline" : "none",
     color: cssColor(firstRun.color, "#333333"),
     textAlign: alignment === "center" ? "center" : alignment === "right" ? "right" : "left",
     verticalAlignment: resolved.verticalAlignment || "top",
     insets: resolved.insets || { top: 0, right: 0, bottom: 0, left: 0 },
-    lineHeight: 1.08,
+    lineHeight: Number(firstParagraph.resolvedTextStyle?.lineSpacing || resolved.lineSpacing || 1.08),
+    paragraphSpacing: Number(firstParagraph.resolvedTextStyle?.paragraphSpacing || resolved.paragraphSpacing || 0),
+    letterSpacing: Number(firstRun.letterSpacing || 0),
+    wrap: resolved.wrap !== false,
   };
 }
 
@@ -1677,13 +1758,13 @@ function restructureSlide24Table(layout) {
     elements: layout.elements.map((element) =>
       element === table
         ? {
-            ...element,
-            rows: rowCount,
-            cols: columnCount,
-            text,
-            textPreview: text.replace(/\n/g, " | "),
-            cells,
-          }
+          ...element,
+          rows: rowCount,
+          cols: columnCount,
+          text,
+          textPreview: text.replace(/\n/g, " | "),
+          cells,
+        }
         : element,
     ),
   };
@@ -1817,13 +1898,13 @@ function restructureSlide26Table(layout) {
     elements: layout.elements.map((element) =>
       element === table
         ? {
-            ...element,
-            rows: rowCount,
-            cols: columnCount,
-            text,
-            textPreview: text.replace(/\n/g, " | "),
-            cells,
-          }
+          ...element,
+          rows: rowCount,
+          cols: columnCount,
+          text,
+          textPreview: text.replace(/\n/g, " | "),
+          cells,
+        }
         : element,
     ),
   };
@@ -1956,7 +2037,21 @@ function restructureSlide30TaxTable(layout) {
   };
 }
 
-function getSlide30TaxFiscalYears(currentPeriod) {
+function getSlide30TaxFiscalYears(currentPeriod, fallbackYears = []) {
+  const startFiscalYear = Number(currentPeriod?.startFiscalYear || 0);
+  const endFiscalYear = Number(currentPeriod?.fiscalYear || 0);
+  if (startFiscalYear && endFiscalYear && endFiscalYear >= startFiscalYear) {
+    return Array.from(
+      { length: endFiscalYear - startFiscalYear + 1 },
+      (_, index) => startFiscalYear + index,
+    ).slice(-(SLIDE_30_TAX_TABLE_COLUMN_COUNT - 2));
+  }
+
+  const cleanFallbackYears = Array.from(new Set(
+    (fallbackYears || []).map(Number).filter((year) => Number.isInteger(year) && year > 0),
+  )).sort((a, b) => a - b);
+  if (cleanFallbackYears.length) return cleanFallbackYears.slice(-(SLIDE_30_TAX_TABLE_COLUMN_COUNT - 2));
+
   const startDate = currentPeriod?.startDate;
   const endDate = currentPeriod?.endDate;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(startDate || "")) || !/^\d{4}-\d{2}-\d{2}$/.test(String(endDate || ""))) {
@@ -1970,6 +2065,43 @@ function getSlide30TaxFiscalYears(currentPeriod) {
   const years = [];
   for (let year = startYear; year <= lastCompleteYear; year += 1) years.push(year);
   return years.slice(-(SLIDE_30_TAX_TABLE_COLUMN_COUNT - 2));
+}
+
+function parseSlide30TaxNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const negative = /^\(.+\)$/.test(raw) || raw.startsWith("-");
+  const parsed = Number(raw.replace(/[($,%)]/g, "").replace(/,/g, ""));
+  if (!Number.isFinite(parsed)) return null;
+  return negative ? -Math.abs(parsed) : parsed;
+}
+
+function getSlide30TaxRowValue(row) {
+  if (!row) return null;
+  if (row.hasTaxReturn === false && row.hasPl === false) return null;
+  const taxReturn = parseSlide30TaxNumber(row.taxReturn ?? row.tax_return);
+  const pl = parseSlide30TaxNumber(row.pl ?? row.book ?? row.bookAmount);
+  if (row.hasTaxReturn && (Math.abs(taxReturn || 0) > 0.0001 || !row.hasPl)) return taxReturn;
+  if (row.hasPl) return pl;
+  return parseSlide30TaxNumber(row.amount ?? row.value) ?? taxReturn ?? pl;
+}
+
+function getSlide30TaxMetricFallback(label, metrics = {}) {
+  const clean = normalizeText(label).toLowerCase();
+  if (clean === "total revenue") return metrics.totalRevenue;
+  if (clean === "total cost of goods sold") return metrics.costOfGoodsSold;
+  if (clean === "gross profit") return metrics.hasGrossProfitData ? metrics.grossProfit : null;
+  if (clean === "net income") return metrics.netProfit;
+  return null;
+}
+
+function formatSlide30TaxValue(value) {
+  const numeric = parseSlide30TaxNumber(value);
+  if (numeric === null) return "-";
+  if (Math.abs(numeric) < 0.0001) return "0";
+  return formatAutoFillMillions(numeric) || "0";
 }
 
 function normalizeSlide35InitiativeDescriptions(layout) {
@@ -1993,13 +2125,117 @@ function normalizeSlide35InitiativeDescriptions(layout) {
   };
 }
 
+function normalizeTemplateFontSize(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return value;
+  return Math.floor(numeric);
+}
+
+function normalizeTemplateWholeFontSizes(node) {
+  if (Array.isArray(node)) return node.map(normalizeTemplateWholeFontSizes);
+  if (!node || typeof node !== "object") return node;
+  return Object.fromEntries(
+    Object.entries(node).map(([key, value]) => {
+      if (key === "fontSize" || key === "resolvedFontSize") {
+        return [key, normalizeTemplateFontSize(value)];
+      }
+      return [key, normalizeTemplateWholeFontSizes(value)];
+    }),
+  );
+}
+
+function normalizeSlide1CompanyName(layout) {
+  if (!layout?.elements) return layout;
+  return {
+    ...layout,
+    elements: layout.elements.map((element) => {
+      const order = Number(element.order || 0);
+      if ([18, 19].includes(order)) {
+        return {
+          ...element,
+          paragraphs: (element.paragraphs || []).map((paragraph) => ({
+            ...paragraph,
+            runs: (paragraph.runs || []).map((run) => ({ ...run, color: "#6D6E71" })),
+          })),
+        };
+      }
+
+      if (order !== 11 || !/\[Company Legal Name\]/i.test(String(element.text || ""))) return element;
+      const bbox = Array.isArray(element.bbox) ? [...element.bbox] : element.bbox;
+      if (bbox) bbox[3] = Math.max(Number(bbox[3] || 0), 70.08);
+      return {
+        ...element,
+        bbox,
+        resolvedFontSize: 30,
+        resolvedTextStyle: {
+          ...(element.resolvedTextStyle || {}),
+          fontSize: 30,
+          verticalAlignment: "top",
+        },
+        textLayout: element.textLayout
+          ? { ...element.textLayout, lineCount: Math.max(Number(element.textLayout.lineCount || 0), 2) }
+          : element.textLayout,
+        paragraphs: (element.paragraphs || []).map((paragraph) => ({
+          ...paragraph,
+          runs: (paragraph.runs || []).map((run) => ({ ...run, fontSize: 30 })),
+        })),
+      };
+    }),
+  };
+}
+
+function normalizeSlide3TableOfContents(layout) {
+  if (!layout?.elements) return layout;
+  const tocStylesByOrder = new Map([
+    ...[6, 10, 14, 18, 22, 26, 30, 34, 38, 42].map((order) => [order, {
+      fontSize: 24,
+      color: "#8BC53D",
+      bold: true,
+    }]),
+    ...[7, 11, 15, 19, 23, 27, 31, 35, 39, 43].map((order) => [order, {
+      fontSize: 16,
+      color: "#2F3033",
+      bold: true,
+    }]),
+    ...[8, 12, 16, 20, 24, 28, 32, 36, 40, 44].map((order) => [order, {
+      fontSize: 11,
+      color: "#8C8D90",
+      bold: false,
+    }]),
+  ]);
+
+  return {
+    ...layout,
+    elements: layout.elements.map((element) => {
+      const style = tocStylesByOrder.get(Number(element.order || 0));
+      if (!style || !element.text) return element;
+      return {
+        ...element,
+        resolvedFontSize: style.fontSize,
+        paragraphs: (element.paragraphs || []).map((paragraph) => ({
+          ...paragraph,
+          runs: (paragraph.runs || []).map((run) => ({
+            ...run,
+            fontSize: style.fontSize,
+            color: style.color,
+            bold: style.bold,
+          })),
+        })),
+      };
+    }),
+  };
+}
+
 export function prepareCimLayout(slideNumber, layout) {
-  if (slideNumber === 24) return restructureSlide24Table(layout);
-  if (slideNumber === 26) return restructureSlide26Table(layout);
-  if (slideNumber === 27) return restructureSlide27Table(layout);
-  if (slideNumber === 30) return restructureSlide30TaxTable(layout);
-  if (slideNumber === 35) return normalizeSlide35InitiativeDescriptions(layout);
-  return layout;
+  let preparedLayout = layout;
+  if (slideNumber === 1) preparedLayout = normalizeSlide1CompanyName(preparedLayout);
+  if (slideNumber === 3) preparedLayout = normalizeSlide3TableOfContents(preparedLayout);
+  if (slideNumber === 24) preparedLayout = restructureSlide24Table(preparedLayout);
+  if (slideNumber === 26) preparedLayout = restructureSlide26Table(preparedLayout);
+  if (slideNumber === 27) preparedLayout = restructureSlide27Table(preparedLayout);
+  if (slideNumber === 30) preparedLayout = restructureSlide30TaxTable(preparedLayout);
+  if (slideNumber === 35) preparedLayout = normalizeSlide35InitiativeDescriptions(preparedLayout);
+  return normalizeTemplateWholeFontSizes(preparedLayout);
 }
 
 function makeFieldId(slideNumber, element) {
@@ -2008,6 +2244,10 @@ function makeFieldId(slideNumber, element) {
 
 function makeTokenFieldId(slideNumber, element, tokenInfo) {
   return `${makeFieldId(slideNumber, element)}:token:${tokenInfo.index}:${tokenInfo.key}`;
+}
+
+function makePptTextFieldId(slideNumber, element) {
+  return `${makeFieldId(slideNumber, element)}:ppt-text`;
 }
 
 function makeRepeatableFieldId(slideNumber, key) {
@@ -2067,14 +2307,41 @@ function getStructuredRepeatableBinding(slideNumber, element) {
   return null;
 }
 
+function isPptTextEditableElement(element) {
+  return Boolean(
+    element?.text &&
+    normalizeText(element.text) &&
+    element.kind !== "table" &&
+    hasEditableTextBounds(element) &&
+    !isTopRightSlideNumberElement(element),
+  );
+}
+
+function buildPptTextField(slideNumber, element, baseField) {
+  const cleanText = normalizeText(element.text);
+  return {
+    ...baseField,
+    id: makePptTextFieldId(slideNumber, element),
+    text: element.text,
+    label: cleanText.length > 72 ? `${cleanText.slice(0, 69)}...` : cleanText || "PPT text",
+    fieldKind: "text",
+    pptOnly: true,
+    fullText: true,
+    excludeFromQuestionnaire: true,
+  };
+}
+
+function isPptTextField(field) {
+  return Boolean(field?.pptOnly && field?.fullText);
+}
+
 export function extractTemplateFields(slideNumber, layout) {
   const elements = layout?.elements || [];
 
   return elements
     .filter((element) => {
-      if (!element.text || !containsTemplateToken(element.text)) return false;
-      const [left, top, width, height] = element.bbox || [];
-      return width > 12 && height > 8 && left >= 0 && top >= 0;
+      if (!element.text || !hasEditableTextBounds(element)) return false;
+      return containsTemplateToken(element.text) || isPptTextEditableElement(element);
     })
     .flatMap((element) => {
       const fieldKind = getFieldKind(element.text);
@@ -2087,6 +2354,15 @@ export function extractTemplateFields(slideNumber, layout) {
         style: getElementStyle(element),
         sourceText: element.text,
       };
+      const globalDetailKey = getSlideGlobalDetailKey(slideNumber, element);
+      const pptTextField = fieldKind === "text" &&
+        !globalDetailKey &&
+        !isSlide1DescriptorElement(slideNumber, element) &&
+        isPptTextEditableElement(element)
+        ? [buildPptTextField(slideNumber, element, baseField)]
+        : [];
+
+      if (!containsTemplateToken(element.text)) return pptTextField;
 
       const repeatableVisible = getRepeatableOverrideByVisibleOrder(slideNumber, element);
       const repeatableTimeline = getRepeatableOverrideForTimelineElement(slideNumber, element);
@@ -2123,7 +2399,7 @@ export function extractTemplateFields(slideNumber, layout) {
           prompt: override.prompt,
           fieldKind: override.fieldKind,
           repeatableConfig: override,
-        }, structuredField];
+        }, structuredField, ...pptTextField];
       }
 
       if (repeatableChart) {
@@ -2259,10 +2535,12 @@ export function extractTemplateFields(slideNumber, layout) {
             };
           });
 
-        return [mergedField, ...remainingTokenFields];
+        return [...pptTextField, mergedField, ...remainingTokenFields];
       }
 
-      return getTemplateTokens(element.text)
+      return [
+        ...pptTextField,
+        ...getTemplateTokens(element.text)
         .filter((tokenInfo) => !tokenValue(tokenInfo.token, GLOBAL_DETAIL_SENTINELS, element.text))
         .map((tokenInfo) => {
           const override = getFieldLabelOverride(slideNumber, element, tokenInfo);
@@ -2295,7 +2573,8 @@ export function extractTemplateFields(slideNumber, layout) {
             hidden: Boolean(mirror?.hidden ?? mirror),
             maxLength: override?.maxLength || getTokenMaxLength(tokenInfo.token),
           };
-        });
+        }),
+      ];
     });
 }
 
@@ -2335,14 +2614,14 @@ function getChartFieldOverride(slideNumber, element) {
 }
 
 function tokenValue(token, details, sourceText = "") {
-  const key = normalizeText(token).toLowerCase();
-  const source = normalizeText(sourceText).toLowerCase();
+  const key = normalizeText(token).toLowerCase().replace(/[–—]/g, "-");
+  const source = normalizeText(sourceText).toLowerCase().replace(/[–—]/g, "-");
   const companyName = details.companyName || "";
   const isCoAdvisorField = source.includes("co-advisor");
 
   if (key === "company name" || key === "company") return companyName;
   if (key === "company legal name") return companyName;
-  if (key === "name") return details.projectName || companyName;
+  if (key === "name") return details.projectName || "";
   if (key === "month year") return details.monthYear || "";
   if (key === "one-line company descriptor - industry, geography, business model") {
     return details.descriptor || "";
@@ -2421,6 +2700,30 @@ function getPlaceholderAssetKey(text) {
   return "";
 }
 
+const ASSET_SCALE_MIN = 0.4;
+const ASSET_SCALE_MAX = 2.5;
+
+function normalizeAssetScale(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 1;
+  return Math.min(ASSET_SCALE_MAX, Math.max(ASSET_SCALE_MIN, numeric));
+}
+
+// Grows/shrinks a placeholder box around its own center so a resized logo
+// never changes aspect ratio -- both dimensions scale by the same factor.
+function scaleBboxAroundCenter(bbox, scale) {
+  const [left = 0, top = 0, width = 0, height = 0] = bbox || [];
+  if (scale === 1 || width <= 0 || height <= 0) return bbox;
+  const nextWidth = width * scale;
+  const nextHeight = height * scale;
+  return [
+    left + (width - nextWidth) / 2,
+    top + (height - nextHeight) / 2,
+    nextWidth,
+    nextHeight,
+  ];
+}
+
 function hasSameBbox(first, second, tolerance = 1) {
   const firstBox = first?.bbox || [];
   const secondBox = second?.bbox || [];
@@ -2454,6 +2757,34 @@ function isTopRightSlideNumberElement(element) {
   return left >= SLIDE_WIDTH - 96 && top <= 48 && width <= 80 && height <= 40;
 }
 
+function isSlide1DescriptorElement(slideNumber, element) {
+  const clean = normalizeText(element?.text).toLowerCase();
+  return Number(slideNumber || 0) === 1 &&
+    Number(element?.order || 0) === 7 &&
+    clean.includes("company descriptor");
+}
+
+function getSlideGlobalDetailKey(slideNumber, element) {
+  if (Number(slideNumber || 0) !== 1) return "";
+  return SLIDE_1_GLOBAL_DETAIL_KEY_BY_ORDER.get(Number(element?.order || 0)) || "";
+}
+
+function getGlobalDetailElementText(globalDetailKey, element, globalDetails = {}) {
+  const value = globalDetailKey === "companyName"
+    ? globalDetails.companyName || globalDetails.companyLegalName || ""
+    : globalDetails[globalDetailKey] || "";
+  return normalizeText(value) ? value : applyGlobalDetails(element?.text || "", globalDetails);
+}
+
+function shouldUseDirectEditorTextField(slideNumber, element, pptTextField) {
+  if (!pptTextField || !element?.text) return false;
+  if (getSlideGlobalDetailKey(slideNumber, element)) return false;
+  if (isTopRightSlideNumberElement(element)) return false;
+  if (isSlide1DescriptorElement(slideNumber, element)) return false;
+  if (getFieldKind(element.text) !== "text") return false;
+  return isPptTextEditableElement(element);
+}
+
 function getKnownGlobalTokens(text) {
   return getTemplateTokens(text).map((item) => item.token).filter(
     (token) => tokenValue(token, GLOBAL_DETAIL_SENTINELS, text),
@@ -2461,6 +2792,7 @@ function getKnownGlobalTokens(text) {
 }
 
 function isHandledByGlobalDetails(field) {
+  if (isPptTextField(field)) return false;
   if (!field?.text || isMediaField(field)) return false;
   const tokens = getTemplateTokens(field.text).map((item) => item.token);
   return tokens.length > 0 && tokens.length === getKnownGlobalTokens(field.text).length;
@@ -2475,6 +2807,7 @@ function getFieldValue(field, fieldValues, globalDetails) {
 }
 
 function isResolvedByGlobalDetails(field, globalDetails) {
+  if (isPptTextField(field)) return false;
   if (field?.token) return Boolean(tokenValue(field.token, globalDetails, field.sourceText || field.text));
   return isHandledByGlobalDetails(field) || !containsTemplateToken(applyGlobalDetails(field.text, globalDetails));
 }
@@ -2505,8 +2838,18 @@ function getElementFields(slideNumber, element, fieldsById) {
   return Object.values(fieldsById || {}).filter((field) => (field.parentId || field.id) === fieldId);
 }
 
+function hasStoredFieldValue(field, fieldValues = {}) {
+  const key = getFieldValueKey(field);
+  return Boolean(key && Object.prototype.hasOwnProperty.call(fieldValues || {}, key));
+}
+
+function getFieldValueKey(field) {
+  return field?.valueFieldId || field?.id || "";
+}
+
 function getStoredFieldValue(field, fieldValues) {
-  return fieldValues[field.valueFieldId || field.id];
+  const key = getFieldValueKey(field);
+  return key ? fieldValues[key] : undefined;
 }
 
 function parseRepeatableEntries(value, _config = null) {
@@ -2812,7 +3155,7 @@ function getChartTitle(field) {
   return text.slice(0, 72) || field?.label || "Chart";
 }
 
-function chartGrid(plot, minValue, maxValue) {
+function chartGrid(plot, minValue, maxValue, chartStyle = getCimChartStyle()) {
   const lines = [];
   const range = maxValue - minValue || 1;
 
@@ -2820,19 +3163,20 @@ function chartGrid(plot, minValue, maxValue) {
     const value = minValue + (range * index) / 4;
     const y = plot.y + plot.height - ((value - minValue) / range) * plot.height;
     lines.push(`
-      <line x1="${plot.x}" y1="${y}" x2="${plot.x + plot.width}" y2="${y}" stroke="#E5E7EB" stroke-width="1"/>
-      <text x="${plot.x - 10}" y="${y + 4}" text-anchor="end" font-size="18" fill="#6D6E71">${escapeSvg(formatChartValue(value))}</text>
+      <line x1="${plot.x}" y1="${y}" x2="${plot.x + plot.width}" y2="${y}" stroke="${chartStyle.gridColor}" stroke-width="1"/>
+      <text x="${plot.x - 10}" y="${y + 4}" text-anchor="end" font-size="18" fill="${chartStyle.labelColor}">${escapeSvg(formatChartValue(value))}</text>
     `);
   }
 
   return lines.join("");
 }
 
-function buildBarChart(data, plot) {
+function buildBarChart(data, plot, chartStyle = getCimChartStyle()) {
   const seriesCount = Math.max(1, ...data.map((row) => row.values.length));
   const maxValue = Math.max(1, ...data.flatMap((row) => row.values.map((value) => Math.max(0, value))));
   const groupWidth = plot.width / Math.max(data.length, 1);
   const barWidth = Math.min(42, (groupWidth * 0.68) / seriesCount);
+  const palette = chartStyle.palette || CHART_COLORS;
 
   const bars = data.flatMap((row, rowIndex) =>
     Array.from({ length: seriesCount }, (_, seriesIndex) => {
@@ -2845,30 +3189,31 @@ function buildBarChart(data, plot) {
         seriesIndex * barWidth;
       const y = plot.y + plot.height - barHeight;
       return `
-        <rect x="${x}" y="${y}" width="${barWidth - 3}" height="${barHeight}" fill="${CHART_COLORS[seriesIndex % CHART_COLORS.length]}"/>
-        <text x="${x + (barWidth - 3) / 2}" y="${y - 7}" text-anchor="middle" font-size="17" font-weight="700" fill="#476E2C">${escapeSvg(formatChartValue(value))}</text>
+        <rect x="${x}" y="${y}" width="${barWidth - 3}" height="${barHeight}" fill="${palette[seriesIndex % palette.length]}"/>
+        <text x="${x + (barWidth - 3) / 2}" y="${y - 7}" text-anchor="middle" font-size="17" font-weight="700" fill="${chartStyle.titleColor}">${escapeSvg(formatChartValue(value))}</text>
       `;
     }),
   ).join("");
 
   const labels = data.map((row, rowIndex) => {
     const x = plot.x + rowIndex * groupWidth + groupWidth / 2;
-    return `<text x="${x}" y="${plot.y + plot.height + 32}" text-anchor="middle" font-size="18" fill="#6D6E71">${escapeSvg(row.label)}</text>`;
+    return `<text x="${x}" y="${plot.y + plot.height + 32}" text-anchor="middle" font-size="18" fill="${chartStyle.labelColor}">${escapeSvg(row.label)}</text>`;
   }).join("");
 
-  return `${chartGrid(plot, 0, maxValue)}${bars}${labels}`;
+  return `${chartGrid(plot, 0, maxValue, chartStyle)}${bars}${labels}`;
 }
 
-function buildLineChart(data, plot) {
+function buildLineChart(data, plot, chartStyle = getCimChartStyle()) {
   const seriesCount = Math.max(1, ...data.map((row) => row.values.length));
   const values = data.flatMap((row) => row.values);
   const minValue = Math.min(0, ...values);
   const maxValue = Math.max(1, ...values);
   const range = maxValue - minValue || 1;
   const step = data.length > 1 ? plot.width / (data.length - 1) : plot.width;
+  const palette = chartStyle.palette || CHART_COLORS;
   const labels = data.map((row, rowIndex) => {
     const x = plot.x + rowIndex * step;
-    return `<text x="${x}" y="${plot.y + plot.height + 32}" text-anchor="middle" font-size="18" fill="#6D6E71">${escapeSvg(row.label)}</text>`;
+    return `<text x="${x}" y="${plot.y + plot.height + 32}" text-anchor="middle" font-size="18" fill="${chartStyle.labelColor}">${escapeSvg(row.label)}</text>`;
   }).join("");
   const series = Array.from({ length: seriesCount }, (_, seriesIndex) => {
     const points = data.map((row, rowIndex) => {
@@ -2878,15 +3223,15 @@ function buildLineChart(data, plot) {
       return [x, y, value];
     });
     const pointList = points.map(([x, y]) => `${x},${y}`).join(" ");
-    const color = CHART_COLORS[seriesIndex % CHART_COLORS.length];
+    const color = palette[seriesIndex % palette.length];
     const dots = points.map(([x, y, value]) => `
       <circle cx="${x}" cy="${y}" r="5" fill="${color}"/>
-      <text x="${x}" y="${y - 12}" text-anchor="middle" font-size="17" font-weight="700" fill="#476E2C">${escapeSvg(formatChartValue(value))}</text>
+      <text x="${x}" y="${y - 12}" text-anchor="middle" font-size="17" font-weight="700" fill="${chartStyle.titleColor}">${escapeSvg(formatChartValue(value))}</text>
     `).join("");
     return `<polyline points="${pointList}" fill="none" stroke="${color}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>${dots}`;
   }).join("");
 
-  return `${chartGrid(plot, minValue, maxValue)}${series}${labels}`;
+  return `${chartGrid(plot, minValue, maxValue, chartStyle)}${series}${labels}`;
 }
 
 function polarToCartesian(cx, cy, radius, angle) {
@@ -2901,9 +3246,10 @@ function piePath(cx, cy, radius, startAngle, endAngle) {
   return `M ${cx} ${cy} L ${startX} ${startY} A ${radius} ${radius} 0 ${largeArc} 0 ${endX} ${endY} Z`;
 }
 
-function buildPieChart(data) {
+function buildPieChart(data, chartStyle = getCimChartStyle()) {
   const total = data.reduce((sum, row) => sum + Math.abs(row.values[0] || 0), 0) || 1;
   let angle = 0;
+  const palette = chartStyle.palette || CHART_COLORS;
   const slices = data.map((row, index) => {
     const value = Math.abs(row.values[0] || 0);
     const endAngle = angle + (value / total) * 360;
@@ -2912,21 +3258,22 @@ function buildPieChart(data) {
     const path = piePath(330, 278, 145, angle, endAngle);
     angle = endAngle;
     return `
-      <path d="${path}" fill="${CHART_COLORS[index % CHART_COLORS.length]}" stroke="#FFFFFF" stroke-width="3"/>
-      <text x="${labelX}" y="${labelY}" text-anchor="middle" font-size="18" font-weight="700" fill="#243F18">${formatAutoFillNumber((value / total) * 100)}%</text>
+      <path d="${path}" fill="${palette[index % palette.length]}" stroke="#FFFFFF" stroke-width="3"/>
+      <text x="${labelX}" y="${labelY}" text-anchor="middle" font-size="18" font-weight="700" fill="${chartStyle.titleColor}">${formatAutoFillNumber((value / total) * 100)}%</text>
     `;
   }).join("");
   const legend = data.map((row, index) => `
-    <rect x="575" y="${175 + index * 42}" width="22" height="22" fill="${CHART_COLORS[index % CHART_COLORS.length]}"/>
-    <text x="612" y="${193 + index * 42}" font-size="22" fill="#333333">${escapeSvg(row.label)}</text>
+    <rect x="575" y="${175 + index * 42}" width="22" height="22" fill="${palette[index % palette.length]}"/>
+    <text x="612" y="${193 + index * 42}" font-size="22" fill="${chartStyle.labelColor}">${escapeSvg(row.label)}</text>
   `).join("");
 
-  return `${slices}${legend}`;
+  return `${slices}${chartStyle.legendPosition === "none" ? "" : legend}`;
 }
 
-function buildWaterfallChart(data, plot) {
+function buildWaterfallChart(data, plot, chartStyle = getCimChartStyle()) {
   const steps = [];
   let running = 0;
+  const palette = chartStyle.palette || CHART_COLORS;
 
   data.forEach((row, index) => {
     const value = row.values[0] || 0;
@@ -2948,40 +3295,41 @@ function buildWaterfallChart(data, plot) {
     const x = plot.x + index * groupWidth + (groupWidth - barWidth) / 2;
     const y = Math.min(yFor(step.start), yFor(step.end));
     const height = Math.max(2, Math.abs(yFor(step.start) - yFor(step.end)));
-    const color = step.isTotal ? "#476E2C" : step.value >= 0 ? "#8BC53D" : "#A5A5A5";
+    const color = step.isTotal ? palette[1 % palette.length] : step.value >= 0 ? palette[0] : palette[2 % palette.length];
     const labelX = plot.x + index * groupWidth + groupWidth / 2;
     const connector = index < steps.length - 1
-      ? `<line x1="${x + barWidth}" y1="${yFor(step.end)}" x2="${plot.x + (index + 1) * groupWidth + (groupWidth - barWidth) / 2}" y2="${yFor(step.end)}" stroke="#A5A5A5" stroke-width="2" stroke-dasharray="5 4"/>`
+      ? `<line x1="${x + barWidth}" y1="${yFor(step.end)}" x2="${plot.x + (index + 1) * groupWidth + (groupWidth - barWidth) / 2}" y2="${yFor(step.end)}" stroke="${chartStyle.gridColor}" stroke-width="2" stroke-dasharray="5 4"/>`
       : "";
     return `
       <rect x="${x}" y="${y}" width="${barWidth}" height="${height}" fill="${color}"/>
-      <text x="${labelX}" y="${y - 8}" text-anchor="middle" font-size="17" font-weight="700" fill="#476E2C">${escapeSvg(formatChartValue(step.end))}</text>
-      <text x="${labelX}" y="${plot.y + plot.height + 32}" text-anchor="middle" font-size="16" fill="#6D6E71">${escapeSvg(step.label)}</text>
+      <text x="${labelX}" y="${y - 8}" text-anchor="middle" font-size="17" font-weight="700" fill="${chartStyle.titleColor}">${escapeSvg(formatChartValue(step.end))}</text>
+      <text x="${labelX}" y="${plot.y + plot.height + 32}" text-anchor="middle" font-size="16" fill="${chartStyle.labelColor}">${escapeSvg(step.label)}</text>
       ${connector}
     `;
   }).join("");
 
-  return `${chartGrid(plot, minValue, maxValue)}${bars}`;
+  return `${chartGrid(plot, minValue, maxValue, chartStyle)}${bars}`;
 }
 
-function buildChartSvg(field, chartConfig = {}) {
+function buildChartSvg(field, chartConfig = {}, styleProfile = null) {
   const type = chartConfig.type || getDefaultChartType(field);
   const data = parseChartData(chartConfig.dataText || "", getDefaultChartData(field, type));
   const plot = { x: 86, y: 105, width: 780, height: 290 };
+  const chartStyle = getCimChartStyle(styleProfile);
   const chart =
     type === "pie"
-      ? buildPieChart(data)
+      ? buildPieChart(data, chartStyle)
       : type === "line"
-        ? buildLineChart(data, plot)
+        ? buildLineChart(data, plot, chartStyle)
         : type === "waterfall"
-          ? buildWaterfallChart(data, plot)
-          : buildBarChart(data, plot);
+          ? buildWaterfallChart(data, plot, chartStyle)
+          : buildBarChart(data, plot, chartStyle);
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="520" viewBox="0 0 960 520">
-    <rect width="960" height="520" fill="#FFFFFF"/>
-    <text x="48" y="56" font-family="Calibri, Arial, sans-serif" font-size="28" font-weight="700" fill="#476E2C">${escapeSvg(getChartTitle(field))}</text>
-    <line x1="48" y1="76" x2="912" y2="76" stroke="#8BC53D" stroke-width="3"/>
-    <g font-family="Calibri, Arial, sans-serif">${chart}</g>
+    <rect width="960" height="520" fill="${chartStyle.backgroundColor}"/>
+    <text x="48" y="56" font-family="${escapeSvg(chartStyle.axisFontFamily)}, Arial, sans-serif" font-size="28" font-weight="700" fill="${chartStyle.titleColor}">${escapeSvg(getChartTitle(field))}</text>
+    <line x1="48" y1="76" x2="912" y2="76" stroke="${chartStyle.palette?.[0] || "#8BC53D"}" stroke-width="3"/>
+    <g font-family="${escapeSvg(chartStyle.axisFontFamily)}, Arial, sans-serif">${chart}</g>
   </svg>`;
 }
 
@@ -3001,8 +3349,9 @@ function wrapSvgText(value, maxCharacters = 24, maxLines = 3) {
   return lines;
 }
 
-function buildTimelineSvg(entries) {
+function buildTimelineSvg(entries, styleProfile = null) {
   const rows = entries.filter(hasRepeatableEntryValue);
+  const chartStyle = getCimChartStyle(styleProfile);
   const width = 1200;
   const height = 210;
   const lineY = 104;
@@ -3024,45 +3373,46 @@ function buildTimelineSvg(entries) {
       `<tspan x="${x}" dy="${lineIndex === 0 ? 0 : lineHeight}">${escapeSvg(line)}</tspan>`
     )).join("");
     return `
-      <line x1="${x}" y1="${lineY}" x2="${x}" y2="${connectorY}" stroke="#8BC53D" stroke-width="2"/>
-      <circle cx="${x}" cy="${lineY}" r="8" fill="#8BC53D" stroke="#476E2C" stroke-width="2"/>
-      <text x="${x}" y="${yearY}" text-anchor="middle" font-size="18" font-weight="700" fill="#476E2C">${escapeSvg(entry.year || "")}</text>
-      <text x="${x}" y="${descriptionY}" text-anchor="middle" font-size="14" fill="#333333">${description}</text>
+      <line x1="${x}" y1="${lineY}" x2="${x}" y2="${connectorY}" stroke="${chartStyle.palette[0]}" stroke-width="2"/>
+      <circle cx="${x}" cy="${lineY}" r="8" fill="${chartStyle.palette[0]}" stroke="${chartStyle.titleColor}" stroke-width="2"/>
+      <text x="${x}" y="${yearY}" text-anchor="middle" font-size="18" font-weight="700" fill="${chartStyle.titleColor}">${escapeSvg(entry.year || "")}</text>
+      <text x="${x}" y="${descriptionY}" text-anchor="middle" font-size="14" fill="${chartStyle.labelColor}">${description}</text>
     `;
   }).join("");
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-    <rect width="${width}" height="${height}" fill="#FFFFFF"/>
-    <line x1="${sidePadding}" y1="${lineY}" x2="${width - sidePadding}" y2="${lineY}" stroke="#476E2C" stroke-width="3"/>
-    <g font-family="Calibri, Arial, sans-serif">${milestones}</g>
+    <rect width="${width}" height="${height}" fill="${chartStyle.backgroundColor}"/>
+    <line x1="${sidePadding}" y1="${lineY}" x2="${width - sidePadding}" y2="${lineY}" stroke="${chartStyle.titleColor}" stroke-width="3"/>
+    <g font-family="${escapeSvg(chartStyle.axisFontFamily)}, Arial, sans-serif">${milestones}</g>
   </svg>`;
 }
 
-function buildPositioningMatrixSvg(entries) {
+function buildPositioningMatrixSvg(entries, styleProfile = null) {
   const rows = entries.filter((entry) => normalizeText(entry.name));
+  const chartStyle = getCimChartStyle(styleProfile);
   const plot = { x: 110, y: 55, width: 760, height: 365 };
   const grid = Array.from({ length: 6 }, (_, index) => {
     const x = plot.x + (plot.width * index) / 5;
     const y = plot.y + (plot.height * index) / 5;
-    return `<line x1="${x}" y1="${plot.y}" x2="${x}" y2="${plot.y + plot.height}" stroke="#E5E7EB" stroke-width="1"/>
-      <line x1="${plot.x}" y1="${y}" x2="${plot.x + plot.width}" y2="${y}" stroke="#E5E7EB" stroke-width="1"/>`;
+    return `<line x1="${x}" y1="${plot.y}" x2="${x}" y2="${plot.y + plot.height}" stroke="${chartStyle.gridColor}" stroke-width="1"/>
+      <line x1="${plot.x}" y1="${y}" x2="${plot.x + plot.width}" y2="${y}" stroke="${chartStyle.gridColor}" stroke-width="1"/>`;
   }).join("");
   const points = rows.map((entry, index) => {
     const xScore = Math.max(0, Math.min(10, parseChartNumber(entry.xScore) ?? 5));
     const yScore = Math.max(0, Math.min(10, parseChartNumber(entry.yScore) ?? 5));
     const x = plot.x + (xScore / 10) * plot.width;
     const y = plot.y + plot.height - (yScore / 10) * plot.height;
-    const color = CHART_COLORS[index % CHART_COLORS.length];
+    const color = chartStyle.palette[index % chartStyle.palette.length];
     return `<circle cx="${x}" cy="${y}" r="11" fill="${color}" stroke="#FFFFFF" stroke-width="3"/>
-      <text x="${x + 15}" y="${y - 13}" font-size="18" font-weight="700" fill="#243F18">${escapeSvg(entry.name)}</text>`;
+      <text x="${x + 15}" y="${y - 13}" font-size="18" font-weight="700" fill="${chartStyle.titleColor}">${escapeSvg(entry.name)}</text>`;
   }).join("");
   return `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="520" viewBox="0 0 960 520">
-    <rect width="960" height="520" fill="#FFFFFF"/>
-    <g font-family="Calibri, Arial, sans-serif">${grid}${points}</g>
-    <line x1="${plot.x}" y1="${plot.y + plot.height}" x2="${plot.x + plot.width}" y2="${plot.y + plot.height}" stroke="#476E2C" stroke-width="3"/>
-    <line x1="${plot.x}" y1="${plot.y}" x2="${plot.x}" y2="${plot.y + plot.height}" stroke="#476E2C" stroke-width="3"/>
-    <text x="${plot.x + plot.width / 2}" y="485" text-anchor="middle" font-family="Calibri, Arial, sans-serif" font-size="20" font-weight="700" fill="#476E2C">Dimension A</text>
-    <text x="32" y="${plot.y + plot.height / 2}" text-anchor="middle" transform="rotate(-90 32 ${plot.y + plot.height / 2})" font-family="Calibri, Arial, sans-serif" font-size="20" font-weight="700" fill="#476E2C">Dimension B</text>
+    <rect width="960" height="520" fill="${chartStyle.backgroundColor}"/>
+    <g font-family="${escapeSvg(chartStyle.axisFontFamily)}, Arial, sans-serif">${grid}${points}</g>
+    <line x1="${plot.x}" y1="${plot.y + plot.height}" x2="${plot.x + plot.width}" y2="${plot.y + plot.height}" stroke="${chartStyle.titleColor}" stroke-width="3"/>
+    <line x1="${plot.x}" y1="${plot.y}" x2="${plot.x}" y2="${plot.y + plot.height}" stroke="${chartStyle.titleColor}" stroke-width="3"/>
+    <text x="${plot.x + plot.width / 2}" y="485" text-anchor="middle" font-family="${escapeSvg(chartStyle.axisFontFamily)}, Arial, sans-serif" font-size="20" font-weight="700" fill="${chartStyle.titleColor}">Dimension A</text>
+    <text x="32" y="${plot.y + plot.height / 2}" text-anchor="middle" transform="rotate(-90 32 ${plot.y + plot.height / 2})" font-family="${escapeSvg(chartStyle.axisFontFamily)}, Arial, sans-serif" font-size="20" font-weight="700" fill="${chartStyle.titleColor}">Dimension B</text>
   </svg>`;
 }
 
@@ -3078,20 +3428,296 @@ function getChartConfig(field, chartValues) {
   };
 }
 
-function getChartDataUrl(field, chartValues, fieldValues = {}) {
+function getCimBuilderTemplateElementId(slideNumber, element, suffix = "") {
+  const base = element?.id || element?.aid || element?.order || "element";
+  return `template:${slideNumber}:${base}${suffix ? `:${suffix}` : ""}`;
+}
+
+// Native CIM Builder: builds a flat, editable element model for one slide.
+// Walks layout.elements the same way SlideCanvas does, so filtering, asset
+// resolution, chart images, repeatable slots, and token resolution share one
+// source of truth.
+export function buildCimBuilderElementSpecs(slideNumber, layout, fields, fieldValues, assetValues, chartValues, globalDetails, styleProfile) {
+  const elements = layout?.elements || [];
+  const resolvedAssetValues = assetValues || {};
+  const resolvedChartValues = chartValues || {};
+  const fieldsById = Object.fromEntries((fields || []).map((field) => [field.id, field]));
+  const fieldsByElement = groupFieldsByElement(fields || []);
+  const specs = [{
+    cimKind: "background",
+    x: 0,
+    y: 0,
+    width: SLIDE_WIDTH,
+    height: SLIDE_HEIGHT,
+    fill: "#FFFFFF",
+    stroke: "transparent",
+    strokeWidth: 0,
+    editable: false,
+  }];
+
+  elements.forEach((element, elementIndex) => {
+    if (shouldHideUnusedRepeatableSlot(slideNumber, element, fieldValues)) return;
+    if (shouldHideLogoPlaceholderShape(elements, elementIndex, resolvedAssetValues)) return;
+
+    const content = getElementContent(
+      slideNumber, element, fieldsById, fieldValues, resolvedAssetValues, resolvedChartValues, globalDetails, styleProfile,
+    );
+    if (content.kind === "hidden") return;
+
+    const [left = 0, top = 0, width = 0, height = 0] = content.bbox || element.bbox || [];
+    const fieldId = getElementFieldId(slideNumber, element);
+    const elementFields = fieldId ? (fieldsByElement[fieldId] || []) : [];
+    const mediaField = elementFields.find((candidate) => isAssetField(candidate) || isChartField(candidate));
+    const editableElementFields = elementFields.filter((candidate) => !candidate.hidden && candidate.fieldKind === "text");
+    const linkedElementFields = elementFields.filter((candidate) => (
+      candidate.fieldKind === "text" && !isPptTextField(candidate)
+    ));
+    const editableLinkedElementFields = linkedElementFields.filter((candidate) => !candidate.hidden);
+    const pptTextField = editableElementFields.find(isPptTextField);
+    const globalDetailKey = getSlideGlobalDetailKey(slideNumber, element);
+    const inlineTokenField = editableLinkedElementFields.length === 1 && isWholeElementToken(element, editableLinkedElementFields[0])
+      ? editableLinkedElementFields[0]
+      : null;
+    const directEditorTextField = shouldUseDirectEditorTextField(slideNumber, element, pptTextField) ? pptTextField : null;
+    const inlineTextField = !mediaField
+      ? directEditorTextField || inlineTokenField || (linkedElementFields.length === 0 ? pptTextField : null)
+      : null;
+
+    if (element.kind === "table" && Array.isArray(element.cells)) {
+      const matrix = content.tableMatrix || parseTableText(content.text ?? "", element.rows, element.cols);
+      const visibleRows = content.visibleTableRows || Array.from(
+        { length: Number(element.rows || 0) },
+        (_, index) => index + 1,
+      );
+      const visibleColumns = content.visibleTableColumns || Array.from(
+        { length: Number(element.cols || 0) },
+        (_, index) => index + 1,
+      );
+      const sourceTableLeft = Number(element.bbox?.[0] || 0);
+      const targetLeft = Number(left || sourceTableLeft);
+      const targetTop = Number(top || element.bbox?.[1] || 0);
+      const tableScaleX = Number(content.tableScaleX || 1);
+      const sourceLabelWidth = Number(
+        element.cells.find((cell) => Number(cell.column || 1) === 1)?.bbox?.[2] || 0,
+      );
+      const compactValueWidth = visibleColumns.length > 1
+        ? (Number(element.bbox?.[2] || 0) - sourceLabelWidth) / (visibleColumns.length - 1)
+        : 0;
+
+      (element.cells || []).filter((cell) => (
+        visibleRows.includes(Number(cell.row || 1)) &&
+        visibleColumns.includes(Number(cell.column || 1))
+      )).forEach((cell) => {
+        const [cellLeft = 0, cellTop = 0, cellWidth = 0, cellHeight = 0] = cell.bbox || [];
+        const rowIndex = Number(cell.row || 1) - 1;
+        const colIndex = Number(cell.column || 1) - 1;
+        const compactRowIndex = visibleRows.indexOf(Number(cell.row || 1));
+        const compactColumnIndex = visibleColumns.indexOf(Number(cell.column || 1));
+        const effectiveCellLeft = content.compactTableColumns
+          ? targetLeft + (compactColumnIndex === 0
+            ? 0
+            : sourceLabelWidth + (compactColumnIndex - 1) * compactValueWidth)
+          : targetLeft + (cellLeft - sourceTableLeft) * tableScaleX;
+        const effectiveCellTop = content.compactTableRows
+          ? targetTop + compactRowIndex * cellHeight
+          : cellTop;
+        const effectiveCellWidth = content.compactTableColumns
+          ? (compactColumnIndex === 0 ? sourceLabelWidth : compactValueWidth)
+          : cellWidth * tableScaleX;
+        const matrixValue = matrix[rowIndex]?.[colIndex];
+        const cellText = content.suppressTemplateFallback
+          ? (matrixValue ?? "")
+          : (matrixValue || applyGlobalDetails(cell.text, globalDetails));
+        const cellStyle = getElementStyle(cell);
+        const cellInsets = cellStyle.insets || {};
+        specs.push({
+          id: getCimBuilderTemplateElementId(slideNumber, element, `cell-bg-${cell.index || `${cell.row}-${cell.column}`}`),
+          type: "shape",
+          subType: "rect",
+          cimKind: "tableRect",
+          x: effectiveCellLeft,
+          y: effectiveCellTop,
+          width: effectiveCellWidth,
+          height: cellHeight,
+          fill: cssColor(cell.fillColor, "transparent"),
+          stroke: cssColor(cell.lineColor, "transparent"),
+          strokeWidth: Math.max(Number(cell.lineWidth || 0), 0),
+          zIndex: Number(element.order || 1) * 100 + Number(cell.index || 0),
+          editable: false,
+        });
+        specs.push({
+          id: getCimBuilderTemplateElementId(slideNumber, element, `cell-text-${cell.index || `${cell.row}-${cell.column}`}`),
+          type: "text",
+          cimKind: "tableCell",
+          cimLinkedFieldIds: linkedElementFields.map(getFieldValueKey).filter(Boolean),
+          x: effectiveCellLeft,
+          y: effectiveCellTop,
+          width: effectiveCellWidth,
+          height: cellHeight,
+          text: cellText, fontFamily: cellStyle.fontFamily, fontSize: cellStyle.fontSize,
+          fill: cellStyle.color, align: cellStyle.textAlign,
+          fontWeight: cellStyle.fontWeight,
+          fontStyle: cellStyle.fontStyle,
+          textDecoration: cellStyle.textDecoration,
+          verticalAlign: cellStyle.verticalAlignment,
+          lineHeight: cellStyle.lineHeight,
+          letterSpacing: cellStyle.letterSpacing,
+          wrap: cellStyle.wrap,
+          insets: {
+            top: Number(cellInsets.top || 0),
+            right: Number(cellInsets.right || 0),
+            bottom: Number(cellInsets.bottom || 0),
+            left: Number(cellInsets.left || 0),
+          },
+          zIndex: Number(element.order || 1) * 100 + Number(cell.index || 0) + 1,
+          editable: false,
+        });
+      });
+      return;
+    }
+
+    if ((content.kind === "image" || content.kind === "chart") && content.dataUrl) {
+      specs.push({
+        id: getCimBuilderTemplateElementId(slideNumber, element),
+        type: "image",
+        cimKind: content.kind,
+        cimAssetKey: content.kind === "image" && mediaField ? getAssetKey(mediaField) : null,
+        cimAssetFieldId: content.kind === "image" && mediaField ? mediaField.id : null,
+        x: left, y: top, width, height,
+        src: content.dataUrl,
+        fit: content.fit || element.imageFit || element.fit || "contain",
+        objectPosition: content.objectPosition || element.objectPosition || "center center",
+        zIndex: Number(element.order || 1),
+      });
+      return;
+    }
+
+    if (mediaField && isAssetField(mediaField)) {
+      specs.push({
+        id: getCimBuilderTemplateElementId(slideNumber, element),
+        type: "image",
+        cimKind: "assetPlaceholder",
+        cimAssetKey: getAssetKey(mediaField),
+        cimAssetFieldId: mediaField.id,
+        x: left, y: top, width, height,
+        src: "",
+        name: mediaField.label || "Upload logo",
+        fit: content.fit || element.imageFit || element.fit || "contain",
+        objectPosition: content.objectPosition || element.objectPosition || "center center",
+        stroke: cssColor(element.lineColor, "#BFD99B"),
+        strokeWidth: element.lineColor ? Math.max(Number(element.lineWidth || 0), 0) : 1,
+        zIndex: Number(element.order || 1),
+      });
+      return;
+    }
+
+    // Decorative shapes (background bars, dividers, theme-colored panels) --
+    // same condition SlideCanvas uses at its bare-<div> branch. These already
+    // carry theme-resolved colors by the time this runs (applyCimTemplateStyleProfile
+    // rewrites fillColor/lineColor before layout reaches either renderer).
+    if (!element.text && content.kind !== "image" && content.kind !== "chart") {
+      const isRule = width === 0 || height === 0;
+      specs.push({
+        id: getCimBuilderTemplateElementId(slideNumber, element),
+        type: isRule ? "line" : "shape",
+        subType: element.geometry === "ellipse" ? "ellipse" : "rect",
+        cimKind: "shape",
+        x: left, y: top, width, height,
+        fill: cssColor(isRule ? (element.lineColor || element.fillColor) : element.fillColor, "transparent"),
+        stroke: element.lineColor ? cssColor(element.lineColor, "transparent") : "transparent",
+        strokeWidth: element.lineColor ? Math.max(Number(element.lineWidth || 0), 0) : 0,
+        isEllipse: element.geometry === "ellipse",
+        zIndex: Number(element.order || 1),
+        editable: false,
+      });
+      return;
+    }
+
+    const displayText = content.text ?? element.text ?? "";
+    if (!normalizeText(displayText) && !inlineTextField) return;
+    const style = getElementStyle(element);
+    const insets = style.insets || {};
+    const isRule = width === 0 || height === 0;
+    specs.push({
+      id: getCimBuilderTemplateElementId(slideNumber, element),
+      type: "text",
+      cimKind: "text",
+      cimFieldId: inlineTextField ? getFieldValueKey(inlineTextField) : null,
+      cimGlobalKey: globalDetailKey || null,
+      cimLinkedFieldIds: linkedElementFields.map(getFieldValueKey).filter(Boolean),
+      x: left, y: top, width, height,
+      text: displayText,
+      fontFamily: style.fontFamily,
+      fontSize: style.fontSize,
+      fill: style.color,
+      align: style.textAlign,
+      fontWeight: style.fontWeight,
+      fontStyle: style.fontStyle,
+      textDecoration: style.textDecoration,
+      verticalAlign: style.verticalAlignment,
+      lineHeight: style.lineHeight,
+      letterSpacing: style.letterSpacing,
+      wrap: style.wrap,
+      insets: {
+        top: Number(insets.top || 0),
+        right: Number(insets.right || 0),
+        bottom: Number(insets.bottom || 0),
+        left: Number(insets.left || 0),
+      },
+      backgroundFill: isRule ? "transparent" : cssColor(element.fillColor, "transparent"),
+      stroke: element.lineColor ? cssColor(element.lineColor, "transparent") : "transparent",
+      strokeWidth: element.lineColor ? Math.max(Number(element.lineWidth || 0), 0) : 0,
+      zIndex: Number(element.order || 1),
+      editable: Boolean(inlineTextField || globalDetailKey),
+    });
+  });
+
+  return specs;
+}
+
+// Inverse of buildCimBuilderElementSpecs for field-bound text.
+export function applyCimBuilderElementsToFieldValues(builderElements = []) {
+  const fieldValues = {};
+  (builderElements || []).forEach((element) => {
+    const cimFieldId = element?.cimFieldId;
+    if (!cimFieldId) return;
+    if (element.type === "text") fieldValues[cimFieldId] = element.text ?? "";
+  });
+  return fieldValues;
+}
+
+export function applyCimBuilderElementsToGlobalDetails(builderElements = [], baseElements = []) {
+  const globalDetails = {};
+  const baseElementById = new Map(
+    (baseElements || []).filter((element) => element?.id).map((element) => [String(element.id), element]),
+  );
+  (builderElements || []).forEach((element) => {
+    const cimGlobalKey = element?.cimGlobalKey;
+    if (!cimGlobalKey || !CIM_BUILDER_GLOBAL_DETAIL_KEYS.has(cimGlobalKey)) return;
+    if (element.type !== "text") return;
+    const baseElement = baseElementById.get(String(element.id || ""));
+    if (baseElement && String(baseElement.text ?? "") === String(element.text ?? "")) return;
+    globalDetails[cimGlobalKey] = element.text ?? "";
+    if (cimGlobalKey === "companyName") globalDetails.companyLegalName = element.text ?? "";
+  });
+  return globalDetails;
+}
+
+function getChartDataUrl(field, chartValues, fieldValues = {}, styleProfile = null) {
   if (field.chartKind === "ownershipPie" || field.chartKind === "positioningMatrix") {
     const entries = parseRepeatableEntries(fieldValues[field.structuredSourceId]);
     if (field.chartKind === "positioningMatrix") {
-      return svgToDataUrl(buildPositioningMatrixSvg(entries));
+      return svgToDataUrl(buildPositioningMatrixSvg(entries, styleProfile));
     }
     const dataText = getShareholderChartDataText(entries);
     return svgToDataUrl(buildChartSvg(
       { ...field, label: "Ownership Summary", text: "[Ownership Summary]" },
       { type: "pie", dataText },
+      styleProfile,
     ));
   }
 
-  return svgToDataUrl(buildChartSvg(field, getChartConfig(field, chartValues)));
+  return svgToDataUrl(buildChartSvg(field, getChartConfig(field, chartValues), styleProfile));
 }
 
 function getElementLayoutOverride(slideNumber, element) {
@@ -3172,7 +3798,7 @@ function getElementAutofillKey(kind, slideNumber, order) {
   return `__cim_${kind}__:${slideNumber}:${order}`;
 }
 
-function getSlide25ElementContent(element, fieldValues = {}) {
+function getSlide25ElementContent(element, fieldValues = {}, styleProfile = null) {
   const order = Number(element?.order || 0);
   if (![5, 8, 9, 10].includes(order)) return null;
 
@@ -3205,6 +3831,7 @@ function getSlide25ElementContent(element, fieldValues = {}) {
       dataUrl: svgToDataUrl(buildChartSvg(
         { ...SLIDE_25_BRIDGE_FIELD, text: "Adjusted EBITDA waterfall", label: "Adjusted EBITDA bridge" },
         { type: "waterfall", dataText: chartData },
+        styleProfile,
       )),
       name: "Adjusted EBITDA bridge",
     };
@@ -3270,7 +3897,13 @@ function getSlide27ElementContent(element, fieldValues = {}) {
   };
 }
 
-function getElementContent(slideNumber, element, fieldsById, fieldValues, assetValues, chartValues, globalDetails) {
+function getElementContent(slideNumber, element, fieldsById, fieldValues, assetValues, chartValues, globalDetails, styleProfile = null) {
+  if (element?.kind === "styleImage" && element.dataUrl) {
+    return { kind: "image", dataUrl: element.dataUrl, name: element.name || "Brand image" };
+  }
+  if (element?.kind === "styleText") {
+    return { kind: "text", text: element.text || "" };
+  }
   if (slideNumber === 9 && Number(element?.order || 0) >= 8 && Number(element?.order || 0) <= 31) {
     return { kind: "hidden" };
   }
@@ -3279,18 +3912,18 @@ function getElementContent(slideNumber, element, fieldsById, fieldValues, assetV
       .filter(hasRepeatableEntryValue);
     return entries.length
       ? {
-          kind: "chart",
-          dataUrl: svgToDataUrl(buildTimelineSvg(entries)),
-          name: "Company growth milestones",
-          bbox: [28.8, 142, 1222.08, 216],
-        }
+        kind: "chart",
+        dataUrl: svgToDataUrl(buildTimelineSvg(entries, styleProfile)),
+        name: "Company growth milestones",
+        bbox: [28.8, 142, 1222.08, 216],
+      }
       : { kind: "hidden" };
   }
   if (slideNumber === 30 && [29, 30, 31].includes(Number(element?.order || 0))) {
     return { kind: "hidden" };
   }
   if (slideNumber === 25) {
-    const bridgeContent = getSlide25ElementContent(element, fieldValues);
+    const bridgeContent = getSlide25ElementContent(element, fieldValues, styleProfile);
     if (bridgeContent) return withElementLayout(slideNumber, element, bridgeContent);
   }
   if (slideNumber === 27) {
@@ -3324,7 +3957,12 @@ function getElementContent(slideNumber, element, fieldsById, fieldValues, assetV
   if (mediaField && isAssetField(mediaField)) {
     const asset = assetValues?.[getAssetKey(mediaField)] || assetValues?.[mediaField.legacyAssetKey];
     if (asset?.dataUrl) {
-      return withElementLayout(slideNumber, element, { kind: "image", dataUrl: asset.dataUrl, name: asset.name || mediaField.label });
+      return withElementLayout(slideNumber, element, {
+        kind: "image",
+        dataUrl: asset.dataUrl,
+        name: asset.name || mediaField.label,
+        bbox: scaleBboxAroundCenter(element.bbox, normalizeAssetScale(asset.scale)),
+      });
     }
   }
 
@@ -3335,7 +3973,7 @@ function getElementContent(slideNumber, element, fieldsById, fieldValues, assetV
     }
     return withElementLayout(slideNumber, element, {
       kind: "chart",
-      dataUrl: getChartDataUrl(mediaField, chartValues, fieldValues),
+      dataUrl: getChartDataUrl(mediaField, chartValues, fieldValues, styleProfile),
       name: mediaField.label,
     });
   }
@@ -3370,6 +4008,9 @@ function getElementContent(slideNumber, element, fieldsById, fieldValues, assetV
     content.compactTableColumns = true;
     content.suppressTemplateFallback = true;
   }
+  if (element.kind === "table" && Array.isArray(element.cells) && !content.tableMatrix) {
+    content.tableMatrix = parseTableText(content.text ?? "", element.rows, element.cols);
+  }
   return withElementLayout(slideNumber, element, content);
 }
 
@@ -3394,6 +4035,7 @@ function getEditableTemplateFields(fields = [], globalDetails) {
   const includesSlide27 = fields.some((field) => field.slideNumber === 27);
   const editableFields = fields.filter(
     (field) => !(
+      field.pptOnly ||
       (field.slideNumber === 25 && [8, 10].includes(field.order)) ||
       (field.slideNumber === 27 && field.order === 7)
     ),
@@ -3820,6 +4462,19 @@ function calculateAutoFillCagr(snapshot, years = []) {
   return (Math.pow(lastRevenue / firstRevenue, 1 / periods) - 1) * 100;
 }
 
+// Builds every year between startYear and endYear (inclusive, capped at
+// maxYears), independent of which years the financial source actually
+// returned data for -- so a selected 5-year range always yields 5 years.
+function buildFullRangeYears(startYear, endYear, fallbackYears = [], maxYears = 5) {
+  if (startYear && endYear && endYear >= startYear) {
+    return Array.from(
+      { length: Math.min(maxYears, endYear - startYear + 1) },
+      (_, index) => startYear + index,
+    );
+  }
+  return fallbackYears.filter(Boolean).slice(0, maxYears);
+}
+
 function getAutoFillCagrYears(snapshot, fallbackYears = []) {
   const availableYears = snapshot?.years || [];
   const startYear = Number(snapshot?.currentPeriod?.startFiscalYear || 0);
@@ -3847,16 +4502,17 @@ function getAutoFillChartData(snapshot, years = snapshot?.years || [], valueKeys
   return years
     .filter(Boolean)
     .map((year) => {
-      const values = valueKeys
-        .map((key) => formatAutoFillChartValue(key, getAutoFillMetric(snapshot, year, key)))
-        .filter((value) => value !== "");
-      return values.length ? `FY${year},${values.join(",")}` : "";
+      // Every requested year gets a row -- a year with no reported figure
+      // shows as 0 on the chart rather than being silently skipped.
+      const values = valueKeys.map((key) => (
+        formatAutoFillChartValue(key, getAutoFillMetric(snapshot, year, key)) || "0"
+      ));
+      return `FY${year},${values.join(",")}`;
     })
-    .filter(Boolean)
     .join("\n");
 }
 
-function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
+export function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   const fields = Object.values(fieldsBySlide || {}).flat();
   const fieldByToken = new Map();
   const chartFieldByOrder = new Map();
@@ -3882,10 +4538,13 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   const currentPeriodMonths = 12;
   const priorYears = years.filter((year) => Number(year) < Number(latestYear));
   const historyYears = alignAutoFillYears(priorYears, 4);
-  const chartYears = years.slice(-5);
   const cagrYears = getAutoFillCagrYears(snapshot, historyYears);
   const selectedStartYear = Number(snapshot?.currentPeriod?.startFiscalYear || cagrYears[0] || 0);
   const selectedEndYear = Number(snapshot?.currentPeriod?.fiscalYear || latestYear || 0);
+  // Chart years must span the whole selected range (like the Slide 24 table
+  // does), not just whichever years the financial source actually returned
+  // data for -- missing years still get a 0 bar rather than being dropped.
+  const chartYears = buildFullRangeYears(selectedStartYear, selectedEndYear, years.slice(-5));
   const selectedRangeText = selectedStartYear && selectedEndYear
     ? selectedStartYear === selectedEndYear
       ? `FY${selectedEndYear}`
@@ -4004,12 +4663,7 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   addChart(23, 33, "bar", getAutoFillChartData(snapshot, chartYears.filter(Boolean), ["totalRevenue"]));
   addChart(23, 35, "bar", getAutoFillChartData(snapshot, chartYears.filter(Boolean), ["adjustedEbitda", "ebitdaMargin"]));
 
-  const incomeYears = selectedStartYear && selectedEndYear && selectedEndYear >= selectedStartYear
-    ? Array.from(
-        { length: Math.min(5, selectedEndYear - selectedStartYear + 1) },
-        (_, index) => selectedStartYear + index,
-      )
-    : years.slice(0, 5);
+  const incomeYears = buildFullRangeYears(selectedStartYear, selectedEndYear, years.slice(0, 5));
   const incomeColumns = [
     ...incomeYears.map((year) => ({ year, metrics: getAutoFillYearMetrics(snapshot, year) })),
     { year: latestYear, metrics: trailing, trailing: true },
@@ -4190,7 +4844,7 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   add(30, 21, 0, currentLongDate);
 
   const taxReconciliation = snapshot?.taxReconciliation || {};
-  const taxYears = getSlide30TaxFiscalYears(snapshot?.currentPeriod);
+  const taxYears = getSlide30TaxFiscalYears(snapshot?.currentPeriod, taxReconciliation.periods || snapshot?.years || []);
   const taxRowsByYearLower = {};
   taxYears.forEach((year) => {
     taxRowsByYearLower[year] = new Map(
@@ -4205,8 +4859,8 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   const taxDataRows = SLIDE_30_TAX_ROW_DEFS.map(({ label, matchKeys }) => {
     const values = taxYears.map((year) => {
       const row = matchKeys.map((key) => taxRowsByYearLower[year]?.get(key)).find(Boolean);
-      const value = row ? Number(row.taxReturn ?? row.tax_return ?? row.amount ?? 0) : null;
-      return value === null || !Number.isFinite(value) ? "-" : formatAutoFillMillions(value);
+      const value = getSlide30TaxRowValue(row) ?? getSlide30TaxMetricFallback(label, getAutoFillYearMetrics(snapshot, year));
+      return formatSlide30TaxValue(value);
     });
     return [label, ...values, "-"].join(" | ");
   });
@@ -4575,9 +5229,8 @@ function useElementWidth(ref) {
 }
 
 function getElementFieldId(slideNumber, element) {
-  if (!element?.text || !containsTemplateToken(element.text)) return null;
-  const [left, top, width, height] = element.bbox || [];
-  if (!(width > 12 && height > 8 && left >= 0 && top >= 0)) return null;
+  if (!element?.text || !hasEditableTextBounds(element) || isTopRightSlideNumberElement(element)) return null;
+  if (!containsTemplateToken(element.text) && !isPptTextEditableElement(element)) return null;
   return makeFieldId(slideNumber, element);
 }
 
@@ -4586,7 +5239,13 @@ function getElementDisplayText(slideNumber, element, fieldsById, fieldValues, gl
   if (isTopRightSlideNumberElement(element)) return String(displaySlideNumber);
   const elementOverride = fieldValues?.[getElementAutofillKey("element_override", slideNumber, element.order)];
   if (normalizeText(elementOverride)) return elementOverride;
+  const globalDetailKey = getSlideGlobalDetailKey(slideNumber, element);
+  if (globalDetailKey) return getGlobalDetailElementText(globalDetailKey, element, globalDetails);
   const elementFields = getElementFields(slideNumber, element, fieldsById);
+  const pptTextField = elementFields.find(isPptTextField);
+  if (pptTextField && hasStoredFieldValue(pptTextField, fieldValues)) {
+    return String(getStoredFieldValue(pptTextField, fieldValues) ?? "");
+  }
 
   if (containsTemplateToken(element.text)) {
     const value = applyFieldValues(element.text, elementFields, fieldValues, globalDetails);
@@ -4616,10 +5275,14 @@ export function SlideCanvas({
   assetValues,
   chartValues,
   globalDetails,
+  styleProfile = null,
   activeFieldId,
   onFieldFocus,
   onFieldChange,
   previewMode = false,
+  styleSelectionMode = false,
+  selectedStyleElementId = null,
+  onSelectStyleElement,
 }) {
   const stageRef = useRef(null);
   const stageWidth = useElementWidth(stageRef);
@@ -4639,6 +5302,7 @@ export function SlideCanvas({
       ref={stageRef}
       className="relative mx-auto w-full overflow-hidden bg-white shadow-card"
       style={{ aspectRatio: "16 / 9", backgroundColor: slideBackgroundColor }}
+      onClick={styleSelectionMode ? () => onSelectStyleElement?.(null) : undefined}
     >
       {elements.map((element, elementIndex) => {
         if (shouldHideUnusedRepeatableSlot(slideNumber, element, fieldValues)) {
@@ -4656,6 +5320,7 @@ export function SlideCanvas({
           resolvedAssetValues,
           resolvedChartValues,
           globalDetails,
+          styleProfile,
         );
         if (content.kind === "hidden") return null;
 
@@ -4668,8 +5333,16 @@ export function SlideCanvas({
         const elementFields = fieldId ? fieldsByElement[fieldId] || [] : [];
         const mediaField = elementFields.find((candidate) => isAssetField(candidate) || isChartField(candidate));
         const editableElementFields = elementFields.filter((candidate) => !candidate.hidden && candidate.fieldKind === "text");
-        const inlineTextField = editableElementFields.length === 1 && !mediaField && isWholeElementToken(element, editableElementFields[0])
-          ? editableElementFields[0]
+        const linkedElementFields = elementFields.filter((candidate) => (
+          candidate.fieldKind === "text" && !isPptTextField(candidate)
+        ));
+        const editableLinkedElementFields = linkedElementFields.filter((candidate) => !candidate.hidden);
+        const pptTextField = editableElementFields.find(isPptTextField);
+        const inlineTokenField = editableLinkedElementFields.length === 1 && isWholeElementToken(element, editableLinkedElementFields[0])
+          ? editableLinkedElementFields[0]
+          : null;
+        const inlineTextField = !mediaField
+          ? inlineTokenField || (linkedElementFields.length === 0 ? pptTextField : null)
           : null;
         const field = mediaField || inlineTextField;
         const isEditable = inlineTextField && !previewMode && !isResolvedByGlobalDetails(inlineTextField, globalDetails);
@@ -4681,7 +5354,7 @@ export function SlideCanvas({
           globalDetails,
           displaySlideNumber,
         );
-        const style = elementFields[0]?.style || getElementStyle(element);
+        const style = getElementStyle(element);
         const fillColor = isRule
           ? cssColor(element.lineColor || element.fillColor, "transparent")
           : cssColor(element.fillColor, "transparent");
@@ -4785,11 +5458,12 @@ export function SlideCanvas({
                       fontSize: Math.max(cellStyle.fontSize * scale, 5),
                       fontWeight: cellStyle.fontWeight,
                       fontStyle: cellStyle.fontStyle,
+                      textDecoration: cellStyle.textDecoration,
                       color: cellStyle.color,
                       textAlign: cellStyle.textAlign,
                       lineHeight: cellStyle.lineHeight,
-                      whiteSpace: "pre-wrap",
-                      letterSpacing: 0,
+                      whiteSpace: cellStyle.wrap === false ? "nowrap" : "pre-wrap",
+                      letterSpacing: cellStyle.letterSpacing,
                     }}
                   >
                     <span className="block w-full">{cellText}</span>
@@ -4824,20 +5498,20 @@ export function SlideCanvas({
           fontSize: Math.max(style.fontSize * scale, 5),
           fontWeight: style.fontWeight,
           fontStyle: style.fontStyle,
+          textDecoration: style.textDecoration,
           color: style.color,
           textAlign: style.textAlign,
           lineHeight: style.lineHeight,
-          whiteSpace: "pre-wrap",
+          whiteSpace: style.wrap === false ? "nowrap" : "pre-wrap",
           overflow: "hidden",
-          letterSpacing: 0,
+          letterSpacing: style.letterSpacing,
         };
         if ((content.kind === "image" || content.kind === "chart") && content.dataUrl) {
           return (
             <div
               key={`${slideNumber}-${element.order}-${element.id}`}
-              className={`absolute overflow-hidden ${
-                !previewMode && field ? "cursor-pointer" : ""
-              }`}
+              className={`absolute overflow-hidden ${!previewMode && field ? "cursor-pointer" : ""
+                }`}
               onClick={() => {
                 if (!previewMode && field) onFieldFocus(field.id);
               }}
@@ -4850,10 +5524,17 @@ export function SlideCanvas({
                   ? "transparent"
                   : fillColor === "transparent" ? "#FFFFFF" : fillColor,
                 padding: content.kind === "image" ? 0 : Math.max(4 * scale, 2),
+                opacity: Number(element.opacity ?? 1),
+                borderRadius: element.imageCornerRadius ? Math.max(Number(element.imageCornerRadius || 0) * scale, 0) : undefined,
+                border: element.imageBorderWidth
+                  ? `${Math.max(Number(element.imageBorderWidth || 0) * scale, 0.5)}px solid ${cssColor(element.imageBorderColor, "#FFFFFF")}`
+                  : commonStyle.border,
                 boxShadow:
                   !previewMode && field && activeFieldId === field.id
                     ? "0 0 0 2px rgba(139, 197, 61, 0.5)"
-                    : undefined,
+                    : element.imageShadow
+                      ? "0 10px 22px rgba(17,24,39,0.16)"
+                      : undefined,
               }}
             >
               <img
@@ -4871,12 +5552,11 @@ export function SlideCanvas({
             <button
               key={`${slideNumber}-${element.order}-${element.id}`}
               type="button"
-              onClick={() => onFieldFocus(field.id)}
-              className={`absolute overflow-hidden rounded-[2px] border border-dashed outline-none transition ${
-                activeFieldId === field.id
-                  ? "border-[#8BC53D] ring-2 ring-[#8BC53D]/30"
-                  : "border-[#8BC53D]/60 hover:border-[#8BC53D]"
-              }`}
+            onClick={() => onFieldFocus(getFieldValueKey(field) || field.id)}
+            className={`absolute overflow-hidden rounded-[2px] border border-dashed outline-none transition ${[field.id, getFieldValueKey(field)].includes(activeFieldId)
+                ? "border-[#8BC53D] ring-2 ring-[#8BC53D]/30"
+                : "border-[#8BC53D]/60 hover:border-[#8BC53D]"
+                }`}
               style={{
                 ...textStyle,
                 backgroundColor: fillColor === "transparent" ? "rgba(255,255,255,0.88)" : fillColor,
@@ -4888,37 +5568,62 @@ export function SlideCanvas({
         }
 
         if (!isEditable) {
+          const isStyleSelected = styleSelectionMode && selectedStyleElementId === element.id;
           return (
             <div
               key={`${slideNumber}-${element.order}-${element.id}`}
-              className="absolute"
-              style={textStyle}
+              className={`absolute ${styleSelectionMode ? "cursor-pointer hover:shadow-[0_0_0_2px_rgba(139,197,61,0.35)]" : ""}`}
+              onClick={
+                styleSelectionMode
+                  ? (event) => {
+                    event.stopPropagation();
+                    onSelectStyleElement?.({
+                      elementId: element.id,
+                      label: normalizeText(displayText).slice(0, 60) || "Text element",
+                      currentFontSize: style.fontSize,
+                      currentColor: style.color,
+                    });
+                  }
+                  : undefined
+              }
+              style={{
+                ...textStyle,
+                boxShadow: isStyleSelected ? "0 0 0 2px #8BC53D" : textStyle.boxShadow,
+              }}
             >
               <span className="block w-full">{displayText}</span>
             </div>
           );
         }
 
-        const userValue = fieldValues[field.id] || "";
+        const isPptTextEditor = isPptTextField(field);
+        const fieldValueKey = getFieldValueKey(field) || field.id;
+        const fieldIsActive = [field.id, fieldValueKey].includes(activeFieldId);
+        const userValue = isPptTextEditor
+          ? (hasStoredFieldValue(field, fieldValues) ? String(getStoredFieldValue(field, fieldValues) ?? "") : displayText)
+          : getStoredFieldValue(field, fieldValues) || "";
 
         return (
           <textarea
             key={`${slideNumber}-${element.order}-${element.id}`}
             aria-label={field.label}
             value={userValue}
-            onFocus={() => onFieldFocus(field.id)}
-            onClick={() => onFieldFocus(field.id)}
-            onChange={(event) => onFieldChange(field.id, event.target.value)}
+            onFocus={() => onFieldFocus(fieldValueKey)}
+            onClick={() => onFieldFocus(fieldValueKey)}
+            onChange={(event) => onFieldChange(fieldValueKey, event.target.value)}
             maxLength={field.maxLength || undefined}
-            className={`absolute resize-none overflow-hidden rounded-[2px] border px-1 py-0.5 outline-none transition ${
-              activeFieldId === field.id
-                ? "border-[#8BC53D] ring-2 ring-[#8BC53D]/30"
+            className={`absolute resize-none overflow-hidden rounded-[2px] border px-1 py-0.5 outline-none transition ${fieldIsActive
+              ? "border-[#8BC53D] ring-2 ring-[#8BC53D]/30"
+              : isPptTextEditor
+                ? "border-transparent hover:border-[#8BC53D]/55 focus:border-[#8BC53D]/70"
                 : "border-[#8BC53D]/45 hover:border-[#8BC53D]"
-            }`}
+              }`}
             style={{
               ...textStyle,
               display: "block",
-              backgroundColor: fillColor === "transparent" ? "rgba(255,255,255,0.76)" : fillColor,
+              backgroundColor: isPptTextEditor
+                ? (fillColor === "transparent" ? "transparent" : fillColor)
+                : (fillColor === "transparent" ? "rgba(255,255,255,0.76)" : fillColor),
             }}
             placeholder={displayText}
             spellCheck={false}
@@ -4939,48 +5644,81 @@ function SectionDrawer({
   globalDetails,
   onSelectSection,
 }) {
-  return (
-    <aside className="sticky top-6 max-h-[calc(100vh-3rem)] overflow-y-auto rounded-lg border border-border bg-white p-3 shadow-card">
-      <div className="mb-3 flex items-center gap-2 px-1 text-xs font-bold uppercase tracking-[0.08em] text-[#6D6E71]">
-        <PanelLeft size={14} />
-        CIM Sections
-      </div>
-      <nav className="space-y-1">
-        {sections.map((section) => {
-          const isBasic = section.type === "basic";
-          const sectionFields = section.slides.flatMap((slide) => fieldsBySlide[slide] || []);
-          const editableFields = getEditableTemplateFields(sectionFields, globalDetails);
-          const basicCompleted = BASIC_DETAIL_FIELDS.filter(([key]) => normalizeText(globalDetails[key])).length;
-          const completed = isBasic
-            ? basicCompleted + countFieldsWithData(editableFields, fieldValues, assetValues, chartValues)
-            : countFieldsWithData(editableFields, fieldValues, assetValues, chartValues);
-          const total = (isBasic ? BASIC_DETAIL_FIELDS.length : 0) + editableFields.length;
-          const isActive = activeSectionId === section.id;
+  const getSectionProgress = (section) => {
+    const isBasic = section.type === "basic";
+    const sectionFields = section.slides.flatMap((slide) => fieldsBySlide[slide] || []);
+    const editableFields = getEditableTemplateFields(sectionFields, globalDetails);
+    const basicCompleted = BASIC_DETAIL_FIELDS.filter(([key]) => normalizeText(globalDetails[key])).length;
+    const completed = isBasic
+      ? basicCompleted + countFieldsWithData(editableFields, fieldValues, assetValues, chartValues)
+      : countFieldsWithData(editableFields, fieldValues, assetValues, chartValues);
+    const total = (isBasic ? BASIC_DETAIL_FIELDS.length : 0) + editableFields.length;
+    return { completed, total };
+  };
 
-          return (
-            <button
-              key={section.id}
-              onClick={() => onSelectSection(section.id)}
-              className={`flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left transition ${
-                isActive
-                  ? "bg-[#EEF6E0] text-[#476E2C]"
-                  : "text-[#6D6E71] hover:bg-[#F0F7E6] hover:text-[#1A1A2E]"
-              }`}
-            >
-              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[#476E2C] text-xs font-bold text-white">
+  return (
+    <aside className="group sticky top-4 z-40 w-14 overflow-visible">
+      <div className="rounded-lg border border-border bg-white p-1.5 shadow-card">
+        <div className="mb-1 flex h-9 items-center justify-center rounded-md bg-[#F7F8FA] text-[#6D6E71]">
+          <PanelLeft size={15} />
+        </div>
+        <nav className="space-y-1">
+          {sections.map((section) => {
+            const isActive = activeSectionId === section.id;
+            return (
+              <button
+                key={section.id}
+                type="button"
+                onClick={() => onSelectSection(section.id)}
+                title={section.title}
+                className={`flex h-10 w-full items-center justify-center rounded-md text-[11px] font-bold transition ${isActive
+                  ? "bg-[#476E2C] text-white"
+                  : "text-[#6D6E71] hover:bg-[#EEF6E0] hover:text-[#476E2C]"
+                  }`}
+              >
                 {section.number}
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-semibold">{section.title}</span>
-                <span className="block text-[11px] text-[#A5A5A5]">
-                  {completed}/{total} fields
-                </span>
-              </span>
-              <ChevronRight size={14} className={isActive ? "text-[#8BC53D]" : "text-[#A5A5A5]"} />
-            </button>
-          );
-        })}
-      </nav>
+              </button>
+            );
+          })}
+        </nav>
+      </div>
+
+      <div className="invisible pointer-events-none absolute left-0 top-0 z-50 w-72 opacity-0 shadow-2xl transition duration-150 group-hover:visible group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:visible group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+        <div className="max-h-[calc(100vh-2rem)] overflow-y-auto rounded-lg border border-border bg-white p-3">
+          <div className="mb-3 flex items-center gap-2 px-1 text-xs font-bold uppercase tracking-[0.08em] text-[#6D6E71]">
+            <PanelLeft size={14} />
+            CIM Sections
+          </div>
+          <nav className="space-y-1">
+            {sections.map((section) => {
+              const isActive = activeSectionId === section.id;
+              const { completed, total } = getSectionProgress(section);
+              return (
+                <button
+                  key={section.id}
+                  type="button"
+                  onClick={() => onSelectSection(section.id)}
+                  className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-left transition ${isActive
+                    ? "bg-[#EEF6E0] text-[#476E2C]"
+                    : "text-[#6D6E71] hover:bg-[#F0F7E6] hover:text-[#1A1A2E]"
+                    }`}
+                >
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[#476E2C] text-xs font-bold text-white">
+                    {section.number}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-semibold">{section.title}</span>
+                    <span className="block text-[11px] text-[#A5A5A5]">
+                      {completed}/{total} fields
+                    </span>
+                  </span>
+                  <ChevronRight size={14} className={isActive ? "text-[#8BC53D]" : "text-[#A5A5A5]"} />
+                </button>
+              );
+            })}
+          </nav>
+        </div>
+      </div>
     </aside>
   );
 }
@@ -5017,9 +5755,8 @@ function GlobalDetailsPanel({ activeSlide, globalDetails, onChange, compact = fa
 }
 
 function fieldCardClass(active) {
-  return `block rounded-md border p-3 transition ${
-    active ? "border-[#8BC53D] bg-[#F7FBF1]" : "border-border bg-white"
-  }`;
+  return `block rounded-md border p-3 transition ${active ? "border-[#8BC53D] bg-[#F7FBF1]" : "border-border bg-white"
+    }`;
 }
 
 function AssetFieldControl({
@@ -5029,6 +5766,7 @@ function AssetFieldControl({
   onFieldFocus,
   onAssetUpload,
   onAssetRemove,
+  onAssetScaleChange,
   questionnaireItem,
   onQuestionnaireToggle,
   onQuestionPromptChange,
@@ -5089,6 +5827,27 @@ function AssetFieldControl({
           </div>
         </div>
       </div>
+      {asset?.dataUrl && (
+        <label className="mt-3 block" onClick={(event) => event.stopPropagation()}>
+          <span className="mb-1 flex items-center justify-between text-[10px] font-bold uppercase text-[#8A8F98]">
+            <span>Logo Size</span>
+            <span>{Math.round(normalizeAssetScale(asset.scale) * 100)}%</span>
+          </span>
+          <input
+            type="range"
+            min={ASSET_SCALE_MIN}
+            max={ASSET_SCALE_MAX}
+            step={0.05}
+            value={normalizeAssetScale(asset.scale)}
+            onChange={(event) => onAssetScaleChange(field, event.target.value)}
+            className="w-full accent-[#476E2C]"
+            aria-label={`${field.label} size`}
+          />
+          <span className="mt-0.5 block text-[10px] text-[#A5A5A5]">
+            Resizes without stretching — the logo's aspect ratio is always preserved.
+          </span>
+        </label>
+      )}
       <QuestionnaireFieldActions
         field={field}
         item={questionnaireItem}
@@ -5110,6 +5869,7 @@ function ChartFieldControl({
   field,
   active,
   chartValues,
+  styleProfile,
   onFieldFocus,
   onChartChange,
   questionnaireItem,
@@ -5121,7 +5881,7 @@ function ChartFieldControl({
   onReviewReopen,
 }) {
   const config = getChartConfig(field, chartValues);
-  const dataUrl = getChartDataUrl(field, chartValues);
+  const dataUrl = getChartDataUrl(field, chartValues, {}, styleProfile);
 
   return (
     <div
@@ -5561,6 +6321,18 @@ function Slide24YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
   const fieldByTokenIndex = new Map(fields.map((field) => [getFieldTokenIndex(field), field]));
   const startYear = Number(String(range?.startDate || "").slice(0, 4));
   const periodType = range?.periodType || "calendar";
+  const cardActive = fields.some((field) => (
+    field.id === activeFieldId || getFieldValueKey(field) === activeFieldId
+  ));
+  const getCardValue = (field) => getStoredFieldValue(field, fieldValues) || "";
+  const focusCardField = (field) => {
+    const key = getFieldValueKey(field);
+    if (key) onFieldFocus(key);
+  };
+  const changeCardField = (field, value) => {
+    const key = getFieldValueKey(field);
+    if (key) onFieldChange(key, value);
+  };
 
   const getDefaultPeriodLabel = (column) => {
     if (column === 5) return "LTM";
@@ -5570,7 +6342,7 @@ function Slide24YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
   };
 
   return (
-    <div className={fieldCardClass(fields.some((field) => field.id === activeFieldId))}>
+    <div className={fieldCardClass(cardActive)}>
       <div className="mb-3">
         <span className="block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
           Historical income statement by period
@@ -5583,7 +6355,7 @@ function Slide24YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
       <div className="space-y-2">
         {columns.map((column, cardIndex) => {
           const periodField = fieldByTokenIndex.get(column);
-          const storedPeriod = periodField ? normalizeText(fieldValues[periodField.id]) : "";
+          const storedPeriod = periodField ? normalizeText(getCardValue(periodField)) : "";
           const periodLabel = column === 5
             ? `LTM${storedPeriod ? ` · ${storedPeriod}` : ""}`
             : storedPeriod || getDefaultPeriodLabel(column);
@@ -5592,7 +6364,7 @@ function Slide24YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
             const metricField = fieldByTokenIndex.get(metric.start + column);
             return metricField ? [{ ...metric, field: metricField }] : [];
           });
-          const populatedCount = metricFields.filter(({ field }) => normalizeText(fieldValues[field.id])).length;
+          const populatedCount = metricFields.filter(({ field }) => normalizeText(getCardValue(field))).length;
           const expanded = expandedColumn === column;
 
           return (
@@ -5630,9 +6402,9 @@ function Slide24YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
                         {column === 5 ? "LTM end date" : "Financial year heading"}
                       </span>
                       <input
-                        value={fieldValues[periodField.id] || ""}
-                        onFocus={() => onFieldFocus(periodField.id)}
-                        onChange={(event) => onFieldChange(periodField.id, event.target.value)}
+                        value={getCardValue(periodField)}
+                        onFocus={() => focusCardField(periodField)}
+                        onChange={(event) => changeCardField(periodField, event.target.value)}
                         className="h-10 w-full rounded-md border border-border bg-white px-3 text-[12px] text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
                       />
                     </label>
@@ -5645,9 +6417,9 @@ function Slide24YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
                           {label}
                         </span>
                         <input
-                          value={fieldValues[field.id] || ""}
-                          onFocus={() => onFieldFocus(field.id)}
-                          onChange={(event) => onFieldChange(field.id, event.target.value)}
+                          value={getCardValue(field)}
+                          onFocus={() => focusCardField(field)}
+                          onChange={(event) => changeCardField(field, event.target.value)}
                           className="h-10 w-full rounded-md border border-border bg-white px-3 text-[12px] text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
                         />
                       </label>
@@ -5669,6 +6441,18 @@ function Slide26YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
   const [expandedColumn, setExpandedColumn] = useState(columns[0] ?? 0);
   const fieldByTokenIndex = new Map(fields.map((field) => [getFieldTokenIndex(field), field]));
   const startYear = Number(String(range?.startDate || "").slice(0, 4));
+  const cardActive = fields.some((field) => (
+    field.id === activeFieldId || getFieldValueKey(field) === activeFieldId
+  ));
+  const getCardValue = (field) => getStoredFieldValue(field, fieldValues) || "";
+  const focusCardField = (field) => {
+    const key = getFieldValueKey(field);
+    if (key) onFieldFocus(key);
+  };
+  const changeCardField = (field, value) => {
+    const key = getFieldValueKey(field);
+    if (key) onFieldChange(key, value);
+  };
 
   const getDefaultPeriodLabel = (column) => {
     if (column === 5) return "LTM";
@@ -5677,7 +6461,7 @@ function Slide26YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
   };
 
   return (
-    <div className={fieldCardClass(fields.some((field) => field.id === activeFieldId))}>
+    <div className={fieldCardClass(cardActive)}>
       <div className="mb-3">
         <span className="block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
           Balance sheet by period
@@ -5690,7 +6474,7 @@ function Slide26YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
       <div className="space-y-2">
         {columns.map((column, cardIndex) => {
           const periodField = fieldByTokenIndex.get(column);
-          const storedPeriod = periodField ? normalizeText(fieldValues[periodField.id]) : "";
+          const storedPeriod = periodField ? normalizeText(getCardValue(periodField)) : "";
           const periodLabel = column === 5
             ? `LTM${storedPeriod ? ` · ${storedPeriod}` : ""}`
             : storedPeriod || getDefaultPeriodLabel(column);
@@ -5699,7 +6483,7 @@ function Slide26YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
             const metricField = fieldByTokenIndex.get(metric.start + column);
             return metricField ? [{ ...metric, field: metricField }] : [];
           });
-          const populatedCount = metricFields.filter(({ field }) => normalizeText(fieldValues[field.id])).length;
+          const populatedCount = metricFields.filter(({ field }) => normalizeText(getCardValue(field))).length;
           const expanded = expandedColumn === column;
 
           return (
@@ -5737,9 +6521,9 @@ function Slide26YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
                         {column === 5 ? "LTM end date" : "Year heading"}
                       </span>
                       <input
-                        value={fieldValues[periodField.id] || ""}
-                        onFocus={() => onFieldFocus(periodField.id)}
-                        onChange={(event) => onFieldChange(periodField.id, event.target.value)}
+                        value={getCardValue(periodField)}
+                        onFocus={() => focusCardField(periodField)}
+                        onChange={(event) => changeCardField(periodField, event.target.value)}
                         className="h-10 w-full rounded-md border border-border bg-white px-3 text-[12px] text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
                       />
                     </label>
@@ -5752,9 +6536,9 @@ function Slide26YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
                           {label}
                         </span>
                         <input
-                          value={fieldValues[field.id] || ""}
-                          onFocus={() => onFieldFocus(field.id)}
-                          onChange={(event) => onFieldChange(field.id, event.target.value)}
+                          value={getCardValue(field)}
+                          onFocus={() => focusCardField(field)}
+                          onChange={(event) => changeCardField(field, event.target.value)}
                           className="h-10 w-full rounded-md border border-border bg-white px-3 text-[12px] text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
                         />
                       </label>
@@ -6150,11 +6934,10 @@ function CimReviewFieldBadge({ field, item, onAddNote, onResolve, onReopen }) {
           event.stopPropagation();
           setOpen(true);
         }}
-        className={`mt-2 inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[11px] font-bold transition ${
-          isOpen
-            ? "border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100"
-            : "border-border bg-white text-[#6D6E71] hover:bg-[#FAFBFC]"
-        }`}
+        className={`mt-2 inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[11px] font-bold transition ${isOpen
+          ? "border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100"
+          : "border-border bg-white text-[#6D6E71] hover:bg-[#FAFBFC]"
+          }`}
       >
         <Flag size={12} />
         {isOpen ? "Client flagged" : "Resolved"}
@@ -6188,6 +6971,7 @@ function FieldPanel({
   fieldValues,
   assetValues,
   chartValues,
+  styleProfile,
   questionnaireState,
   reviewState,
   globalDetails,
@@ -6198,6 +6982,7 @@ function FieldPanel({
   onRepeatablePageChange,
   onAssetUpload,
   onAssetRemove,
+  onAssetScaleChange,
   onChartChange,
   onQuestionnaireToggle,
   onQuestionPromptChange,
@@ -6259,6 +7044,9 @@ function FieldPanel({
         ) : null}
         {editableFields.length > 0 ? (
           editableFields.map((field) => {
+            const fieldValueKey = getFieldValueKey(field) || field.id;
+            const fieldValue = getStoredFieldValue(field, fieldValues) || "";
+            const fieldActive = activeFieldId === field.id || activeFieldId === fieldValueKey;
             const questionnaireItem = questionnaireState?.items?.[field.id];
             const reviewItem = reviewState?.items?.[field.id];
             if (field.fieldKind === "ebitdaBridge") {
@@ -6295,6 +7083,7 @@ function FieldPanel({
                   onFieldFocus={onFieldFocus}
                   onAssetUpload={onAssetUpload}
                   onAssetRemove={onAssetRemove}
+                  onAssetScaleChange={onAssetScaleChange}
                   questionnaireItem={questionnaireItem}
                   onQuestionnaireToggle={onQuestionnaireToggle}
                   onQuestionPromptChange={onQuestionPromptChange}
@@ -6313,6 +7102,7 @@ function FieldPanel({
                   field={field}
                   active={activeFieldId === field.id}
                   chartValues={chartValues}
+                  styleProfile={styleProfile}
                   onFieldFocus={onFieldFocus}
                   onChartChange={onChartChange}
                   questionnaireItem={questionnaireItem}
@@ -6350,16 +7140,16 @@ function FieldPanel({
             return (
               <label
                 key={field.id}
-                className={fieldCardClass(activeFieldId === field.id)}
-                onFocus={() => onFieldFocus(field.id)}
+                className={fieldCardClass(fieldActive)}
+                onFocus={() => onFieldFocus(fieldValueKey)}
               >
                 <span className="mb-1 block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
                   {field.label}
                 </span>
                 {field.inputType === "select" ? (
                   <select
-                    value={fieldValues[field.id] || ""}
-                    onChange={(event) => onFieldChange(field.id, event.target.value)}
+                    value={fieldValue}
+                    onChange={(event) => onFieldChange(fieldValueKey, event.target.value)}
                     className="h-10 w-full rounded-md border border-border bg-white px-3 text-[13px] font-semibold text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
                   >
                     <option value="">Select one</option>
@@ -6371,8 +7161,8 @@ function FieldPanel({
                   </select>
                 ) : (
                   <textarea
-                    value={fieldValues[field.id] || ""}
-                    onChange={(event) => onFieldChange(field.id, event.target.value)}
+                    value={fieldValue}
+                    onChange={(event) => onFieldChange(fieldValueKey, event.target.value)}
                     placeholder={getFieldValue(field, fieldValues, globalDetails) || field.label}
                     maxLength={field.maxLength || undefined}
                     className="min-h-[86px] w-full resize-y rounded-md border border-border bg-white px-3 py-2 text-[13px] leading-snug text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
@@ -6408,38 +7198,64 @@ function FieldPanel({
 function FinancialAutofillModal({
   initialRange,
   initialReportVersionId,
+  initialDatasetVersion,
+  sourceLabel,
+  versionMode,
   reportVersions,
   reportVersionsLoading,
   reportVersionsError,
+  datasetVersions,
+  datasetVersionsLoading,
+  datasetVersionsError,
   loading,
   onClose,
   onConfirm,
 }) {
   const [range, setRange] = useState(initialRange || getDefaultFinancialAutofillRange());
   const [reportVersionId, setReportVersionId] = useState(initialReportVersionId || "");
+  const [datasetVersion, setDatasetVersion] = useState(initialDatasetVersion || "");
 
-  const hasReportVersions = reportVersions.length > 0;
-  const reportVersionValid = !hasReportVersions || reportVersions.some((version) => version.id === reportVersionId);
+  const needsReportVersion = versionMode === "key_reports";
+  const needsDatasetVersion = versionMode === "manual_gl";
+  const hasReportVersions = needsReportVersion && reportVersions.length > 0;
+  const hasDatasetVersions = needsDatasetVersion && datasetVersions.length > 0;
+  const fallbackReportVersion = reportVersions.find((version) => version.id === initialReportVersionId)
+    || reportVersions.find((version) => version.isActive)
+    || reportVersions[0]
+    || null;
+  const effectiveReportVersionId = reportVersions.some((version) => version.id === reportVersionId)
+    ? reportVersionId
+    : fallbackReportVersion?.id || "";
+  const fallbackDatasetVersion = datasetVersions.find((version) => String(version.value ?? version.id) === String(initialDatasetVersion))
+    || datasetVersions.find((version) => version.isActive || version.is_active)
+    || datasetVersions[0]
+    || null;
+  const effectiveDatasetVersion = datasetVersions.some((version) => String(version.value ?? version.id) === String(datasetVersion))
+    ? datasetVersion
+    : fallbackDatasetVersion ? String(fallbackDatasetVersion.value ?? fallbackDatasetVersion.id) : "";
+  const reportVersionValid = !needsReportVersion || reportVersions.some((version) => version.id === effectiveReportVersionId);
+  const datasetVersionValid = !needsDatasetVersion || datasetVersions.some((version) => String(version.value ?? version.id) === String(effectiveDatasetVersion));
   const valid = isValidFinancialAutofillRange(range)
     && reportVersionValid
-    && !reportVersionsLoading
-    && !reportVersionsError;
+    && datasetVersionValid
+    && (!needsReportVersion || (!reportVersionsLoading && !reportVersionsError))
+    && (!needsDatasetVersion || (!datasetVersionsLoading && !datasetVersionsError));
   const rangeError = getFinancialAutofillRangeError(range);
-  const formError = rangeError || (!reportVersionValid ? "Select a valid reports version." : "");
+  const formError = rangeError
+    || (needsReportVersion && !hasReportVersions && !reportVersionsLoading ? "No Key Reports version is available for this company." : "")
+    || (needsReportVersion && !reportVersionValid ? "Select a valid reports version." : "")
+    || (needsDatasetVersion && !hasDatasetVersions && !datasetVersionsLoading ? "No Manual GL version is available for this company." : "")
+    || (needsDatasetVersion && !datasetVersionValid ? "Select a valid Manual GL version." : "");
   const trailingRange = getTrailingTwelveMonthRange(range);
-
-  useEffect(() => {
-    if (!hasReportVersions || reportVersions.some((version) => version.id === reportVersionId)) return;
-    const fallback = reportVersions.find((version) => version.id === initialReportVersionId)
-      || reportVersions.find((version) => version.isActive)
-      || reportVersions[0];
-    setReportVersionId(fallback?.id || "");
-  }, [hasReportVersions, initialReportVersionId, reportVersionId, reportVersions]);
 
   const handleSubmit = (event) => {
     event.preventDefault();
     if (!valid || loading) return;
-    onConfirm({ dateRange: range, reportVersionId });
+    onConfirm({
+      dateRange: range,
+      reportVersionId: needsReportVersion ? effectiveReportVersionId : "",
+      datasetVersion: needsDatasetVersion ? effectiveDatasetVersion : "",
+    });
   };
 
   return (
@@ -6454,9 +7270,11 @@ function FinancialAutofillModal({
               <CalendarDays size={20} />
             </span>
             <div>
-              <h2 className="text-base font-bold text-[#050505]">Select Financial Period and Reports Version</h2>
+              <h2 className="text-base font-bold text-[#050505]">
+                {needsReportVersion || needsDatasetVersion ? "Select Financial Period and Version" : "Select Financial Period"}
+              </h2>
               <p className="mt-1 text-sm leading-relaxed text-[#6D6E71]">
-                Choose the exact reports version and up to five years for CIM financial analysis.
+                Auto-fill will read from {sourceLabel || "the active financial source"} and replicate the same connected-source data used in Reports.
               </p>
             </div>
           </div>
@@ -6502,37 +7320,69 @@ function FinancialAutofillModal({
             </select>
           </label>
 
-          <label className="block">
-            <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
-              Reports version
-            </span>
-            <select
-              value={reportVersionId}
-              onChange={(event) => setReportVersionId(event.target.value)}
-              className="h-11 w-full rounded-md border border-border bg-white px-3 text-sm font-semibold text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20 disabled:bg-[#F7F8FA] disabled:text-[#A5A5A5]"
-              disabled={loading || reportVersionsLoading || !hasReportVersions}
-              required={hasReportVersions}
-            >
-              {reportVersionsLoading ? <option value="">Loading report versions...</option> : null}
-              {!reportVersionsLoading && !hasReportVersions ? (
-                <option value="">No saved report versions - use current financial source</option>
-              ) : null}
-              {reportVersions.map((version) => (
-                <option key={version.id} value={version.id}>
-                  {version.versionName || `Version ${version.versionNumber || ""}`.trim()}
-                  {version.isActive ? " (Official)" : ""}
-                  {version.status ? ` - ${version.status}` : ""}
-                </option>
-              ))}
-            </select>
-            <span className="mt-1 block text-xs text-[#6D6E71]">
-              Auto-fill will read only the reports and generated financials linked to this version.
-            </span>
-          </label>
+          {needsReportVersion ? (
+            <label className="block">
+              <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
+                Reports version
+              </span>
+              <select
+                value={effectiveReportVersionId}
+                onChange={(event) => setReportVersionId(event.target.value)}
+                className="h-11 w-full rounded-md border border-border bg-white px-3 text-sm font-semibold text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20 disabled:bg-[#F7F8FA] disabled:text-[#A5A5A5]"
+                disabled={loading || reportVersionsLoading || !hasReportVersions}
+                required
+              >
+                {reportVersionsLoading ? <option value="">Loading report versions...</option> : null}
+                {!reportVersionsLoading && !hasReportVersions ? (
+                  <option value="">No Key Reports versions available</option>
+                ) : null}
+                {reportVersions.map((version) => (
+                  <option key={version.id} value={version.id}>
+                    {version.versionName || `Version ${version.versionNumber || ""}`.trim()}
+                    {version.isActive ? " (Official)" : ""}
+                    {version.status ? ` - ${version.status}` : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
 
-          {reportVersionsError ? (
+          {needsDatasetVersion ? (
+            <label className="block">
+              <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
+                Manual GL version
+              </span>
+              <select
+                value={effectiveDatasetVersion}
+                onChange={(event) => setDatasetVersion(event.target.value)}
+                className="h-11 w-full rounded-md border border-border bg-white px-3 text-sm font-semibold text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20 disabled:bg-[#F7F8FA] disabled:text-[#A5A5A5]"
+                disabled={loading || datasetVersionsLoading || !hasDatasetVersions}
+                required
+              >
+                {datasetVersionsLoading ? <option value="">Loading Manual GL versions...</option> : null}
+                {!datasetVersionsLoading && !hasDatasetVersions ? (
+                  <option value="">No Manual GL versions available</option>
+                ) : null}
+                {datasetVersions.map((version) => (
+                  <option key={version.id || version.value} value={String(version.value ?? version.id)}>
+                    {version.label || `Version ${version.value ?? version.versionNumber ?? ""}`.trim()}
+                    {version.isActive || version.is_active ? " (Active)" : ""}
+                    {version.status ? ` - ${version.status}` : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+
+          {needsReportVersion && reportVersionsError ? (
             <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
               {reportVersionsError}
+            </p>
+          ) : null}
+
+          {needsDatasetVersion && datasetVersionsError ? (
+            <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
+              {datasetVersionsError}
             </p>
           ) : null}
 
@@ -6642,15 +7492,6 @@ function FinancialAutofillProgressOverlay({ state }) {
   );
 }
 
-function formatValidationFigure(value) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return "-";
-  return new Intl.NumberFormat("en-US", {
-    notation: "compact",
-    maximumFractionDigits: 2,
-  }).format(numeric);
-}
-
 function FinancialValidationBanner({ validation }) {
   if (!validation || validation.status !== "verified") return null;
   const summary = validation.summary || {};
@@ -6671,24 +7512,486 @@ function FinancialValidationBanner({ validation }) {
   );
 }
 
-function PreviewModal({
-  open,
-  previewSlideIndex,
-  onClose,
-  onSlideIndexChange,
+const CIM_BUILDER_EXTRA_PREVIEW_KIND = "cim-builder-added-page";
+
+function getCimBuilderSlideKey(slideNumber, instanceIndex = 0) {
+  return `${Number(slideNumber || 1)}:${Number(instanceIndex || 0)}`;
+}
+
+function sanitizeCimBuilderElement(element = {}) {
+  if (!element || typeof element !== "object" || !element.type) return null;
+  const type = element.type === "rect" || element.type === "ellipse" ? "shape" : element.type;
+  const sanitized = {
+    id: String(element.id || `element-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
+    type,
+    subType: element.subType || (element.type === "ellipse" ? "ellipse" : "rect"),
+    cimKind: element.cimKind || type,
+    cimFieldId: element.cimFieldId || null,
+    cimGlobalKey: element.cimGlobalKey || null,
+    cimLinkedFieldIds: Array.from(new Set(element.cimLinkedFieldIds || [])).filter(Boolean).map(String),
+    cimAssetKey: element.cimAssetKey || null,
+    cimAssetFieldId: element.cimAssetFieldId || null,
+    x: Number(element.x || 0),
+    y: Number(element.y || 0),
+    width: Math.max(Number(element.width || 1), 1),
+    height: Number(element.height ?? (type === "line" ? 0 : 1)),
+    rotation: Number(element.rotation || 0),
+    opacity: Number(element.opacity ?? 1),
+    zIndex: Number(element.zIndex || 1),
+  };
+
+  if (type === "text") {
+    return {
+      ...sanitized,
+      text: String(element.text ?? ""),
+      fontFamily: element.fontFamily || "Calibri, Aptos, Arial, sans-serif",
+      fontSize: Number(element.fontSize || 12),
+      fill: element.fill || "#111827",
+      align: element.align || "left",
+      verticalAlign: element.verticalAlign || "top",
+      lineHeight: Number(element.lineHeight || 1.08),
+      letterSpacing: Number(element.letterSpacing || 0),
+      fontWeight: element.fontWeight || 400,
+      fontStyle: element.fontStyle || "normal",
+      textDecoration: element.textDecoration || "none",
+      backgroundFill: element.backgroundFill || "transparent",
+      stroke: element.stroke || "transparent",
+      strokeWidth: Number(element.strokeWidth || 0),
+      padding: Number(element.padding || 0),
+    };
+  }
+
+  if (type === "image") {
+    return {
+      ...sanitized,
+      src: normalizeBuilderImageSource(element),
+      name: element.name || "Image",
+      fit: element.fit || "contain",
+      objectPosition: element.objectPosition || "center center",
+      stroke: element.stroke || "transparent",
+      strokeWidth: Number(element.strokeWidth || 0),
+    };
+  }
+
+  return {
+    ...sanitized,
+    fill: element.fill || (type === "line" ? "transparent" : "#FFFFFF"),
+    stroke: element.stroke || element.fill || "#111827",
+    strokeWidth: Number(element.strokeWidth || (type === "line" ? 2 : 0)),
+    cornerRadius: Number(element.cornerRadius || 0),
+  };
+}
+
+function sanitizeCimBuilderPage(page = {}) {
+  return {
+    id: String(page.id || `page-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
+    name: page.name || "Added page",
+    backgroundColor: page.backgroundColor || page.background || "#FFFFFF",
+    backgroundImage: page.backgroundImage || "",
+    backgroundImageOpacity: Number(page.backgroundImageOpacity ?? 1),
+    deleted: Boolean(page.deleted),
+    elements: (page.elements || page.children || []).map(sanitizeCimBuilderElement).filter(Boolean),
+  };
+}
+
+function normalizeCimBuilderPageState(pageState = {}) {
+  if (!pageState || typeof pageState !== "object") {
+    return {
+      hiddenElementIds: [],
+      elementOverrides: {},
+      addedElements: [],
+      backgroundColor: "",
+      backgroundImage: "",
+      backgroundImageOpacity: 1,
+      deleted: false,
+    };
+  }
+
+  const elementOverrides = Object.fromEntries(
+    Object.entries(pageState.elementOverrides || {})
+      .map(([id, element]) => [id, sanitizeCimBuilderElement({ ...element, id })])
+      .filter(([, element]) => Boolean(element)),
+  );
+
+  return {
+    hiddenElementIds: Array.from(new Set(pageState.hiddenElementIds || [])).map(String),
+    elementOverrides,
+    addedElements: (pageState.addedElements || []).map(sanitizeCimBuilderElement).filter(Boolean),
+    backgroundColor: pageState.backgroundColor || "",
+    backgroundImage: pageState.backgroundImage || "",
+    backgroundImageOpacity: Number(pageState.backgroundImageOpacity ?? 1),
+    deleted: Boolean(pageState.deleted),
+  };
+}
+
+function convertLegacyPolotnoElementToBuilderElement(element = {}) {
+  if (!element || typeof element !== "object") return null;
+  if (element.type === "figure") {
+    return sanitizeCimBuilderElement({
+      ...element,
+      type: "shape",
+      subType: element.subType === "circle" ? "ellipse" : "rect",
+      fill: element.fill,
+      stroke: element.stroke,
+    });
+  }
+  if (element.type === "text") {
+    return sanitizeCimBuilderElement({
+      ...element,
+      cimFieldId: element.custom?.cimFieldId || element.cimFieldId || null,
+    });
+  }
+  if (element.type === "image" || element.type === "svg") {
+    return sanitizeCimBuilderElement({
+      ...element,
+      type: "image",
+      cimAssetKey: element.custom?.cimAssetKey || element.cimAssetKey || null,
+    });
+  }
+  if (element.type === "line") return sanitizeCimBuilderElement(element);
+  return null;
+}
+
+function migrateLegacyPolotnoPagesToBuilderState(input = {}) {
+  if (!input || typeof input !== "object") return {};
+  const extraPagesByKey = Object.fromEntries(
+    Object.entries(input)
+      .map(([key, pages]) => [
+        key,
+        (Array.isArray(pages) ? pages : []).map((page) => sanitizeCimBuilderPage({
+          id: page.id,
+          name: page.name || "Added page",
+          backgroundColor: page.background || "#FFFFFF",
+          elements: (page.children || []).map(convertLegacyPolotnoElementToBuilderElement).filter(Boolean),
+        })).filter(Boolean),
+      ])
+      .filter(([, pages]) => pages.length > 0),
+  );
+  return { version: 1, pagesByKey: {}, extraPagesByKey };
+}
+
+function normalizeCimBuilderState(input = {}) {
+  if (!input || typeof input !== "object") {
+    return { version: 1, pagesByKey: {}, extraPagesByKey: {} };
+  }
+
+  const pagesByKey = Object.fromEntries(
+    Object.entries(input.pagesByKey || {})
+      .map(([key, pageState]) => [key, normalizeCimBuilderPageState(pageState)])
+      .filter(([key]) => Boolean(key)),
+  );
+  const extraPagesByKey = Object.fromEntries(
+    Object.entries(input.extraPagesByKey || {})
+      .map(([key, pages]) => [
+        key,
+        (Array.isArray(pages) ? pages : []).map(sanitizeCimBuilderPage).filter(Boolean),
+      ])
+      .filter(([, pages]) => pages.length > 0),
+  );
+
+  return { version: 1, pagesByKey, extraPagesByKey };
+}
+
+function getCimBuilderTemplateBackground() {
+  return "#FFFFFF";
+}
+
+const SLIDE3_TOC_POINT_2_3_STYLE_BY_ID = {
+  "template:3:12": { fontSize: 16, fill: "#2F3033", fontWeight: 700 },
+  "template:3:13": { fontSize: 11, fill: "#8C8D90", fontWeight: 400 },
+  "template:3:16": { fontSize: 16, fill: "#2F3033", fontWeight: 700 },
+  "template:3:17": { fontSize: 11, fill: "#8C8D90", fontWeight: 400 },
+};
+
+const SLIDE1_DESCRIPTOR_BUILDER_ELEMENT_IDS = new Set([
+  "template:1:8",
+  "template:1:sh/u9knih4b",
+]);
+
+function isSlide1DescriptorBuilderElement(element = {}) {
+  return SLIDE1_DESCRIPTOR_BUILDER_ELEMENT_IDS.has(String(element.id || ""));
+}
+
+export function normalizeCimBuilderSlide3TocPointStyle(element = {}) {
+  if (element?.type !== "text") return element;
+  const style = SLIDE3_TOC_POINT_2_3_STYLE_BY_ID[String(element.id || "")];
+  if (!style) return element;
+  return {
+    ...element,
+    ...style,
+  };
+}
+
+function getComparableCimBuilderElement(element = {}) {
+  const comparable = sanitizeCimBuilderElement(element);
+  if (!comparable) return null;
+  if (isCimBuilderTextLinked(comparable)) delete comparable.text;
+  if (isSlide1DescriptorBuilderElement(comparable)) delete comparable.text;
+  return comparable;
+}
+
+function isCimBuilderTextLinked(element = {}) {
+  return Boolean(
+    element.cimFieldId ||
+    element.cimGlobalKey ||
+    (Array.isArray(element.cimLinkedFieldIds) && element.cimLinkedFieldIds.length)
+  );
+}
+
+export function buildCimBuilderPage(baseElements = [], pageState = {}, fallbackBackground = "#FFFFFF") {
+  const normalizedState = normalizeCimBuilderPageState(pageState);
+  const hiddenIds = new Set(normalizedState.hiddenElementIds || []);
+  const elements = [
+    ...baseElements
+      .map(sanitizeCimBuilderElement)
+      .filter(Boolean)
+      .filter((element) => element.cimKind !== "background" && !hiddenIds.has(element.id))
+      .map((element) => {
+        const override = normalizedState.elementOverrides[element.id] || null;
+        if (!override) return element;
+        const safeOverride = { ...override };
+        if (isCimBuilderTextLinked(element)) delete safeOverride.text;
+        if (isSlide1DescriptorBuilderElement(element)) delete safeOverride.text;
+        return sanitizeCimBuilderElement({ ...element, ...safeOverride, id: element.id, type: element.type });
+      })
+      .map(normalizeCimBuilderSlide3TocPointStyle),
+    ...normalizedState.addedElements,
+  ].filter(Boolean);
+
+  return sanitizeCimBuilderPage({
+    id: "template-page",
+    name: "Template page",
+    backgroundColor: normalizedState.backgroundColor || fallbackBackground || "#FFFFFF",
+    backgroundImage: normalizedState.backgroundImage || "",
+    backgroundImageOpacity: normalizedState.backgroundImageOpacity,
+    deleted: normalizedState.deleted,
+    elements,
+  });
+}
+
+function extractCimBuilderPageState(baseElements = [], page = {}) {
+  const baseMap = new Map(
+    baseElements
+      .map(sanitizeCimBuilderElement)
+      .filter(Boolean)
+      .filter((element) => element.cimKind !== "background")
+      .map((element) => [element.id, element]),
+  );
+  const nextElements = (page.elements || []).map(sanitizeCimBuilderElement).filter(Boolean);
+  const nextById = new Map(nextElements.map((element) => [element.id, element]));
+  const hiddenElementIds = Array.from(baseMap.keys()).filter((id) => !nextById.has(id));
+  const elementOverrides = {};
+  const addedElements = [];
+
+  nextElements.forEach((element) => {
+    const base = baseMap.get(element.id);
+    if (!base) {
+      addedElements.push(element);
+      return;
+    }
+
+    const comparableBase = getComparableCimBuilderElement(base);
+    const comparableNext = getComparableCimBuilderElement(element);
+    if (JSON.stringify(comparableBase) !== JSON.stringify(comparableNext)) {
+      const override = sanitizeCimBuilderElement(element);
+      if (isCimBuilderTextLinked(override)) delete override.text;
+      if (isSlide1DescriptorBuilderElement(override)) delete override.text;
+      elementOverrides[element.id] = override;
+    }
+  });
+
+  return normalizeCimBuilderPageState({
+    hiddenElementIds,
+    elementOverrides,
+    addedElements,
+    backgroundColor: page.backgroundColor || "",
+    backgroundImage: page.backgroundImage || "",
+    backgroundImageOpacity: Number(page.backgroundImageOpacity ?? 1),
+    deleted: Boolean(page.deleted),
+  });
+}
+
+function buildPreviewSlidesWithBuilderPages(fieldValues = {}, builderState = {}) {
+  const normalizedState = normalizeCimBuilderState(builderState);
+  return buildCimExportSlides(fieldValues).flatMap((slideRef) => {
+    const key = getCimBuilderSlideKey(slideRef.sourceSlideNumber, slideRef.instanceIndex);
+    const pageState = normalizedState.pagesByKey[key] || {};
+    const extraPages = normalizedState.extraPagesByKey[key] || [];
+    return [
+      ...(pageState.deleted ? [] : [slideRef]),
+      ...extraPages.map((page, index) => ({
+        kind: CIM_BUILDER_EXTRA_PREVIEW_KIND,
+        sourceSlideNumber: slideRef.sourceSlideNumber,
+        instanceIndex: slideRef.instanceIndex || 0,
+        builderPageIndex: index,
+        page,
+      })),
+    ];
+  });
+}
+
+function isCimBuilderExtraPreviewSlide(slideRef) {
+  return slideRef?.kind === CIM_BUILDER_EXTRA_PREVIEW_KIND;
+}
+
+function getCimBuilderFirstFontFamily(fontFamily = "Calibri") {
+  return String(fontFamily || "Calibri").split(",")[0].replace(/["']/g, "").trim() || "Calibri";
+}
+
+function buildCimBuilderExportTextElement(element, index) {
+  const text = String(element.text || "");
+  const typeface = getCimBuilderFirstFontFamily(element.fontFamily);
+  const color = element.fill || "#111827";
+  const padding = Number(element.padding || 0);
+  return {
+    id: element.id,
+    name: element.name || `Builder Text ${index + 1}`,
+    kind: "shape",
+    builderKind: "text",
+    order: index + 1,
+    bbox: [element.x, element.y, element.width, element.height],
+    rotation: element.rotation || 0,
+    text,
+    fillColor: element.backgroundFill === "transparent" ? null : element.backgroundFill,
+    lineColor: element.stroke === "transparent" ? null : element.stroke,
+    lineWidth: element.strokeWidth || 0,
+    resolvedFontSize: element.fontSize || 12,
+    resolvedTextStyle: {
+      typeface,
+      alignment: element.align || "left",
+      verticalAlignment: element.verticalAlign || "top",
+      lineSpacing: element.lineHeight || 1.08,
+      insets: { top: padding, right: padding, bottom: padding, left: padding },
+      wrap: true,
+    },
+    paragraphs: [{
+      resolvedTextStyle: { alignment: element.align || "left", lineSpacing: element.lineHeight || 1.08 },
+      runs: [{
+        text,
+        fontSize: element.fontSize || 12,
+        typeface,
+        bold: Number(element.fontWeight || 400) >= 600,
+        italic: element.fontStyle === "italic",
+        underline: element.textDecoration === "underline",
+        color,
+        letterSpacing: element.letterSpacing || 0,
+      }],
+    }],
+  };
+}
+
+function buildCimBuilderExportLayoutElement(element, index) {
+  if (element.type === "text") return buildCimBuilderExportTextElement(element, index);
+  if (element.type === "image") {
+    return {
+      id: element.id,
+      name: element.name || `Builder Image ${index + 1}`,
+      kind: "shape",
+      builderKind: "image",
+      order: index + 1,
+      bbox: [element.x, element.y, element.width, element.height],
+      rotation: element.rotation || 0,
+      dataUrl: normalizeBuilderImageSource(element),
+      opacity: element.opacity,
+      imageFit: element.fit || "contain",
+      imageBorderColor: element.stroke,
+      imageBorderWidth: element.strokeWidth || 0,
+    };
+  }
+  return {
+    id: element.id,
+    name: `Builder Shape ${index + 1}`,
+    kind: "shape",
+    builderKind: element.type,
+    order: index + 1,
+    bbox: [element.x, element.y, element.width, element.height],
+    rotation: element.rotation || 0,
+    text: "",
+    fillColor: element.type === "line" ? element.stroke : element.fill,
+    lineColor: element.stroke,
+    lineWidth: element.strokeWidth || 0,
+    geometry: element.subType === "ellipse" ? "ellipse" : "rect",
+    opacity: element.opacity,
+  };
+}
+
+function buildCimBuilderExportLayout(page = {}) {
+  const safePage = sanitizeCimBuilderPage(page);
+  return {
+    slide: {
+      backgroundColor: safePage.backgroundColor || "#FFFFFF",
+      backgroundImage: safePage.backgroundImage ? { dataUrl: safePage.backgroundImage } : null,
+      backgroundImageOpacity: safePage.backgroundImageOpacity,
+    },
+    elements: safePage.elements.map(buildCimBuilderExportLayoutElement),
+  };
+}
+
+function getCimBuilderExportElementContent(_slideRef, element = {}) {
+  if (element.builderKind === "image") return { kind: "image", dataUrl: element.dataUrl, name: element.name };
+  return { kind: "text", text: element.text || "" };
+}
+
+function resolveCimBuilderPreviewPage(slideRef, {
   layouts,
   fieldsBySlide,
   fieldValues,
   assetValues,
   chartValues,
   globalDetails,
+  styleProfile,
+  builderState,
+}) {
+  if (isCimBuilderExtraPreviewSlide(slideRef)) return sanitizeCimBuilderPage(slideRef.page);
+
+  const slideNumber = slideRef?.sourceSlideNumber || slideRef;
+  const scopedFieldValues = getFieldValuesForExportSlide(fieldValues, slideRef);
+  const baseElements = buildCimBuilderElementSpecs(
+    slideNumber,
+    layouts[slideNumber],
+    fieldsBySlide[slideNumber] || [],
+    scopedFieldValues,
+    assetValues,
+    chartValues,
+    globalDetails,
+    styleProfile,
+  );
+  const key = getCimBuilderSlideKey(slideNumber, slideRef?.instanceIndex || 0);
+  return buildCimBuilderPage(
+    baseElements,
+    normalizeCimBuilderState(builderState).pagesByKey[key],
+    getCimBuilderTemplateBackground(layouts[slideNumber]),
+  );
+}
+
+function PreviewModal({
+  open,
+  previewSlideIndex,
+  onClose,
+  onSlideIndexChange,
+  builderState,
+  layouts,
+  fieldsBySlide,
+  fieldValues,
+  assetValues,
+  chartValues,
+  globalDetails,
+  styleProfile,
 }) {
   if (!open) return null;
 
-  const previewSlides = buildCimExportSlides(fieldValues);
+  const previewSlides = buildPreviewSlidesWithBuilderPages(fieldValues, builderState);
   const activeSlideRef = previewSlides[previewSlideIndex] || previewSlides[0];
-  const activeSlide = activeSlideRef?.sourceSlideNumber || 1;
-  const activeFieldValues = getFieldValuesForExportSlide(fieldValues, activeSlideRef);
+  const activePage = activeSlideRef ? resolveCimBuilderPreviewPage(activeSlideRef, {
+    layouts,
+    fieldsBySlide,
+    fieldValues,
+    assetValues,
+    chartValues,
+    globalDetails,
+    styleProfile,
+    builderState,
+  }) : null;
   const prevDisabled = previewSlideIndex <= 0;
   const nextDisabled = previewSlideIndex >= previewSlides.length - 1;
 
@@ -6718,31 +8021,37 @@ function PreviewModal({
             <div className="space-y-2">
               {previewSlides.map((slideRef, index) => {
                 const slideNumber = slideRef.sourceSlideNumber;
-                const scopedFieldValues = getFieldValuesForExportSlide(fieldValues, slideRef);
+                const isAddedPage = isCimBuilderExtraPreviewSlide(slideRef);
+                const previewPage = resolveCimBuilderPreviewPage(slideRef, {
+                  layouts,
+                  fieldsBySlide,
+                  fieldValues,
+                  assetValues,
+                  chartValues,
+                  globalDetails,
+                  styleProfile,
+                  builderState,
+                });
                 return (
-                <button
-                  key={`${slideNumber}-${slideRef.instanceIndex}`}
-                  onClick={() => onSlideIndexChange(index)}
-                  className={`block w-full overflow-hidden rounded-md border text-left transition ${
-                    index === previewSlideIndex
+                  <button
+                    key={isAddedPage
+                      ? `${slideNumber}-${slideRef.instanceIndex}-builder-${slideRef.builderPageIndex}`
+                      : `${slideNumber}-${slideRef.instanceIndex}`}
+                    onClick={() => onSlideIndexChange(index)}
+                    className={`block w-full overflow-hidden rounded-md border text-left transition ${index === previewSlideIndex
                       ? "border-[#8BC53D] ring-2 ring-[#8BC53D]/25"
                       : "border-border hover:border-[#8BC53D]/60"
-                  }`}
-                >
-                  <div className="pointer-events-none">
-                    <SlideCanvas
-                      slideNumber={slideNumber}
-                      displaySlideNumber={index + 1}
-                      layout={layouts[slideNumber]}
-                      fields={fieldsBySlide[slideNumber] || []}
-                      fieldValues={scopedFieldValues}
-                      assetValues={assetValues}
-                      chartValues={chartValues}
-                      globalDetails={globalDetails}
-                      previewMode
-                    />
-                  </div>
-                </button>
+                      }`}
+                  >
+                    <div className="pointer-events-none">
+                      <CimBuilderPagePreview page={previewPage} />
+                    </div>
+                    {isAddedPage ? (
+                      <div className="border-t border-border bg-[#F8FCF3] px-2 py-1 text-[10px] font-bold uppercase tracking-[0.06em] text-[#476E2C]">
+                        Added page
+                      </div>
+                    ) : null}
+                  </button>
                 );
               })}
             </div>
@@ -6750,17 +8059,7 @@ function PreviewModal({
 
           <div className="flex min-h-0 flex-col">
             <div className="min-h-0 flex-1 overflow-auto">
-              <SlideCanvas
-                slideNumber={activeSlide}
-                displaySlideNumber={previewSlideIndex + 1}
-                layout={layouts[activeSlide]}
-                fields={fieldsBySlide[activeSlide] || []}
-                fieldValues={activeFieldValues}
-                assetValues={assetValues}
-                chartValues={chartValues}
-                globalDetails={globalDetails}
-                previewMode
-              />
+              {activePage ? <CimBuilderPagePreview page={activePage} /> : null}
             </div>
             <div className="mt-3 flex items-center justify-center gap-2">
               <button
@@ -6957,11 +8256,10 @@ function QuestionnaireReviewModal({
                     key={section.id}
                     type="button"
                     onClick={() => setBuilderSectionId(section.id)}
-                    className={`flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left transition ${
-                      active
-                        ? "bg-[#EEF6E0] text-[#476E2C]"
-                        : "text-[#6D6E71] hover:bg-[#F0F7E6] hover:text-[#050505]"
-                    }`}
+                    className={`flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left transition ${active
+                      ? "bg-[#EEF6E0] text-[#476E2C]"
+                      : "text-[#6D6E71] hover:bg-[#F0F7E6] hover:text-[#050505]"
+                      }`}
                   >
                     <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[#476E2C] text-xs font-bold text-white">
                       {section.number}
@@ -7019,9 +8317,8 @@ function QuestionnaireReviewModal({
                 return (
                   <div
                     key={field.id}
-                    className={`rounded-lg border p-3 transition ${
-                      selected ? "border-[#8BC53D] bg-[#F7FBF1]" : "border-border bg-white"
-                    }`}
+                    className={`rounded-lg border p-3 transition ${selected ? "border-[#8BC53D] bg-[#F7FBF1]" : "border-border bg-white"
+                      }`}
                   >
                     <label className="flex cursor-pointer items-start gap-3">
                       <input
@@ -7090,121 +8387,121 @@ function QuestionnaireReviewModal({
             {items.length > 0 ? (
               <div className="space-y-3">
                 {items.map((item) => {
-                const note = normalizeText(item.clientNote);
-                const canUseNote = note && item.fieldKind === "text";
-                const clientAsset = item.clientAsset?.dataUrl ? item.clientAsset : null;
-                const canUseAsset = clientAsset && item.fieldKind === "asset";
+                  const note = normalizeText(item.clientNote);
+                  const canUseNote = note && item.fieldKind === "text";
+                  const clientAsset = item.clientAsset?.dataUrl ? item.clientAsset : null;
+                  const canUseAsset = clientAsset && item.fieldKind === "asset";
 
-                return (
-                  <article key={item.id} className="rounded-lg border border-border bg-[#FAFBFC] p-3">
-                    <div className="flex flex-col gap-3">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <QuestionnaireStatusPill status={item.status} />
-                          <span className="text-xs font-semibold text-[#6D6E71]">
-                            {item.sectionTitle}
-                          </span>
-                        </div>
-                        <h3 className="mt-2 text-sm font-bold text-[#050505]">{item.label}</h3>
-                        <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-[#6D6E71]">
-                          {item.prompt}
-                        </p>
-                      </div>
-                      <div className="flex shrink-0 flex-wrap gap-2">
-                        {canUseNote && (
-                          <button
-                            type="button"
-                            onClick={() => onUseClientNote(item)}
-                            className="theme-btn-secondary h-9 px-3 text-xs"
-                          >
-                            <FileText size={14} />
-                            Use Note
-                          </button>
-                        )}
-                        {canUseAsset && (
-                          <button
-                            type="button"
-                            onClick={() => onUseClientAsset(item)}
-                            className="theme-btn-secondary h-9 px-3 text-xs"
-                          >
-                            <ImagePlus size={14} />
-                            Use Image
-                          </button>
-                        )}
-                        {note && (
-                          <button
-                            type="button"
-                            onClick={() => onCopyNote(item)}
-                            className="theme-btn-secondary h-9 px-3 text-xs"
-                          >
-                            <Copy size={14} />
-                            Copy
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => updateStatus(item.id, item.status === "resolved" ? "open" : "resolved")}
-                          className="theme-btn-secondary h-9 px-3 text-xs"
-                        >
-                          <CheckCircle2 size={14} />
-                          {item.status === "resolved" ? "Reopen" : "Resolve"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => archiveItem(item.id)}
-                          className="theme-btn-secondary h-9 px-3 text-xs text-red-600 hover:border-red-200 hover:bg-red-50"
-                        >
-                          <Trash2 size={14} />
-                          Remove
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="mt-3 rounded-md border border-border bg-white p-3">
-                      <p className="mb-1 text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
-                        Client response
-                      </p>
-                      {clientAsset && (
-                        <div className="mb-3 overflow-hidden rounded-md border border-border bg-[#F7F8FA] p-2">
-                          <img
-                            src={clientAsset.dataUrl}
-                            alt={clientAsset.name || item.label}
-                            className="max-h-40 w-full object-contain"
-                          />
-                          <p className="mt-2 truncate text-xs text-[#6D6E71]">{clientAsset.name || "Uploaded image"}</p>
-                        </div>
-                      )}
-                      {note ? (
-                        <div>
-                          <p className="whitespace-pre-wrap text-sm leading-relaxed text-[#050505]">
-                            {item.clientNote}
-                          </p>
-                          <p className="mt-2 text-xs text-[#A5A5A5]">
-                            Updated {item.clientUpdatedAt ? new Date(item.clientUpdatedAt).toLocaleString("en-IN") : "recently"}
-                            {item.clientUpdatedBy?.name ? ` by ${item.clientUpdatedBy.name}` : ""}
+                  return (
+                    <article key={item.id} className="rounded-lg border border-border bg-[#FAFBFC] p-3">
+                      <div className="flex flex-col gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <QuestionnaireStatusPill status={item.status} />
+                            <span className="text-xs font-semibold text-[#6D6E71]">
+                              {item.sectionTitle}
+                            </span>
+                          </div>
+                          <h3 className="mt-2 text-sm font-bold text-[#050505]">{item.label}</h3>
+                          <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-[#6D6E71]">
+                            {item.prompt}
                           </p>
                         </div>
-                      ) : (
-                        <p className="text-sm text-[#A5A5A5]">
-                          {clientAsset ? "No text note included." : "No client response yet."}
+                        <div className="flex shrink-0 flex-wrap gap-2">
+                          {canUseNote && (
+                            <button
+                              type="button"
+                              onClick={() => onUseClientNote(item)}
+                              className="theme-btn-secondary h-9 px-3 text-xs"
+                            >
+                              <FileText size={14} />
+                              Use Note
+                            </button>
+                          )}
+                          {canUseAsset && (
+                            <button
+                              type="button"
+                              onClick={() => onUseClientAsset(item)}
+                              className="theme-btn-secondary h-9 px-3 text-xs"
+                            >
+                              <ImagePlus size={14} />
+                              Use Image
+                            </button>
+                          )}
+                          {note && (
+                            <button
+                              type="button"
+                              onClick={() => onCopyNote(item)}
+                              className="theme-btn-secondary h-9 px-3 text-xs"
+                            >
+                              <Copy size={14} />
+                              Copy
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => updateStatus(item.id, item.status === "resolved" ? "open" : "resolved")}
+                            className="theme-btn-secondary h-9 px-3 text-xs"
+                          >
+                            <CheckCircle2 size={14} />
+                            {item.status === "resolved" ? "Reopen" : "Resolve"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => archiveItem(item.id)}
+                            className="theme-btn-secondary h-9 px-3 text-xs text-red-600 hover:border-red-200 hover:bg-red-50"
+                          >
+                            <Trash2 size={14} />
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="mt-3 rounded-md border border-border bg-white p-3">
+                        <p className="mb-1 text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
+                          Client response
                         </p>
-                      )}
-                    </div>
-                  </article>
-                );
-              })}
+                        {clientAsset && (
+                          <div className="mb-3 overflow-hidden rounded-md border border-border bg-[#F7F8FA] p-2">
+                            <img
+                              src={clientAsset.dataUrl}
+                              alt={clientAsset.name || item.label}
+                              className="max-h-40 w-full object-contain"
+                            />
+                            <p className="mt-2 truncate text-xs text-[#6D6E71]">{clientAsset.name || "Uploaded image"}</p>
+                          </div>
+                        )}
+                        {note ? (
+                          <div>
+                            <p className="whitespace-pre-wrap text-sm leading-relaxed text-[#050505]">
+                              {item.clientNote}
+                            </p>
+                            <p className="mt-2 text-xs text-[#A5A5A5]">
+                              Updated {item.clientUpdatedAt ? new Date(item.clientUpdatedAt).toLocaleString("en-IN") : "recently"}
+                              {item.clientUpdatedBy?.name ? ` by ${item.clientUpdatedBy.name}` : ""}
+                            </p>
+                          </div>
+                        ) : (
+                          <p className="text-sm text-[#A5A5A5]">
+                            {clientAsset ? "No text note included." : "No client response yet."}
+                          </p>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
-          ) : (
-            <div className="flex min-h-[320px] items-center justify-center rounded-lg border border-dashed border-border bg-white text-center">
-              <div>
-                <ClipboardList size={30} className="mx-auto mb-3 text-[#8BC53D]" />
-                <h3 className="text-sm font-bold text-[#050505]">No selected questions yet</h3>
-                <p className="mt-1 text-sm text-[#6D6E71]">
-                  Select prepared questions or add a custom question.
-                </p>
+            ) : (
+              <div className="flex min-h-[320px] items-center justify-center rounded-lg border border-dashed border-border bg-white text-center">
+                <div>
+                  <ClipboardList size={30} className="mx-auto mb-3 text-[#8BC53D]" />
+                  <h3 className="text-sm font-bold text-[#050505]">No selected questions yet</h3>
+                  <p className="mt-1 text-sm text-[#6D6E71]">
+                    Select prepared questions or add a custom question.
+                  </p>
+                </div>
               </div>
-            </div>
-          )}
+            )}
           </aside>
         </div>
       </div>
@@ -7247,11 +8544,10 @@ function CimReviewModal({ onClose, reviewState, onAddNote, onResolve, onReopen }
               key={value}
               type="button"
               onClick={() => setFilter(value)}
-              className={`rounded-md border px-3 py-1.5 text-xs font-bold transition ${
-                filter === value
-                  ? "border-[#8BC53D] bg-[#EEF6E0] text-[#476E2C]"
-                  : "border-border bg-white text-[#6D6E71] hover:border-[#8BC53D]/60"
-              }`}
+              className={`rounded-md border px-3 py-1.5 text-xs font-bold transition ${filter === value
+                ? "border-[#8BC53D] bg-[#EEF6E0] text-[#476E2C]"
+                : "border-border bg-white text-[#6D6E71] hover:border-[#8BC53D]/60"
+                }`}
             >
               {label}
             </button>
@@ -7299,6 +8595,12 @@ export default function WorkspaceCimPrep() {
   const { activeSource } = useDataSource();
   const { showToast } = useToast();
   const selectedDatasetVersion = useDatasetVersionStore((state) => state.selectedVersion);
+  const manualGlDatasetVersions = useDatasetVersionStore((state) => state.versions);
+  const activeManualGlDatasetVersion = useDatasetVersionStore((state) => state.activeVersion);
+  const manualGlDatasetVersionsLoading = useDatasetVersionStore((state) => state.isLoading);
+  const manualGlDatasetVersionsError = useDatasetVersionStore((state) => state.error);
+  const fetchManualGlDatasetVersions = useDatasetVersionStore((state) => state.fetchVersions);
+  const setSelectedDatasetVersion = useDatasetVersionStore((state) => state.setSelectedVersion);
   const reportVersions = useKeyReportContextStore((state) => state.versions);
   const selectedReportVersionId = useKeyReportContextStore((state) => state.selectedVersionId);
   const reportVersionsLoading = useKeyReportContextStore((state) => state.loading);
@@ -7311,8 +8613,11 @@ export default function WorkspaceCimPrep() {
   const [fieldValues, setFieldValues] = useState({});
   const [assetValues, setAssetValues] = useState({});
   const [chartValues, setChartValues] = useState({});
+  const [cimBuilderState, setCimBuilderState] = useState(() => normalizeCimBuilderState());
   const [questionnaireState, setQuestionnaireState] = useState(() => normalizeQuestionnaireState());
   const [reviewState, setReviewState] = useState(() => normalizeCimReviewState());
+  const [styleProfilesState, setStyleProfilesState] = useState(() => normalizeCimStyleProfilesState());
+  const [activeStyleProfileId, setActiveStyleProfileId] = useState(DEFAULT_CIM_STYLE_PROFILE_ID);
   const [companyUsers, setCompanyUsers] = useState([]);
   const [financialAutofillState, setFinancialAutofillState] = useState({
     loading: false,
@@ -7334,13 +8639,33 @@ export default function WorkspaceCimPrep() {
   const [questionnaireOpen, setQuestionnaireOpen] = useState(false);
   const [reviewPickerOpen, setReviewPickerOpen] = useState(false);
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
+  const [styleEditorOpen, setStyleEditorOpen] = useState(false);
+  const [styleProfilesSaving, setStyleProfilesSaving] = useState(false);
+  const [activeBuilderPageIndex, setActiveBuilderPageIndex] = useState(0);
   const [financialAutofillModalOpen, setFinancialAutofillModalOpen] = useState(false);
   const [financialAutofillRange, setFinancialAutofillRange] = useState(() => getDefaultFinancialAutofillRange());
   const [financialAutofillReportVersionId, setFinancialAutofillReportVersionId] = useState("");
+  const [financialAutofillDatasetVersion, setFinancialAutofillDatasetVersion] = useState("");
   const reportSource = useMemo(
     () => normalizeReportSourceKey(activeSource) || REPORT_SOURCE_KEYS.QUICKBOOKS,
     [activeSource],
   );
+  const reportSourceLabel = useMemo(() => getReportSourceLabel(reportSource), [reportSource]);
+  const isKeyReportsSource = reportSource === REPORT_SOURCE_KEYS.KEY_REPORTS;
+  const isManualGlSource = reportSource === REPORT_SOURCE_KEYS.MANUAL_GL;
+  const manualGlAutofillDatasetVersion = String(
+    financialAutofillDatasetVersion ||
+    selectedDatasetVersion ||
+    activeManualGlDatasetVersion?.value ||
+    activeManualGlDatasetVersion?.dataset_version ||
+    "",
+  );
+  const financialAutofillVersionMode = isKeyReportsSource
+    ? "key_reports"
+    : isManualGlSource && (manualGlDatasetVersionsLoading || manualGlDatasetVersions.length > 1)
+      ? "manual_gl"
+      : "none";
+  const financialAutofillReportVersions = isKeyReportsSource ? reportVersions : [];
 
   const fieldsBySlide = useMemo(() => {
     const result = {};
@@ -7349,6 +8674,14 @@ export default function WorkspaceCimPrep() {
     }
     return result;
   }, [layouts]);
+  const activeStyleProfile = useMemo(() => (
+    styleProfilesState.profiles.find((profile) => profile.id === activeStyleProfileId) ||
+    getActiveCimStyleProfile(styleProfilesState)
+  ), [activeStyleProfileId, styleProfilesState]);
+  const styledLayouts = useMemo(
+    () => applyCimTemplateStyleProfilesToLayouts(layouts, activeStyleProfile),
+    [activeStyleProfile, layouts],
+  );
   const templateFieldCount = useMemo(
     () => Object.values(fieldsBySlide).reduce((sum, fields) => sum + fields.length, 0),
     [fieldsBySlide],
@@ -7391,14 +8724,26 @@ export default function WorkspaceCimPrep() {
         const payload = await getCompanyRequest(clientId);
         if (cancelled) return;
         setCompany(payload);
-        setGlobalDetails((previous) => ({
-          ...createDefaultGlobalDetails(payload),
-          ...previous,
-          companyName: previous.companyName || payload?.name || "",
-          companyLegalName: previous.companyName || payload?.name || "",
-          projectName: previous.projectName || payload?.project_name || payload?.name || "",
-          descriptor: previous.descriptor || (payload?.industry ? `${payload.industry} business` : ""),
-        }));
+        setGlobalDetails((previous) => {
+          const payloadCompanyName = payload?.name || "";
+          const payloadProjectName = payload?.project_name || "";
+          const previousProjectName = normalizeText(previous.projectName);
+          const cleanPayloadCompanyName = normalizeText(payloadCompanyName);
+          const cleanPayloadProjectName = normalizeText(payloadProjectName);
+          let projectName = previous.projectName || payloadProjectName;
+          if (previousProjectName === cleanPayloadCompanyName && cleanPayloadProjectName !== previousProjectName) {
+            projectName = payloadProjectName;
+          }
+
+          return {
+            ...createDefaultGlobalDetails(payload),
+            ...previous,
+            companyName: previous.companyName || payloadCompanyName,
+            companyLegalName: previous.companyName || payloadCompanyName,
+            projectName,
+            descriptor: previous.descriptor || (payload?.industry ? `${payload.industry} business` : ""),
+          };
+        });
       } catch {
         if (!cancelled) setCompany(null);
       }
@@ -7411,16 +8756,34 @@ export default function WorkspaceCimPrep() {
   }, [clientId]);
 
   useEffect(() => {
-    if (clientId) void fetchReportVersions(clientId);
-  }, [clientId, fetchReportVersions]);
+    if (clientId && isKeyReportsSource) void fetchReportVersions(clientId);
+  }, [clientId, fetchReportVersions, isKeyReportsSource]);
 
   useEffect(() => {
+    if (clientId && isManualGlSource) void fetchManualGlDatasetVersions(clientId);
+  }, [clientId, fetchManualGlDatasetVersions, isManualGlSource]);
+
+  useEffect(() => {
+    if (!isKeyReportsSource) {
+      window.queueMicrotask(() => setFinancialAutofillReportVersionId(""));
+      return;
+    }
     if (loading || reportVersionsLoading || !reportVersions.length) return;
-    setFinancialAutofillReportVersionId((previous) => {
+    window.queueMicrotask(() => setFinancialAutofillReportVersionId((previous) => {
       if (previous && reportVersions.some((version) => version.id === previous)) return previous;
       return selectedReportVersionId || reportVersions.find((version) => version.isActive)?.id || reportVersions[0].id;
-    });
-  }, [loading, reportVersions, reportVersionsLoading, selectedReportVersionId]);
+    }));
+  }, [isKeyReportsSource, loading, reportVersions, reportVersionsLoading, selectedReportVersionId]);
+
+  useEffect(() => {
+    if (!isManualGlSource) {
+      window.queueMicrotask(() => setFinancialAutofillDatasetVersion(""));
+      return;
+    }
+    window.queueMicrotask(() => setFinancialAutofillDatasetVersion((previous) => (
+      selectedDatasetVersion || previous || activeManualGlDatasetVersion?.value || activeManualGlDatasetVersion?.dataset_version || ""
+    )));
+  }, [activeManualGlDatasetVersion, isManualGlSource, selectedDatasetVersion]);
 
   useEffect(() => {
     if (loading || !isValidFinancialAutofillRange(financialAutofillRange)) return;
@@ -7517,10 +8880,20 @@ export default function WorkspaceCimPrep() {
     let cancelled = false;
 
     function applyLoadedCimPrepState(data) {
-      setGlobalDetails((previous) => ({ ...previous, ...(data.globalDetails || {}) }));
+      setGlobalDetails((previous) => {
+        const nextDetails = { ...previous, ...(data.globalDetails || {}) };
+        const legacyDescriptor = getLegacySlide1DescriptorFieldValue(data.fieldValues || {});
+        if (!normalizeText(nextDetails.descriptor) && legacyDescriptor) {
+          nextDetails.descriptor = legacyDescriptor;
+        }
+        return nextDetails;
+      });
       setFieldValues(data.fieldValues || {});
       setAssetValues(data.assetValues || {});
       setChartValues(data.chartValues || {});
+      setCimBuilderState(normalizeCimBuilderState(
+        data.cimBuilderState || migrateLegacyPolotnoPagesToBuilderState(data.polotnoPagesBySlideKey),
+      ));
       setFinancialAutofillState((previous) => ({
         ...previous,
         validation: data.financialValidation || null,
@@ -7530,6 +8903,9 @@ export default function WorkspaceCimPrep() {
       }
       if (data.financialAutofillReportVersionId) {
         setFinancialAutofillReportVersionId(String(data.financialAutofillReportVersionId));
+      }
+      if (data.financialAutofillDatasetVersion) {
+        setFinancialAutofillDatasetVersion(String(data.financialAutofillDatasetVersion));
       }
     }
 
@@ -7655,6 +9031,46 @@ export default function WorkspaceCimPrep() {
       cancelled = true;
     };
   }, [clientId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    // Style profiles are a per-broker preference (not scoped to this company), so this
+    // only needs to load once on mount.
+    async function loadStyleProfiles() {
+      try {
+        const payload = await getCimStyleProfilesRequest();
+        if (cancelled) return;
+        const state = normalizeCimStyleProfilesState(payload?.state || {});
+        setStyleProfilesState(state);
+        setActiveStyleProfileId(state.activeProfileId || DEFAULT_CIM_STYLE_PROFILE_ID);
+      } catch {
+        // Keep the default template style if saved profiles can't be loaded.
+      }
+    }
+
+    loadStyleProfiles();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleSaveStyleProfiles = useCallback(async (nextState) => {
+    setStyleProfilesSaving(true);
+    try {
+      const payload = await saveCimStyleProfilesRequest(nextState);
+      const savedState = normalizeCimStyleProfilesState(payload?.state || nextState);
+      setStyleProfilesState(savedState);
+      setActiveStyleProfileId(savedState.activeProfileId || DEFAULT_CIM_STYLE_PROFILE_ID);
+      showToast({
+        type: "success",
+        title: "Template Style Saved",
+        message: "Your CIM template style was saved.",
+      });
+    } finally {
+      setStyleProfilesSaving(false);
+    }
+  }, [showToast]);
 
   const persistCimReviewState = useCallback(async (nextState, toastOptions = null) => {
     const state = normalizeCimReviewState(nextState);
@@ -7787,7 +9203,7 @@ export default function WorkspaceCimPrep() {
     void persistCimReviewState(nextState);
   }, [persistCimReviewState, reviewState, user]);
 
-  const handleFinancialAutofill = useCallback(async ({ dateRange, reportVersionId = "" } = {}) => {
+  const handleFinancialAutofill = useCallback(async ({ dateRange, reportVersionId = "", datasetVersion = "" } = {}) => {
     if (!clientId || templateFieldCount === 0) {
       showToast({
         type: "info",
@@ -7805,11 +9221,40 @@ export default function WorkspaceCimPrep() {
       return false;
     }
 
-    const reportVersion = reportVersions.find((version) => version.id === reportVersionId) || null;
+    const effectiveReportVersionId = isKeyReportsSource ? reportVersionId : "";
+    if (isKeyReportsSource && !effectiveReportVersionId) {
+      showToast({
+        type: "error",
+        title: "Select Reports Version",
+        message: "Choose a Key Reports version before auto-filling CIM financials.",
+      });
+      return false;
+    }
+    const reportVersion = isKeyReportsSource
+      ? reportVersions.find((version) => version.id === effectiveReportVersionId) || null
+      : null;
+    if (isKeyReportsSource && !reportVersion) {
+      showToast({
+        type: "error",
+        title: "Reports Version Unavailable",
+        message: "The selected Key Reports version is no longer available. Please choose another version.",
+      });
+      return false;
+    }
     const selectedReportSource = reportVersion
       ? (reportVersion.resolvedBatchId ? REPORT_SOURCE_KEYS.MANUAL_GL : REPORT_SOURCE_KEYS.MANUAL_UPLOAD)
       : reportSource;
-    const reportDatasetVersion = reportVersion?.resolvedDatasetVersion ?? selectedDatasetVersion;
+    const reportDatasetVersion = selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL
+      ? String(
+        reportVersion?.resolvedDatasetVersion ||
+        datasetVersion ||
+        financialAutofillDatasetVersion ||
+        selectedDatasetVersion ||
+        activeManualGlDatasetVersion?.value ||
+        activeManualGlDatasetVersion?.dataset_version ||
+        "",
+      )
+      : "";
 
     setFinancialAutofillState((previous) => ({
       ...previous,
@@ -7818,7 +9263,7 @@ export default function WorkspaceCimPrep() {
       progress: 4,
       progressMessage: reportVersion
         ? `Preparing ${reportVersion.versionName || `Version ${reportVersion.versionNumber || ""}`.trim()}`
-        : "Preparing the selected date range",
+        : `Preparing ${getReportSourceLabel(selectedReportSource)}`,
     }));
 
     try {
@@ -7826,7 +9271,7 @@ export default function WorkspaceCimPrep() {
         clientId,
         sourceKey: selectedReportSource,
         selectedDatasetVersion: reportDatasetVersion,
-        selectedReportVersionId: reportVersionId,
+        selectedReportVersionId: effectiveReportVersionId,
         dateRange,
         onProgress: ({ progress, message }) => {
           setFinancialAutofillState((previous) => ({
@@ -7891,7 +9336,8 @@ export default function WorkspaceCimPrep() {
         progressMessage: "Financial auto-fill complete",
       });
       setFinancialAutofillRange(dateRange);
-      setFinancialAutofillReportVersionId(reportVersionId);
+      setFinancialAutofillReportVersionId(effectiveReportVersionId);
+      setFinancialAutofillDatasetVersion(reportDatasetVersion);
 
       const discrepancyCount = snapshot.validation?.summary?.discrepancies || 0;
       const sourceWarningCount = snapshot.validation?.summary?.sourceWarnings || 0;
@@ -7927,6 +9373,9 @@ export default function WorkspaceCimPrep() {
     clientId,
     fieldValues,
     fieldsBySlide,
+    financialAutofillDatasetVersion,
+    activeManualGlDatasetVersion,
+    isKeyReportsSource,
     reportSource,
     reportVersions,
     selectedDatasetVersion,
@@ -7934,11 +9383,15 @@ export default function WorkspaceCimPrep() {
     templateFieldCount,
   ]);
 
-  const handleConfirmFinancialAutofill = useCallback(({ dateRange, reportVersionId }) => {
+  const handleConfirmFinancialAutofill = useCallback(({ dateRange, reportVersionId, datasetVersion }) => {
+    const effectiveReportVersionId = isKeyReportsSource ? reportVersionId || "" : "";
+    const effectiveDatasetVersion = isManualGlSource ? datasetVersion || manualGlAutofillDatasetVersion || "" : "";
     setFinancialAutofillModalOpen(false);
     setFinancialAutofillRange(dateRange);
-    setFinancialAutofillReportVersionId(reportVersionId || "");
-    if (reportVersionId) void selectReportVersion(reportVersionId);
+    setFinancialAutofillReportVersionId(effectiveReportVersionId);
+    setFinancialAutofillDatasetVersion(effectiveDatasetVersion);
+    if (effectiveReportVersionId) void selectReportVersion(effectiveReportVersionId);
+    if (effectiveDatasetVersion) setSelectedDatasetVersion(effectiveDatasetVersion);
     const slide24HeadingFields = (fieldsBySlide[24] || []).filter((field) => {
       const tokenIndex = getFieldTokenIndex(field);
       return field.order === 7 && tokenIndex >= 0 && tokenIndex <= 5;
@@ -7956,8 +9409,20 @@ export default function WorkspaceCimPrep() {
       ...withoutFieldValues(previous, headingFields),
       ...headingValues,
     }));
-    void handleFinancialAutofill({ dateRange, reportVersionId });
-  }, [fieldsBySlide, handleFinancialAutofill, selectReportVersion]);
+    void handleFinancialAutofill({
+      dateRange,
+      reportVersionId: effectiveReportVersionId,
+      datasetVersion: effectiveDatasetVersion,
+    });
+  }, [
+    fieldsBySlide,
+    handleFinancialAutofill,
+    isKeyReportsSource,
+    isManualGlSource,
+    manualGlAutofillDatasetVersion,
+    selectReportVersion,
+    setSelectedDatasetVersion,
+  ]);
 
   const handleSectionSelect = useCallback((sectionId) => {
     const nextSection = NAV_SECTIONS.find((section) => section.id === sectionId) || BASIC_DETAILS_SECTION;
@@ -7985,6 +9450,155 @@ export default function WorkspaceCimPrep() {
   const handleFieldChange = useCallback((fieldId, value) => {
     setFieldValues((previous) => ({ ...previous, [fieldId]: value }));
   }, []);
+
+  const syncBuilderFieldValues = useCallback((elements = [], baseElements = []) => {
+    const updates = applyCimBuilderElementsToFieldValues(elements);
+    Object.entries(updates).forEach(([fieldId, value]) => {
+      setFieldValues((previous) => (
+        previous[fieldId] === value ? previous : { ...previous, [fieldId]: value }
+      ));
+    });
+    const globalUpdates = applyCimBuilderElementsToGlobalDetails(elements, baseElements);
+    const globalEntries = Object.entries(globalUpdates);
+    if (globalEntries.length) {
+      setGlobalDetails((previous) => {
+        const nextDetails = { ...previous };
+        let changed = false;
+        globalEntries.forEach(([key, value]) => {
+          if (nextDetails[key] === value) return;
+          nextDetails[key] = value;
+          changed = true;
+        });
+        return changed ? nextDetails : previous;
+      });
+    }
+  }, []);
+
+  const buildActiveBuilderBaseElements = useCallback(() => buildCimBuilderElementSpecs(
+    activeSlide,
+    styledLayouts[activeSlide],
+    fieldsBySlide[activeSlide] || [],
+    activeCanvasFieldValues,
+    assetValues,
+    chartValues,
+    effectiveGlobalDetails,
+    activeStyleProfile,
+  ), [
+    activeCanvasFieldValues,
+    activeSlide,
+    activeStyleProfile,
+    assetValues,
+    chartValues,
+    effectiveGlobalDetails,
+    fieldsBySlide,
+    styledLayouts,
+  ]);
+
+  const handleBuilderPageChange = useCallback((nextPage) => {
+    const key = getCimBuilderSlideKey(activeSlide, activeSlideInstance);
+    const safePage = sanitizeCimBuilderPage(nextPage);
+    const activeBaseElements = activeBuilderPageIndex === 0 ? buildActiveBuilderBaseElements() : [];
+    syncBuilderFieldValues(safePage.elements, activeBaseElements);
+
+    setCimBuilderState((previous) => {
+      const normalized = normalizeCimBuilderState(previous);
+      if (activeBuilderPageIndex === 0) {
+        const pageState = extractCimBuilderPageState(activeBaseElements, safePage);
+        return {
+          ...normalized,
+          pagesByKey: {
+            ...normalized.pagesByKey,
+            [key]: pageState,
+          },
+        };
+      }
+
+      const currentPages = normalized.extraPagesByKey[key] || [];
+      const nextPages = [...currentPages];
+      nextPages[activeBuilderPageIndex - 1] = safePage;
+      return {
+        ...normalized,
+        extraPagesByKey: {
+          ...normalized.extraPagesByKey,
+          [key]: nextPages.filter(Boolean),
+        },
+      };
+    });
+  }, [
+    activeBuilderPageIndex,
+    activeSlide,
+    activeSlideInstance,
+    buildActiveBuilderBaseElements,
+    syncBuilderFieldValues,
+  ]);
+
+  const handleAddBuilderPage = useCallback(() => {
+    const key = getCimBuilderSlideKey(activeSlide, activeSlideInstance);
+    const normalized = normalizeCimBuilderState(cimBuilderState);
+    const currentPages = normalized.extraPagesByKey[key] || [];
+    const nextPage = createBlankBuilderPage({ name: `Added page ${currentPages.length + 1}` });
+    setCimBuilderState({
+      ...normalized,
+      extraPagesByKey: {
+        ...normalized.extraPagesByKey,
+        [key]: [...currentPages, nextPage],
+      },
+    });
+    setActiveBuilderPageIndex(currentPages.length + 1);
+  }, [activeSlide, activeSlideInstance, cimBuilderState]);
+
+  const handleDeleteBuilderPage = useCallback(() => {
+    const key = getCimBuilderSlideKey(activeSlide, activeSlideInstance);
+    const normalized = normalizeCimBuilderState(cimBuilderState);
+    if (activeBuilderPageIndex === 0) {
+      const pageState = normalizeCimBuilderPageState(normalized.pagesByKey[key]);
+      setCimBuilderState({
+        ...normalized,
+        pagesByKey: {
+          ...normalized.pagesByKey,
+          [key]: { ...pageState, deleted: true },
+        },
+      });
+      return;
+    }
+
+    const currentPages = normalized.extraPagesByKey[key] || [];
+    const nextPages = currentPages.filter((_, index) => index !== activeBuilderPageIndex - 1);
+    setActiveBuilderPageIndex(Math.max(0, activeBuilderPageIndex - 1));
+    if (!nextPages.length) {
+      const nextExtraPagesByKey = { ...normalized.extraPagesByKey };
+      delete nextExtraPagesByKey[key];
+      setCimBuilderState({ ...normalized, extraPagesByKey: nextExtraPagesByKey });
+      return;
+    }
+    setCimBuilderState({
+      ...normalized,
+      extraPagesByKey: {
+        ...normalized.extraPagesByKey,
+        [key]: nextPages,
+      },
+    });
+  }, [activeBuilderPageIndex, activeSlide, activeSlideInstance, cimBuilderState]);
+
+  const handleRestoreBuilderPage = useCallback(() => {
+    const key = getCimBuilderSlideKey(activeSlide, activeSlideInstance);
+    setCimBuilderState((previous) => {
+      const normalized = normalizeCimBuilderState(previous);
+      const pageState = normalizeCimBuilderPageState(normalized.pagesByKey[key]);
+      return {
+        ...normalized,
+        pagesByKey: {
+          ...normalized.pagesByKey,
+          [key]: { ...pageState, deleted: false },
+        },
+      };
+    });
+  }, [activeSlide, activeSlideInstance]);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => setActiveBuilderPageIndex(0));
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeSlide, activeSlideInstance]);
 
   const handleAssetUpload = useCallback(async (field, file) => {
     if (!file.type || !["image/png", "image/jpeg"].includes(file.type)) {
@@ -8026,6 +9640,25 @@ export default function WorkspaceCimPrep() {
     }
   }, [showToast]);
 
+  const handleBuilderAssetPlaceholderUpload = useCallback(async (placeholder, file) => {
+    const fieldsForSlide = fieldsBySlide[activeSlide] || [];
+    const field = fieldsForSlide.find((candidate) => candidate.id === placeholder?.fieldId) ||
+      fieldsForSlide.find((candidate) => (
+        isAssetField(candidate) && getAssetKey(candidate) === placeholder?.assetKey
+      ));
+
+    if (!field) {
+      showToast({
+        type: "error",
+        title: "Logo Upload Failed",
+        message: "This logo placeholder is not linked to a CIM asset field.",
+      });
+      return;
+    }
+
+    await handleAssetUpload(field, file);
+  }, [activeSlide, fieldsBySlide, handleAssetUpload, showToast]);
+
   const handleAssetRemove = useCallback((field) => {
     setAssetValues((previous) => {
       const next = { ...previous };
@@ -8033,6 +9666,18 @@ export default function WorkspaceCimPrep() {
       return next;
     });
     setActiveFieldId(field.id);
+  }, []);
+
+  const handleAssetScaleChange = useCallback((field, scale) => {
+    setAssetValues((previous) => {
+      const key = getAssetKey(field);
+      const existing = previous[key];
+      if (!existing?.dataUrl) return previous;
+      return {
+        ...previous,
+        [key]: { ...existing, scale: normalizeAssetScale(scale) },
+      };
+    });
   }, []);
 
   const handleChartChange = useCallback((fieldId, nextConfig) => {
@@ -8132,11 +9777,11 @@ export default function WorkspaceCimPrep() {
         item.archived
           ? item
           : {
-              ...item,
-              batchId,
-              sentAt: now,
-              updatedAt: now,
-            },
+            ...item,
+            batchId,
+            sentAt: now,
+            updatedAt: now,
+          },
       ]),
     );
     const historyEntry = buildQuestionnaireHistoryEntry(activeItems, batchId, now, user);
@@ -8182,7 +9827,10 @@ export default function WorkspaceCimPrep() {
       title: "Client Note Added",
       message: "The note was placed into the CIM field. Review and save your CIM changes.",
     });
-  }, [handleGlobalChange, showToast]);
+  }, [
+    handleGlobalChange,
+    showToast,
+  ]);
 
   const handleUseClientAsset = useCallback((item) => {
     const asset = item.clientAsset;
@@ -8217,24 +9865,36 @@ export default function WorkspaceCimPrep() {
     });
   }, [showToast]);
 
-  const getExportElementContent = useCallback((slideRef, element) => {
-    const slideNumber = slideRef?.sourceSlideNumber || slideRef;
-    const fieldsForSlide = fieldsBySlide[slideNumber] || [];
-    const fieldsById = Object.fromEntries(fieldsForSlide.map((field) => [field.id, field]));
-    const exportFieldValues = getFieldValuesForExportSlide(fieldValues, slideRef);
-    if (shouldHideUnusedRepeatableSlot(slideNumber, element, exportFieldValues)) {
-      return { kind: "hidden" };
-    }
-    return getElementContent(
-      slideNumber,
-      element,
-      fieldsById,
-      exportFieldValues,
-      assetValues,
-      chartValues,
-      effectiveGlobalDetails,
-    );
-  }, [assetValues, chartValues, effectiveGlobalDetails, fieldValues, fieldsBySlide]);
+  const buildNativeBuilderExportDeck = useCallback(() => {
+    const previewSlides = buildPreviewSlidesWithBuilderPages(fieldValues, cimBuilderState);
+    const exportLayouts = {};
+    const exportSlideRefs = previewSlides.map((slideRef, index) => {
+      const exportKey = `builder-${index + 1}`;
+      const page = resolveCimBuilderPreviewPage(slideRef, {
+        layouts: styledLayouts,
+        fieldsBySlide,
+        fieldValues,
+        assetValues,
+        chartValues,
+        globalDetails: effectiveGlobalDetails,
+        styleProfile: activeStyleProfile,
+        builderState: cimBuilderState,
+      });
+      exportLayouts[exportKey] = buildCimBuilderExportLayout(page);
+      return { sourceSlideNumber: exportKey, instanceIndex: 0 };
+    });
+
+    return { exportLayouts, exportSlideRefs };
+  }, [
+    activeStyleProfile,
+    assetValues,
+    chartValues,
+    cimBuilderState,
+    effectiveGlobalDetails,
+    fieldValues,
+    fieldsBySlide,
+    styledLayouts,
+  ]);
 
   const handleSave = useCallback(async () => {
     setSaving(true);
@@ -8244,9 +9904,11 @@ export default function WorkspaceCimPrep() {
       fieldValues,
       assetValues,
       chartValues,
+      cimBuilderState: normalizeCimBuilderState(cimBuilderState),
       financialValidation: financialAutofillState.validation,
       financialAutofillRange,
       financialAutofillReportVersionId,
+      financialAutofillDatasetVersion,
       updatedAt: new Date().toISOString(),
     };
     const localKey = getLocalStorageKey(clientId);
@@ -8282,16 +9944,20 @@ export default function WorkspaceCimPrep() {
     assetValues,
     chartValues,
     clientId,
+    activeStyleProfileId,
     effectiveGlobalDetails,
     fieldValues,
     financialAutofillRange,
+    financialAutofillDatasetVersion,
     financialAutofillReportVersionId,
     financialAutofillState.validation,
+    cimBuilderState,
     showToast,
+    styleProfilesState,
   ]);
 
-  const handleExport = useCallback(() => {
-    const missingSlides = PREVIEW_SLIDES.filter((slideNumber) => !layouts[slideNumber]);
+  const handleExport = useCallback(async () => {
+    const missingSlides = PREVIEW_SLIDES.filter((slideNumber) => !styledLayouts[slideNumber]);
     if (missingSlides.length > 0) {
       showToast({
         type: "error",
@@ -8304,12 +9970,21 @@ export default function WorkspaceCimPrep() {
     const baseName = sanitizeFileName(
       effectiveGlobalDetails.projectName || effectiveGlobalDetails.companyLegalName || company?.name || "cim-prep",
     );
-    const exportSlides = buildCimExportSlides(fieldValues);
+    const { exportLayouts, exportSlideRefs } = buildNativeBuilderExportDeck();
+    if (!exportSlideRefs.length) {
+      showToast({
+        type: "error",
+        title: "Export Not Ready",
+        message: "All pages are removed. Restore or add at least one page before exporting.",
+      });
+      return;
+    }
     exportCimPptx({
-      layouts,
-      slideNumbers: exportSlides,
-      getElementContent: getExportElementContent,
+      layouts: exportLayouts,
+      slideNumbers: exportSlideRefs,
+      getElementContent: getCimBuilderExportElementContent,
       filename: `${baseName}-CIM.pptx`,
+      styleProfile: isDefaultCimStyleProfile(activeStyleProfile) ? null : activeStyleProfile,
     });
     showToast({
       type: "success",
@@ -8318,15 +9993,43 @@ export default function WorkspaceCimPrep() {
     });
   }, [
     company?.name,
+    buildNativeBuilderExportDeck,
     effectiveGlobalDetails,
-    fieldValues,
-    getExportElementContent,
-    layouts,
+    activeStyleProfile,
+    styledLayouts,
     showToast,
   ]);
 
   const isBasicSection = activeSection.type === "basic";
   const activeFields = activeSlide ? fieldsBySlide[activeSlide] || [] : [];
+  const activeBuilderSlideKey = getCimBuilderSlideKey(activeSlide, activeSlideInstance);
+  const normalizedBuilderState = useMemo(() => normalizeCimBuilderState(cimBuilderState), [cimBuilderState]);
+  const activeBuilderBaseElements = useMemo(() => buildCimBuilderElementSpecs(
+    activeSlide, styledLayouts[activeSlide], activeFields, activeCanvasFieldValues,
+    assetValues, chartValues, effectiveGlobalDetails, activeStyleProfile,
+  ), [
+    activeCanvasFieldValues,
+    activeFields,
+    activeSlide,
+    activeStyleProfile,
+    assetValues,
+    chartValues,
+    effectiveGlobalDetails,
+    styledLayouts,
+  ]);
+  const activeBuilderExtraPages = normalizedBuilderState.extraPagesByKey[activeBuilderSlideKey] || [];
+  const activeBuilderPageState = normalizedBuilderState.pagesByKey[activeBuilderSlideKey] || {};
+  const activeBuilderPage = activeBuilderPageIndex === 0
+    ? buildCimBuilderPage(
+        activeBuilderBaseElements,
+        activeBuilderPageState,
+        getCimBuilderTemplateBackground(styledLayouts[activeSlide]),
+      )
+    : sanitizeCimBuilderPage(activeBuilderExtraPages[activeBuilderPageIndex - 1] || createBlankBuilderPage());
+  const activeBuilderPageTabs = [
+    { index: 0, label: activeBuilderPageState.deleted ? "Removed" : "Template" },
+    ...activeBuilderExtraPages.map((page, index) => ({ index: index + 1, label: page.name || `Page ${index + 2}` })),
+  ];
   const sectionEditableFields = getEditableTemplateFields(
     activeSection.slides.flatMap((slideNumber) => fieldsBySlide[slideNumber] || []),
     effectiveGlobalDetails,
@@ -8337,6 +10040,7 @@ export default function WorkspaceCimPrep() {
     : countFieldsWithData(sectionEditableFields, fieldValues, assetValues, chartValues);
   const sectionFieldTotal = (isBasicSection ? BASIC_DETAIL_FIELDS.length : 0) + sectionEditableFields.length;
   const questionnaireCounts = getQuestionnaireCounts(questionnaireState);
+  const questionnaireSections = NAV_SECTIONS;
 
   return (
     <div className="min-h-screen bg-bg-page p-4 text-text-primary lg:p-6">
@@ -8372,15 +10076,18 @@ export default function WorkspaceCimPrep() {
           </button>
           <button
             onClick={() => setQuestionnaireOpen(true)}
-            className="theme-btn-secondary"
+            className="group relative flex h-10 w-10 items-center justify-center rounded-md border border-border bg-white text-[#6D6E71] transition hover:border-[#8BC53D] hover:bg-[#EEF6E0] hover:text-[#476E2C]"
+            aria-label={`Questionnaire${questionnaireCounts.total > 0 ? ` (${questionnaireCounts.total})` : ""}`}
           >
             <ClipboardList size={16} />
-            Questionnaire
             {questionnaireCounts.total > 0 && (
-              <span className="ml-1 rounded-full bg-[#EEF6E0] px-1.5 py-0.5 text-[11px] font-bold text-[#476E2C]">
+              <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full border-2 border-white bg-[#8BC53D] px-1 text-[10px] font-bold leading-none text-white">
                 {questionnaireCounts.total}
               </span>
             )}
+            <span className="pointer-events-none absolute right-0 top-full z-50 mt-2 whitespace-nowrap rounded-md bg-[#050505] px-2 py-1 text-xs font-semibold text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+              Questionnaire
+            </span>
           </button>
           <button
             onClick={() => setReviewPickerOpen(true)}
@@ -8408,8 +10115,29 @@ export default function WorkspaceCimPrep() {
             </span>
           </button>
           <button
+            onClick={() => setStyleEditorOpen(true)}
+            className="group relative flex h-10 w-10 items-center justify-center rounded-md border border-border bg-white text-[#6D6E71] transition hover:border-[#8BC53D] hover:bg-[#EEF6E0] hover:text-[#476E2C]"
+            aria-label="Customize template"
+          >
+            <Palette size={16} />
+            {!isDefaultCimStyleProfile(activeStyleProfile) ? (
+              <span className="absolute -right-1 -top-1 h-3 w-3 rounded-full border-2 border-white bg-[#8BC53D]" />
+            ) : null}
+            <span className="pointer-events-none absolute right-0 top-full z-50 mt-2 whitespace-nowrap rounded-md bg-[#050505] px-2 py-1 text-xs font-semibold text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+              {isDefaultCimStyleProfile(activeStyleProfile) ? "Customize template" : `Template: ${activeStyleProfile.name}`}
+            </span>
+          </button>
+          <button
             onClick={() => {
-              const index = PREVIEW_SLIDES.indexOf(activeSlide);
+              const previewSlides = buildPreviewSlidesWithBuilderPages(fieldValues, cimBuilderState);
+              const index = previewSlides.findIndex((slideRef) => {
+                const sameSlide = Number(slideRef.sourceSlideNumber) === Number(activeSlide) &&
+                  Number(slideRef.instanceIndex || 0) === Number(activeSlideInstance || 0);
+                if (!sameSlide) return false;
+                if (activeBuilderPageIndex === 0) return !isCimBuilderExtraPreviewSlide(slideRef);
+                return isCimBuilderExtraPreviewSlide(slideRef) &&
+                  Number(slideRef.builderPageIndex || 0) === activeBuilderPageIndex - 1;
+              });
               setPreviewSlideIndex(index >= 0 ? index : 0);
               setPreviewOpen(true);
             }}
@@ -8444,9 +10172,9 @@ export default function WorkspaceCimPrep() {
 
       <FinancialValidationBanner validation={financialAutofillState.validation} />
 
-      <div className="grid gap-4 xl:grid-cols-[230px_minmax(0,1fr)_310px]">
+      <div className="grid gap-3 xl:grid-cols-[58px_minmax(0,1fr)_288px]">
         <SectionDrawer
-          sections={NAV_SECTIONS}
+          sections={questionnaireSections}
           activeSectionId={activeSectionId}
           fieldValues={fieldValues}
           assetValues={assetValues}
@@ -8456,46 +10184,47 @@ export default function WorkspaceCimPrep() {
           onSelectSection={handleSectionSelect}
         />
 
-        <section className="min-w-0 space-y-3">
-          <div className="rounded-lg border border-border bg-white p-4 shadow-card">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <p className="text-xs font-bold uppercase tracking-[0.08em] text-[#8BC53D]">
-                  {isBasicSection ? "Setup" : `Section ${activeSection.number}`}
-                </p>
-                <h2 className="mt-1 text-xl font-bold text-[#050505]">
-                  {activeSection.title}
-                </h2>
-                <p className="mt-1 text-sm text-[#6D6E71]">
-                  {sectionCompleted}/{sectionFieldTotal} fields completed
-                </p>
+        <section className="min-w-0 space-y-2">
+          <div className="rounded-lg border border-border bg-white px-3 py-2 shadow-card">
+            <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex min-w-0 items-center gap-3">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[#EEF6E0] text-xs font-bold text-[#476E2C]">
+                  {isBasicSection ? "BD" : activeSection.number}
+                </span>
+                <div className="min-w-0">
+                  <h2 className="truncate text-sm font-bold text-[#050505]">
+                    {activeSection.title}
+                  </h2>
+                  <p className="text-xs text-[#6D6E71]">
+                    {sectionCompleted}/{sectionFieldTotal} fields completed
+                  </p>
+                </div>
               </div>
 
               {activeSectionSlideRefs.length > 0 && (
-                <div className="flex gap-2 overflow-x-auto pb-1">
+                <div className="flex gap-1.5 overflow-x-auto pb-0.5">
                   {activeSectionSlideRefs.map((slideRef) => {
                     const slideNumber = slideRef.sourceSlideNumber;
                     const instanceIndex = slideRef.instanceIndex || 0;
                     const selected = activeSlide === slideNumber && activeSlideInstance === instanceIndex;
                     return (
-                    <button
-                      key={`${slideNumber}-${instanceIndex}`}
-                      onClick={() => {
-                        setActiveSlide(slideNumber);
-                        setActiveSlideInstance(instanceIndex);
-                        setActiveFieldId("");
-                      }}
-                      className={`shrink-0 rounded-md border px-3 py-2 text-xs font-bold transition ${
-                        selected
+                      <button
+                        key={`${slideNumber}-${instanceIndex}`}
+                        onClick={() => {
+                          setActiveSlide(slideNumber);
+                          setActiveSlideInstance(instanceIndex);
+                          setActiveFieldId("");
+                        }}
+                        className={`h-8 shrink-0 rounded-md border px-2.5 text-xs font-bold transition ${selected
                           ? "border-[#8BC53D] bg-[#EEF6E0] text-[#476E2C]"
                           : "border-border bg-white text-[#6D6E71] hover:border-[#8BC53D]/60"
-                      }`}
-                    >
-                      Slide {slideNumber}{instanceIndex > 0 ? `.${instanceIndex + 1}` : ""}
-                      {instanceIndex > 0 ? (
-                        <span className="ml-1 rounded bg-[#476E2C] px-1 py-0.5 text-[9px] text-white">CONT.</span>
-                      ) : null}
-                    </button>
+                          }`}
+                      >
+                        Slide {slideNumber}{instanceIndex > 0 ? `.${instanceIndex + 1}` : ""}
+                        {instanceIndex > 0 ? (
+                          <span className="ml-1 rounded bg-[#476E2C] px-1 py-0.5 text-[9px] text-white">CONT.</span>
+                        ) : null}
+                      </button>
                     );
                   })}
                 </div>
@@ -8503,25 +10232,24 @@ export default function WorkspaceCimPrep() {
             </div>
           </div>
 
-          <div className="rounded-lg border border-border bg-white p-2 shadow-card">
+          <div className="rounded-lg border border-border bg-white p-1.5 shadow-card">
             {loading ? (
               <div className="flex aspect-video items-center justify-center text-sm font-semibold text-[#6D6E71]">
                 <Loader2 size={18} className="mr-2 animate-spin text-[#8BC53D]" />
                 Loading CIM template
               </div>
             ) : (
-              <SlideCanvas
-                slideNumber={activeSlide}
-                displaySlideNumber={activeSlideInstance > 0 ? `${activeSlide}.${activeSlideInstance + 1}` : activeSlide}
-                layout={layouts[activeSlide]}
-                fields={activeFields}
-                fieldValues={activeCanvasFieldValues}
-                assetValues={assetValues}
-                chartValues={chartValues}
-                globalDetails={effectiveGlobalDetails}
-                activeFieldId={activeFieldId}
-                onFieldFocus={setActiveFieldId}
-                onFieldChange={handleFieldChange}
+              <CimNativeBuilderCanvas
+                slideKey={`${activeSlide}-${activeSlideInstance}`}
+                page={activeBuilderPage}
+                pageTabs={activeBuilderPageTabs}
+                activePageIndex={activeBuilderPageIndex}
+                onSelectPage={setActiveBuilderPageIndex}
+                onAddPage={handleAddBuilderPage}
+                onDeletePage={handleDeleteBuilderPage}
+                onRestorePage={handleRestoreBuilderPage}
+                onChange={handleBuilderPageChange}
+                onAssetPlaceholderUpload={handleBuilderAssetPlaceholderUpload}
               />
             )}
           </div>
@@ -8543,6 +10271,7 @@ export default function WorkspaceCimPrep() {
             fieldValues={fieldValues}
             assetValues={assetValues}
             chartValues={chartValues}
+            styleProfile={activeStyleProfile}
             questionnaireState={questionnaireState}
             reviewState={reviewState}
             globalDetails={effectiveGlobalDetails}
@@ -8566,7 +10295,7 @@ export default function WorkspaceCimPrep() {
       {questionnaireOpen && (
         <QuestionnaireReviewModal
           onClose={() => setQuestionnaireOpen(false)}
-          sections={NAV_SECTIONS}
+          sections={questionnaireSections}
           fieldsBySlide={fieldsBySlide}
           globalDetails={effectiveGlobalDetails}
           questionnaireState={questionnaireState}
@@ -8600,12 +10329,50 @@ export default function WorkspaceCimPrep() {
         <FinancialAutofillModal
           initialRange={financialAutofillRange}
           initialReportVersionId={financialAutofillReportVersionId}
-          reportVersions={reportVersions}
-          reportVersionsLoading={reportVersionsLoading}
-          reportVersionsError={reportVersionsError}
+          initialDatasetVersion={manualGlAutofillDatasetVersion}
+          sourceLabel={reportSourceLabel}
+          versionMode={financialAutofillVersionMode}
+          reportVersions={financialAutofillReportVersions}
+          reportVersionsLoading={isKeyReportsSource && reportVersionsLoading}
+          reportVersionsError={isKeyReportsSource ? reportVersionsError : null}
+          datasetVersions={manualGlDatasetVersions}
+          datasetVersionsLoading={isManualGlSource && manualGlDatasetVersionsLoading}
+          datasetVersionsError={isManualGlSource ? manualGlDatasetVersionsError : null}
           loading={financialAutofillState.loading}
           onClose={() => setFinancialAutofillModalOpen(false)}
           onConfirm={handleConfirmFinancialAutofill}
+        />
+      ) : null}
+
+      {styleEditorOpen ? (
+        <CimTemplateStyleEditor
+          open
+          profilesState={{
+            ...styleProfilesState,
+            activeProfileId: activeStyleProfileId,
+          }}
+          previewSlides={TEMPLATE_SLIDES}
+          sections={NAV_SECTIONS}
+          saving={styleProfilesSaving}
+          onClose={() => setStyleEditorOpen(false)}
+          onSave={handleSaveStyleProfiles}
+          renderPreview={({ profile, slideNumber, selection }) => (
+            <SlideCanvas
+              slideNumber={slideNumber}
+              displaySlideNumber={slideNumber}
+              layout={applyCimTemplateStyleProfile(slideNumber, layouts[slideNumber], profile)}
+              fields={fieldsBySlide[slideNumber] || []}
+              fieldValues={fieldValues}
+              assetValues={assetValues}
+              chartValues={chartValues}
+              globalDetails={effectiveGlobalDetails}
+              styleProfile={profile}
+              previewMode
+              styleSelectionMode={Boolean(selection)}
+              selectedStyleElementId={selection?.selectedElementId}
+              onSelectStyleElement={selection?.onSelectElement}
+            />
+          )}
         />
       ) : null}
 
@@ -8616,12 +10383,14 @@ export default function WorkspaceCimPrep() {
         previewSlideIndex={previewSlideIndex}
         onClose={() => setPreviewOpen(false)}
         onSlideIndexChange={setPreviewSlideIndex}
-        layouts={layouts}
+        builderState={cimBuilderState}
+        layouts={styledLayouts}
         fieldsBySlide={fieldsBySlide}
         fieldValues={fieldValues}
         assetValues={assetValues}
         chartValues={chartValues}
         globalDetails={effectiveGlobalDetails}
+        styleProfile={activeStyleProfile}
       />
     </div>
   );

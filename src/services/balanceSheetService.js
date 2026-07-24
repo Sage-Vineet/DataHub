@@ -575,6 +575,29 @@ function normalizeKey(name) {
   return BS_SECTION_SYNONYMS[basic] || basic;
 }
 
+function isTotalRow(node) {
+  return node?.type === "total" || String(node?.name || "").toLowerCase().startsWith("total");
+}
+
+// Guarantees a "Total X" row always renders as the LAST child within its
+// parent, matching the universal accounting convention (a subtotal follows
+// the items it sums). Applied as a final normalization pass over the whole
+// tree so it holds regardless of the order the multi-period merge or the
+// GAAP-hierarchy relocation ("moves") logic above happened to leave things
+// in — both operate on unions of several QuickBooks snapshots and neither
+// guarantees per-section ordering on its own.
+function ensureTotalsLast(nodes) {
+  if (!Array.isArray(nodes)) return nodes;
+  const rest = [];
+  const totals = [];
+  for (const node of nodes) {
+    const next = node.children ? { ...node, children: ensureTotalsLast(node.children) } : node;
+    if (isTotalRow(next)) totals.push(next);
+    else rest.push(next);
+  }
+  return [...rest, ...totals];
+}
+
 function mergeFileNodes(nodeArraysByFile, fileKeys) {
   const orderedKeys = [];
   const nodeMap = new Map();
@@ -697,15 +720,32 @@ function mergePeriods(periodResults, periods) {
       return collected;
     }
 
+    // Tries each target in priority order, searching the WHOLE tree for that
+    // one target before falling back to the next. This matters because
+    // nameTargets mixes specific destinations ("liabilities") with broader
+    // fallbacks ("liabilities and equity") for trees that lack the specific
+    // one — searching all targets at once lets a shallow, broad match (e.g.
+    // the top-level "Liabilities and Equity" wrapper) win over a deeper,
+    // more specific match (the nested "Liabilities" section) purely because
+    // it's encountered first in traversal order, silently misplacing nodes
+    // (e.g. Long-Term Liabilities ending up a sibling of Liabilities instead
+    // of inside it).
     function findSection(nodes, nameTargets) {
+      for (const target of nameTargets) {
+        const found = findSectionForTarget(nodes, target);
+        if (found) return found;
+      }
+      return null;
+    }
+
+    function findSectionForTarget(nodes, target) {
       if (!nodes) return null;
       for (let i = 0; i < nodes.length; i++) {
-        const norm = normalizeName(nodes[i].name);
-        if (nameTargets.includes(norm)) {
+        if (normalizeName(nodes[i].name) === target) {
           return nodes[i];
         }
         if (nodes[i].children) {
-          const found = findSection(nodes[i].children, nameTargets);
+          const found = findSectionForTarget(nodes[i].children, target);
           if (found) return found;
         }
       }
@@ -728,39 +768,61 @@ function mergePeriods(periodResults, periods) {
 
     for (const move of moves) {
       const extracted = extractAllNodes(tree, move.target);
+      if (extracted.length === 0) continue;
       // Reverse extracted array to preserve original relative ordering when unshifting
       extracted.reverse();
-      for (const nodeToMove of extracted) {
-        let destNode = findSection(tree, move.dest);
-        if (destNode && destNode.children) {
-          destNode.children.unshift(nodeToMove);
+
+      // Different comparative periods can represent the "same" section at
+      // different depths in QuickBooks' own response (e.g. Long-Term
+      // Liabilities nested under Liabilities in one period's snapshot, a
+      // flat top-level sibling in another). extractAllNodes finds every
+      // occurrence by name across the WHOLE tree, so more than one node can
+      // come back here for the same move target. They must be consolidated
+      // into a single node before insertion — if each surviving duplicate
+      // were reinserted as its own sibling, recompute() below would sum
+      // every duplicate's contribution independently, over- or
+      // under-stating the parent total depending on which child accounts
+      // happen to share names across the mismatched structures (this is
+      // what produced the wrong Total Assets / Total Liabilities & Equity
+      // figures reported against a correct raw QuickBooks response).
+      const nodeToMove = extracted[0];
+      for (let i = 1; i < extracted.length; i++) {
+        const dupe = extracted[i];
+        if (dupe.children?.length) {
+          if (!nodeToMove.children) nodeToMove.children = [];
+          mergeInto(nodeToMove.children, dupe.children);
+        }
+      }
+
+      let destNode = findSection(tree, move.dest);
+      if (destNode && destNode.children) {
+        destNode.children.unshift(nodeToMove);
+        structureChanged = true;
+      } else {
+        let parentNode = findSection(tree, move.parentFallback || []);
+        if (parentNode && parentNode.children) {
+          // Create the missing destination section
+          const newSectionName = move.dest[0].split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+          const newDestNode = {
+            id: "created-section-" + move.dest[0].replace(/\s+/g, '-'),
+            name: newSectionName,
+            type: "header",
+            children: [
+              nodeToMove,
+              {
+                id: "total-created-" + move.dest[0].replace(/\s+/g, '-'),
+                name: "Total " + newSectionName,
+                type: "total",
+                amounts: {}
+              }
+            ],
+            amounts: {}
+          };
+          parentNode.children.unshift(newDestNode);
           structureChanged = true;
         } else {
-          let parentNode = findSection(tree, move.parentFallback);
-          if (parentNode && parentNode.children) {
-            // Create the missing destination section
-            const newSectionName = move.dest[0].split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
-            const newDestNode = {
-              id: "created-section-" + move.dest[0].replace(/\s+/g, '-'),
-              name: newSectionName,
-              type: "header",
-              children: [
-                nodeToMove,
-                {
-                  id: "total-created-" + move.dest[0].replace(/\s+/g, '-'),
-                  name: "Total " + newSectionName,
-                  type: "total",
-                  amounts: {}
-                }
-              ],
-              amounts: {}
-            };
-            parentNode.children.unshift(newDestNode);
-            structureChanged = true;
-          } else {
-            tree.unshift(nodeToMove);
-            structureChanged = true;
-          }
+          tree.unshift(nodeToMove);
+          structureChanged = true;
         }
       }
     }
@@ -802,7 +864,7 @@ function mergePeriods(periodResults, periods) {
   }
 
   const enrichedRows = masterRows.map(enrich);
-  return restructureGAAPTree(enrichedRows);
+  return ensureTotalsLast(restructureGAAPTree(enrichedRows));
 }
 
 function fileYear(file) {
@@ -1175,6 +1237,21 @@ export async function getBalanceSheetDetail(
     const s = new Date(startDate + "T00:00:00");
     const e = new Date(endDate + "T00:00:00");
     let yr = s.getFullYear(), mo = s.getMonth();
+    // A wide range (e.g. "All Dates") would otherwise fire one live QuickBooks
+    // request per calendar month with no upper bound — cap to the most recent
+    // MAX_MONTHLY_PERIODS months so it stays bounded and fast, keeping the
+    // period closest to "now" since that's what users actually monitor.
+    const MAX_MONTHLY_PERIODS = 120;
+    const endMonthIndex = e.getFullYear() * 12 + e.getMonth();
+    let startMonthIndex = yr * 12 + mo;
+    if (endMonthIndex - startMonthIndex + 1 > MAX_MONTHLY_PERIODS) {
+      console.warn(
+        `[BalanceSheet] Month mode range (${startDate} to ${endDate}) spans more than ${MAX_MONTHLY_PERIODS} months — trimming to the most recent ${MAX_MONTHLY_PERIODS}.`,
+      );
+      startMonthIndex = endMonthIndex - MAX_MONTHLY_PERIODS + 1;
+      yr = Math.floor(startMonthIndex / 12);
+      mo = startMonthIndex % 12;
+    }
     while (yr < e.getFullYear() || (yr === e.getFullYear() && mo <= e.getMonth())) {
       const mm = String(mo + 1).padStart(2, "0");
       const lastDay = new Date(yr, mo + 1, 0).getDate();
