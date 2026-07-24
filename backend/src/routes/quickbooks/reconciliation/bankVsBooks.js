@@ -6,6 +6,7 @@ const {
   extractBankStatementsFromPdfBase64,
   extractBankStatementsFromExcelBuffer,
   buildBankResponseShape,
+  mergeDuplicateBanksInShape,
 } = require("../../../services/bankStatementExtractor");
 const {
   extractBsBankBalancesWithGemini,
@@ -20,7 +21,10 @@ const BANK_RECONCILIATION_TYPE = "bank_reconciliation";
 // Version-aware cache for Key Reports-resolved bank statement extraction. Kept
 // separate from BANK_RECONCILIATION_TYPE (written by Sync All) so the existing
 // sync cache is never disturbed; this cache is keyed by the linked document set.
-const BANK_RECON_KR_CACHE_TYPE = "bank_reconciliation_kr_v1";
+// v2: cache is now persistent PER document-set (per Key Report version) instead
+// of a single overwritten row, so switching versions / refreshing reuses the
+// cached extraction instead of re-calling Gemini. Bump invalidates v1 rows.
+const BANK_RECON_KR_CACHE_TYPE = "bank_reconciliation_kr_v2";
 
 // Maps frontend REPORT_SOURCE_KEYS values → backend cache source + DataRoom folder root
 const SOURCE_CONFIG = {
@@ -508,7 +512,7 @@ router.get("/reconciliation-variance", extractClientId, async (req, res) => {
 // target its own isolated cache partition and DataRoom folder.
 // Returns { statusCode, body } — the caller forwards these directly to res.
 // ─────────────────────────────────────────────────────────────────────────────
-async function runBankExtraction(clientId, cacheSource = MANUAL_REPORT_UPLOAD_SOURCE, folderRootName = "Manual Upload Source", datasetVersion = null, keyReportVersionId = null) {
+async function runBankExtractionImpl(clientId, cacheSource = MANUAL_REPORT_UPLOAD_SOURCE, folderRootName = "Manual Upload Source", datasetVersion = null, keyReportVersionId = null) {
   // 1. Resolve the source document(s) strictly from the SELECTED Key Reports
   //    version (or the active one when no version is selected). The document set
   //    determines the cache key, so switching versions (and therefore which bank
@@ -559,20 +563,24 @@ async function runBankExtraction(clientId, cacheSource = MANUAL_REPORT_UPLOAD_SO
 
   const documentSignature = documents.map((d) => d.id).filter(Boolean).sort().join(",");
 
-  // 2. Version-aware cache check — only valid if built from the SAME linked
-  //    document set (kept in its own report_type so Sync All's cache is untouched).
-  const { data: cached } = await supabase
+  // 2. Version-aware cache check — persistent PER document set. Each Key Report
+  //    version's linked docs produce a distinct signature and its own cache row,
+  //    so switching versions (or refreshing) reuses that version's cached
+  //    extraction instead of re-calling Gemini. (Kept in its own report_type so
+  //    Sync All's cache is untouched.)
+  const { data: cachedRows } = await supabase
     .from("qb_synced_reports")
     .select("data, updated_at")
     .eq("company_id", clientId)
     .eq("source", cacheSource)
     .eq("report_type", BANK_RECON_KR_CACHE_TYPE)
-    .order("updated_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .order("updated_at", { ascending: false });
 
-  const bd = cached?.data?.bank_reconciliation;
-  if (bd?.banks?.length > 0 && bd.documentSignature === documentSignature) {
+  const cachedMatch = (cachedRows || []).find(
+    (r) => r?.data?.bank_reconciliation?.documentSignature === documentSignature,
+  );
+  const bd = cachedMatch?.data?.bank_reconciliation;
+  if (bd?.banks?.length > 0) {
     console.log(`[BankPDF] KR cache hit for ${clientId} (source=${cacheSource}, sig=${documentSignature})`);
     return {
       statusCode: 200,
@@ -583,7 +591,7 @@ async function runBankExtraction(clientId, cacheSource = MANUAL_REPORT_UPLOAD_SO
         banks: bd.banks,
         months: bd.months || [],
         totals: bd.totals || [],
-        syncedAt: bd.syncedAt || cached.updated_at,
+        syncedAt: bd.syncedAt || cachedMatch.updated_at,
         documentCount: bd.documentCount || bd.banks.length,
       },
     };
@@ -672,26 +680,51 @@ async function runBankExtraction(clientId, cacheSource = MANUAL_REPORT_UPLOAD_SO
     },
   };
   try {
-    await supabase
+    // Persist per document set: update this version's cache row if present,
+    // otherwise insert. Other versions' cache rows are left intact so switching
+    // back to them stays a cache hit (no re-extraction).
+    const { data: existingRows } = await supabase
       .from("qb_synced_reports")
-      .delete()
+      .select("id, data")
       .eq("company_id", clientId)
       .eq("source", cacheSource)
       .eq("report_type", BANK_RECON_KR_CACHE_TYPE);
-    await supabase.from("qb_synced_reports").insert({
-      company_id: clientId,
-      report_type: BANK_RECON_KR_CACHE_TYPE,
-      source: cacheSource,
-      data: cachePayload,
-      status: "synced",
-      last_synced_at: now,
-      updated_at: now,
-    });
+    const existing = (existingRows || []).find(
+      (r) => r?.data?.bank_reconciliation?.documentSignature === documentSignature,
+    );
+    if (existing?.id) {
+      await supabase
+        .from("qb_synced_reports")
+        .update({ data: cachePayload, status: "synced", last_synced_at: now, updated_at: now })
+        .eq("id", existing.id);
+    } else {
+      await supabase.from("qb_synced_reports").insert({
+        company_id: clientId,
+        report_type: BANK_RECON_KR_CACHE_TYPE,
+        source: cacheSource,
+        data: cachePayload,
+        status: "synced",
+        last_synced_at: now,
+        updated_at: now,
+      });
+    }
   } catch (cacheErr) {
     console.warn(`[BankPDF] KR cache write failed (non-fatal): ${cacheErr.message}`);
   }
 
   return { statusCode: 200, body: { success: true, source: "live", bank_count: banks.length, banks, months, totals } };
+}
+
+// Public entry point. Wraps the extraction so EVERY consumer — the
+// /extract-bank-pdf-records route, the QMS / manual bank-data endpoints, and the
+// manualReportUploads routes that import this — gets duplicate banks collapsed,
+// including case-variant duplicates ("Truist (9118)" vs "TRUIST (9118)") that
+// may persist in older cached/synced results. Idempotent on freshly-extracted
+// data (buildBankResponseShape already groups canonically).
+async function runBankExtraction(...args) {
+  const result = await runBankExtractionImpl(...args);
+  if (result && result.body) result.body = mergeDuplicateBanksInShape(result.body);
+  return result;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -760,6 +793,9 @@ router.get("/extract-bank-pdf-records", extractClientId, async (req, res) => {
     const { cacheSource, folderRootName } = SOURCE_CONFIG[sourceKey] || DEFAULT_SOURCE_CONFIG;
     console.log(`[BankPDF] source="${sourceKey}" → cacheSource="${cacheSource}", folder="${folderRootName}", keyReportVersionId=${keyReportVersionId}, datasetVersion=${datasetVersion}, fiscalYear=${fiscalYear}`);
     // keyReportVersionId / datasetVersion scope document resolution to the SELECTED Key Reports version.
+    // runBankExtraction already collapses case-variant duplicate banks (e.g.
+    // "Truist (9118)" vs "TRUIST (9118)") for every source, so the response here
+    // only needs optional fiscal-year scoping.
     const { statusCode, body } = await runBankExtraction(req.clientId, cacheSource, folderRootName, datasetVersion, keyReportVersionId);
     const scoped = fiscalYear ? filterBankReconByYear(body, fiscalYear) : body;
     return res.status(statusCode).json(scoped);

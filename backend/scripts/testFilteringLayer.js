@@ -14,12 +14,12 @@ const testCases = [
   { value: 'Accrual Basis Saturday, April 04, 2026 01:40 PM GMTZ', field: 'description', shouldFilter: true, reason: 'Accrual Basis* pattern' },
   { value: 'Cash Basis Friday, May 01, 2026', field: 'field_name', shouldFilter: true, reason: 'Cash Basis* pattern' },
   { value: 'Report Generated: 2026-06-25', field: 'field_label', shouldFilter: true, reason: 'Report Generated* pattern' },
-  { value: 'Generated On: Monday, Jan 12, 2026', field: 'memo_description', shouldFilter: false }, // not in fieldsToInspect
+  { value: 'Generated On: Monday, Jan 12, 2026', field: 'memo', shouldFilter: false }, // not in fieldsToInspect
   { value: 'Generated On: Monday, Jan 12, 2026', field: 'description', shouldFilter: true, reason: 'Generated On* pattern' },
 
   // Disallowed Totals
   { value: 'Total for Bank Accounts', field: 'account_name', shouldFilter: true, reason: 'Total for * pattern' },
-  { value: 'Total for Current Assets', field: 'distribution_account', shouldFilter: true, reason: 'Total for * pattern' },
+  { value: 'Total for Current Assets', field: 'account_name', shouldFilter: true, reason: 'Total for * pattern' },
   { value: 'Total for Sales', field: 'account_name', shouldFilter: true, reason: 'Total for * pattern' },
   { value: 'Total for Payroll Expenses', field: 'account_name', shouldFilter: true, reason: 'Total for * pattern' },
   { value: 'Total Assets', field: 'account_name', shouldFilter: true, reason: 'Exact total pattern: "Total Assets"' },
@@ -48,7 +48,7 @@ const testCases = [
   { value: 'Payroll Expenses', field: 'account_name', shouldFilter: false },
   { value: 'Retained Earnings', field: 'account_name', shouldFilter: false },
   { value: 'Loan Payable - PPP Loan', field: 'account_name', shouldFilter: false },
-  { value: 'Sales', field: 'distribution_account', shouldFilter: false },
+  { value: 'Sales', field: 'account_name', shouldFilter: false },
   { value: 'Provident Bank Business Checking', field: 'bank_account', shouldFilter: false }
 ];
 

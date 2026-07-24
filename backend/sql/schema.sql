@@ -683,6 +683,9 @@ CREATE TABLE IF NOT EXISTS chart_of_accounts (
   original_hierarchy jsonb,
   adjusted_name text,
   adjusted_hierarchy jsonb,
+  system_id text,                          -- client "System ID" (migration 052) e.g. INC-001
+  normal_balance text,                     -- normal balance (debit | credit)
+  audit_log jsonb NOT NULL DEFAULT '[]'::jsonb,  -- inline classification + adjustment audit (migration 055)
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT uq_chart_of_accounts_version_account
@@ -699,70 +702,15 @@ CREATE INDEX IF NOT EXISTS idx_chart_of_accounts_statement
   ON chart_of_accounts(version_id, statement_type, account_type);
 CREATE INDEX IF NOT EXISTS idx_chart_of_accounts_method
   ON chart_of_accounts(version_id, classification_method);
+CREATE INDEX IF NOT EXISTS idx_chart_of_accounts_system_id
+  ON chart_of_accounts(version_id, system_id);
 
-CREATE TABLE IF NOT EXISTS coa_hierarchy_levels (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  level_number integer NOT NULL,
-  statement_type text,
-  parent_label text,
-  label text NOT NULL,
-  sort_order integer NOT NULL DEFAULT 0,
-  is_standard boolean NOT NULL DEFAULT true,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT uq_coa_hierarchy_levels UNIQUE (level_number, statement_type, parent_label, label)
-);
-CREATE INDEX IF NOT EXISTS idx_coa_hierarchy_levels_lookup
-  ON coa_hierarchy_levels(level_number, statement_type);
+-- NOTE: coa_hierarchy_levels, coa_account_mappings, coa_account_adjustments and
+-- coa_classification_history were consolidated into chart_of_accounts and removed
+-- (migration 055). Mapping is rebuilt in-memory from the COA leaves; adjustments
+-- and classification history live in chart_of_accounts.audit_log; the hierarchy
+-- taxonomy is static in chartOfAccountsService.js.
 
-CREATE TABLE IF NOT EXISTS coa_account_mappings (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  version_id uuid NOT NULL REFERENCES key_report_versions(id) ON DELETE CASCADE,
-  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-  account_id uuid REFERENCES chart_of_accounts(id) ON DELETE CASCADE,
-  source_table text NOT NULL,
-  source_account_name text NOT NULL,
-  source_account_number text,
-  normalized_name text NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT uq_coa_account_mappings
-    UNIQUE (version_id, source_table, normalized_name, source_account_number)
-);
-CREATE INDEX IF NOT EXISTS idx_coa_account_mappings_lookup
-  ON coa_account_mappings(version_id, normalized_name);
-CREATE INDEX IF NOT EXISTS idx_coa_account_mappings_account
-  ON coa_account_mappings(account_id);
-
-CREATE TABLE IF NOT EXISTS coa_account_adjustments (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  account_id uuid NOT NULL REFERENCES chart_of_accounts(id) ON DELETE CASCADE,
-  version_id uuid NOT NULL REFERENCES key_report_versions(id) ON DELETE CASCADE,
-  company_id uuid REFERENCES companies(id) ON DELETE CASCADE,
-  field_changed text NOT NULL,
-  old_value jsonb,
-  new_value jsonb,
-  changed_by uuid,
-  changed_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_coa_account_adjustments_account
-  ON coa_account_adjustments(account_id, changed_at DESC);
-CREATE INDEX IF NOT EXISTS idx_coa_account_adjustments_version
-  ON coa_account_adjustments(version_id, changed_at DESC);
-
-CREATE TABLE IF NOT EXISTS coa_classification_history (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  account_id uuid NOT NULL REFERENCES chart_of_accounts(id) ON DELETE CASCADE,
-  version_id uuid NOT NULL REFERENCES key_report_versions(id) ON DELETE CASCADE,
-  company_id uuid REFERENCES companies(id) ON DELETE CASCADE,
-  classification_method text,
-  hierarchy_snapshot jsonb,
-  source text,
-  created_by uuid,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_coa_classification_history_account
-  ON coa_classification_history(account_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_coa_classification_history_version
-  ON coa_classification_history(version_id, created_at DESC);
 CREATE TABLE IF NOT EXISTS workspace_page_state (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -775,3 +723,36 @@ CREATE TABLE IF NOT EXISTS workspace_page_state (
 
 CREATE INDEX IF NOT EXISTS idx_workspace_page_state_company
   ON workspace_page_state(company_id, updated_at DESC);
+
+-- ============================================================================
+-- Key Report Date Dimension (migration 067) — client Excel spec: id/date/year/month/
+-- quarter/month_name only, no fiscal_* columns. general_ledger_entries.date_id
+-- (nullable FK, additive) is defined by migration 067; transaction_date is
+-- unchanged and remains the column every GL filter uses directly.
+--
+-- Named key_report_date_dimension (not date_dimension) to avoid collision
+-- with the existing date_dimension table, which has a different schema.
+--
+-- NOTE: general_ledger_entries (created by migration 049, reshaped by 050/060,
+-- backfilled by 063) predates this schema.sql mirroring convention and is not
+-- reproduced here in full — see backend/sql/migrations/049, 050, 060, 063 for
+-- its authoritative definition. Migrations 067 (date_id) and 068
+-- (vendor/customer/entity_type) are additive columns on that table. Migration
+-- 069 subsequently DROPPED fiscal_year/fiscal_month from general_ledger_entries
+-- entirely (client Date Architecture Refactor) — year/month/quarter/month_name
+-- now come exclusively from the date_id → key_report_date_dimension join;
+-- filtering uses transaction_date directly. If reproducing this table's DDL
+-- from scratch, do not include fiscal_year/fiscal_month.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS key_report_date_dimension (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  date        date NOT NULL,
+  year        integer NOT NULL,
+  month       integer NOT NULL,
+  quarter     integer NOT NULL,
+  month_name  text NOT NULL,
+  CONSTRAINT uq_key_report_date_dimension_date UNIQUE (date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_key_report_date_dimension_year_month
+  ON key_report_date_dimension(year, month);

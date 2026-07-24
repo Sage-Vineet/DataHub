@@ -17,9 +17,30 @@ function getReportRoot(elementId) {
   return root;
 }
 
+// FrozenPaneTable (the shared sticky-header table primitive) renders the
+// header and body as two SIBLING <table> elements — one with a <thead> and
+// no rows, one with a <tbody> and no header row — so the header can stay
+// genuinely sticky to the page instead of a scroll-container hack (see
+// FrozenPaneTable.jsx for why). A naive `querySelector("table")` only ever
+// finds the first one, silently exporting either headers with zero data
+// rows or data with no headers. Querying <thead>/<tbody> directly against
+// the report root sidesteps how many <table> elements they're split across
+// — this works whether they're two tables (FrozenPaneTable) or one
+// (any older single-table report component).
+function buildExportTable(root) {
+  const thead = root.querySelector("thead");
+  const tbody = root.querySelector("tbody");
+  if (!thead && !tbody) return null;
+
+  const combined = document.createElement("table");
+  if (thead) combined.appendChild(thead.cloneNode(true));
+  if (tbody) combined.appendChild(tbody.cloneNode(true));
+  return combined;
+}
+
 export function exportReportToExcel(elementId, fileName = "report") {
   const root = getReportRoot(elementId);
-  const table = root.querySelector("table");
+  const table = buildExportTable(root);
   if (!table) throw new Error("No table found in the report to export.");
   const workbook = XLSX.utils.table_to_book(table, { sheet: "Report", raw: false });
   XLSX.writeFile(workbook, `${sanitizeFileName(fileName)}.xlsx`);
@@ -37,14 +58,15 @@ function fmtDate(iso) {
 }
 
 function parseReportTable(root) {
-  const table = root.querySelector("table");
-  if (!table) return { colHeaders: [], rows: [] };
+  const thead = root.querySelector("thead");
+  const tbody = root.querySelector("tbody");
+  if (!thead && !tbody) return { colHeaders: [], rows: [] };
 
-  const thCells = [...(table.querySelector("thead")?.querySelectorAll("th") ?? [])];
+  const thCells = [...(thead?.querySelectorAll("th") ?? [])];
   const colHeaders = thCells.map(th => th.textContent.trim().replace(/\s+/g, " "));
 
   const rows = [];
-  table.querySelectorAll("tbody tr").forEach(tr => {
+  (tbody ? [...tbody.querySelectorAll("tr")] : []).forEach(tr => {
     const cells = [...tr.querySelectorAll("td")];
     if (!cells.length) return;
 

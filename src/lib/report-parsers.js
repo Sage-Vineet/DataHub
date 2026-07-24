@@ -166,6 +166,26 @@ function parseSummaryRows(rows, indexOffset = 0) {
         childIndex += children.length;
       }
 
+      // QuickBooks sometimes posts transactions directly to a parent account
+      // in addition to (not instead of) its sub-accounts — reported as a
+      // non-empty value on the Header row itself, alongside the section
+      // name. Without surfacing it as its own line item, that amount is
+      // silently dropped: it's baked into the Summary total but never shown
+      // anywhere, so the section's visible children never sum to its own
+      // "Total X" row even though the API response accounts for it.
+      if (row.Summary && row.Summary.ColData) {
+        const headerOwnAmount = findLastNumericValue((row.Header.ColData || []).slice(1));
+        if (headerOwnAmount) {
+          children.push({
+            id: `header-own-${cleanName}-${indexOffset + index}`,
+            name,
+            amount: headerOwnAmount,
+            amounts: { y5: headerOwnAmount },
+            type: "data",
+          });
+        }
+      }
+
       const totalAmount = row.Summary ? findLastNumericValue(row.Summary.ColData) : findLastNumericValue(row.Header.ColData);
 
       // Case 4: Summary Row -> Render AFTER children

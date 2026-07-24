@@ -14,6 +14,7 @@ import { MessageNotificationsProvider } from "./context/MessageNotificationsCont
 import { ToastProvider, useToast } from "./context/ToastContext";
 import { DataSourceProvider } from "./context/DataSourceContext";
 import ErrorBoundary from "./components/common/ErrorBoundary";
+import KeyReportGenerationToaster from "./components/key-reports/KeyReportGenerationToaster";
 import Layout from "./components/layout/Layout";
 import BrokerLayout from "./components/layout/BrokerLayout";
 import ClientWorkspaceLayout from "./components/layout/ClientWorkspaceLayout";
@@ -31,6 +32,7 @@ import ClientConnections from "./pages/client/Connections";
 import ClientMessages from "./pages/client/Messages";
 import ClientProfile from "./pages/client/Profile";
 import ClientCimQuestionnaire from "./pages/client/CimQuestionnaire";
+import ClientCimReview from "./pages/client/CimReview";
 import UserPortalDashboard from "./pages/user/PortalDashboard";
 import UserCompanyDetails from "./pages/user/CompanyDetails";
 import UserDocuments from "./pages/user/Documents";
@@ -428,6 +430,14 @@ function AppRoutes() {
         }
       />
       <Route
+        path="/client/cim-review"
+        element={
+          <ProtectedRoute allowedRole="client">
+            <ClientCimReview />
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/client/reminders"
         element={
           <ProtectedRoute allowedRole="client">
@@ -502,6 +512,8 @@ export default function App() {
               <ErrorBoundary>
                 <AppRoutes />
               </ErrorBoundary>
+              {/* App-level: pops Key Reports generation-complete toasts on any page */}
+              <KeyReportGenerationToaster />
             </DataSourceProvider>
           </ToastProvider>
         </MessageNotificationsProvider>

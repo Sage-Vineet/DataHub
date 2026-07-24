@@ -58,10 +58,39 @@ async function detectPython() {
 }
 
 
+// ── Serialize all Python subprocess invocations ─────────────────────────────
+// CONFIRMED BUG this fixes: extraction is run with bounded concurrency at the
+// JS level (keyReportSyncService's EXTRACTION_CONCURRENCY, default 4) — a
+// version with 2+ linked Balance Sheet documents extracts them in parallel.
+// Confirmed live across four unrelated companies (Davis Signs, Space X, Golf
+// Sign Company, Seattle Painting Specialists): every single one had exactly
+// 2 BS documents whose extraction completed within ~100ms of each other, and
+// EVERY one of those pairs came back as a clean, well-formed result with ZERO
+// rows carrying any hierarchy (parent_path) — while re-running the exact same
+// file through this exact same code path alone (one at a time, this session's
+// diagnostic scripts) succeeded correctly on the first try, every time, no
+// exceptions. That pattern — fails only when 2+ run at once, never when run
+// alone — points at a race in the Python interpreter's own startup (most
+// likely first-time __pycache__ bytecode compilation for extract_excel.py /
+// common.py racing across two simultaneously-spawned processes), not
+// anything wrong with the extraction LOGIC itself, and not a caching bug —
+// _isExtractionSuspicious already correctly detects and repairs a bad result
+// after the fact, but the real fix is to stop the race from ever happening.
+// A simple in-process queue removes the concurrency entirely: extraction is
+// I/O-bound (subprocess spawn + file parse), not CPU-bound, so serializing it
+// costs a few hundred ms per additional document, not seconds.
+let _pythonSubprocessQueue = Promise.resolve();
+function runExclusive(fn) {
+  const result = _pythonSubprocessQueue.then(fn, fn);
+  _pythonSubprocessQueue = result.then(() => {}, () => {});
+  return result;
+}
+
 // ── Core subprocess helper ────────────────────────────────────────────────────
 
 /**
  * Spawn a Python script, write fileBuffer to stdin, collect stdout JSON.
+ * Serialized process-wide via runExclusive — see the comment above.
  *
  * @param {string}   scriptName  - Filename under backend/python/ (e.g. 'extract_excel.py')
  * @param {Buffer}   fileBuffer  - Raw file bytes sent to the script via stdin
@@ -69,6 +98,10 @@ async function detectPython() {
  * @returns {Promise<object>}    - Parsed JSON object from stdout
  */
 async function runPythonScript(scriptName, fileBuffer, extraArgs = []) {
+  return runExclusive(() => runPythonScriptInner(scriptName, fileBuffer, extraArgs));
+}
+
+async function runPythonScriptInner(scriptName, fileBuffer, extraArgs = []) {
   const pythonCmd = await detectPython();
   if (!pythonCmd) {
     throw new Error('Python 3 not found on PATH. Install Python 3 and run: pip install -r backend/python/requirements.txt');

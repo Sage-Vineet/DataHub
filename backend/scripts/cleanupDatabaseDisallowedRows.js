@@ -111,8 +111,8 @@ const tablesToCheck = [
   },
   {
     name: 'general_ledger_entries',
-    fields: ['distribution_account', 'account_section'],
-    select: 'id, distribution_account, account_section'
+    fields: ['account_name', 'account_section'],
+    select: 'id, account_name, account_section'
   },
   {
     name: 'tax_return_entries',

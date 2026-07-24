@@ -216,7 +216,7 @@ export default function ManualProfitLossMonthlyDetail({
 
   if (!sections.length) {
     return (
-      <div className={isPreview ? "py-8" : "flex-1 overflow-y-auto bg-bg-page/50 p-10 font-inter"}>
+      <div className={isPreview ? "py-8" : "bg-bg-page/50 p-10 font-inter"}>
         <div className="max-w-[1400px] mx-auto card-base p-10 min-h-[400px] flex items-center justify-center rounded-sm shadow-xl">
           <p className="text-text-muted italic text-[14px]">
             No Profit &amp; Loss data found. Select a fiscal year filter and re-generate.
