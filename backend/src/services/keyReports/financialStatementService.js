@@ -610,50 +610,6 @@ function buildBsStatement(leaves, byId) {
   };
 }
 
-// ─── Net Income → Retained Earnings injection ─────────────────────────────────
-
-function injectNetIncomeToBS(bsEntry, plEntry) {
-  if (!bsEntry || !plEntry) return bsEntry;
-  const netIncome = safeNum(plEntry.statement?.netIncome);
-  if (Math.abs(netIncome) < 0.01) return bsEntry;
-
-  const eq = bsEntry.statement.equity;
-  if (!eq) return bsEntry;
-
-  // Only touch the "Net Income" account — never add to Retained Earnings.
-  // RE represents accumulated prior earnings; NI is the current year's result.
-  const niAcc = (eq.accounts || []).find(a =>
-    /^net\s*(income|loss)/i.test(a.name || "")
-  );
-
-  if (niAcc) {
-    // If this year has Net Income from an uploaded BS, trust that value over the
-    // generated P&L (the uploaded QB document is the source of truth).
-    if (bsEntry.hasUploadedNetIncome && Math.abs(niAcc.amount) > 0.01) {
-      return bsEntry;
-    }
-    niAcc.amount = safeNum(netIncome);
-    niAcc.netIncomeInjected = netIncome;
-  } else {
-    eq.accounts = eq.accounts || [];
-    eq.accounts.push({
-      systemId: null, accountNumber: null,
-      name: "Net Income",
-      adjustedName: "Net Income",
-      amount: netIncome,
-      netIncomeInjected: netIncome,
-    });
-  }
-
-  eq.total = safeNum((eq.accounts || []).reduce((s, a) => s + a.amount, 0));
-  const s = bsEntry.statement;
-  s.totalEquity               = eq.total;
-  s.totalLiabilitiesAndEquity = safeNum(s.totalLiabilities + s.totalEquity);
-  s.difference                = safeNum(s.totalAssets - s.totalLiabilitiesAndEquity);
-  s.balanced                  = Math.abs(s.difference) < 1;
-  return bsEntry;
-}
-
 // ─── Equity reconciliation — enforce the accounting equation ──────────────────
 
 const RE_NAME_RE = /^retained\s+earnings/i;
@@ -733,6 +689,54 @@ function reconcileEquityYearly(bsYearly, plYearly) {
     }
 
     balanceRetainedEarnings(bsYearly[idx].statement);
+  }
+}
+
+/**
+ * CONFIRMED ROOT CAUSE (fixed here): reconcileEquityYearly above already
+ * guarantees the Balance Sheet's Net Income equals the generated P&L's Net
+ * Income at the YEARLY grain — but nothing analogous ever ran for MONTHLY
+ * entries. generateMonthlyBs derives each month's "Net Income" account from
+ * its own GL roll-forward, independently of generateMonthlyPl's own
+ * per-month figure; the two are computed by different code paths and are
+ * not guaranteed to agree (confirmed live: every month of a real company's
+ * FY2024 showed a different Balance Sheet Net Income than that same month's
+ * generated P&L Net Income). The stale comment that used to sit at this
+ * call site ("each month-end snapshot already carries its cumulative Net
+ * Income from the P&L roll-forward") was aspirational, not actual behavior.
+ *
+ * Mirrors reconcileEquityYearly at the monthly grain: within one fiscal
+ * year, Net Income for month M is the CUMULATIVE (year-to-date) sum of that
+ * same year's own generated P&L Net Income through month M — never an
+ * independently-rederived monthly figure. Retained Earnings is then reset to
+ * the balancing residual (balanceRetainedEarnings) so every month still
+ * balances. NOTE: the cumulative-of-monthly total is NOT guaranteed to equal
+ * generateYearlyPl's own separately-computed yearly figure — those two are
+ * independent P&L code paths that can disagree with each other (a distinct,
+ * pre-existing issue this change does not touch); this function only
+ * guarantees the Balance Sheet always matches whichever P&L figure it is
+ * itself paired with (monthly BS <-> monthly P&L, yearly BS <-> yearly P&L).
+ */
+function reconcileEquityMonthly(bsMonthsForYear, plMonthsForYear) {
+  const plByMonth = new Map();
+  for (const p of plMonthsForYear || []) plByMonth.set(Number(p.monthNumber), safeNum(p.statement?.netIncome));
+
+  const sortedMonths = (bsMonthsForYear || []).slice().sort((a, b) => Number(a.monthNumber) - Number(b.monthNumber));
+  let cumulative = 0;
+  for (const monthEntry of sortedMonths) {
+    const eq = monthEntry?.statement?.equity;
+    if (!eq) continue;
+    eq.accounts = eq.accounts || [];
+
+    cumulative = safeNum(cumulative + (plByMonth.get(Number(monthEntry.monthNumber)) || 0));
+    const niAcc = eq.accounts.find(a => NI_NAME_RE.test(a.name || ""));
+    if (niAcc) {
+      niAcc.amount = cumulative;
+    } else {
+      eq.accounts.push({ systemId: null, accountNumber: null, name: "Net Income", adjustedName: "Net Income", amount: cumulative });
+    }
+
+    balanceRetainedEarnings(monthEntry.statement);
   }
 }
 
@@ -1893,7 +1897,7 @@ async function generateMonthlyCf(versionId, year, allCoa) {
 
 // ─── Validation ───────────────────────────────────────────────────────────────
 
-function validateAll(plYearly, bsYearly) {
+function validateAll(plYearly, bsYearly, plMonthly = [], bsMonthly = []) {
   const errors = [];
   for (const { year, statement: s } of bsYearly) {
     if (!s.balanced) {
@@ -1905,13 +1909,29 @@ function validateAll(plYearly, bsYearly) {
     const bsEntry = bsYearly.find(b => b.year === year);
     if (!bsEntry) continue;
     // Look specifically for the "Net Income" account in equity — not Retained Earnings.
-    // After injectNetIncomeToBS, this account always holds the authoritative NI for the year.
+    // After reconcileEquityYearly, this account always holds the authoritative NI for the year.
     const niAcc = bsEntry.statement.equity?.accounts?.find(
       a => /^net\s*(income|loss)/i.test(a.name || "")
     );
     if (niAcc && Math.abs(safeNum(niAcc.amount) - safeNum(plY.netIncome)) > 1) {
       const diff = round2(safeNum(niAcc.amount) - safeNum(plY.netIncome));
       errors.push(`FY${year} Net Income: generated P&L=${plY.netIncome} vs BS equity NI=${niAcc.amount} (diff=${diff})`);
+    }
+  }
+  // Monthly regression tripwire for reconcileEquityMonthly: month M's BS Net
+  // Income must equal that year's own P&L, summed year-to-date through M.
+  for (let yi = 0; yi < plMonthly.length; yi += 1) {
+    const plMonthsForYear = plMonthly[yi] || [];
+    const bsMonthsForYear = (bsMonthly[yi] || []).slice().sort((a, b) => Number(a.monthNumber) - Number(b.monthNumber));
+    const plByMonth = new Map(plMonthsForYear.map((p) => [Number(p.monthNumber), safeNum(p.statement?.netIncome)]));
+    let cumulative = 0;
+    for (const monthEntry of bsMonthsForYear) {
+      cumulative = safeNum(cumulative + (plByMonth.get(Number(monthEntry.monthNumber)) || 0));
+      const niAcc = monthEntry.statement?.equity?.accounts?.find(a => /^net\s*(income|loss)/i.test(a.name || ""));
+      if (niAcc && Math.abs(safeNum(niAcc.amount) - cumulative) > 1) {
+        const diff = round2(safeNum(niAcc.amount) - cumulative);
+        errors.push(`${monthEntry.periodLabel} Net Income: year-to-date P&L=${cumulative} vs BS equity NI=${niAcc.amount} (diff=${diff})`);
+      }
     }
   }
   return errors;
@@ -2038,20 +2058,21 @@ async function _generateFinancialStatementsImpl(versionId, options = {}) {
     bsMonthly.push(await generateMonthlyBs(companyId, versionId, y, allCoa, unmappedSet));
   }
 
-  // ── Equity reconciliation — guarantee Assets = Liabilities + Equity ──────────
+  // ── Equity reconciliation — guarantee Assets = Liabilities + Equity, and
+  // that the Balance Sheet's Net Income always comes from the P&L ──────────
   // YEARLY: set current-year Net Income = generated P&L Net Income, then set
   // Retained Earnings to the residual that balances the sheet.
   reconcileEquityYearly(bsYearly, plYearly);
-  // MONTHLY: each month-end snapshot already carries its cumulative Net Income
-  // (from the P&L roll-forward); set Retained Earnings to the balancing residual so
-  // every month balances too. Applied to every month across every year.
-  for (const monthsForYear of bsMonthly) {
-    for (const monthEntry of (monthsForYear || [])) {
-      if (monthEntry?.statement) balanceRetainedEarnings(monthEntry.statement);
-    }
+  // MONTHLY: set each month's Net Income to that year's own P&L, accumulated
+  // year-to-date through that month (see reconcileEquityMonthly's doc
+  // comment — this used to be skipped entirely, letting the monthly Balance
+  // Sheet's own independently-derived Net Income silently diverge from the
+  // generated P&L every month), then rebalance Retained Earnings.
+  for (let i = 0; i < filteredYears.length; i++) {
+    reconcileEquityMonthly(bsMonthly[i], plMonthly[i]);
   }
 
-  const validation       = validateAll(plYearly, bsYearly);
+  const validation       = validateAll(plYearly, bsYearly, plMonthly, bsMonthly);
   // Accounts with no Chart of Accounts hierarchy match (needs_mapping, excluded
   // from loadCoa) and any GL/BS name that couldn't be matched to a COA leaf at all
   // (unmappedSet, accumulated across every generate*/aggregate* call above) —
