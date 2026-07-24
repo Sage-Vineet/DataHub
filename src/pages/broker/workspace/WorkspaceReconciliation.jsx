@@ -2,12 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import Header from "../../../components/Header";
 
-import { getStoredToken, setSelectedReportSource, loadSavedQBBankActivityRequest } from "../../../lib/api";
+import { getStoredToken, setSelectedReportSource, loadSavedQBBankActivityRequest, getFinancialStatements } from "../../../lib/api";
+import { readCachedFinancials, writeCachedFinancials } from "../../../lib/keyReportFinancials";
 import { useDataSource } from "../../../context/DataSourceContext";
 import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
 import {
   useKeyReportContextStore,
   selectKeyReportContext,
+  maskKeyReportContext,
 } from "../../../store/useKeyReportContextStore";
 import { useShallow } from "zustand/react/shallow";
 import KeyReportVersionSelector from "../../../components/key-reports/KeyReportVersionSelector";
@@ -158,6 +160,57 @@ const getStoredWorkspaceState = (clientId) => {
   } catch {
     return null;
   }
+};
+
+// Per-slot cache for the extracted Bank Reconciliation data, isolated by
+// (company, connection mode, Key Report version). Keeping the DATA in its own
+// slot key — separate from the client-level settings above — means switching
+// version or connection mode restores that exact slot's table instantly and
+// never shows another version/mode's numbers.
+const getReconDataKey = (clientId, source, version) =>
+  `${RECONCILIATION_STORAGE_PREFIX}-data:${clientId || "default"}:${source || "default"}:${version || "default"}`;
+
+const getStoredReconData = (clientId, source, version) => {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(getReconDataKey(clientId, source, version));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+const saveStoredReconData = (clientId, source, version, data) => {
+  if (typeof window === "undefined" || !clientId || !source) return;
+  try {
+    window.sessionStorage.setItem(
+      getReconDataKey(clientId, source, version),
+      JSON.stringify(data),
+    );
+  } catch {
+    // Ignore quota/serialization issues — this is a display cache only.
+  }
+};
+
+// Derive the Activity Review's monthly P&L figures — { totalIncome, totalExpenses }
+// keyed "YYYY-MM" — from a Key Reports financial-statements response. Mirrors the
+// backend's computeMonthlyPlFinancials (revenue.total → income, operatingIncome →
+// expenses) so the numbers are identical, and keys match the bank data's monthKey.
+const computePlFinancialsFromFs = (resp) => {
+  const monthly = resp?.reports?.profitAndLoss?.monthly || [];
+  const totalIncome = {};
+  const totalExpenses = {};
+  for (const e of monthly) {
+    const year = Number(e?.year);
+    const monthNum = Number(e?.monthNumber);
+    if (!Number.isInteger(year) || !(monthNum >= 1 && monthNum <= 12)) continue;
+    const key = `${year}-${String(monthNum).padStart(2, "0")}`;
+    totalIncome[key] = Number(e?.statement?.revenue?.total) || 0;
+    totalExpenses[key] = Number(e?.statement?.operatingIncome) || 0;
+  }
+  return { totalIncome, totalExpenses };
 };
 const fmtAmt = (val) => {
   if (val == null || val === 0) return "-";
@@ -539,6 +592,53 @@ function parseManualPLItems(files) {
   return { plIncomeItems, plExpenseItems };
 }
 
+// Parse a Key Reports financial-statements response (the payload from
+// GET /key-reports/versions/:id/reports/financial-statements) into the same
+// { name, source, monthAmounts } picker shape parseManualPLItems produces.
+//   • Income   = revenue leaf accounts.
+//   • Expenses = union of every operating-expense group's accounts + cost of sales.
+// Accounts are merged across every monthly period by identity (systemId, falling
+// back to name); amounts are keyed "YYYY-MM" — the same monthKey the Activity
+// Review rows use — so the picker's per-month figures line up with the table.
+function parseKeyReportPLItems(resp) {
+  const monthly = resp?.reports?.profitAndLoss?.monthly || [];
+  const income = new Map();
+  const expense = new Map();
+
+  const add = (bucket, source, acc, monthKey) => {
+    const idKey = acc?.systemId || acc?.name;
+    const name = acc?.adjustedName || acc?.name;
+    if (!idKey || !name) return;
+    let rec = bucket.get(idKey);
+    if (!rec) {
+      rec = { name, source, monthAmounts: {} };
+      bucket.set(idKey, rec);
+    }
+    const val = Number(acc?.amount);
+    if (Number.isFinite(val) && val !== 0) rec.monthAmounts[monthKey] = val;
+  };
+
+  for (const e of monthly) {
+    const year = Number(e?.year);
+    const monthNum = Number(e?.monthNumber);
+    if (!Number.isInteger(year) || !(monthNum >= 1 && monthNum <= 12)) continue;
+    const monthKey = `${year}-${String(monthNum).padStart(2, "0")}`;
+    const s = e?.statement || {};
+
+    for (const acc of s.revenue?.accounts || []) add(income, "pl_income", acc, monthKey);
+
+    for (const acc of s.costOfSales?.accounts || []) add(expense, "pl_expense", acc, monthKey);
+    for (const g of Object.values(s.operatingExpenses?.groups || {})) {
+      for (const acc of g?.accounts || []) add(expense, "pl_expense", acc, monthKey);
+    }
+  }
+
+  return {
+    plIncomeItems: Array.from(income.values()),
+    plExpenseItems: Array.from(expense.values()),
+  };
+}
+
 function AddbackPickerModal({
   isOpen,
   section,
@@ -550,12 +650,19 @@ function AddbackPickerModal({
   getHeaders,
   existingItems,
   reportSource,
+  keyReportVersionId,
   onAdd,
   onClose,
 }) {
+  // In Key Reports mode the resolved reportSource is a manual_* value, so it
+  // can't distinguish "true manual upload" from "Key Reports". The presence of a
+  // Key Report version is the authoritative signal, and it takes priority: the
+  // P&L pick-list must come from that version's generated financial statements,
+  // not the client's raw manual-upload files.
+  const isKeyReports = Boolean(keyReportVersionId);
   const isQBOnline = reportSource === "quickbooks_online";
-  const isManualUpload = reportSource === "manual_upload_excel_pdf";
-  const hasPLData = isQBOnline || isManualUpload;
+  const isManualUpload = !isKeyReports && reportSource === "manual_upload_excel_pdf";
+  const hasPLData = isKeyReports || isQBOnline || isManualUpload;
 
   // Default tab: deposits→income items, withdrawals→expense items; no-P&L modes→manual only
   const defaultTab = hasPLData ? (section === "withdrawals" ? "expense" : "income") : "manual";
@@ -577,7 +684,29 @@ function AddbackPickerModal({
 
     setLoading(true);
 
-    if (isQBOnline) {
+    if (isKeyReports) {
+      // Reuse the sessionStorage cache the Reports page / Activity Review already
+      // warm, so opening the picker is instant on the common path and only falls
+      // back to the network when nothing is cached yet.
+      (async () => {
+        try {
+          let resp = readCachedFinancials(clientId, keyReportVersionId);
+          if (!resp) {
+            resp = await getFinancialStatements(keyReportVersionId, { currency: "USD" });
+            if (resp) writeCachedFinancials(clientId, keyReportVersionId, resp);
+          }
+          if (resp) {
+            setLineItems(parseKeyReportPLItems(resp));
+          } else {
+            setFetchError("Could not load P&L items from Key Reports.");
+          }
+        } catch {
+          setFetchError("Could not load P&L items from Key Reports.");
+        } finally {
+          setLoading(false);
+        }
+      })();
+    } else if (isQBOnline) {
       const params = new URLSearchParams({
         clientId,
         start_date: startDate,
@@ -608,7 +737,7 @@ function AddbackPickerModal({
         .catch(() => setFetchError("Could not load P&L items from manual upload."))
         .finally(() => setLoading(false));
     }
-  }, [isOpen, reportSource, section, clientId, startDate, endDate, accountingMethod]);
+  }, [isOpen, reportSource, keyReportVersionId, section, clientId, startDate, endDate, accountingMethod]);
 
   if (!isOpen) return null;
 
@@ -930,7 +1059,16 @@ export default function WorkspaceReconciliation() {
   // WorkspaceReconciliation must never call getReportSources independently — doing so reads
   // only the DB value and can be stale relative to the localStorage cache in DataSourceContext.
   const { activeSource: contextActiveSource, sourceRecords: contextSourceRecords } = useDataSource();
-  const kr = useKeyReportContextStore(useShallow(selectKeyReportContext));
+  // Key Reports drives this page ONLY when the active data source is
+  // "key_reports" (activated from the Key Reports page). For the 4 connection
+  // modes the KR context is masked inactive so the Connections-page selection
+  // is authoritative.
+  const krSelected = useMemo(
+    () => normalizeReportSourceKey(contextActiveSource) === REPORT_SOURCE_KEYS.KEY_REPORTS,
+    [contextActiveSource],
+  );
+  const rawKr = useKeyReportContextStore(useShallow(selectKeyReportContext));
+  const kr = useMemo(() => maskKeyReportContext(rawKr, krSelected), [rawKr, krSelected]);
   // Shared dataset-version selection (same store Reports writes to) removed — 
   // consolidated into the unified Key Report Version selector.
   // Track the live GL scope (selected dataset version) so an in-flight bank-data
@@ -1144,6 +1282,52 @@ export default function WorkspaceReconciliation() {
     extractedBankPdfData,
     selectedReportSource,
   ]);
+
+  // Slot identity for the per-version / per-connection-mode data cache. kr is
+  // masked outside Key Reports mode, so the version dimension is "default" for
+  // the 4 connection modes and the selected Key Report Version in KR mode.
+  const reconDataVersion = kr.krActive ? String(kr.selectedVersionId || "default") : "default";
+
+  // Persist the extracted Bank Reconciliation data for the current slot so
+  // returning to this version + connection mode restores the table instantly.
+  useEffect(() => {
+    if (!clientId || !selectedReportSource) return;
+    saveStoredReconData(clientId, selectedReportSource, reconDataVersion, {
+      extractedBankPdfData: extractedBankPdfData ?? null,
+      qbBankActivity: qbBankActivity ?? null,
+      qbOneBankActivity: qbOneBankActivity ?? null,
+      plFinancials: plFinancials ?? null,
+      bsBankBalances: bsBankBalances ?? null,
+      savedAt: new Date().toISOString(),
+    });
+  }, [
+    clientId,
+    selectedReportSource,
+    reconDataVersion,
+    extractedBankPdfData,
+    qbBankActivity,
+    qbOneBankActivity,
+    plFinancials,
+    bsBankBalances,
+  ]);
+
+  // Restore the cached data for the current slot on mount and whenever the
+  // version / connection mode changes — an instant, correctly-isolated view.
+  // The unified loader still runs afterwards to refresh from the backend.
+  useEffect(() => {
+    if (!clientId || !selectedReportSource) return;
+    const slot = getStoredReconData(clientId, selectedReportSource, reconDataVersion);
+    if (!slot) return;
+    if (slot.extractedBankPdfData) {
+      setExtractedBankPdfData(slot.extractedBankPdfData);
+      setExtractedBankPdfFetchStatus({ status: "success", message: "Restored saved data." });
+    }
+    if (slot.qbBankActivity) setQbBankActivity(slot.qbBankActivity);
+    if (slot.qbOneBankActivity) setQbOneBankActivity(slot.qbOneBankActivity);
+    if (slot.plFinancials) setPlFinancials(slot.plFinancials);
+    if (slot.bsBankBalances) setBsBankBalances(slot.bsBankBalances);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientId, selectedReportSource, reconDataVersion]);
 
   // ── Load saved snapshot from DB (no QB connection needed) ─────────────────
   const loadSavedQBBankActivity = useCallback(async () => {
@@ -1381,7 +1565,9 @@ export default function WorkspaceReconciliation() {
     }
     setIsLoadingExtractedBankPdfData(true);
     setExtractedBankPdfError("");
-    setPlFinancials(null);
+    // In Key Reports mode the P&L figures are owned by the dedicated
+    // financial-statements fetch (see effect below); don't reset/clobber them here.
+    if (!krVersionIdRef.current) setPlFinancials(null);
     setExtractedBankPdfFetchStatus({
       status: "loading",
       message: "Loading bank statement data from Manual Upload source...",
@@ -1402,8 +1588,10 @@ export default function WorkspaceReconciliation() {
       } else {
         setBsBankBalances(null);
       }
-      // Set P&L financials (Sales/Expenses per Financials for Activity Review)
-      setPlFinancials(data.plFinancials ?? null);
+      // Set P&L financials (Sales/Expenses per Financials for Activity Review).
+      // In Key Reports mode these come from the financial-statements fetch below
+      // (reliable), so only apply the bank-data-merged value outside KR mode.
+      if (!krVersionIdRef.current) setPlFinancials(data.plFinancials ?? null);
       if (data.empty) {
         setExtractedBankPdfData(null);
         setExtractedBankPdfFetchStatus({
@@ -1490,12 +1678,19 @@ export default function WorkspaceReconciliation() {
       .catch(() => {});
   }, [clientId, getHeaders]);
 
-  // Load persisted addback items — isolated by company AND connection mode.
+  // Load persisted addback items — isolated by company AND connection mode, and
+  // additionally by Key Report Version when in Key Reports mode (each version has
+  // its own addbacks). kr is masked outside Key Reports mode, so addbackVersionId
+  // is null for the 4 connection modes.
+  const addbackVersionId = kr.krActive ? kr.selectedVersionId : null;
   useEffect(() => {
     if (!clientId || !selectedReportSource) return;
     setAddbackItems([]); // clear immediately so old mode's items never flash
+    const versionParam = addbackVersionId
+      ? `&keyReportVersionId=${encodeURIComponent(addbackVersionId)}`
+      : "";
     fetch(
-      `${BANK_RECON_ADDBACK_ITEMS_ENDPOINT}?clientId=${clientId}&reportSource=${encodeURIComponent(selectedReportSource)}`,
+      `${BANK_RECON_ADDBACK_ITEMS_ENDPOINT}?clientId=${clientId}&reportSource=${encodeURIComponent(selectedReportSource)}${versionParam}`,
       { headers: getHeaders() },
     )
       .then((r) => (r.ok ? r.json() : null))
@@ -1503,7 +1698,7 @@ export default function WorkspaceReconciliation() {
         if (d?.success && Array.isArray(d.items)) setAddbackItems(d.items);
       })
       .catch(() => {});
-  }, [clientId, getHeaders, selectedReportSource]);
+  }, [clientId, getHeaders, selectedReportSource, addbackVersionId]);
 
   const saveAdjustment = useCallback(
     async (month, rowKey, amount) => {
@@ -1528,7 +1723,7 @@ export default function WorkspaceReconciliation() {
         const resp = await fetch(BANK_RECON_ADDBACK_ITEMS_ENDPOINT, {
           method: "POST",
           headers: { ...getHeaders(), "Content-Type": "application/json" },
-          body: JSON.stringify({ clientId, section, name, source, monthAmounts, reportSource: selectedReportSource }),
+          body: JSON.stringify({ clientId, section, name, source, monthAmounts, reportSource: selectedReportSource, keyReportVersionId: addbackVersionId }),
         });
         const data = await resp.json();
         if (data?.success && data.item) {
@@ -1536,7 +1731,7 @@ export default function WorkspaceReconciliation() {
         }
       } catch { /* stays in local state */ }
     },
-    [clientId, getHeaders, selectedReportSource],
+    [clientId, getHeaders, selectedReportSource, addbackVersionId],
   );
 
   const updateAddbackItemAmounts = useCallback(
@@ -1594,6 +1789,21 @@ export default function WorkspaceReconciliation() {
   useEffect(() => {
     if (!clientId || !selectedReportSource || !isSourceConfirmedByServer) return;
 
+    // Instant return: if this exact slot (company + connection mode + version) is
+    // already cached in session storage, the restore effect has painted it — skip
+    // the network fetch so revisiting the page is instant. The Refresh button
+    // calls the loaders directly (bypassing this effect) to force a fresh fetch.
+    const manualSource =
+      selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ||
+      selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL ||
+      selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
+    if (manualSource) {
+      const slot = getStoredReconData(clientId, selectedReportSource, reconDataVersion);
+      if (slot && (slot.extractedBankPdfData || slot.bsBankBalances || slot.plFinancials)) {
+        return;
+      }
+    }
+
     if (selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) {
       // Manual Upload → single endpoint returns both bank data and balanceSheetBankAccounts
       void loadManualBankData();
@@ -1615,7 +1825,36 @@ export default function WorkspaceReconciliation() {
       void loadBsBankBalances("quickbooks_manual", { keyReportVersionId: krVersionIdRef.current });
     }
     // QUICKBOOKS (QB Online) uses its own separate data flow — no action here
-  }, [clientId, selectedReportSource, isSourceConfirmedByServer, kr.resolvedDatasetVersion, kr.selectedVersionId, loadExtractedBankPdfData, loadManualBankData, loadQMSBankData, loadBsBankBalances]);
+  }, [clientId, selectedReportSource, isSourceConfirmedByServer, reconDataVersion, kr.resolvedDatasetVersion, kr.selectedVersionId, loadExtractedBankPdfData, loadManualBankData, loadQMSBankData, loadBsBankBalances]);
+
+  // Key Reports: source the Activity Review's "Sales per Financials" /
+  // "Expenses per Financials" directly from the selected version's financial
+  // statements — the same endpoint the Reports page uses. The bank-data endpoint
+  // also computes these, but it runs the heavy generateFinancialStatements in
+  // parallel with the multi-minute bank extraction and can fail under load,
+  // leaving the rows blank. Fetching them separately here (reusing the Reports
+  // page's sessionStorage cache, invalidated on regenerate) is reliable and cheap.
+  useEffect(() => {
+    const versionId = kr.krActive ? kr.selectedVersionId : null;
+    if (!clientId || !versionId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        let resp = readCachedFinancials(clientId, versionId);
+        if (!resp) {
+          resp = await getFinancialStatements(versionId, { currency: "USD" });
+          if (resp) writeCachedFinancials(clientId, versionId, resp);
+        }
+        if (cancelled || !resp) return;
+        setPlFinancials(computePlFinancialsFromFs(resp));
+      } catch {
+        /* non-fatal — leave any existing P&L figures in place */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [clientId, kr.krActive, kr.selectedVersionId]);
 
   // Auto-restore QB Online bank activity from DB on page load.
   // Fires when the server confirms the source is QB Online and there is no
@@ -3628,8 +3867,8 @@ export default function WorkspaceReconciliation() {
                   Refresh
                 </button>
               )}
-              {/* Unified Key Reports Version selector is the single source of truth */}
-              <KeyReportVersionSelector clientId={clientId} variant="filter" />
+              {/* Key Reports Version selector — only when Key Reports is the active source */}
+              {krSelected && <KeyReportVersionSelector clientId={clientId} variant="filter" />}
               <div className="min-w-[280px]">
                 <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
                   Bank Account
@@ -3778,6 +4017,7 @@ export default function WorkspaceReconciliation() {
           getHeaders={getHeaders}
           existingItems={addbackItems}
           reportSource={selectedReportSource}
+          keyReportVersionId={addbackVersionId}
           onAdd={(name, source, monthAmounts) =>
             createAddbackItem(addbackPickerState.section, name, source, monthAmounts)
           }

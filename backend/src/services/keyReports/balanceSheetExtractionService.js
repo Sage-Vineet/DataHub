@@ -57,18 +57,131 @@ function findCol(headers, aliases) {
   return -1;
 }
 
-/** Detect section (Assets / Liabilities / Equity) from preceding header rows */
+/**
+ * Recognize a bare section-HEADER line (literal text like "ASSETS",
+ * "Current Liabilities", "Liabilities and Equity", "Owner's Equity" printed
+ * on the document with no amount). This reads what the document itself says,
+ * not a guess — it must NEVER be used to classify an ordinary account line
+ * from its own name (that would be a hardcoded keyword guess); see the two
+ * call sites below.
+ *
+ * A line matches ONLY if EVERY word in it is drawn from a small closed
+ * header-vocabulary set — not a substring test on the whole string (that
+ * previously matched "capital" inside "Capital One Credit Card", a real
+ * account, misfiring it as an equity header and corrupting the section
+ * context for every account after it), and not a single fixed phrase either
+ * (too narrow — real documents use "Current Liabilities", "Liabilities and
+ * Equity", etc., not just "Liabilities" alone).
+ */
+const HEADER_WORDS = new Set([
+  'total', 'current', 'fixed', 'long', 'term', 'other', 'and',
+  'asset', 'assets', 'liability', 'liabilities',
+]);
+const EQUITY_WORDS = new Set([
+  'equity', 'capital', 'owner', 'owners', 'member', 'members', 'stockholder', 'stockholders', 'partner', 'partners',
+]);
+for (const w of EQUITY_WORDS) HEADER_WORDS.add(w);
+
 function inferSection(accountName) {
-  const n = lc(accountName);
-  if (/asset/.test(n)) return 'assets';
-  if (/liabilit/.test(n)) return 'liabilities';
-  if (/equity|capital|owner/.test(n)) return 'equity';
+  const n = lc(accountName).replace(/'/g, '').trim();
+  if (!n) return null;
+  const words = n.replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean);
+  if (!words.length || !words.every((w) => HEADER_WORDS.has(w))) return null;
+
+  const hasAsset = words.some((w) => w === 'asset' || w === 'assets');
+  const hasLiability = words.some((w) => w === 'liability' || w === 'liabilities');
+  const hasEquity = words.some((w) => EQUITY_WORDS.has(w));
+
+  if (hasAsset) return 'assets';
+  if (hasLiability && hasEquity) {
+    // Combined "Liabilities and Equity" style header — resolve by which
+    // marker word appears first; liabilities-first is the overwhelmingly
+    // common convention, but this handles either order.
+    const liabIdx = n.indexOf('liabilit');
+    let equityIdx = Infinity;
+    for (const w of EQUITY_WORDS) {
+      const i = n.indexOf(w);
+      if (i !== -1 && i < equityIdx) equityIdx = i;
+    }
+    return equityIdx < liabIdx ? 'equity' : 'liabilities';
+  }
+  if (hasLiability) return 'liabilities';
+  if (hasEquity) return 'equity';
+  return null;
+}
+
+/**
+ * A second, additive qualifier read from the SAME bare header line as
+ * inferSection — current | fixed | long_term | other | null. Stored
+ * separately (balance_sheet_entries.sub_section, migration 075) rather than
+ * folded into section's own values, since other services do exact-string
+ * checks against section === "assets"/"liabilities"/"equity" for real
+ * Balance Sheet / Cash Flow generation logic. Only ever called on the same
+ * already-confirmed header line inferSection matched — never on an account's
+ * own name.
+ */
+function inferSubSection(accountName) {
+  const n = lc(accountName).replace(/'/g, '').trim();
+  if (!n) return null;
+  const words = n.replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean);
+  if (words.some((w) => w === 'current')) return 'current';
+  if (words.some((w) => w === 'fixed')) return 'fixed';
+  if (words.some((w) => w === 'long') && words.some((w) => w === 'term')) return 'long_term';
+  if (words.some((w) => w === 'other')) return 'other';
   return null;
 }
 
 class BalanceSheetExtractionService extends ExtractionServiceBase {
   constructor() {
     super('balance_sheet', 'balance_sheet_entries');
+    // inferSection()'s header-detection logic changed (whole-word-set
+    // classifier replacing an unanchored substring test that misfired on
+    // "Capital One Credit Card" and similar real accounts) — bump this
+    // service's own parser_version so the extraction cache is invalidated
+    // and every previously-cached Balance Sheet gets re-parsed with the
+    // fixed logic on the next sync, instead of silently reusing stale rows
+    // extracted before the fix (which is what was still happening).
+    // v3: added sub_section (current/fixed/long_term/other) alongside section
+    // — bump again so previously-cached rows (which lack this field) get
+    // re-extracted rather than silently missing it forever.
+    // v4: added parent_path (real N-level hierarchy read from the document's
+    // own indentation, e.g. ["Assets", "Current Assets", "Bank Accounts"]) —
+    // bump again for the same reason.
+    // v5: unrecognized intermediate headers (e.g. "Bank Accounts") are now
+    // also preserved in `rows` (node_type: hierarchy_group) instead of being
+    // silently dropped — bump again so cached parses get refreshed.
+    // v6: CONFIRMED BUG — extract_excel.py's extract_balance_sheet only ever
+    // read indentation via leading whitespace characters (_cell_indent), but
+    // this client's (and likely most QuickBooks) exports encode nesting via
+    // the Excel cell's own alignment.indent property instead, with ZERO
+    // leading whitespace in the cell text. Every row therefore read indent=0,
+    // collapsing parent_path to empty for every account and leaving
+    // Level 3/4 in the generated Chart of Accounts as the leaf account's own
+    // name instead of "Current Assets"/"Fixed Assets" etc. Fixed via
+    // get_rows_with_indent (already used by extract_profit_loss) — bump again
+    // so every previously-cached, flattened Balance Sheet parse gets redone.
+    // v7: added a retry-and-sanity-check around the Python extraction call
+    // (_extractFromExcelWithFallback) — a run that returns real leaf rows but
+    // with EVERY parent_path empty is now retried once before being accepted,
+    // since a transient bad run (confirmed live: identical file/code
+    // produced empty parent_path once, then correct nested paths on
+    // immediate re-run) could otherwise get cached under the current
+    // parser_version and silently persist until manually cleared. Bump so
+    // any such bad cached parse is discarded and re-attempted with the new
+    // safeguard.
+    // v8: CONFIRMED ROOT CAUSE — the ancestor stack (both this JS fallback and
+    // extract_excel.py's Python primary path) pushed EVERY row, including a
+    // real leaf/total account with its own posted amount, onto the parent_path
+    // stack. Whenever two sibling accounts' extracted indent values weren't
+    // perfectly monotonic (common indent noise in real exports), the first
+    // sibling was silently retained as the "parent" of the second, corrupting
+    // Level 3+ in the generated Chart of Accounts (confirmed live: a real
+    // sibling account nested under an unrelated sibling 11 times in one
+    // document). Fixed: only header/group rows (no amount) may remain
+    // ancestors. Bump so every previously-cached parse — which may carry a
+    // phantom leaf-as-parent entry in parent_path — is re-extracted with the
+    // fix applied.
+    this.parserVersion = 'v8';
   }
 
   async extract({ fileName, fileBuffer }) {
@@ -78,20 +191,60 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
   }
 
   // ── Excel: Python primary, JS fallback ─────────────────────────────────────
+  // Retries Python once before falling back to JS, and treats a suspiciously
+  // flat result (real leaf rows but zero hierarchy) as worth retrying too —
+  // not just an outright failure. CONFIRMED (production evidence): a Python
+  // run can occasionally return rows with every parent_path empty even for a
+  // document independently verified to carry real alignment-indent hierarchy
+  // (re-running the exact same file, same code, immediately after reliably
+  // produced the correct nested result) — most likely a transient race (e.g.
+  // this backend process restarting mid-extraction during active development/
+  // use) rather than a deterministic parsing bug. Whatever the exact trigger,
+  // a bad flat result must never be trusted and cached as if it were correct
+  // — see extraction cache's parser_version keying; a wrong result cached
+  // under the current version silently persists until manually cleared.
+  // Shared with the base class's cache-read gate (_readExtractionCache) so a
+  // bad result is caught the same way whether it was just extracted or read
+  // back from a previously-cached (and possibly stale/bad) entry.
+  _isExtractionSuspicious(rows) {
+    const leafRows = (rows || []).filter((r) => !r.is_section_header && !r.is_total);
+    const rowsWithParent = leafRows.filter((r) => Array.isArray(r.parent_path) && r.parent_path.length > 0);
+    return leafRows.length > 3 && rowsWithParent.length === 0;
+  }
+
   async _extractFromExcelWithFallback(fileBuffer, fileName) {
-    try {
-      this.logger.log(`Trying Python extraction for Excel "${fileName}"`);
-      const result = await extractWithPython('extract_excel.py', fileBuffer, {
-        type: 'balance_sheet',
-        filename: fileName,
-      });
-      if (result.rows && result.rows.length > 0) {
-        this.logger.log(`Python extracted ${result.rows.length} rows from "${fileName}"`);
-        return { rows: result.rows, detectedYears: result.detected_years };
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const suffix = attempt > 1 ? ` (retry ${attempt})` : '';
+      try {
+        this.logger.log(`Trying Python extraction for Excel "${fileName}"${suffix}`);
+        const result = await extractWithPython('extract_excel.py', fileBuffer, {
+          type: 'balance_sheet',
+          filename: fileName,
+        });
+        if (result.rows && result.rows.length > 0) {
+          const suspiciouslyFlat = this._isExtractionSuspicious(result.rows);
+          if (suspiciouslyFlat && attempt === 1) {
+            this.logger.warn(
+              `Python extraction for "${fileName}" returned ${result.rows.length} row(s) with NO hierarchy ` +
+              `at all (every parent_path empty) — suspicious for a real Balance Sheet, retrying once before ` +
+              `accepting it.`,
+            );
+            continue;
+          }
+          if (suspiciouslyFlat) {
+            this.logger.warn(
+              `Python extraction for "${fileName}" is STILL flat after a retry — accepting it (no better source ` +
+              `available; the JS fallback can never produce a hierarchy either) but this will be re-checked and ` +
+              `re-extracted on the next sync instead of being trusted from cache.`,
+            );
+          }
+          this.logger.log(`Python extracted ${result.rows.length} rows from "${fileName}"`);
+          return { rows: result.rows, detectedYears: result.detected_years };
+        }
+        this.logger.warn(`Python returned 0 rows for "${fileName}"${attempt < 2 ? ', retrying' : ', falling back to JS'}`);
+      } catch (err) {
+        this.logger.warn(`Python extraction failed for "${fileName}"${attempt < 2 ? ', retrying' : ', falling back to JS'}: ${err.message}`);
       }
-      this.logger.warn(`Python returned 0 rows for "${fileName}", falling back to JS`);
-    } catch (err) {
-      this.logger.warn(`Python extraction failed for "${fileName}", falling back to JS: ${err.message}`);
     }
     return this._extractFromExcel(fileBuffer, fileName);
   }
@@ -131,11 +284,24 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
 
     const rows = flatNodes.map((node) => ({
       account_name: node.name,
-      section: node._section || inferSection(node.name),
+      // Only Gemini's own structural read of the document — never guessed
+      // from the account's own name (see inferSection's doc comment).
+      section: node._section || null,
+      // The full ancestor chain Gemini's own nested tree already encodes
+      // (flattenGeminiRows), e.g. ["Assets", "Current Assets", "Bank Accounts"]
+      // — real document structure, not a single collapsed section label.
+      parent_path: node._parent_path || [],
       amount: node.amount || 0,
       as_of_date: asOfDate,
       fiscal_year: fiscalYear,
       is_total: node.type === 'total',
+      // A Gemini 'header' node is a structural heading (recognized section OR
+      // an arbitrary intermediate grouping label) — never a postable account.
+      // Preserved in the row (never silently dropped) so the hierarchy is
+      // complete, but flagged the same way the Excel path flags one, so
+      // transformRows/filterRowsBeforeInsertion exclude it from the table.
+      is_section_header: node.type === 'header',
+      node_type: node.type === 'header' ? (inferSection(node.name) ? 'hierarchy_section' : 'hierarchy_group') : node.type === 'total' ? 'total' : 'account',
     }));
 
     this.logger.log(`PDF "${fileName}": ${rows.length} rows (as_of_date=${asOfDate})`);
@@ -197,30 +363,31 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
     const rows = [];
     let rowsDetected = 0, rowsRejected = 0;
 
+    // Real multi-level hierarchy, read from the document's OWN indentation —
+    // never a hardcoded level scheme. A stack of {indent, label} ancestors:
+    // a row less-indented-than-or-equal-to the stack's top pops it (sibling or
+    // uncle), so the surviving stack at any point is exactly that row's real
+    // ancestor chain, however deep. Every row (header or leaf) is pushed —
+    // whether it ever becomes someone's ancestor is decided by what follows it,
+    // not by whether it looked like a recognized section-header keyword. A
+    // flat file with no indentation naturally yields an empty parent_path for
+    // every row (degrades to the pre-existing section/sub_section-only behavior).
+    const ancestorStack = [];
+
     for (let i = headerIdx + 1; i < raw.length; i++) {
       const row = raw[i];
-      const rawName = String(row[acctIdx] || '').trim();
+      const cellRaw = String(row[acctIdx] ?? '');
+      const rawName = cellRaw.trim();
       if (!rawName) continue;
 
       rowsDetected++;
 
+      const indent = (cellRaw.match(/^[ \t]*/)[0] || '').replace(/\t/g, '    ').length;
+      while (ancestorStack.length && ancestorStack[ancestorStack.length - 1].indent >= indent) ancestorStack.pop();
+      const parentPath = ancestorStack.map((a) => a.label);
+
       // Detect section headers (ASSETS, LIABILITIES, EQUITY)
       const sectionMatch = inferSection(rawName);
-      if (sectionMatch && !parseAmount(row[row.length - 1])) {
-        // This row is a pure section header (no amount) — track section
-        currentSection = rawName;
-        // Still emit a header row so the hierarchy is preserved
-        rows.push({
-          account_name: rawName,
-          section: sectionMatch,
-          amount: 0,
-          as_of_date: asOfDate,
-          fiscal_year: fiscalYear,
-          is_total: false,
-          is_section_header: true,
-        });
-        continue;
-      }
 
       // Find the rightmost numeric value as the amount
       let amount = null;
@@ -229,20 +396,86 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
         if (v !== null) { amount = v; break; }
       }
 
-      if (amount === null) { rowsRejected++; continue; }
+      if (sectionMatch && amount === null) {
+        // This row is a pure, RECOGNIZED section header (no amount) — track
+        // section. Still emit a header row so the hierarchy is preserved —
+        // NEVER inserted into the database as a postable account: see
+        // filterRowsBeforeInsertion (extractionService.base.js), which strips
+        // any row_type/is_heading-flagged row before insertRows, using this
+        // same structural metadata rather than a hardcoded keyword list.
+        currentSection = rawName;
+        rows.push({
+          account_name: rawName,
+          section: sectionMatch,
+          sub_section: inferSubSection(rawName),
+          parent_path: parentPath,
+          amount: 0,
+          as_of_date: asOfDate,
+          fiscal_year: fiscalYear,
+          is_total: false,
+          is_section_header: true,
+          is_heading: true,
+          node_type: 'hierarchy_section',
+        });
+        ancestorStack.push({ indent, label: rawName });
+        continue;
+      }
 
-      const accountName = rawName.replace(/^\s+/, '');
+      if (amount === null) {
+        // An UNRECOGNIZED intermediate grouping label (e.g. "Bank Accounts")
+        // — no section keyword match, no amount. Not itself a postable
+        // account, but a real ancestor for whatever is nested more deeply
+        // under it (the whole point of reading indentation instead of only
+        // fixed keywords) — still emitted (node_type: 'hierarchy_group') so
+        // the full document hierarchy is never silently discarded, but
+        // filterRowsBeforeInsertion strips it the same way as a recognized
+        // section header before it ever reaches balance_sheet_entries.
+        rows.push({
+          account_name: rawName,
+          section: currentSection ? inferSection(currentSection) : null,
+          sub_section: currentSection ? inferSubSection(currentSection) : null,
+          parent_path: parentPath,
+          amount: 0,
+          as_of_date: asOfDate,
+          fiscal_year: fiscalYear,
+          is_total: false,
+          is_section_header: false,
+          is_heading: true,
+          node_type: 'hierarchy_group',
+        });
+        ancestorStack.push({ indent, label: rawName });
+        continue;
+      }
+
+      const accountName = rawName;
       const isTotal = /^total\b/i.test(accountName) || /\btotal$/i.test(accountName);
 
       rows.push({
         account_name: accountName,
         account_number: null,
-        section: currentSection ? inferSection(currentSection) : inferSection(accountName),
+        // Section comes from the last section-HEADER line actually seen above
+        // this row in the document — never guessed from this row's own account
+        // name when no header has appeared yet (see inferSection's doc comment).
+        section: currentSection ? inferSection(currentSection) : null,
+        sub_section: currentSection ? inferSubSection(currentSection) : null,
+        // The row's real ancestor chain (e.g. ["Assets", "Current Assets",
+        // "Bank Accounts"]) read from indentation — independent of, and often
+        // deeper than, the flat section/sub_section pair above.
+        parent_path: parentPath,
         amount,
         as_of_date: asOfDate,
         fiscal_year: fiscalYear,
         is_total: isTotal,
+        is_heading: false,
+        node_type: isTotal ? 'total' : 'account',
       });
+      // CONFIRMED ROOT CAUSE (fixed here, mirrors extract_excel.py's identical
+      // fix): a leaf/total row — one with its own posted amount — must never
+      // be pushed onto the ancestor stack. Only the two header/group branches
+      // above (both `continue` before reaching here) may remain a parent for
+      // later rows. Previously every row was pushed unconditionally, so a
+      // small indent inconsistency between two sibling accounts caused the
+      // first to be misread as the structural parent of the second.
     }
 
     this.logger.log(`  "${fileName}": Rows detected=${rowsDetected}, extracted=${rows.length}, rejected=${rowsRejected}`);
@@ -276,16 +509,31 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
 
       account_name: row.account_name.trim(),
       account_number: row.account_number?.trim() || null,
-      account_type: row.section || null,
+      // account_type is never set at extraction time — it previously aliased
+      // `section` directly (e.g. "assets", a plural section id, not a real
+      // "asset" account_type value), which downstream code had to work around.
+      // The only authoritative source of account_type is Gemini/COA classification.
+      account_type: null,
       section: row.section || null,
+      sub_section: row.sub_section || null,
+      parent_path: Array.isArray(row.parent_path) && row.parent_path.length ? row.parent_path : null,
 
       amount: Number(row.amount) || 0,
 
-      hierarchy_level: row.is_section_header ? 0 : 1,
+      // 0 = a structural heading row (recognized section header OR an
+      // unrecognized intermediate grouping label like "Bank Accounts") —
+      // filterRowsBeforeInsertion strips every hierarchy_level=0 row before
+      // it reaches this table; 1 = a real postable account/total line.
+      hierarchy_level: (row.is_section_header || row.node_type === 'hierarchy_group') ? 0 : 1,
       sort_order: idx,
       is_total: Boolean(row.is_total),
 
-      row_hash: this.computeRowHash({ versionId: metadata.versionId, accountName: row.account_name, asOfDate: row.as_of_date, amount: row.amount }),
+      // Include documentId + the row's position so rows that share the same
+      // account name, date, and amount (e.g. multiple 0.00 lines, or an account
+      // repeated across sections) don't collapse to one hash and violate the
+      // idx_balance_sheet_entries_hash unique constraint — which previously failed
+      // the whole BS insert and halted generation. Mirrors the P&L row_hash.
+      row_hash: this.computeRowHash({ versionId: metadata.versionId, documentId: metadata.documentId, accountName: row.account_name, asOfDate: row.as_of_date, amount: row.amount, sortOrder: idx }),
       extracted_at: new Date().toISOString(),
     }));
   }

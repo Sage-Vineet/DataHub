@@ -1,7 +1,6 @@
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useMemo } from "react";
 import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
 import { cn } from "../../lib/utils";
-import ExtractedDataModal from "./ExtractedDataModal";
 
 const PROCESS_STEPS = [
   "Read linked files",
@@ -256,8 +255,6 @@ export default function KeyReportSyncDashboard({
   syncState,
   hasLinkedDocuments = false,
 }) {
-  const [modal, setModal] = useState({ open: false, dataType: null, year: null });
-
   const state = syncState || {
     status: "idle",
     startedAt: null,
@@ -292,7 +289,7 @@ export default function KeyReportSyncDashboard({
         : "Sync dashboard";
 
   const subtitle = isProcessing
-    ? `Processing ${versionLabel} now. Stay on this page while the sync finishes.`
+    ? `Your data is being generated. This may take a few minutes — the application will automatically update when processing completes.`
     : isComplete
       ? `Latest sync results for ${versionLabel}.`
       : isError
@@ -458,15 +455,6 @@ export default function KeyReportSyncDashboard({
                             <p className="mt-2 text-[11px] leading-4 text-inherit" title={message}>
                               {message}
                             </p>
-                            {(cell.status === "success" || cell.status === "warning") && row.key !== "chart_of_accounts" && (
-                              <button
-                                onClick={() => setModal({ open: true, dataType: row.key, year: null })}
-                                className="mt-1.5 text-[11px] font-semibold text-primary hover:underline"
-                                style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "block" }}
-                              >
-                                View data →
-                              </button>
-                            )}
                           </div>
                         );
                       })()
@@ -487,15 +475,6 @@ export default function KeyReportSyncDashboard({
                             <p className="mt-2 text-[11px] leading-4 text-inherit" title={message}>
                               {message}
                             </p>
-                            {(cell.status === "success" || cell.status === "warning") && row.key !== "chart_of_accounts" && (
-                              <button
-                                onClick={() => setModal({ open: true, dataType: row.key, year: parseInt(column, 10) || null })}
-                                className="mt-1.5 text-[11px] font-semibold text-primary hover:underline"
-                                style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "block" }}
-                              >
-                                View data →
-                              </button>
-                            )}
                           </div>
                         );
                       })
@@ -504,36 +483,6 @@ export default function KeyReportSyncDashboard({
                 ))}
               </div>
             </div>
-
-            {matrix.detailRows.length > 0 && (
-              <div className="mt-4 space-y-2">
-                <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-secondary">
-                  Validation messages
-                </h3>
-                <div className="space-y-2">
-                  {matrix.detailRows.slice(0, 12).map((item) => {
-                    const meta = STATUS_META[item.status] || STATUS_META.idle;
-                    return (
-                      <div
-                        key={`${item.rowKey}:${item.column}:${item.message}`}
-                        className="rounded-xl border border-border bg-bg-page px-3 py-2"
-                      >
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-semibold", meta.badge)}>
-                            {meta.label}
-                          </span>
-                          <span className="text-xs font-semibold text-text-primary">
-                            {item.rowLabel}
-                          </span>
-                          <span className="text-xs text-text-muted">{item.column}</span>
-                        </div>
-                        <p className="mt-1 text-sm text-text-secondary">{item.message}</p>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
           </>
         ) : (
           <div className="mt-4 rounded-xl border border-dashed border-border bg-bg-page px-4 py-8 text-center">
@@ -541,19 +490,11 @@ export default function KeyReportSyncDashboard({
               No validation results yet.
             </p>
             <p className="mt-1 text-sm text-text-secondary">
-              Sync the selected Key Reports version to generate the dashboard.
+              Click Generate to build your financial reports.
             </p>
           </div>
         )}
       </section>
-
-      <ExtractedDataModal
-        open={modal.open}
-        onClose={() => setModal({ open: false, dataType: null, year: null })}
-        versionId={version?.id}
-        dataType={modal.dataType}
-        year={modal.year}
-      />
     </div>
   );
 }

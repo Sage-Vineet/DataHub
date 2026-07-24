@@ -4,6 +4,7 @@ import CashflowSummary from "./CashflowSummary";
 import ManualCashflowMonthlyDetail from "./ManualCashflowMonthlyDetail";
 
 const MANUAL_STAGED_SOURCES = ["MANUAL_STAGED", "manual_staged", "manual_gl_staged_transactions", "manual_gl_reporting_snapshot"];
+const KEY_REPORT_SOURCES = ["key_reports_entry_tables", "generated_report_snapshots"];
 
 function CashflowReport({
   reportType,
@@ -60,7 +61,8 @@ function CashflowReport({
   }
 
   // Summary mode
-  const isManualStagedSummary = MANUAL_STAGED_SOURCES.includes(data?.source) && Array.isArray(data?.hierarchicalRows);
+  const isManualStagedSummary = [...MANUAL_STAGED_SOURCES, ...KEY_REPORT_SOURCES].includes(data?.source)
+    && Array.isArray(data?.hierarchicalRows);
   if (isManualStagedSummary) {
     const yearCols = Array.isArray(data.yearCols) ? data.yearCols : [];
     const columns = yearCols.length > 0 ? { yearCols } : undefined;

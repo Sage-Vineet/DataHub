@@ -26,8 +26,28 @@ const REPORT_CATEGORIES = {
   GENERAL_LEDGER: "general_ledger",
   BANK_STATEMENT: "bank_statement",
   TAX_RETURN: "tax_return",
+  // Optional: a company's own Chart of Accounts workbook (migration 072).
+  // When linked, it becomes that company's highest-priority hierarchy source
+  // (see coaMappingService.createCoaMapper) — above the shared global
+  // reference and above AI category selection.
+  CHART_OF_ACCOUNTS: "chart_of_accounts",
 };
 const VALID_CATEGORIES = new Set(Object.values(REPORT_CATEGORIES));
+
+// Entry table that holds a category's extracted rows, keyed by (version_id,
+// source_file_id). Mirrors each extraction service's `tableName` — kept here
+// too so removeMapping can clean up without loading the extraction services.
+// profit_loss has no entry table (dropped by migration 056; P&L is generated
+// from the General Ledger). chart_of_accounts also has none here on purpose:
+// client_chart_of_accounts is scoped by company_id, not version_id/
+// source_file_id, so unlinking the document doesn't revoke the company's
+// parsed reference — only a fresh upload replaces it (clientCoaImportService).
+const ENTRY_TABLE_BY_CATEGORY = {
+  [REPORT_CATEGORIES.GENERAL_LEDGER]: "general_ledger_entries",
+  [REPORT_CATEGORIES.BALANCE_SHEET]: "balance_sheet_entries",
+  [REPORT_CATEGORIES.BANK_STATEMENT]: "bank_statement_entries",
+  [REPORT_CATEGORIES.TAX_RETURN]: "tax_return_entries",
+};
 
 function normalizeVersion(row) {
   if (!row) return null;
@@ -77,7 +97,12 @@ async function listVersions(companyId) {
     .eq("company_id", companyId)
     .order("version_number", { ascending: false });
   if (error) throw error;
-  return (data || []).map(normalizeVersion);
+  return (data || [])
+    .map(normalizeVersion)
+    // QA/perf-testing clones are never real client data — exclude them at the
+    // source so no consumer (Key Reports page, EBITDA, Reports, etc.) ever
+    // has to filter them out client-side.
+    .filter((v) => !String(v.versionName || "").toUpperCase().includes("PERF-TEST"));
 }
 
 async function getVersion(versionId) {
@@ -309,6 +334,22 @@ async function removeMapping(mappingId) {
   if (error) throw error;
 
   if (row.document_id) {
+    // Delete this document's already-extracted rows for THIS category so a
+    // future replace/delete doesn't leave stale data mixed into the version's
+    // aggregates (glRowCount, COA generation, Trial Balance, etc. all filter
+    // by version_id only, not by which documents are still mapped).
+    const entryTable = ENTRY_TABLE_BY_CATEGORY[row.report_category];
+    if (entryTable) {
+      const { error: entryErr } = await supabase
+        .from(entryTable)
+        .delete()
+        .eq("version_id", row.version_id)
+        .eq("source_file_id", row.document_id);
+      if (entryErr) {
+        console.warn(`[KeyReports] removeMapping: failed to delete ${entryTable} rows for document ${row.document_id}: ${entryErr.message}`);
+      }
+    }
+
     const { data: remaining } = await supabase
       .from("key_report_file_mappings")
       .select("id")
@@ -355,10 +396,34 @@ async function validateVersion(versionId) {
 // Sync: persist mappings (already persisted), validate, generate backend
 // financial tables, and update sync status. Idempotent + re-syncable.
 // Table generation is delegated to keyReportSyncService (Step 5).
+//
+// NO SYNC LOCKING (removed per explicit product requirement): every call to
+// syncVersion starts its own independent sync immediately — no in-memory
+// Map/Set/mutex, no database lock column, no "already in progress" check of
+// any kind, at any level (version, company, or client). Any number of
+// concurrent syncVersion calls for the same version (or different versions,
+// or different companies) all run in parallel, each with its own Sync ID.
+//
+// KNOWN, ACCEPTED TRADE-OFF (explicitly requested — not an oversight): the
+// lock this replaces (migration 079, sync_locked_at/sync_locked_by, now
+// dropped — see migration 080) existed because two concurrent syncs of the
+// SAME version can each independently run extractAndStore's DELETE-then-
+// INSERT for the same document; if one process's DELETE lands after the
+// other's INSERT has already committed, both processes' inserted rows
+// survive side by side — confirmed live to produce 10,875 duplicated
+// general_ledger_entries rows for one version in a single extraction batch
+// before this lock was introduced. Removing the lock reintroduces that
+// exact possibility for anyone who deliberately runs overlapping syncs of
+// the same version. Database-level transactional integrity (individual
+// statements/writes) is unaffected and unchanged.
+
 async function syncVersion(versionId, userId = null, opts = {}) {
   const version = await getVersion(versionId);
   if (!version) throw new Error("Version not found.");
+  return _executeSync(version, versionId, userId, opts);
+}
 
+async function _executeSync(version, versionId, userId = null, opts = {}) {
   const { data: logRow, error: logErr } = await supabase
     .from("key_report_sync_logs")
     .insert({
@@ -370,7 +435,20 @@ async function syncVersion(versionId, userId = null, opts = {}) {
     .select("*")
     .single();
   if (logErr) throw logErr;
+  // The sync_logs row's own id is already a real, unique per-sync identifier
+  // — reused directly as the Sync Id rather than minting a second, parallel one.
   const logId = logRow.id;
+
+  console.log(
+    "=========================================\n" +
+    "Key Report Sync Started\n" +
+    "=========================================\n\n" +
+    `Version: ${versionId}\n\n` +
+    `Company: ${version.companyId}\n\n` +
+    `Sync Id: ${logId}\n\n` +
+    `Started At: ${logRow.sync_started_at || logRow.created_at}\n\n` +
+    "=========================================",
+  );
 
   try {
     const validation = await validateVersion(versionId);
@@ -631,16 +709,9 @@ async function getActiveLinkedDocuments(companyId, reportCategory) {
 
 // ---- Extracted data viewer --------------------------------------------------
 
+// NOTE: no `profit_loss` entry — there is no profit_loss_entries table. P&L is
+// generated live from the General Ledger and is not browsable as raw extracted data.
 const ENTRY_TABLE_CONFIG = {
-  profit_loss: {
-    table: 'profit_loss_entries',
-    yearCol: 'fiscal_year',
-    yearIsDate: false,
-    searchCols: ['account_name', 'account_number', 'category'],
-    selectCols: 'id,fiscal_year,account_name,account_number,account_type,category,sub_category,amount,hierarchy_level,is_total,sort_order',
-    orderCol: 'sort_order',
-    orderSecondary: 'id',
-  },
   balance_sheet: {
     table: 'balance_sheet_entries',
     yearCol: 'fiscal_year',
@@ -652,10 +723,13 @@ const ENTRY_TABLE_CONFIG = {
   },
   general_ledger: {
     table: 'general_ledger_entries',
-    yearCol: 'fiscal_year',
-    yearIsDate: false,
-    searchCols: ['account_section', 'distribution_account', 'memo_description', 'split_account', 'transaction_name', 'transaction_num'],
-    selectCols: 'id,row_type,row_number,fiscal_year,transaction_date,account_section,distribution_account,transaction_type,transaction_num,transaction_name,memo_description,split_account,amount,running_balance',
+    // fiscal_year/fiscal_month no longer exist (migration 069 — date_dimension
+    // refactor); transaction_date is always populated (including for
+    // BEGINNING_BALANCE/TOTAL_ROW sentinel dates), so a date-range filter works.
+    yearCol: 'transaction_date',
+    yearIsDate: true,
+    searchCols: ['account_name', 'account_section', 'memo', 'split_account', 'transaction_number'],
+    selectCols: 'id,row_type,row_number,transaction_date,date_id,account_section,account_name,account_number,transaction_type,transaction_number,memo,split_account,vendor,customer,entity_type,amount,debit_amount,credit_amount,running_balance,coa_id',
     orderCol: 'row_number',
     orderSecondary: 'id',
   },

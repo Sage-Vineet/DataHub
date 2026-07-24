@@ -2,12 +2,21 @@ const express = require("express");
 const { requireAuth } = require("../middleware/auth");
 const { canAccessCompany } = require("../services/permissionService");
 const keyReportService = require("../services/keyReports/keyReportService");
+const keyReportProgress = require("../services/keyReports/keyReportProgress");
 const fileReferenceService = require("../services/fileReferenceService");
 const userPreferenceService = require("../services/userPreferenceService");
 const chartOfAccountsService = require("../services/chartOfAccountsService");
 const keyReportReportService = require("../services/keyReports/keyReportReportService");
 const { generateFinancialStatements } = require("../services/keyReports/financialStatementService");
+const { exportKeyReportData } = require("../services/keyReports/keyReportExportService");
 const { normalizeError, isConnectionError } = require("../utils/dbErrorHandler");
+// Reconciliation extraction helpers — used to pre-warm the Bank & Tax
+// Reconciliation caches immediately after a version is generated, so those pages
+// load instantly (cache hit) instead of running a multi-minute live extraction on
+// first visit. These are the SAME functions (and cache keys) the pages use.
+const { runBankExtraction, runBsBankBalancesExtraction } = require("./quickbooks/reconciliation/bankVsBooks");
+const { runTaxExtraction } = require("./manualReportUploads");
+const { MANUAL_REPORT_UPLOAD_SOURCE } = require("../services/manualReportUploadService");
 
 const router = express.Router();
 router.use(requireAuth);
@@ -224,16 +233,104 @@ router.delete("/key-reports/mappings/:mappingId", async (req, res) => {
   }
 });
 
+// Pre-warm the Bank & Tax Reconciliation caches for a freshly generated version.
+//
+// Generate extracts the linked bank/tax files into the entry tables, but the
+// Bank/Tax Reconciliation pages run their OWN (summary-level) Gemini extraction,
+// cached lazily on first page visit — which is why that first visit took minutes.
+// Here we run that same extraction now, using the identical functions and
+// cache-key path the pages use, so by the time Generate reports success the pages
+// are a guaranteed cache hit and load instantly.
+//
+// Fully non-fatal: every branch is settled and swallowed, so a warm-up failure
+// never fails the generate — the page simply falls back to its lazy extraction.
+async function warmReconciliationCaches(companyId, versionId) {
+  if (!companyId || !versionId) return;
+  try {
+    const results = await Promise.allSettled([
+      // Bank statement summary (report_type "bank_reconciliation_kr_v2")
+      runBankExtraction(companyId, MANUAL_REPORT_UPLOAD_SOURCE, "Manual Upload Source", null, versionId),
+      // Balance-Sheet bank balances (report_type "bs_bank_balances_cache_v2")
+      runBsBankBalancesExtraction(companyId, MANUAL_REPORT_UPLOAD_SOURCE, "Manual Upload Source", null, null, versionId),
+      // Tax return summary (report_type "tax_return_kr_v2")
+      runTaxExtraction(companyId, { keyReportVersionId: versionId }),
+    ]);
+    const labels = ["bank", "bs-bank-balances", "tax"];
+    results.forEach((r, i) => {
+      if (r.status === "rejected") {
+        console.warn(`[KeyReports] Reconciliation warm-up (${labels[i]}) failed (non-fatal): ${r.reason?.message || r.reason}`);
+      }
+    });
+    console.log(`[KeyReports] Reconciliation caches warmed for version ${versionId} (company ${companyId}).`);
+  } catch (err) {
+    // Defensive: allSettled shouldn't throw, but never let warm-up break generate.
+    console.warn(`[KeyReports] Reconciliation warm-up error (non-fatal): ${err?.message || err}`);
+  }
+}
+
+// Background-warm the financial-statements RESULT cache after a generate/sync.
+// generateFinancialStatements is expensive (many GL scans); warming it now — with
+// the COA the sync just built — means the Reports page (and the Reconciliation
+// P&L fetch) hit a warm cache and load instantly instead of paying the full
+// compute on first visit. Fire-and-forget (not awaited), so it never delays the
+// generate response or risks a request timeout; skipped when the workflow halted
+// (no COA was generated). Fully non-fatal.
+function warmFinancialStatementsCache(versionId, result) {
+  if (!versionId || result?.halted) return;
+  generateFinancialStatements(versionId, { currency: "USD" })
+    .then(() => console.log(`[KeyReports] Financial-statements cache warmed for version ${versionId}.`))
+    .catch((e) => console.warn(`[KeyReports] Financial-statements cache warm failed (non-fatal): ${e?.message || e}`));
+}
+
 // ---- Sync ------------------------------------------------------------------
 
 router.post("/key-reports/versions/:versionId/sync", async (req, res) => {
   try {
     const version = await loadVersionWithAccess(req, res);
     if (!version) return;
-    const result = await keyReportService.syncVersion(version.id, req.user?.id);
-    return res.json({ success: true, ...result });
+    // Run the sync pipeline AND warm the Bank/Tax Reconciliation caches
+    // concurrently. Warm-up reads the raw linked files (independent of the
+    // pipeline's generated tables), so it overlaps the pipeline and adds ~no
+    // wall-clock — yet the reconciliation pages are a guaranteed cache hit
+    // (instant) once this returns instead of running a multi-minute extraction on
+    // first visit. Warm-up is fully non-fatal (see warmReconciliationCaches).
+    const [result] = await Promise.all([
+      keyReportService.syncVersion(version.id, req.user?.id),
+      warmReconciliationCaches(version.companyId, version.id),
+    ]);
+    res.json({ success: true, ...result });
+    warmFinancialStatementsCache(version.id, result);
+    return;
   } catch (error) {
     return handleError(res, error, "POST sync");
+  }
+});
+
+// ---- Generate (semantic alias for /sync — single-click full workflow) ------
+// Calls the identical syncVersion pipeline: AI extraction → COA → Financial
+// Reports → Snapshots → Validation. Kept as a separate route so the new UI
+// can use clean "Generate" language while the existing /sync endpoint remains
+// fully backward-compatible for any existing integrations.
+
+router.post("/key-reports/versions/:versionId/generate", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    // Run the sync pipeline AND warm the Bank/Tax Reconciliation caches
+    // concurrently. Warm-up reads the raw linked files (independent of the
+    // pipeline's generated tables), so it overlaps the pipeline and adds ~no
+    // wall-clock — yet the reconciliation pages are a guaranteed cache hit
+    // (instant) once this returns instead of running a multi-minute extraction on
+    // first visit. Warm-up is fully non-fatal (see warmReconciliationCaches).
+    const [result] = await Promise.all([
+      keyReportService.syncVersion(version.id, req.user?.id),
+      warmReconciliationCaches(version.companyId, version.id),
+    ]);
+    res.json({ success: true, ...result });
+    warmFinancialStatementsCache(version.id, result);
+    return;
+  } catch (error) {
+    return handleError(res, error, "POST generate");
   }
 });
 
@@ -266,6 +363,22 @@ router.get("/key-reports/versions/:versionId/sync-logs", async (req, res) => {
   }
 });
 
+// ---- Generate progress (live, in-memory) -----------------------------------
+// Lightweight poll target for the Generate Workflow progress bar. Returns the
+// stage the sync pipeline is currently on (derived from its log markers, from
+// "=== Sync started ===" to "=== Sync complete ==="). In-memory only — no DB
+// table; `progress` is null when no run is tracked for this version.
+router.get("/key-reports/versions/:versionId/generate-progress", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const progress = keyReportProgress.getProgress(version.id);
+    return res.json({ success: true, progress });
+  } catch (error) {
+    return handleError(res, error, "GET generate-progress");
+  }
+});
+
 // ---- Chart of Accounts -----------------------------------------------------
 
 // Helper: verify the caller can access the company that owns a COA account.
@@ -283,16 +396,6 @@ async function loadAccountWithAccess(req, res) {
   if (!requireCompanyAccess(req, res, row.company_id)) return null;
   return row;
 }
-
-// The standardized hierarchy taxonomy (reference data for UI level filters).
-router.get("/key-reports/hierarchy-levels", async (req, res) => {
-  try {
-    const levels = await chartOfAccountsService.getHierarchyLevels();
-    return res.json({ success: true, levels });
-  } catch (error) {
-    return handleError(res, error, "GET hierarchy-levels");
-  }
-});
 
 // Fetch a version's COA as a deep tree + flat list (15-level hierarchy).
 router.get("/key-reports/versions/:versionId/chart-of-accounts", async (req, res) => {
@@ -474,15 +577,27 @@ router.get("/key-reports/versions/:versionId/reports/profit-loss", async (req, r
   }
 });
 
-router.get("/key-reports/versions/:versionId/reports/balance-sheet", async (req, res) => {
+router.get("/key-reports/versions/:versionId/reports/trial-balance", async (req, res) => {
   try {
     const version = await loadVersionWithAccess(req, res);
     if (!version) return;
-    const { year, startDate, endDate, period } = parseReportQuery(req.query);
-    const result = await keyReportReportService.getBalanceSheetReport(version.id, { year, startDate, endDate, period });
+    const { year } = parseReportQuery(req.query);
+    const result = await keyReportReportService.getTrialBalanceReport(version.id, { year });
     return res.json({ success: true, ...result });
   } catch (error) {
-    return handleError(res, error, "GET reports/balance-sheet");
+    return handleError(res, error, "GET reports/trial-balance");
+  }
+});
+
+router.get("/key-reports/versions/:versionId/reports/reconciliation", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const { year } = parseReportQuery(req.query);
+    const result = await keyReportReportService.getReconciliationReport(version.id, { year });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return handleError(res, error, "GET reports/reconciliation");
   }
 });
 
@@ -549,6 +664,58 @@ router.get("/key-reports/versions/:versionId/reports/financial-statements", asyn
     return res.json({ success: true, ...result });
   } catch (error) {
     return handleError(res, error, "GET reports/financial-statements");
+  }
+});
+
+// ── Quality of Earnings ──────────────────────────────────────────────────────
+// GET /key-reports/versions/:versionId/reports/qoe?year=2024
+router.get("/key-reports/versions/:versionId/reports/qoe", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const { year } = req.query;
+    const result = await keyReportReportService.getQoeReport(version.id, {
+      year: year ? parseInt(String(year), 10) : undefined,
+    });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return handleError(res, error, "GET reports/qoe");
+  }
+});
+
+// ── KPI Report ───────────────────────────────────────────────────────────────
+// GET /key-reports/versions/:versionId/reports/kpi?year=2024
+router.get("/key-reports/versions/:versionId/reports/kpi", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const { year } = req.query;
+    const result = await keyReportReportService.getKpiReport(version.id, {
+      year: year ? parseInt(String(year), 10) : undefined,
+    });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return handleError(res, error, "GET reports/kpi");
+  }
+});
+
+// ── Export Data ──────────────────────────────────────────────────────────────
+// GET /key-reports/versions/:versionId/export
+// Exports all raw synced data for the selected version as an Excel workbook
+router.get("/key-reports/versions/:versionId/export", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+
+    const { fileName, buffer } = await exportKeyReportData(version.id);
+
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+    res.setHeader("Content-Length", buffer.length);
+
+    return res.send(buffer);
+  } catch (error) {
+    return handleError(res, error, "GET export");
   }
 });
 

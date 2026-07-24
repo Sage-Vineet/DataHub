@@ -66,6 +66,28 @@ async function getAllCompanies() {
   return attachCompanyStats(data || []);
 }
 
+function getCompanyListScopeIds(user) {
+  const ids = new Set();
+
+  if (user?.company_id) ids.add(String(user.company_id));
+
+  if (Array.isArray(user?.direct_company_ids)) {
+    for (const companyId of user.direct_company_ids) {
+      if (companyId) ids.add(String(companyId));
+    }
+    return Array.from(ids);
+  }
+
+  for (const companyId of user?.company_ids || []) {
+    if (companyId) ids.add(String(companyId));
+  }
+  for (const company of user?.assigned_companies || []) {
+    if (company?.id) ids.add(String(company.id));
+  }
+
+  return Array.from(ids);
+}
+
 async function getCompaniesForUser(user) {
   const role = String(user?.role || "").toLowerCase();
   let query = supabase
@@ -74,13 +96,7 @@ async function getCompaniesForUser(user) {
     .order("created_at", { ascending: false });
 
   if (role !== "admin") {
-    const companyIds = Array.from(
-      new Set([
-        ...(user?.company_ids || []),
-        ...((user?.assigned_companies || []).map((company) => company.id)),
-        user?.company_id,
-      ].filter(Boolean).map(String)),
-    );
+    const companyIds = getCompanyListScopeIds(user);
     if (!companyIds.length) return [];
     query = query.in("id", companyIds);
   }
@@ -435,4 +451,5 @@ module.exports = {
   deleteCompany,
   syncCompanyClientRepresentative,
   attachCompanyStats,
+  getCompanyListScopeIds,
 };

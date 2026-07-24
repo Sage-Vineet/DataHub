@@ -1,4 +1,4 @@
-import { Database, FileText, Zap } from "lucide-react";
+import { Database, FileText, Zap, BarChart3 } from "lucide-react";
 import { useDataSource } from "../../context/DataSourceContext";
 import { getReportSourceLabel } from "../../lib/report-source";
 
@@ -7,6 +7,7 @@ const SOURCE_CONFIGS = {
   manual: { icon: Database, color: "text-blue-600", bg: "bg-blue-50", ring: "ring-blue-200" },
   manual_upload: { icon: FileText, color: "text-purple-600", bg: "bg-purple-50", ring: "ring-purple-200" },
   quickbooks_manual: { icon: Zap, color: "text-orange-600", bg: "bg-orange-50", ring: "ring-orange-200" },
+  key_reports: { icon: BarChart3, color: "text-primary", bg: "bg-primary/10", ring: "ring-primary/20" },
 };
 
 export default function ActiveSourceIndicator() {

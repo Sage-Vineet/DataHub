@@ -1,4 +1,9 @@
 import { formatCurrency } from "../../../lib/utils";
+import FrozenPaneTable from "../shared/FrozenPaneTable";
+
+const NAME_COL_WIDTH = "300px";
+const YEAR_COL_WIDTH = "130px";
+const CONSOLIDATED_COL_WIDTH = "150px";
 
 function formatMetric(metric) {
   return String(metric || "")
@@ -22,8 +27,29 @@ export default function ManualProfitLossSummary({
     ? data.yearComparison
     : [];
 
+  const columnWidths = [NAME_COL_WIDTH, ...years.map(() => YEAR_COL_WIDTH), CONSOLIDATED_COL_WIDTH];
+
+  const headerRow = (
+    <tr className="bg-bg-page">
+      <th className="sticky left-0 z-20 bg-bg-page pt-2.5 pb-4 px-4 text-left text-[12px] font-medium text-text-muted uppercase tracking-wider border-b-2 border-text-primary border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]">
+        Metric
+      </th>
+      {years.map((year) => (
+        <th
+          key={`year-${year}`}
+          className="bg-bg-page pt-2.5 pb-4 px-4 text-right text-[12px] font-medium text-text-muted uppercase tracking-wider border-b-2 border-text-primary"
+        >
+          FY {year}
+        </th>
+      ))}
+      <th className="bg-bg-page pt-2.5 pb-4 px-4 text-right text-[12px] font-semibold text-text-primary uppercase tracking-wider border-b-2 border-text-primary">
+        Consolidated
+      </th>
+    </tr>
+  );
+
   return (
-    <div className="flex-1 overflow-y-auto bg-bg-page/50 p-10 lg:p-16 font-inter">
+    <div className="bg-bg-page/50 p-10 lg:p-16 font-inter">
       <div className="max-w-[1200px] mx-auto card-base p-10 min-h-[900px] flex flex-col rounded-sm shadow-xl">
         <div className="flex flex-col items-center mb-10 relative">
           <div className="w-12 h-1 bg-primary rounded-full mb-6" />
@@ -38,61 +64,39 @@ export default function ManualProfitLossSummary({
           ) : null}
         </div>
 
-        <div className="overflow-x-auto relative">
-          <table className="w-full border-collapse">
-            <thead>
-              <tr className="bg-bg-page sticky top-0 z-10">
-                <th className="sticky top-0 left-0 z-30 bg-bg-page pt-2.5 pb-4 px-4 text-left text-[12px] font-medium text-text-muted uppercase tracking-wider border-b-2 border-text-primary border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)] min-w-[300px]">
-                  Metric
-                </th>
-                {years.map((year) => (
-                  <th
-                    key={`year-${year}`}
-                    className="pt-2.5 pb-4 px-4 text-right text-[12px] font-medium text-text-muted uppercase tracking-wider border-b-2 border-text-primary"
-                  >
-                    FY {year}
-                  </th>
-                ))}
-                <th className="pt-2.5 pb-4 px-4 text-right text-[12px] font-semibold text-text-primary uppercase tracking-wider border-b-2 border-text-primary">
-                  Consolidated
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {lines.map((line) => (
-                <tr key={line.key} className="border-b border-border-light group">
-                  <td className="px-4 py-3 text-[14px] font-medium text-text-primary sticky left-0 z-10 bg-inherit border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)] min-w-[300px]">
-                    {line.label || formatMetric(line.key)}
-                  </td>
-                  {years.map((year) => {
-                    const value = Number(line?.valuesByYear?.[year] || 0);
-                    return (
-                      <td
-                        key={`${line.key}-${year}`}
-                        className={`px-4 py-3 text-right text-[14px] tabular-nums ${value < 0 ? "text-status-error font-semibold" : "text-text-secondary"}`}
-                      >
-                        {formatCurrency(value)}
-                      </td>
-                    );
-                  })}
-                  <td className="px-4 py-3 text-right text-[14px] font-semibold text-text-primary tabular-nums">
-                    {formatCurrency(Number(line?.consolidated || 0))}
-                  </td>
-                </tr>
-              ))}
-              {!lines.length ? (
-                <tr>
+        <FrozenPaneTable columnWidths={columnWidths} headerRows={headerRow}>
+          {lines.map((line) => (
+            <tr key={line.key} className="border-b border-border-light group">
+              <td className="px-4 py-3 text-[14px] font-medium text-text-primary sticky left-0 z-10 bg-bg-card border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]">
+                {line.label || formatMetric(line.key)}
+              </td>
+              {years.map((year) => {
+                const value = Number(line?.valuesByYear?.[year] || 0);
+                return (
                   <td
-                    colSpan={Math.max(2, years.length + 2)}
-                    className="py-16 text-center text-text-muted italic"
+                    key={`${line.key}-${year}`}
+                    className={`px-4 py-3 text-right text-[14px] tabular-nums ${value < 0 ? "text-status-error font-semibold" : "text-text-secondary"}`}
                   >
-                    No staged Profit & Loss data found for the selected filters.
+                    {formatCurrency(value)}
                   </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
+                );
+              })}
+              <td className="px-4 py-3 text-right text-[14px] font-semibold text-text-primary tabular-nums">
+                {formatCurrency(Number(line?.consolidated || 0))}
+              </td>
+            </tr>
+          ))}
+          {!lines.length ? (
+            <tr>
+              <td
+                colSpan={Math.max(2, years.length + 2)}
+                className="py-16 text-center text-text-muted italic"
+              >
+                No staged Profit & Loss data found for the selected filters.
+              </td>
+            </tr>
+          ) : null}
+        </FrozenPaneTable>
 
         {yearComparison.length ? (
           <div className="mt-10">
