@@ -139,7 +139,12 @@ async function fetchChartOfAccountsData(versionId) {
         .from("chart_of_accounts")
         .select("*")
         .eq("version_id", versionId)
-        .order("sort_order", { ascending: true }),
+        // sort_order is not guaranteed unique (see financialStatementService.js's
+        // loadCoa for the confirmed root cause) — an id tie-breaker keeps this
+        // paginated fetch's ordering stable across pages/requests, so a
+        // same-sort_order row can never be skipped or duplicated between pages.
+        .order("sort_order", { ascending: true })
+        .order("id", { ascending: true }),
       { label: `COA export for ${versionId.substring(0, 8)}` }
     );
     return data || [];

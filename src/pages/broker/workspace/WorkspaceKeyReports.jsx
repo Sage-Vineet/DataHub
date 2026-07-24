@@ -219,7 +219,8 @@ export default function WorkspaceKeyReports() {
   const [showPopup, setShowPopup] = useState(false);
 
   // ── COA editor visibility (collapsible below Validation Dashboard) ────────
-  const [showCoa, setShowCoa] = useState(false);
+  // Open by default — no click needed to see it; still collapsible via the toggle.
+  const [showCoa, setShowCoa] = useState(true);
 
   // ── Export data state ─────────────────────────────────────────────────────
   const [exporting, setExporting] = useState(false);
