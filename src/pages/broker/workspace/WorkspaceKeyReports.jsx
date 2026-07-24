@@ -668,6 +668,7 @@ export default function WorkspaceKeyReports() {
               <GenerateProgressPanel
                 key={generateState.startedAt || "idle"}
                 status={generateState.status}
+                versionId={selectedVersionId}
                 startedAt={generateState.startedAt}
                 finishedAt={generateState.finishedAt}
                 errorStage={generateState.errorStage}

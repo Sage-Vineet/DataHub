@@ -2,12 +2,16 @@
  * GenerateProgressPanel
  *
  * Shown while `handleGenerate` is in-flight and after it completes / fails.
- * Simulates stage-by-stage progress via a time-based ticker (the backend is a
- * single synchronous request today) — structured so swapping the ticker for
- * real SSE / WebSocket events requires no further component changes.
+ * While generating, it polls the backend for the REAL pipeline stage (derived
+ * from the sync log markers, from "=== Sync started ===" to
+ * "=== Sync complete ===") and advances the bar accordingly, so the percentage
+ * reflects actual progress rather than a timer. The bar creeps within the
+ * current stage's band for liveliness but never past the real stage, and
+ * completes when the generation request resolves (status → "done").
  *
  * Props
  *   status        "idle" | "generating" | "done" | "error"
+ *   versionId     string — version being generated (drives progress polling)
  *   startedAt     ISO string — when generation was kicked off
  *   finishedAt    ISO string — set on completion / error
  *   errorStage    string | null — stage key that failed (e.g. "ai_processing")
@@ -31,6 +35,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
+import { getKeyReportGenerateProgress } from "../../lib/api";
 
 // ── Stage definitions ─────────────────────────────────────────────────────────
 const STAGES = [
@@ -101,16 +106,21 @@ const BREAKPOINTS = STAGES.map((st) => {
   return { start, end: _cum };
 });
 
-// Animation speed
-const PCT_PER_SEC = 9; // ~11 s to reach STALL_AT
-const TICK_MS = 250;
-const STALL_AT = 98; // freeze here until API resolves
+// Map each stage key → its index, so a stage reported by the backend resolves
+// to a position in STAGES / BREAKPOINTS.
+const STAGE_INDEX_BY_KEY = Object.fromEntries(STAGES.map((s, i) => [s.key, i]));
 
-function computeStageIndex(pct) {
-  for (let i = BREAKPOINTS.length - 1; i >= 0; i--) {
-    if (pct >= BREAKPOINTS[i].start) return i;
-  }
-  return 0;
+// Animation / polling cadence.
+const CREEP_PER_SEC = 5; // gentle within-stage fill so a long stage isn't frozen
+const TICK_MS = 250;
+const POLL_MS = 1200; // how often we ask the backend which stage it's really on
+const STALL_AT = 98; // cap until the generation request actually resolves
+
+// Target fill for a stage index: the END of that stage's weighted band, capped
+// so the bar never claims completion before the request resolves (status→done).
+function targetPctForStage(idx) {
+  if (idx == null || idx < 0) return 0;
+  return Math.min(STALL_AT, BREAKPOINTS[idx].end);
 }
 
 function formatTs(iso) {
@@ -193,6 +203,7 @@ function StageRow({ stage, stageStatus, errorMessage }) {
 // ── Main component ────────────────────────────────────────────────────────────
 export default function GenerateProgressPanel({
   status = "idle",
+  versionId = null,
   startedAt = null,
   finishedAt = null,
   errorStage = null,
@@ -200,23 +211,54 @@ export default function GenerateProgressPanel({
   onRetry,
 }) {
   const [pct, setPct] = useState(0);
-  const tickerRef = useRef(null);
+  const [stageIdx, setStageIdx] = useState(0);
   const pctRef = useRef(0);
+  const stageIdxRef = useRef(0);
+  // Seed the target at the first stage so the bar shows immediate motion while
+  // the first poll is in flight (we ARE in "Preparing Data" at that point).
+  const targetRef = useRef(targetPctForStage(0));
 
+  // Poll the backend for the real pipeline stage while generating. Forward-only:
+  // a transient poll failure or an out-of-order reply never rewinds the bar.
   useEffect(() => {
-    if (status === "generating") {
-      pctRef.current = 0;
-      tickerRef.current = setInterval(() => {
-        const next = Math.min(STALL_AT, pctRef.current + (PCT_PER_SEC * TICK_MS) / 1000);
+    if (status !== "generating" || !versionId) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await getKeyReportGenerateProgress(versionId);
+        if (cancelled) return;
+        const stage = res?.progress?.stage;
+        const idx = stage != null ? STAGE_INDEX_BY_KEY[stage] : undefined;
+        if (idx != null && idx >= stageIdxRef.current) {
+          stageIdxRef.current = idx;
+          setStageIdx(idx);
+          targetRef.current = Math.max(targetRef.current, targetPctForStage(idx));
+        }
+      } catch {
+        /* transient poll failure — keep last known progress */
+      }
+    };
+    poll(); // fire immediately, then on an interval
+    const id = setInterval(poll, POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [status, versionId]);
+
+  // Creep the displayed percentage toward the current stage's target, bounded by
+  // the real stage — the bar can never run ahead of what the backend reports.
+  useEffect(() => {
+    if (status !== "generating") return;
+    const id = setInterval(() => {
+      const step = (CREEP_PER_SEC * TICK_MS) / 1000;
+      const next = Math.min(targetRef.current, pctRef.current + step);
+      if (next !== pctRef.current) {
         pctRef.current = next;
         setPct(next);
-      }, TICK_MS);
-    } else {
-      if (tickerRef.current) clearInterval(tickerRef.current);
-    }
-    return () => {
-      if (tickerRef.current) clearInterval(tickerRef.current);
-    };
+      }
+    }, TICK_MS);
+    return () => clearInterval(id);
   }, [status]);
 
   const isGenerating = status === "generating";
@@ -224,7 +266,7 @@ export default function GenerateProgressPanel({
   const isError = status === "error";
 
   const currentStageIdx = isGenerating
-    ? computeStageIndex(pct)
+    ? stageIdx
     : isDone
       ? STAGES.length - 1
       : isError
