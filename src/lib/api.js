@@ -1522,6 +1522,15 @@ export function getKeyReportSyncLogs(versionId) {
 }
 
 /**
+ * Live generation progress for the Generate Workflow bar. Returns
+ * { progress: { stage, done, updatedAt } | null }. Polled while a generation is
+ * in flight so the bar reflects the real pipeline stage instead of a timer.
+ */
+export function getKeyReportGenerateProgress(versionId) {
+  return request(`/key-reports/versions/${versionId}/generate-progress`);
+}
+
+/**
  * Fetch a financial report directly from Key Reports entry tables.
  *
  * reportType: 'profit-loss' | 'balance-sheet' | 'general-ledger' |

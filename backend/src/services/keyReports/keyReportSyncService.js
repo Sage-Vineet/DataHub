@@ -31,6 +31,9 @@ const profitLossExtractionService = require('./profitLossExtractionService');
 // (Step 7b) — same recognition-only call already used by COA generation,
 // never repurposed to build hierarchy here.
 const { classifyAccountsWithAI } = require('./geminiCoaClassifier');
+// In-memory progress tracker — the sync logger feeds it each phase marker so the
+// UI progress bar reflects the real pipeline instead of a fake timer. No DB.
+const keyReportProgress = require('./keyReportProgress');
 
 function normName(accountName) {
   return String(accountName || '').trim().toLowerCase();
@@ -648,7 +651,12 @@ async function generateFinancialTables(version, opts = {}) {
   const versionId = version.id;
 
   const logger = {
-    log: (msg) => console.log(`[KeyReportSync v${version.versionNumber || versionId}] ${msg}`),
+    log: (msg) => {
+      console.log(`[KeyReportSync v${version.versionNumber || versionId}] ${msg}`);
+      // Drive the UI progress bar off the real phase markers in these log lines
+      // (from "=== Sync started ===" to "=== Sync complete ==="). In-memory only.
+      keyReportProgress.onSyncLog(versionId, msg);
+    },
     warn: (msg) => console.warn(`[KeyReportSync v${version.versionNumber || versionId}] WARNING: ${msg}`),
     error: (msg) => console.error(`[KeyReportSync v${version.versionNumber || versionId}] ERROR: ${msg}`),
   };
