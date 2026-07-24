@@ -150,7 +150,38 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
     // v5: unrecognized intermediate headers (e.g. "Bank Accounts") are now
     // also preserved in `rows` (node_type: hierarchy_group) instead of being
     // silently dropped — bump again so cached parses get refreshed.
-    this.parserVersion = 'v5';
+    // v6: CONFIRMED BUG — extract_excel.py's extract_balance_sheet only ever
+    // read indentation via leading whitespace characters (_cell_indent), but
+    // this client's (and likely most QuickBooks) exports encode nesting via
+    // the Excel cell's own alignment.indent property instead, with ZERO
+    // leading whitespace in the cell text. Every row therefore read indent=0,
+    // collapsing parent_path to empty for every account and leaving
+    // Level 3/4 in the generated Chart of Accounts as the leaf account's own
+    // name instead of "Current Assets"/"Fixed Assets" etc. Fixed via
+    // get_rows_with_indent (already used by extract_profit_loss) — bump again
+    // so every previously-cached, flattened Balance Sheet parse gets redone.
+    // v7: added a retry-and-sanity-check around the Python extraction call
+    // (_extractFromExcelWithFallback) — a run that returns real leaf rows but
+    // with EVERY parent_path empty is now retried once before being accepted,
+    // since a transient bad run (confirmed live: identical file/code
+    // produced empty parent_path once, then correct nested paths on
+    // immediate re-run) could otherwise get cached under the current
+    // parser_version and silently persist until manually cleared. Bump so
+    // any such bad cached parse is discarded and re-attempted with the new
+    // safeguard.
+    // v8: CONFIRMED ROOT CAUSE — the ancestor stack (both this JS fallback and
+    // extract_excel.py's Python primary path) pushed EVERY row, including a
+    // real leaf/total account with its own posted amount, onto the parent_path
+    // stack. Whenever two sibling accounts' extracted indent values weren't
+    // perfectly monotonic (common indent noise in real exports), the first
+    // sibling was silently retained as the "parent" of the second, corrupting
+    // Level 3+ in the generated Chart of Accounts (confirmed live: a real
+    // sibling account nested under an unrelated sibling 11 times in one
+    // document). Fixed: only header/group rows (no amount) may remain
+    // ancestors. Bump so every previously-cached parse — which may carry a
+    // phantom leaf-as-parent entry in parent_path — is re-extracted with the
+    // fix applied.
+    this.parserVersion = 'v8';
   }
 
   async extract({ fileName, fileBuffer }) {
@@ -160,20 +191,60 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
   }
 
   // ── Excel: Python primary, JS fallback ─────────────────────────────────────
+  // Retries Python once before falling back to JS, and treats a suspiciously
+  // flat result (real leaf rows but zero hierarchy) as worth retrying too —
+  // not just an outright failure. CONFIRMED (production evidence): a Python
+  // run can occasionally return rows with every parent_path empty even for a
+  // document independently verified to carry real alignment-indent hierarchy
+  // (re-running the exact same file, same code, immediately after reliably
+  // produced the correct nested result) — most likely a transient race (e.g.
+  // this backend process restarting mid-extraction during active development/
+  // use) rather than a deterministic parsing bug. Whatever the exact trigger,
+  // a bad flat result must never be trusted and cached as if it were correct
+  // — see extraction cache's parser_version keying; a wrong result cached
+  // under the current version silently persists until manually cleared.
+  // Shared with the base class's cache-read gate (_readExtractionCache) so a
+  // bad result is caught the same way whether it was just extracted or read
+  // back from a previously-cached (and possibly stale/bad) entry.
+  _isExtractionSuspicious(rows) {
+    const leafRows = (rows || []).filter((r) => !r.is_section_header && !r.is_total);
+    const rowsWithParent = leafRows.filter((r) => Array.isArray(r.parent_path) && r.parent_path.length > 0);
+    return leafRows.length > 3 && rowsWithParent.length === 0;
+  }
+
   async _extractFromExcelWithFallback(fileBuffer, fileName) {
-    try {
-      this.logger.log(`Trying Python extraction for Excel "${fileName}"`);
-      const result = await extractWithPython('extract_excel.py', fileBuffer, {
-        type: 'balance_sheet',
-        filename: fileName,
-      });
-      if (result.rows && result.rows.length > 0) {
-        this.logger.log(`Python extracted ${result.rows.length} rows from "${fileName}"`);
-        return { rows: result.rows, detectedYears: result.detected_years };
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const suffix = attempt > 1 ? ` (retry ${attempt})` : '';
+      try {
+        this.logger.log(`Trying Python extraction for Excel "${fileName}"${suffix}`);
+        const result = await extractWithPython('extract_excel.py', fileBuffer, {
+          type: 'balance_sheet',
+          filename: fileName,
+        });
+        if (result.rows && result.rows.length > 0) {
+          const suspiciouslyFlat = this._isExtractionSuspicious(result.rows);
+          if (suspiciouslyFlat && attempt === 1) {
+            this.logger.warn(
+              `Python extraction for "${fileName}" returned ${result.rows.length} row(s) with NO hierarchy ` +
+              `at all (every parent_path empty) — suspicious for a real Balance Sheet, retrying once before ` +
+              `accepting it.`,
+            );
+            continue;
+          }
+          if (suspiciouslyFlat) {
+            this.logger.warn(
+              `Python extraction for "${fileName}" is STILL flat after a retry — accepting it (no better source ` +
+              `available; the JS fallback can never produce a hierarchy either) but this will be re-checked and ` +
+              `re-extracted on the next sync instead of being trusted from cache.`,
+            );
+          }
+          this.logger.log(`Python extracted ${result.rows.length} rows from "${fileName}"`);
+          return { rows: result.rows, detectedYears: result.detected_years };
+        }
+        this.logger.warn(`Python returned 0 rows for "${fileName}"${attempt < 2 ? ', retrying' : ', falling back to JS'}`);
+      } catch (err) {
+        this.logger.warn(`Python extraction failed for "${fileName}"${attempt < 2 ? ', retrying' : ', falling back to JS'}: ${err.message}`);
       }
-      this.logger.warn(`Python returned 0 rows for "${fileName}", falling back to JS`);
-    } catch (err) {
-      this.logger.warn(`Python extraction failed for "${fileName}", falling back to JS: ${err.message}`);
     }
     return this._extractFromExcel(fileBuffer, fileName);
   }
@@ -398,7 +469,13 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
         is_heading: false,
         node_type: isTotal ? 'total' : 'account',
       });
-      ancestorStack.push({ indent, label: accountName });
+      // CONFIRMED ROOT CAUSE (fixed here, mirrors extract_excel.py's identical
+      // fix): a leaf/total row — one with its own posted amount — must never
+      // be pushed onto the ancestor stack. Only the two header/group branches
+      // above (both `continue` before reaching here) may remain a parent for
+      // later rows. Previously every row was pushed unconditionally, so a
+      // small indent inconsistency between two sibling accounts caused the
+      // first to be misread as the structural parent of the second.
     }
 
     this.logger.log(`  "${fileName}": Rows detected=${rowsDetected}, extracted=${rows.length}, rejected=${rowsRejected}`);

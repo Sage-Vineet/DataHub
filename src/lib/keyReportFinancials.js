@@ -116,35 +116,6 @@ function sectionNode(id, name, perPeriodAccounts, totalName, perPeriodTotal) {
   return { id, name, type: "header", amounts: {}, children };
 }
 
-// A Balance-Sheet container (Current Assets / Fixed Assets / …) that nests one
-// sub-section per named group, then a container subtotal.
-function groupContainer(idPrefix, title, perPeriodGroups, perPeriodTotal) {
-  const order = [];
-  const map = new Map();
-  perPeriodGroups.forEach(({ colKey, groups }) => {
-    Object.entries(groups || {}).forEach(([gName, g]) => {
-      if (!map.has(gName)) {
-        order.push(gName);
-        map.set(gName, { perAccounts: [], perTotal: [] });
-      }
-      const rec = map.get(gName);
-      rec.perAccounts.push({ colKey, accounts: g.accounts || [] });
-      rec.perTotal.push({ colKey, value: g.total });
-    });
-  });
-  const children = order.map((gName) =>
-    sectionNode(
-      `${idPrefix}-${gName}`,
-      gName,
-      map.get(gName).perAccounts,
-      `Total ${gName}`,
-      map.get(gName).perTotal,
-    ),
-  );
-  children.push(totalRow(`${idPrefix}-total`, `Total ${title}`, perPeriodTotal));
-  return { id: idPrefix, name: title, type: "header", amounts: {}, children };
-}
-
 function buildProfitAndLoss(entries, cols) {
   const colKey = (i) => cols[i].key;
   const per = (pick) => entries.map((e, i) => ({ colKey: colKey(i), value: pick(e.statement || {}) }));
@@ -195,28 +166,65 @@ function buildProfitAndLoss(entries, cols) {
   };
 }
 
+// Merge the backend's genuine, arbitrary-depth Balance Sheet hierarchy
+// (financialStatementService.js's buildDynamicHierarchy — built directly
+// from chart_of_accounts level_1..level_15; no fixed bucket names, no depth
+// cap, consecutive duplicate labels already collapsed server-side) across
+// every period, into the { id, name, type, amounts, children } shape QBRow
+// recurses through. This is the ONLY Balance Sheet hierarchy construction on
+// the frontend: it just merges whatever tree the backend already built by
+// name at each depth — it never invents, renames, or reclassifies a node.
+// Containers are matched by name; leaves are matched by systemId (falling
+// back to name), same convention as mergeAccounts above.
+function mergeDynamicHierarchy(entries, colKey, pickHierarchy, idPrefix) {
+  function mergeLevel(perPeriodNodes, parentId) {
+    const order = [];
+    const byKey = new Map(); // matchKey -> { isLeaf, name, occurrences: [{colKey, node}] }
+    perPeriodNodes.forEach(({ colKey: ck, nodes }) => {
+      (nodes || []).forEach((node) => {
+        const isLeaf = node.type === "leaf";
+        const matchKey = isLeaf ? (node.systemId || node.name) : node.name;
+        if (!byKey.has(matchKey)) { order.push(matchKey); byKey.set(matchKey, { isLeaf, name: node.name, occurrences: [] }); }
+        byKey.get(matchKey).occurrences.push({ colKey: ck, node });
+      });
+    });
+    return order.map((matchKey) => {
+      const rec = byKey.get(matchKey);
+      const id = `${parentId}/${matchKey}`;
+      if (rec.isLeaf) {
+        const amounts = {};
+        rec.occurrences.forEach(({ colKey: ck, node }) => { amounts[ck] = Number(node.amount) || 0; });
+        return { id, name: rec.name, amounts };
+      }
+      const childPerPeriod = rec.occurrences.map(({ colKey: ck, node }) => ({ colKey: ck, nodes: node.children || [] }));
+      const children = mergeLevel(childPerPeriod, id);
+      const totalAmounts = {};
+      rec.occurrences.forEach(({ colKey: ck, node }) => { totalAmounts[ck] = Number(node.amount) || 0; });
+      // Avoid "Total Total Assets" when the container's own COA name already
+      // reads as a total (e.g. the root anchor "Total Assets"/"Total
+      // Liabilities and Equity") — use its own name verbatim instead of
+      // prefixing another "Total " onto it.
+      const totalLabel = /^total\b/i.test(rec.name) ? rec.name : `Total ${rec.name}`;
+      children.push({ id: `${id}-total`, name: totalLabel, type: "total", amounts: totalAmounts });
+      return { id, name: rec.name, type: "header", amounts: {}, children };
+    });
+  }
+  const perPeriodRoot = entries.map((e, i) => ({ colKey: colKey(i), nodes: pickHierarchy(e.statement || {}) || [] }));
+  return mergeLevel(perPeriodRoot, idPrefix);
+}
+
 function buildBalanceSheet(entries, cols) {
   const colKey = (i) => cols[i].key;
   const per = (pick) => entries.map((e, i) => ({ colKey: colKey(i), value: pick(e.statement || {}) }));
-  const perGroups = (pick) => entries.map((e, i) => ({ colKey: colKey(i), groups: pick(e.statement || {}) }));
 
-  const assets = {
-    id: "bs-assets", name: "Assets", type: "header", amounts: {},
-    children: [
-      groupContainer("bs-ca", "Current Assets", perGroups((s) => s.assets?.currentAssets?.groups), per((s) => s.assets?.currentAssets?.total)),
-      groupContainer("bs-fa", "Fixed Assets", perGroups((s) => s.assets?.fixedAssets?.groups), per((s) => s.assets?.fixedAssets?.total)),
-      groupContainer("bs-oa", "Other Assets", perGroups((s) => s.assets?.otherAssets?.groups), per((s) => s.assets?.otherAssets?.total)),
-      totalRow("bs-ta", "Total Assets", per((s) => s.totalAssets)),
-    ],
-  };
-  const liabilities = {
-    id: "bs-liab", name: "Liabilities", type: "header", amounts: {},
-    children: [
-      groupContainer("bs-cl", "Current Liabilities", perGroups((s) => s.liabilities?.currentLiabilities?.groups), per((s) => s.liabilities?.currentLiabilities?.total)),
-      groupContainer("bs-ltl", "Long-Term Liabilities", perGroups((s) => s.liabilities?.longTermLiabilities?.groups), per((s) => s.liabilities?.longTermLiabilities?.total)),
-      totalRow("bs-tl", "Total Liabilities", per((s) => s.totalLiabilities)),
-    ],
-  };
+  // The backend's hierarchy root is already self-describing (its own name
+  // comes straight from chart_of_accounts level_1, e.g. "Total Assets") and
+  // already carries its own rolled-up "Total …" child — used directly as the
+  // top-level row(s), with no extra hardcoded "Assets"/"Liabilities" wrapper
+  // or redundant appended total layered on top of it.
+  const assetRows = mergeDynamicHierarchy(entries, colKey, (s) => s.assets?.hierarchy, "bs-a");
+  const liabRows  = mergeDynamicHierarchy(entries, colKey, (s) => s.liabilities?.hierarchy, "bs-l");
+
   const equity = sectionNode(
     "bs-eq", "Equity",
     entries.map((e, i) => ({ colKey: colKey(i), accounts: e.statement?.equity?.accounts || [] })),
@@ -225,7 +233,7 @@ function buildBalanceSheet(entries, cols) {
   );
   const tle = totalRow("bs-tle", "Total Liabilities and Equity", per((s) => s.totalLiabilitiesAndEquity));
 
-  return { rows: [assets, liabilities, equity, tle], columns: { yearCols: cols } };
+  return { rows: [...assetRows, ...liabRows, equity, tle], columns: { yearCols: cols } };
 }
 
 // Cash-flow activity section. Monthly items are plain {name, amount}; yearly

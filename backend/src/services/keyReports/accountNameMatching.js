@@ -93,7 +93,13 @@ function singularize(word) {
 // balances — fuzzy matching must never bridge a query and a candidate that disagree
 // on which of these modifiers they carry, no matter how similar the remaining words
 // are. This list is generic accounting vocabulary, not tied to any specific account.
-const MODIFIER_PHRASES = ["non current", "long term", "short term"];
+// "net operating" / "non operating" added — CONFIRMED BUG this fixes: "Net
+// Operating Income" (a computed subtotal) and "Non-Operating Income" (a real,
+// unrelated line item) are opposite concepts that share every word except
+// "Net"/"Non", scoring 0.90 similarity — exactly the fuzzy-match threshold —
+// and colliding onto the same generated hierarchy path. Standard financial-
+// statement vocabulary, not tied to any specific client's chart of accounts.
+const MODIFIER_PHRASES = ["non current", "long term", "short term", "net operating", "non operating"];
 const MODIFIER_WORDS = [
   "accrued", "deferred", "prepaid", "prepayment", "provision", "allowance",
   "reserve", "unearned", "payable", "receivable", "amortization", "amortized",

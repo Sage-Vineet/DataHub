@@ -1044,6 +1044,34 @@ async function generateMonthlyBalanceSheetsReverse(companyId, versionId, gate, o
       }
       if (agg?.bsMap) for (const [key, acc] of agg.bsMap) addRun(running, key, -acc.net, acc.type, acc.name);
     }
+    // CONFIRMED BUG this fixes: for every year EXCEPT endYear, cumulativeNetIncome
+    // is set to that year's OWN full-year netIncome (computed as the sum of the
+    // exact same byMonth data this loop then walks down month by month) — so it
+    // is mathematically guaranteed to reach exactly 0 by the time all 12 months
+    // are undone. endYear is different: its cumulativeNetIncome is SEEDED from
+    // the uploaded Ending BS's own stated "Net Income" line (ground truth from
+    // the document, per bsBalancesAtLatest) — an EXTERNAL figure, not derived
+    // from this year's own byMonth sum. When the GL's own month-by-month
+    // aggregation for that partial year doesn't exactly agree with the
+    // document's stated Net Income (confirmed live: a $168,198.55 gap for one
+    // real company), the walk leaves a real, non-zero leftover in
+    // cumulativeNetIncome here — which an unconditional reset to 0 then
+    // silently discarded, permanently breaking Assets = Liabilities + Equity
+    // for every single earlier month this engine ever generates (the loss
+    // compounds forward through every prior year since nothing later restores
+    // it). Retained Earnings is the conventional place a P&L-vs-balance-sheet
+    // reconciling difference belongs — fold it in instead of dropping it, and
+    // log it loudly so a real GL/document mismatch is never invisible.
+    if (Math.abs(round2(cumulativeNetIncome)) >= 0.005) {
+      console.warn(
+        `[generateMonthlyBalanceSheetsReverse] versionId=${versionId}: ${year}'s GL-derived Net Income does not fully ` +
+        `offset its seeded value — a $${Math.abs(cumulativeNetIncome).toFixed(2)} residual was folded into Retained ` +
+        `Earnings rather than silently dropped. This usually means the uploaded Ending Balance Sheet's stated Net ` +
+        `Income for ${year} disagrees with what the General Ledger's own account classification computes for the ` +
+        `same period.`,
+      );
+      addRun(running, reCoaId, cumulativeNetIncome, "equity", "Retained Earnings");
+    }
 
     cumulativeNetIncome = 0;
     yearsStored.unshift(year);
@@ -1497,7 +1525,17 @@ async function generateReconciliation(companyId, versionId, gate) {
 
   if (rows.length) await chunkedInsert("bs_reconciliation_entries", rows);
   summary.balanced = summary.differences === 0 && summary.missingFromGl === 0 && summary.missingFromBs === 0;
-  return { ran: true, stored: rows.length, year, summary };
+
+  // Top differing accounts (by absolute variance), for the validation-row
+  // message — same "accounts responsible" convention as the P&L reconciliation
+  // block (persistProfitLossReconciliation's fileResults.topDiffs).
+  const topDiffs = rows
+    .filter((r) => r.status === "DIFFERENCE")
+    .sort((a, b) => Math.abs(b.variance) - Math.abs(a.variance))
+    .slice(0, 15);
+  const diffCount = rows.filter((r) => r.status === "DIFFERENCE").length;
+
+  return { ran: true, stored: rows.length, year, summary, topDiffs, diffCount };
 }
 
 // ============================================================================

@@ -6,6 +6,7 @@ const {
   extractBankStatementsFromPdfBase64,
   extractBankStatementsFromExcelBuffer,
   buildBankResponseShape,
+  mergeDuplicateBanksInShape,
 } = require("../../../services/bankStatementExtractor");
 const {
   extractBsBankBalancesWithGemini,
@@ -511,7 +512,7 @@ router.get("/reconciliation-variance", extractClientId, async (req, res) => {
 // target its own isolated cache partition and DataRoom folder.
 // Returns { statusCode, body } — the caller forwards these directly to res.
 // ─────────────────────────────────────────────────────────────────────────────
-async function runBankExtraction(clientId, cacheSource = MANUAL_REPORT_UPLOAD_SOURCE, folderRootName = "Manual Upload Source", datasetVersion = null, keyReportVersionId = null) {
+async function runBankExtractionImpl(clientId, cacheSource = MANUAL_REPORT_UPLOAD_SOURCE, folderRootName = "Manual Upload Source", datasetVersion = null, keyReportVersionId = null) {
   // 1. Resolve the source document(s) strictly from the SELECTED Key Reports
   //    version (or the active one when no version is selected). The document set
   //    determines the cache key, so switching versions (and therefore which bank
@@ -714,6 +715,18 @@ async function runBankExtraction(clientId, cacheSource = MANUAL_REPORT_UPLOAD_SO
   return { statusCode: 200, body: { success: true, source: "live", bank_count: banks.length, banks, months, totals } };
 }
 
+// Public entry point. Wraps the extraction so EVERY consumer — the
+// /extract-bank-pdf-records route, the QMS / manual bank-data endpoints, and the
+// manualReportUploads routes that import this — gets duplicate banks collapsed,
+// including case-variant duplicates ("Truist (9118)" vs "TRUIST (9118)") that
+// may persist in older cached/synced results. Idempotent on freshly-extracted
+// data (buildBankResponseShape already groups canonically).
+async function runBankExtraction(...args) {
+  const result = await runBankExtractionImpl(...args);
+  if (result && result.body) result.body = mergeDuplicateBanksInShape(result.body);
+  return result;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Scope a bank-reconciliation response to a single fiscal (calendar) year.
 //
@@ -780,6 +793,9 @@ router.get("/extract-bank-pdf-records", extractClientId, async (req, res) => {
     const { cacheSource, folderRootName } = SOURCE_CONFIG[sourceKey] || DEFAULT_SOURCE_CONFIG;
     console.log(`[BankPDF] source="${sourceKey}" → cacheSource="${cacheSource}", folder="${folderRootName}", keyReportVersionId=${keyReportVersionId}, datasetVersion=${datasetVersion}, fiscalYear=${fiscalYear}`);
     // keyReportVersionId / datasetVersion scope document resolution to the SELECTED Key Reports version.
+    // runBankExtraction already collapses case-variant duplicate banks (e.g.
+    // "Truist (9118)" vs "TRUIST (9118)") for every source, so the response here
+    // only needs optional fiscal-year scoping.
     const { statusCode, body } = await runBankExtraction(req.clientId, cacheSource, folderRootName, datasetVersion, keyReportVersionId);
     const scoped = fiscalYear ? filterBankReconByYear(body, fiscalYear) : body;
     return res.status(statusCode).json(scoped);

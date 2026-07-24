@@ -189,7 +189,7 @@ function glRowYear(row) {
 async function collectBsAccountsFromEntries(companyId, versionId) {
   return fetchAllRows(() =>
     supabase.from("balance_sheet_entries")
-      .select("account_name, account_number, section, sub_section, is_total, hierarchy_level, parent_path, fiscal_year")
+      .select("account_name, account_number, section, sub_section, is_total, hierarchy_level, parent_path, fiscal_year, source_file_id, coa_id")
       .eq("company_id", companyId).eq("version_id", versionId)
       .or("is_total.eq.false,is_total.is.null").order("id", { ascending: true }),
   );
@@ -434,79 +434,365 @@ function isRedundantTopLevelHeading(label, accountType) {
   const s = String(label || "").trim().toLowerCase();
   if (!s) return false;
   if (accountType === "asset") return s === "assets" || s === "asset" || s === "total assets";
-  if (accountType === "liability") return s === "liabilities" || s === "liability" || s === "total liabilities";
-  if (accountType === "equity") return ["equity", "total equity", "owner's equity", "owners equity", "stockholders equity", "members equity"].includes(s);
+  // CONFIRMED BUG this fixes: a document whose top-level heading for this
+  // side is literally "Liabilities and Equity" (spanning BOTH liabilities
+  // and equity, as many real Balance Sheets format it) previously matched
+  // neither the liability nor equity redundant-heading check (only the bare
+  // "Liabilities"/"Equity" forms were recognized) — so for such a document,
+  // NEITHER of the raw parent_path's first two ancestor labels
+  // ("Liabilities and Equity", "Liabilities") ever got trimmed, and both
+  // ended up duplicated after the fixed prefix (which already encodes both
+  // concepts as "Total Liabilities and Equity" / "Total Liabilities").
+  if (accountType === "liability") {
+    return ["liabilities", "liability", "total liabilities", "liabilities and equity", "total liabilities and equity"].includes(s);
+  }
+  if (accountType === "equity") {
+    return ["equity", "total equity", "owner's equity", "owners equity", "stockholders equity", "members equity", "liabilities and equity", "total liabilities and equity"].includes(s);
+  }
   if (accountType === "income") return ["income", "revenue", "sales", "total income", "total revenue"].includes(s);
   if (accountType === "cogs" || accountType === "expense") return ["expenses", "expense", "total expenses", "cost of goods sold", "cost of sales"].includes(s);
   return false;
 }
 
+// Iterative, not a single strip: a document can stack more than one
+// redundant leading label for the same side (e.g. "Liabilities and Equity"
+// THEN "Liabilities" before the first real category) — every leading label
+// that duplicates the fixed prefix's own concept must be dropped, not just
+// the first.
 function trimRedundantParentPath(parentPath, accountType) {
-  if (parentPath.length && isRedundantTopLevelHeading(parentPath[0], accountType)) return parentPath.slice(1);
-  return parentPath;
+  let path = parentPath;
+  while (path.length && isRedundantTopLevelHeading(path[0], accountType)) path = path.slice(1);
+  return path;
+}
+
+// CONFIRMED BUG this fixes: a parent/category chain (from an AI-reasoned
+// hierarchy, a client-COA match, or a parsed document) sometimes already
+// ends with the account's own name as its own deepest category — e.g. the
+// AI naturally classifies a "Retained Earnings" account under a category it
+// also calls "Retained Earnings", or an uploaded Chart of Accounts workbook
+// lists the account as the last level of its own row. Every hierarchy-build
+// site unconditionally appended the leaf's name AGAIN after that chain,
+// producing a path whose last two entries were identical
+// (".../Retained Earnings/Retained Earnings"). buildDesiredCategories then
+// persisted the duplicated entry as its own is_group category node — sharing
+// the exact name of the real leaf account sitting right under it. Across many
+// AI-classified accounts this produced hundreds of phantom category rows
+// (confirmed live: 937 category nodes for 63 leaf accounts, many literally
+// named after real leaf accounts like "Retained Earnings" /
+// "Capital One - Credit Card"), which in turn made the stale-category
+// cleanup DELETE in syncCategoryNodes fail with Bad Request (URL too long
+// for hundreds of ids) every subsequent run, compounding further. Always
+// drop one trailing duplicate before appending the leaf.
+function appendLeaf(prefixPath, leafName) {
+  const path = Array.isArray(prefixPath) ? [...prefixPath] : [];
+  const last = path[path.length - 1];
+  const leafKey = String(leafName || "").trim().toLowerCase();
+  if (last != null && String(last).trim().toLowerCase() === leafKey) path.pop();
+  path.push(leafName);
+  return path;
+}
+
+// Scores every distinct candidate hierarchy path collected for ONE account
+// across every uploaded Balance Sheet (never just the first one seen).
+// Priority, in order: (1) greater depth, (2) appears in more documents/rows
+// (frequency — a path multiple statements independently agree on outranks a
+// one-off), (3) newest fiscal year, (4) came from the confirmed Ending
+// Balance Sheet specifically. Ties after all of that keep first-seen order
+// (stable sort) rather than guessing.
+function compareBsPathCandidates(a, b, endingFiscalYear) {
+  if (b.levels.length !== a.levels.length) return b.levels.length - a.levels.length;
+  if (b.occurrences !== a.occurrences) return b.occurrences - a.occurrences;
+  const aMaxYear = a.fiscalYears.size ? Math.max(...a.fiscalYears) : -Infinity;
+  const bMaxYear = b.fiscalYears.size ? Math.max(...b.fiscalYears) : -Infinity;
+  if (bMaxYear !== aMaxYear) return bMaxYear - aMaxYear;
+  if (endingFiscalYear != null) {
+    const aIsEnding = a.fiscalYears.has(endingFiscalYear);
+    const bIsEnding = b.fiscalYears.has(endingFiscalYear);
+    if (aIsEnding !== bIsEnding) return aIsEnding ? -1 : 1;
+  }
+  return 0;
+}
+
+// ── Document hierarchy tree ──────────────────────────────────────────────────
+// A real parent -> children tree, built directly from the uploaded document's
+// own parsed positions (parent_path). Every node stores name/parentId/
+// children/depth/fullPath. An account's hierarchy path is produced by walking
+// its own leaf node up to the root via parentId, then reversing — never by
+// inferring parents from keywords, account names, or another company's COA.
+// Level 1-2 (Balance Sheet) / 1-9 (Profit & Loss) are the only fixed part of
+// any path (fixedPrefixFor) and form the tree's shared top branches; every
+// level after that comes entirely from parent_path.
+
+function createHierarchyTree() {
+  return { nodesByPath: new Map(), nodesById: new Map(), nextId: 0 };
+}
+
+// Finds (or creates) the node for this exact path, creating every missing
+// ancestor first — so parentId always resolves to a real node in the tree,
+// and a node's depth is always exactly one more than its parent's (no gaps).
+function getOrCreateTreeNode(tree, pathArr) {
+  const pathKey = pathArr.map((s) => normName(s)).join(" > ");
+  const existing = tree.nodesByPath.get(pathKey);
+  if (existing) return existing;
+  const parentPathArr = pathArr.slice(0, -1);
+  const parent = parentPathArr.length ? getOrCreateTreeNode(tree, parentPathArr) : null;
+  const node = {
+    id: `n${tree.nextId += 1}`,
+    name: pathArr[pathArr.length - 1],
+    parentId: parent ? parent.id : null,
+    children: [],
+    depth: pathArr.length,
+    fullPath: pathArr.join(" > "),
+    isLeaf: false,
+  };
+  if (parent) parent.children.push(node);
+  tree.nodesByPath.set(pathKey, node);
+  tree.nodesById.set(node.id, node);
+  return node;
+}
+
+/** Leaf -> root via parentId, then reversed into a root -> leaf path array. */
+function pathFromLeafNode(tree, node) {
+  const reversed = [];
+  let cursor = node;
+  while (cursor) {
+    reversed.push(cursor.name);
+    cursor = cursor.parentId ? tree.nodesById.get(cursor.parentId) : null;
+  }
+  return reversed.reverse();
+}
+
+/**
+ * Populates `tree` from one statement's parsed rows, attaching a leaf node
+ * per postable account under its fixed anchor + the document's own real
+ * parent_path (redundant leading labels trimmed). Returns one entry per
+ * valid row — the SAME account name can legitimately appear more than once
+ * across multiple uploaded documents (Opening vs Ending Balance Sheet, or
+ * repeated comparative P&L columns); the caller applies deepest-wins across
+ * occurrences using each node's own depth.
+ */
+function populateHierarchyTree(tree, rows, accountTypeForRow, isValidLeafRow) {
+  const occurrences = [];
+  for (const r of rows || []) {
+    if (!isValidLeafRow(r)) continue;
+    const accountType = accountTypeForRow(r);
+    const rawParentPath = (Array.isArray(r.parent_path) ? r.parent_path : []).filter(Boolean).map(normalizeHierarchyLabel);
+    const parentPath = trimRedundantParentPath(rawParentPath, accountType);
+    const fullPathArr = appendLeaf([...fixedPrefixFor(accountType), ...parentPath], r.account_name);
+    const node = getOrCreateTreeNode(tree, fullPathArr);
+    node.isLeaf = true;
+    node.accountType = accountType;
+    node.sourceFiscalYear = r.fiscal_year ?? null;
+    node.sourceFileId = r.source_file_id ?? null;
+    occurrences.push({ key: normName(r.account_name), node, accountType });
+  }
+  return occurrences;
+}
+
+/**
+ * Post-generation validation of a document hierarchy tree, per the explicit
+ * spec: no internal gaps, no dangling parent references, every leaf's depth
+ * accounted for. By construction (getOrCreateTreeNode always builds missing
+ * ancestors first) these invariants can't actually break — this still checks
+ * and logs them so a future change to the builder can't silently reintroduce
+ * a gap or an orphaned parent without it showing up here.
+ */
+function validateHierarchyTree(tree, label) {
+  const issues = [];
+  let maxDepth = 0;
+  let leafCount = 0;
+  let totalLeafDepth = 0;
+
+  // Defensive check (post cross-document merge, so it catches the ancestor-
+  // stack bug class even if a future extractor change reintroduces it): a
+  // node that is itself a real posted leaf account must never also be the
+  // parent of another node. Only a structural header/group node may have
+  // children. Computed via the tree's own isLeaf/parentId fields — never a
+  // keyword or account-name guess.
+  const childCounts = new Map();
+  for (const node of tree.nodesById.values()) {
+    if (node.parentId) childCounts.set(node.parentId, (childCounts.get(node.parentId) || 0) + 1);
+  }
+  let leafUsedAsParentCount = 0;
+
+  for (const node of tree.nodesById.values()) {
+    if (node.parentId && !tree.nodesById.has(node.parentId)) {
+      issues.push(`Node "${node.fullPath}" has parent_id "${node.parentId}" that does not exist in the tree.`);
+    }
+    if (!node.name || !String(node.name).trim()) {
+      issues.push(`Node at path "${node.fullPath}" has an empty/blank name.`);
+    }
+    if (node.parentId) {
+      const parent = tree.nodesById.get(node.parentId);
+      if (parent && node.depth !== parent.depth + 1) {
+        issues.push(`Node "${node.fullPath}" has depth ${node.depth}, expected ${parent.depth + 1} (gap after parent "${parent.fullPath}").`);
+      }
+    } else if (node.depth !== 1) {
+      issues.push(`Root node "${node.fullPath}" has depth ${node.depth}, expected 1.`);
+    }
+    if (node.isLeaf) {
+      leafCount += 1;
+      totalLeafDepth += node.depth;
+      if (node.depth > maxDepth) maxDepth = node.depth;
+      if (childCounts.get(node.id) > 0) {
+        leafUsedAsParentCount += 1;
+        issues.push(`Leaf account "${node.fullPath}" has ${childCounts.get(node.id)} child node(s) — a posted account can never be a structural parent.`);
+      }
+    }
+  }
+  const avgDepth = leafCount ? totalLeafDepth / leafCount : 0;
+  console.log(
+    `Hierarchy Tree Validation (${label})\n` +
+    `  Nodes: ${tree.nodesById.size}\n` +
+    `  Leaf Accounts: ${leafCount}\n` +
+    `  Maximum Depth: ${maxDepth}\n` +
+    `  Average Depth: ${avgDepth.toFixed(2)}\n` +
+    `  Leaf Used As Parent: ${leafUsedAsParentCount}\n` +
+    `  Hierarchy Gaps: ${issues.length}` +
+    (issues.length ? `\n  Issues:\n${issues.slice(0, 20).map((i) => `    ${i}`).join("\n")}` : ""),
+  );
+  if (leafUsedAsParentCount > 0) {
+    console.error(
+      `[ChartOfAccounts][${label}] VALIDATION WARNING: ${leafUsedAsParentCount} leaf account(s) have children in ` +
+      `the hierarchy tree — a real posted account is acting as another account's structural parent. This should ` +
+      `be impossible after the ancestor-stack extraction fix; investigate the source document(s).`,
+    );
+  }
+  return { maxDepth, avgDepth, leafCount, gapCount: issues.length, issues, leafUsedAsParentCount };
 }
 
 /**
  * Priority-2 lookup tables: normName(accountName) -> { levels, accountType,
- * statementType }, one from this version's own uploaded Balance Sheet rows,
- * one from the ephemeral parsed Profit & Loss rows — both now carrying
- * `parent_path` (migration 077 for BS; P&L stays ephemeral, never persisted).
- * DEEPEST occurrence wins (never first) — see the DEEPEST-WINS comment below.
- * Total/header rows are excluded — they are not real postable accounts.
+ * statementType, sourceFiscalYear }, one from this version's own uploaded
+ * Balance Sheet rows, one from the ephemeral parsed Profit & Loss rows — both
+ * now carrying `parent_path` (migration 077 for BS; P&L stays ephemeral,
+ * never persisted), each built by materializing a real hierarchy tree
+ * (createHierarchyTree/populateHierarchyTree) and reading `levels` off it via
+ * leaf-to-root traversal (pathFromLeafNode) — never inferred from keywords or
+ * account names.
+ *
+ * Balance Sheet side: EVERY distinct candidate path an account reaches across
+ * every uploaded Balance Sheet is collected first (never just the first
+ * occurrence), then scored via compareBsPathCandidates — deepest wins; ties
+ * broken by how many documents/rows independently agree on that exact path
+ * (frequency); further ties by newest fiscal year, then by whether the
+ * Ending Balance Sheet specifically confirms it. Total/header rows are
+ * excluded — they are not real postable accounts.
  */
-function buildDocHierarchyLookups(bsRows, plRows) {
-  const bsHierarchyByName = new Map();
-  for (const r of bsRows || []) {
+function buildDocHierarchyLookups(bsRows, plRows, endingFiscalYear = null, { logValidation = false } = {}) {
+  const bsTree = createHierarchyTree();
+  const bsOccurrences = populateHierarchyTree(
+    bsTree,
+    bsRows,
+    (r) => bsSectionToType(r.section),
     // hierarchy_level 0 = a structural header/grouping row (recognized
     // section header, e.g. "ASSETS") — not a real postable account.
-    if (!r.account_name || r.is_total || r.hierarchy_level === 0) continue;
-    const key = normName(r.account_name);
-    const accountType = bsSectionToType(r.section);
-    const rawParentPath = (Array.isArray(r.parent_path) ? r.parent_path : []).filter(Boolean).map(normalizeHierarchyLabel);
-    const parentPath = trimRedundantParentPath(rawParentPath, accountType);
-    const levels = [...fixedPrefixFor(accountType), ...parentPath, r.account_name];
-    // DEEPEST-WINS: the same account can appear at different real depths
-    // across multiple uploaded Balance Sheet documents (or repeated
-    // comparative columns within one) — e.g. one export nests it
-    // Assets > Fixed Assets > Equipment > Computer Equipment, another
-    // flattens the same account straight under Assets. A later, shallower
-    // occurrence must never silently replace an earlier, deeper one that
-    // already resolved this account — keep whichever has more real levels.
-    const existing = bsHierarchyByName.get(key);
-    if (existing && existing.levels.length >= levels.length) continue;
+    (r) => Boolean(r.account_name) && !r.is_total && r.hierarchy_level !== 0,
+  );
+
+  // Step 2/3 of the document-driven spec: group every occurrence by account
+  // key, then by its exact resolved path, so an account reached the SAME way
+  // by multiple statements is recognized as one candidate with occurrences>1
+  // (frequency), not several unrelated ones.
+  const bsCandidatesByKey = new Map(); // key -> Map<pathString, candidate>
+  for (const { key, node, accountType } of bsOccurrences) {
+    const levels = pathFromLeafNode(bsTree, node);
+    const pathString = levels.join(" > ");
+    if (!bsCandidatesByKey.has(key)) bsCandidatesByKey.set(key, new Map());
+    const paths = bsCandidatesByKey.get(key);
+    if (!paths.has(pathString)) {
+      paths.set(pathString, {
+        levels,
+        accountType,
+        statementType: accountType ? "balance_sheet" : null,
+        occurrences: 0,
+        fiscalYears: new Set(),
+        sourceFileId: node.sourceFileId ?? null,
+      });
+    }
+    const candidate = paths.get(pathString);
+    candidate.occurrences += 1;
+    if (node.sourceFiscalYear != null) candidate.fiscalYears.add(node.sourceFiscalYear);
+  }
+
+  // Step 4/5: score every account's candidates and select the winner. Tallies
+  // below feed the "Balance Sheet Hierarchy Validation" log (Resolved By
+  // Depth/Frequency/Recency, Conflicting Paths) — never guessed, always
+  // attributable to the exact tier that decided it.
+  const bsHierarchyByName = new Map();
+  let conflictingPathsCount = 0;
+  let resolvedByDepthCount = 0;
+  let resolvedByFrequencyCount = 0;
+  let resolvedByRecencyCount = 0;
+  // A node (leaf path) independently confirmed by more than one uploaded row
+  // — Step 2's "if the same node appears in multiple Balance Sheets, merge
+  // them" — counted here rather than duplicated as separate tree nodes.
+  let mergedNodesCount = 0;
+  for (const [key, paths] of bsCandidatesByKey) {
+    const candidates = Array.from(paths.values());
+    for (const c of candidates) if (c.occurrences > 1) mergedNodesCount += 1;
+    if (candidates.length > 1) {
+      conflictingPathsCount += 1;
+      candidates.sort((a, b) => compareBsPathCandidates(a, b, endingFiscalYear));
+      const [winner, runnerUp] = candidates;
+      if (winner.levels.length !== runnerUp.levels.length) resolvedByDepthCount += 1;
+      else if (winner.occurrences !== runnerUp.occurrences) resolvedByFrequencyCount += 1;
+      else resolvedByRecencyCount += 1;
+    }
+    const winner = candidates[0];
+    const winnerFiscalYear = winner.fiscalYears.size ? Math.max(...winner.fiscalYears) : null;
     bsHierarchyByName.set(key, {
-      levels,
-      accountType,
-      statementType: accountType ? "balance_sheet" : null,
+      levels: winner.levels,
+      accountType: winner.accountType,
+      statementType: winner.statementType,
+      sourceFiscalYear: winnerFiscalYear,
+      sourceFileId: winner.sourceFileId,
     });
   }
-  const plHierarchyByName = new Map();
-  for (const r of plRows || []) {
+  // Kept for the existing "Balance Sheet Hierarchy Analysis" log's "Deepest
+  // Hierarchy Used" field — any account with more than one candidate path
+  // needed the scoring tiers above at all, regardless of which tier decided it.
+  const deepestHierarchyUsedCount = conflictingPathsCount;
+
+  const plTree = createHierarchyTree();
+  const plOccurrences = populateHierarchyTree(
+    plTree,
+    plRows,
+    (r) => plSectionToType(r.section),
     // A subtotal (Gross Profit / Net Operating Income / Net Income, etc.) is
     // a real computed line in the statement, and legitimately appears as an
     // ANCESTOR for other accounts (see the fixed P&L prefixes above) — but
     // is never itself a postable account.
-    if (!r.account_name || r.is_total || r.is_header || r.node_type === "subtotal") continue;
-    const key = normName(r.account_name);
-    const accountType = plSectionToType(r.section);
-    const rawParentPath = (Array.isArray(r.parent_path) ? r.parent_path : []).filter(Boolean).map(normalizeHierarchyLabel);
-    const parentPath = trimRedundantParentPath(rawParentPath, accountType);
-    // Every P&L account anchors under its fixed 9-level prefix before its own
-    // real, dynamic-depth position in the uploaded P&L (e.g. Healthcare
-    // Revenue > RN Revenue > Travel Nurse Revenue) is appended.
-    const levels = [...fixedPrefixFor(accountType), ...parentPath, r.account_name];
+    (r) => Boolean(r.account_name) && !r.is_total && !r.is_header && r.node_type !== "subtotal",
+  );
+  const plHierarchyByName = new Map();
+  for (const { key, node, accountType } of plOccurrences) {
+    const levels = pathFromLeafNode(plTree, node);
     // DEEPEST-WINS — see the identical rule in the Balance Sheet loop above
     // (e.g. one monthly P&L column nests an account under a sub-category,
     // another (or a differently-formatted comparative column) flattens it).
+    // P&L has no Opening/Ending document concept, so ties keep the existing
+    // (first-seen) candidate — endingFiscalYear is never consulted here.
     const existing = plHierarchyByName.get(key);
     if (existing && existing.levels.length >= levels.length) continue;
     plHierarchyByName.set(key, {
       levels,
       accountType,
       statementType: accountType ? "profit_loss" : null,
+      sourceFiscalYear: node.sourceFiscalYear,
     });
   }
-  return { bsHierarchyByName, plHierarchyByName };
+
+  if (logValidation) {
+    validateHierarchyTree(bsTree, "Balance Sheet");
+    validateHierarchyTree(plTree, "Profit & Loss");
+  }
+
+  return {
+    bsHierarchyByName, plHierarchyByName, bsTree, plTree, deepestHierarchyUsedCount,
+    conflictingPathsCount, resolvedByDepthCount, resolvedByFrequencyCount, resolvedByRecencyCount,
+    mergedNodesCount,
+  };
 }
 
 // Strict fuzzy fallback (Step 3, between the exact document lookup and AI) —
@@ -553,14 +839,150 @@ function pickDocHierarchy(accountName, key, glBucketByKey, bsHierarchyByName, pl
     : [bsHierarchyByName, plHierarchyByName, "balanceSheet", "profitLoss"];
 
   let entry = first.get(key);
-  if (entry) { if (stats) stats[firstLabel]++; return entry; }
+  if (entry) { if (stats) stats[firstLabel]++; return { ...entry, matchType: "exact" }; }
   entry = second.get(key);
-  if (entry) { if (stats) stats[secondLabel]++; return entry; }
+  if (entry) { if (stats) stats[secondLabel]++; return { ...entry, matchType: "exact" }; }
 
   // Step 3 — fuzzy match, tried against both statements' known accounts.
   entry = fuzzyMatchDocHierarchy(accountName, first) || fuzzyMatchDocHierarchy(accountName, second);
-  if (entry) { if (stats) stats.fuzzy++; return entry; }
+  if (entry) { if (stats) stats.fuzzy++; return { ...entry, matchType: "fuzzy" }; }
   return null;
+}
+
+/**
+ * Resolves source_file_id -> uploaded document name for every distinct
+ * document referenced in bsRows — used only for the "Source File" field in
+ * the "Balance Sheet Hierarchy Analysis" unresolved-account log, so a flagged
+ * account points at a real filename instead of an opaque uuid.
+ */
+async function buildSourceFileNameLookup(bsRows) {
+  const ids = Array.from(new Set((bsRows || []).map((r) => r.source_file_id).filter(Boolean)));
+  const lookup = new Map();
+  if (!ids.length) return lookup;
+  const { data } = await supabase.from("documents").select("id, name").in("id", ids);
+  for (const row of data || []) lookup.set(row.id, row.name);
+  return lookup;
+}
+
+/**
+ * "Balance Sheet Hierarchy Validation" — the exact document-driven audit
+ * block requested: how many uploaded Balance Sheets contributed, the shape
+ * of the merged hierarchy tree, exactly which scoring tier resolved every
+ * account that had more than one candidate path (never just "first
+ * occurrence"), and a full completeness sweep (null levels, broken parent
+ * links, accounts still missing a hierarchy) over the FINAL resolved leaves.
+ * Every unresolved or flagged account is logged individually with its source
+ * file and both its detected (raw) and chosen (final) hierarchy.
+ */
+function logBalanceSheetHierarchyValidation(hierarchical, bsRows, bsTree, resolutionTallies, sourceFileNameById) {
+  const {
+    conflictingPathsCount = 0, resolvedByDepthCount = 0,
+    resolvedByFrequencyCount = 0, resolvedByRecencyCount = 0, mergedNodesCount = 0,
+  } = resolutionTallies || {};
+
+  const bsLeaves = hierarchical.filter((l) => l.statementType === "balance_sheet");
+
+  const balanceSheetsParsed = new Set((bsRows || []).map((r) => r.source_file_id).filter(Boolean)).size;
+  const hierarchyNodes = bsTree.nodesById.size;
+  const uniqueLeafAccounts = new Set(
+    (bsRows || [])
+      .filter((r) => r.account_name && !r.is_total && r.hierarchy_level !== 0)
+      .map((r) => normName(r.account_name)),
+  ).size;
+
+  let totalDepth = 0;
+  let depthCount = 0;
+  let maxDepth = 0;
+  let accountsMissingHierarchy = 0;
+  let accountsFilledToLevel15 = 0;
+  let nullLevels = 0;
+  const unresolved = [];
+
+  const pathCounts = new Map();
+  for (const leaf of bsLeaves) {
+    if (leaf.hierarchyPath) pathCounts.set(leaf.hierarchyPath, (pathCounts.get(leaf.hierarchyPath) || 0) + 1);
+  }
+  const duplicatePaths = Array.from(pathCounts.values()).filter((n) => n > 1).length;
+
+  for (const leaf of bsLeaves) {
+    const levels = leaf.levels || [];
+    const realLevels = levels.filter(Boolean);
+    if (realLevels.length) {
+      totalDepth += realLevels.length;
+      depthCount += 1;
+      if (realLevels.length > maxDepth) maxDepth = realLevels.length;
+    }
+    if (leaf.needsMapping) accountsMissingHierarchy += 1;
+
+    // Every persisted row is padded to Level 1-15 at insert time
+    // (levelsToColumns/padLevelsWithLeafPropagation) by repeating the deepest
+    // populated level — simulate that same rule here so this validation
+    // reflects what actually lands in the database, not the pre-pad array.
+    const leafName = leaf.baseAccount || leaf.accountName || leaf.displayName;
+    const padded = padLevelsWithLeafPropagation(levels, leafName);
+    const nullCount = padded.filter((v) => v == null || String(v).trim() === "").length;
+    nullLevels += nullCount;
+    if (nullCount === 0 && padded.length >= MAX_LEVELS) accountsFilledToLevel15 += 1;
+
+    if (leaf.needsMapping || leaf.needsReview || !realLevels.length) {
+      unresolved.push({
+        account: leaf.accountName || leaf.displayName,
+        sourceFile: sourceFileNameById?.get(leaf.hierarchySourceFileId) || leaf.hierarchySourceFileId || "(no document position — GL only)",
+        detected: leaf.hierarchyPath || "(none)",
+        chosen: realLevels.join(" > ") || "(none)",
+        reason: leaf.needsMapping ? "needs_mapping — no match found in any source"
+          : leaf.needsReview ? "needs_review — low-confidence AI classification"
+          : "unresolved",
+      });
+    }
+  }
+
+  const avgDepth = depthCount ? totalDepth / depthCount : 0;
+  const brokenParentLinks = validateHierarchyTree(bsTree, "Balance Sheet (validation)").gapCount;
+  const hierarchyValid = nullLevels === 0 && brokenParentLinks === 0 && accountsMissingHierarchy === 0;
+
+  console.log(
+    "==============================\n" +
+    "Balance Sheet Hierarchy Validation\n" +
+    "==============================\n\n" +
+    `Balance Sheets Parsed : ${balanceSheetsParsed}\n\n` +
+    `Hierarchy Nodes : ${hierarchyNodes}\n\n` +
+    `Unique Leaf Accounts : ${uniqueLeafAccounts}\n\n` +
+    `Merged Nodes : ${mergedNodesCount}\n\n` +
+    `Duplicate Paths : ${duplicatePaths}\n\n` +
+    `Conflicting Paths : ${conflictingPathsCount}\n\n` +
+    `Resolved By Depth : ${resolvedByDepthCount}\n\n` +
+    `Resolved By Frequency : ${resolvedByFrequencyCount}\n\n` +
+    `Resolved By Recency : ${resolvedByRecencyCount}\n\n` +
+    `Average Hierarchy Depth : ${avgDepth.toFixed(2)}\n\n` +
+    `Maximum Hierarchy Depth : ${maxDepth}\n\n` +
+    `Accounts Missing Hierarchy : ${accountsMissingHierarchy}\n\n` +
+    `Accounts Filled To Level15 : ${accountsFilledToLevel15}\n\n` +
+    `Null Levels : ${nullLevels}\n\n` +
+    `Broken Parent Links : ${brokenParentLinks}\n\n` +
+    `Hierarchy Valid : ${hierarchyValid ? "YES" : "NO"}\n` +
+    "==============================",
+  );
+
+  if (unresolved.length) {
+    console.log(
+      "Unresolved / flagged Balance Sheet accounts:\n" +
+      unresolved.map((u) =>
+        `  Account: ${u.account}\n` +
+        `  Source File: ${u.sourceFile}\n` +
+        `  Detected Hierarchy: ${u.detected}\n` +
+        `  Chosen Hierarchy: ${u.chosen}\n` +
+        `  Reason: ${u.reason}`,
+      ).join("\n\n"),
+    );
+  }
+
+  return {
+    balanceSheetsParsed, hierarchyNodes, uniqueLeafAccounts, mergedNodesCount, duplicatePaths,
+    conflictingPathsCount, resolvedByDepthCount, resolvedByFrequencyCount, resolvedByRecencyCount,
+    avgDepth, maxDepth, accountsMissingHierarchy, accountsFilledToLevel15, nullLevels,
+    brokenParentLinks, hierarchyValid, unresolved,
+  };
 }
 
 /**
@@ -632,9 +1054,9 @@ function splitAccountsAtRetainedEarnings(glRowsInOrder) {
  *                           Profit-and-Loss bucketing hint (Priority 2, below
  *                           matchResults, above aiResults)
  */
-function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResults = new Map(), glBucketByKey = new Map()) {
+function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResults = new Map(), glBucketByKey = new Map(), endingFiscalYear = null) {
   const leavesByName = new Map();
-  const { bsHierarchyByName, plHierarchyByName } = buildDocHierarchyLookups(bsRows, plRows);
+  const { bsHierarchyByName, plHierarchyByName } = buildDocHierarchyLookups(bsRows, plRows, endingFiscalYear);
 
   // A GL posting is, by definition, a real transaction — never a calculated
   // report/header row. If Gemini says isReportRow=true for a name that ALSO
@@ -792,7 +1214,19 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
         matchSystemId: null,
         matchClientAccountId: null,
         matchNormalBalance: null,
-        matchReason: `Matched this account's own position in the uploaded ${docHierarchy.statementType === "profit_loss" ? "Profit & Loss" : "Balance Sheet"}.`,
+        matchReason: `Matched this account's own position in the uploaded ${docHierarchy.statementType === "profit_loss" ? "Profit & Loss" : "Balance Sheet"}` +
+          (docHierarchy.sourceFiscalYear != null ? ` (FY${docHierarchy.sourceFiscalYear}).` : "."),
+        // Which uploaded document's own year this leaf's hierarchy came from —
+        // surfaced in the per-account "COA Hierarchy Generation" log so it's
+        // never a black box which Balance Sheet (Opening vs Ending) won when
+        // more than one is linked.
+        hierarchySourceFiscalYear: docHierarchy.sourceFiscalYear ?? null,
+        // Exact document-position match vs a fuzzy-name fallback, and which
+        // uploaded document/file this hierarchy actually came from — surfaced
+        // in the "Balance Sheet Hierarchy Analysis" log (Exact/Fuzzy Matches,
+        // per-account Source File).
+        docHierarchyMatchType: docHierarchy.matchType || "exact",
+        hierarchySourceFileId: docHierarchy.sourceFileId ?? null,
         sources: new Set([source]),
         fiscalYears: new Set(fiscalYear ? [Number(fiscalYear)] : []),
         bsSection: bsSection || null,
@@ -1055,37 +1489,23 @@ async function loadKnownCategoryPaths(companyId, versionId, hasLinkedCoaDocument
  * Priority 3 (uploaded Profit & Loss) — grouping only, never deeper than one
  * level, never applied to a Balance Sheet account.
  *
- * `subSection` (asset/liability only — from balance_sheet_entries.sub_section,
- * migration 075) adds ONE more real level when the document's own sub-header
- * distinguished it (Current vs. Fixed Assets, Current vs. Long-Term
- * Liabilities) — still evidence-gated the same way as `section`, never
- * invented when the document only shows the bare top-level header.
+ * CONFIRMED BUG this fixes: this function used to map balance_sheet_entries.
+ * sub_section (current/fixed/long_term/other — migration 075, a coarse
+ * classifier of a real header ROW's own text, not company structure) onto a
+ * hardcoded label ("Current Assets", "Fixed Assets", "Current Liabilities",
+ * "Long-Term Liabilities") and inserted it as an invented Level 3. That is
+ * exactly the "hardcode Level 3/4 category names" pattern the redesign
+ * forbids — this shallow-evidence pass only runs when an account has NO real
+ * parent_path in ANY uploaded document at all (see buildLeafHierarchies'
+ * pass order), so there is no genuine intermediate category to report here;
+ * inventing one is a guess, not a fact from the document. Now returns ONLY
+ * the fixed Level 1/2 prefix — padLevelsWithLeafPropagation (persistence
+ * time) fills every remaining level with the leaf's own name instead, which
+ * is honest about what the document actually gave us.
  */
-const ASSET_SUB_LABELS = { current: "Current Assets", fixed: "Fixed Assets", other: "Other Assets" };
-const LIABILITY_SUB_LABELS = { current: "Current Liabilities", long_term: "Long-Term Liabilities", other: "Other Liabilities" };
-
-// Every anchor here is built ON TOP OF fixedPrefixFor(accountType) — the same
-// fixed root every document-hierarchy match uses (buildDocHierarchyLookups)
-// — so a shallow, evidence-only placement still lands under the correct
-// top-level branch. Previously income/cogs/expense returned bare anchors
-// ("Total Income"/"Total Cost of Goods Sold"/"Total Expenses") with no fixed
-// prefix at all, landing them as siblings of "Total Assets"/"Total
-// Liabilities and Equity" instead of nested under Net Income where they
-// belong — confirmed live as a real wrong-section classification.
-function shallowLevelsFromSectionEvidence(section, accountType, subSection) {
+function shallowLevelsFromSectionEvidence(section, accountType) {
   if (!section) return null; // no document evidence — never guess
-  const prefix = fixedPrefixFor(accountType);
-  if (accountType === "asset") {
-    const sub = subSection && ASSET_SUB_LABELS[subSection];
-    return sub ? [...prefix, sub] : [...prefix];
-  }
-  if (accountType === "liability") {
-    const sub = subSection && LIABILITY_SUB_LABELS[subSection];
-    return sub ? [...prefix, sub] : [...prefix];
-  }
-  if (accountType === "equity") return [...prefix];
-  if (accountType === "income" || accountType === "cogs" || accountType === "expense") return [...prefix];
-  return null;
+  return [...fixedPrefixFor(accountType)];
 }
 
 /**
@@ -1160,7 +1580,7 @@ async function buildLeafHierarchies(leaves, existingByKey = new Map()) {
     // it in even though matchLevels.some(Boolean) is false for an empty array.
     if (leaf.matchLevels && (leaf.matchLevels.some(Boolean) || leaf.classificationMethod === "document_hierarchy")) {
       const baseAccount = leaf.accountName || displayName;
-      const path = [...leaf.matchLevels.filter(Boolean), baseAccount];
+      const path = appendLeaf(leaf.matchLevels.filter(Boolean), baseAccount);
       const levels = new Array(MAX_LEVELS).fill(null);
       path.forEach((label, li) => { if (li < MAX_LEVELS) levels[li] = label; });
       return {
@@ -1239,7 +1659,7 @@ async function buildLeafHierarchies(leaves, existingByKey = new Map()) {
     // (e.g. AI returning "Total Revenue" as its own first level) so it isn't
     // duplicated.
     const trimmedAiLevels = trimRedundantParentPath(leaf.aiLevels, leaf.accountType);
-    const path = [...fixedPrefixFor(leaf.accountType), ...trimmedAiLevels, baseAccount];
+    const path = appendLeaf([...fixedPrefixFor(leaf.accountType), ...trimmedAiLevels], baseAccount);
     const levels = new Array(MAX_LEVELS).fill(null);
     path.forEach((label, li) => { if (li < MAX_LEVELS) levels[li] = label; });
 
@@ -1270,12 +1690,12 @@ async function buildLeafHierarchies(leaves, existingByKey = new Map()) {
   for (const idx of pendingIndices) {
     const leaf = resolved[idx];
     const sectionEvidence = leaf.bsSection || leaf.plSection;
-    const shallowLevels = shallowLevelsFromSectionEvidence(sectionEvidence, leaf.accountType, leaf.bsSubSection);
+    const shallowLevels = shallowLevelsFromSectionEvidence(sectionEvidence, leaf.accountType);
     if (!shallowLevels) continue;
     const tier = leaf.bsSection ? "bs_section" : "pl_section";
 
     const baseAccount = leaf.accountName || leaf.displayName;
-    const path = [...shallowLevels, baseAccount];
+    const path = appendLeaf(shallowLevels, baseAccount);
     const levels = new Array(MAX_LEVELS).fill(null);
     path.forEach((label, li) => { if (li < MAX_LEVELS) levels[li] = label; });
 
@@ -1472,10 +1892,24 @@ function buildDesiredCategories(leaves) {
  * Map<catKey, accountId> for the leaf pass to point parents at.
  */
 async function syncCategoryNodes(versionId, companyId, existingCatsData, desiredCats) {
+  // CONFIRMED BUG this fixes: staleness below is decided purely by "is this
+  // row's path still desired" — a genuine duplicate (two+ rows persisted
+  // for the EXACT same cat_path, from an earlier run that failed to match
+  // an existing row for some transient reason) is invisible to that check,
+  // since its path IS still desired. Every extra copy beyond the first must
+  // be queued for deletion here regardless of desiredCats membership, or it
+  // survives forever (confirmed live: 3-4 duplicate rows per path, several
+  // hundred KB of dead category rows accumulated across repeated syncs).
   const existingByPath = new Map();
+  const duplicateStaleIds = [];
   for (const row of existingCatsData || []) {
     const p = row.metadata?.cat_path;
-    if (p) existingByPath.set(p, row);
+    if (!p) continue;
+    if (existingByPath.has(p)) {
+      duplicateStaleIds.push(row.id);
+      continue;
+    }
+    existingByPath.set(p, row);
   }
 
   const catIdByPath = new Map();
@@ -1532,13 +1966,23 @@ async function syncCategoryNodes(versionId, companyId, existingCatsData, desired
     if (error) throw error;
   }
 
+  // Chunked (not one bulk call): a version with many category nodes to
+  // insert/delete in one pass can exceed the request's practical size limit,
+  // surfacing as an opaque "Bad Request" with no further detail (confirmed
+  // live — see appendLeaf's doc comment for how the node count exploded in
+  // the first place). Chunking keeps each request small regardless of how
+  // many nodes a given run needs to reconcile.
+  const SYNC_CATEGORY_CHUNK = 100;
   if (toInsert.length) {
-    const payload = toInsert.map(({ _cat_path, ...row }) => row);
-    const ins = await supabase.from(TABLE_COA).insert(payload).select("id, metadata");
-    if (ins.error) throw ins.error;
-    for (const row of ins.data || []) {
-      const p = row.metadata?.cat_path;
-      if (p) catIdByPath.set(p, row.id);
+    for (let i = 0; i < toInsert.length; i += SYNC_CATEGORY_CHUNK) {
+      const chunk = toInsert.slice(i, i + SYNC_CATEGORY_CHUNK);
+      const payload = chunk.map(({ _cat_path, ...row }) => row);
+      const ins = await supabase.from(TABLE_COA).insert(payload).select("id, metadata");
+      if (ins.error) throw ins.error;
+      for (const row of ins.data || []) {
+        const p = row.metadata?.cat_path;
+        if (p) catIdByPath.set(p, row.id);
+      }
     }
   }
 
@@ -1553,12 +1997,26 @@ async function syncCategoryNodes(versionId, companyId, existingCatsData, desired
     if (error) throw error;
   }
 
-  // Delete category nodes whose path is no longer used (CASCADE clears any FKs).
-  const staleCatIds = (existingCatsData || [])
-    .filter((row) => !desiredCats.has(row.metadata?.cat_path))
-    .map((row) => row.id);
-  if (staleCatIds.length) {
-    const del = await supabase.from(TABLE_COA).delete().in("id", staleCatIds);
+  // Delete category nodes whose path is no longer used. Each deleted id's
+  // ON DELETE SET NULL/CASCADE fires against every referencing table (GL
+  // entries, BS entries, adjustments, etc.) — confirmed live at ~100ms/row,
+  // so a 100-row chunk (~11s) can exceed the DB's statement_timeout. A much
+  // smaller chunk keeps every single DELETE well under that budget; this
+  // only matters for a large one-time backlog anyway (a healthy run's
+  // desired-category set barely changes run over run).
+  const STALE_DELETE_CHUNK = 20;
+  const staleCatIds = [
+    ...duplicateStaleIds,
+    ...(existingCatsData || [])
+      .filter((row) => !desiredCats.has(row.metadata?.cat_path))
+      .map((row) => row.id),
+  ];
+  if (duplicateStaleIds.length) {
+    console.warn(`[ChartOfAccounts] ${duplicateStaleIds.length} duplicate category node(s) found (same path persisted more than once) — cleaning up.`);
+  }
+  for (let i = 0; i < staleCatIds.length; i += STALE_DELETE_CHUNK) {
+    const chunk = staleCatIds.slice(i, i + STALE_DELETE_CHUNK);
+    const del = await supabase.from(TABLE_COA).delete().in("id", chunk);
     if (del.error) throw del.error;
   }
 
@@ -1688,6 +2146,14 @@ async function generateChartOfAccounts(companyId, versionId, batchId, opts = {})
     ? Boolean(opts.hasLinkedCoaDocument)
     : await hasLinkedCoaDocumentForVersion(versionId);
 
+  // Which fiscal year's uploaded Balance Sheet is the Ending document — the
+  // deepest-wins tie-break in buildDocHierarchyLookups prefers it when an
+  // Opening and Ending Balance Sheet give the same account equal depth.
+  // Passed through from keyReportSyncService's own validation gate
+  // (classifyWorkflowDocuments' gate.endingBs.fiscal_year) — never re-derived
+  // here, so this stays in sync with whatever the gate already resolved.
+  const endingFiscalYear = opts.endingFiscalYear ?? null;
+
   // 1) Collect source accounts. GL + Balance Sheet come from entry tables (P&L
   //    transactions surface through the GL — there is no profit_loss_entries
   //    table). opts.plRows is an optional ephemeral parse of the linked
@@ -1736,7 +2202,10 @@ async function generateChartOfAccounts(companyId, versionId, batchId, opts = {})
   //     the uploaded COA (1b) NOR the uploaded statements (here) can resolve
   //     are sent to AI (Priority 3) below.
   const glBucketByKey = splitAccountsAtRetainedEarnings(glRows);
-  const { bsHierarchyByName, plHierarchyByName } = buildDocHierarchyLookups(bsRows, plRows);
+  const {
+    bsHierarchyByName, plHierarchyByName, bsTree: bsDocTree,
+    conflictingPathsCount, resolvedByDepthCount, resolvedByFrequencyCount, resolvedByRecencyCount, mergedNodesCount,
+  } = buildDocHierarchyLookups(bsRows, plRows, endingFiscalYear, { logValidation: true });
   const docHierarchyStats = createDocHierarchyStats();
   const needsAi = unmatchedByCoa.filter(
     (a) => !pickDocHierarchy(a.accountName, a.key, glBucketByKey, bsHierarchyByName, plHierarchyByName, docHierarchyStats),
@@ -1765,7 +2234,7 @@ async function generateChartOfAccounts(companyId, versionId, batchId, opts = {})
     }
   }
 
-  const { leaves } = buildCoaModel(glRows, bsRows, plRows, aiResults, matchResults, glBucketByKey);
+  const { leaves } = buildCoaModel(glRows, bsRows, plRows, aiResults, matchResults, glBucketByKey, endingFiscalYear);
   if (!leaves.length) {
     // Nothing to build — clear derived rows so stale accounts don't linger.
     await supabase.from(TABLE_COA).delete().eq("version_id", versionId);
@@ -1934,6 +2403,31 @@ async function generateChartOfAccounts(companyId, versionId, batchId, opts = {})
       `  Accounts Requiring AI: ${aiMappedCount}\n` +
       `  Hierarchy Valid: ${hierarchyValid ? "YES" : "NO"}`,
     );
+
+    // Per-account hierarchy source — so it is never a black box WHICH
+    // uploaded document (and which fiscal year, when more than one Balance
+    // Sheet is linked) produced each account's Level 3+ path.
+    const sourceLabel = (leaf) => {
+      if (leaf.classificationMethod === "client_workbook") return "uploaded Chart of Accounts";
+      if (leaf.classificationMethod === "document_hierarchy") {
+        const stmt = leaf.statementType === "profit_loss" ? "Profit & Loss" : "Balance Sheet";
+        return leaf.hierarchySourceFiscalYear != null ? `${stmt} FY${leaf.hierarchySourceFiscalYear}` : stmt;
+      }
+      if (leaf.classificationMethod === "ai_hierarchy" || leaf.classificationMethod === "gemini") return "AI";
+      if (leaf.classificationMethod === "bs_section" || leaf.classificationMethod === "pl_section") return "section evidence only (no document position)";
+      if (leaf.classificationMethod === "rule") return "structural rule (Net Income/Retained Earnings)";
+      if (leaf.needsMapping) return "UNRESOLVED — needs manual mapping";
+      return leaf.classificationMethod || "unknown";
+    };
+    console.log(
+      "COA Hierarchy Source (per account)\n" +
+      hierarchical.map((leaf) => `  ${leaf.accountName || leaf.displayName} | source: ${sourceLabel(leaf)} | path: ${leaf.hierarchyPath || "(none)"}`).join("\n"),
+    );
+
+    const sourceFileNameById = await buildSourceFileNameLookup(bsRows);
+    logBalanceSheetHierarchyValidation(hierarchical, bsRows, bsDocTree, {
+      conflictingPathsCount, resolvedByDepthCount, resolvedByFrequencyCount, resolvedByRecencyCount, mergedNodesCount,
+    }, sourceFileNameById);
   }
 
   // A prior run's client_account_id can go stale if client_chart_of_accounts was
@@ -1991,6 +2485,11 @@ async function generateChartOfAccounts(companyId, versionId, batchId, opts = {})
       // 1-2 sentence CPA-style justification. Never used programmatically.
       match_reason: leaf.matchReason || leaf.aiReasoning || null,
       hierarchy_source: leaf.classificationMethod === "client_workbook" ? "uploaded_coa" : "ai_generated",
+      // Exact document-position match vs. a strict fuzzy-name fallback within
+      // pickDocHierarchy — persisted so the "COA Mapping Validation" block can
+      // report a real "Generated By Fuzzy Matching" count instead of guessing.
+      // Only ever set for classificationMethod === "document_hierarchy".
+      doc_match_type: leaf.docHierarchyMatchType || null,
       // Report-line tag (cash / receivable / inventory / payable / long-term debt /
       // D&A / interest / income tax) for QoE + KPI to read instead of scanning
       // account/group names by keyword at render time. Not user-editable.
@@ -2699,11 +3198,20 @@ async function validateChartOfAccounts(companyId, versionId) {
  * Prints the "COA Validation" summary block after every sync — real counts
  * from the persisted chart_of_accounts + actual GL linkage state, never
  * placeholders. Read-only, never blocks the sync.
+ *
+ * @param {string} companyId
+ * @param {string} versionId
+ * @param {Array} [plRows] - the SAME ephemeral parsed Profit & Loss account
+ *   rows keyReportSyncService's Step 5b passed to generateChartOfAccounts
+ *   (never persisted — there is no profit_loss_entries table). Threaded
+ *   through here ONLY so the "COA Mapping Validation" / "Hierarchy Sources"
+ *   blocks below can report real P&L coverage numbers instead of omitting
+ *   them; never used to alter classification or any report calculation.
  */
-async function printCoaValidationBlock(companyId, versionId) {
+async function printCoaValidationBlock(companyId, versionId, plRows = []) {
   const { data: allRows } = await supabase
     .from(TABLE_COA)
-    .select(["id, account_name, account_number, parent_account_id, hierarchy_path, statement_type, cf_category, metadata", ...Array.from({ length: MAX_LEVELS }, (_, i) => `level_${i + 1}`)].join(", "))
+    .select(["id, account_name, account_number, parent_account_id, hierarchy_path, base_account, statement_type, account_type, cf_category, classification_method, metadata", ...Array.from({ length: MAX_LEVELS }, (_, i) => `level_${i + 1}`)].join(", "))
     .eq("version_id", versionId);
   const all = allRows || [];
   const byId = new Map(all.map((r) => [r.id, r]));
@@ -2787,13 +3295,16 @@ async function printCoaValidationBlock(companyId, versionId) {
   // levels past the uploaded documents' real depth repeat the leaf's own
   // name rather than staying NULL). Category/group nodes are excluded —
   // they are not "an account" and correctly have only their own real depth.
+  // Declared with `let` at function scope (not `const` inside the block
+  // below) so the "COA Mapping Validation" / rule-aggregation blocks further
+  // down can reuse these exact figures instead of recomputing them.
+  let rowsWithNullLevels = 0;
+  let rowsWithEmptyLevels = 0;
+  let rowsWithFewerThan15 = 0;
+  let rowsNormalizedByPropagation = 0;
+  let hierarchyLeafMaxDepth = 0;
   {
     const isBlank = (v) => v === null || v === undefined || (typeof v === "string" && v.trim() === "");
-    let rowsWithNullLevels = 0;
-    let rowsWithEmptyLevels = 0;
-    let rowsWithFewerThan15 = 0;
-    let rowsNormalizedByPropagation = 0;
-    let hierarchyLeafMaxDepth = 0;
     for (const r of leaves) {
       const vals = levelCols.map((c) => r[c]);
       if (vals.some((v) => v === null || v === undefined)) rowsWithNullLevels += 1;
@@ -2834,10 +3345,274 @@ async function printCoaValidationBlock(companyId, versionId) {
     }
   }
 
+  // ══════════════════════════════════════════════════════════════════════
+  // COA Mapping Validation / Hierarchy Quality / Hierarchy Sources
+  //
+  // The three blocks above (COA Validation / COA Hierarchy Validation /
+  // logBalanceSheetHierarchyValidation, the latter printed earlier during
+  // generateChartOfAccounts) prove the hierarchy TREE is internally
+  // consistent. They do not prove every uploaded document account and every
+  // GL transaction actually resolved into that tree correctly. These three
+  // blocks close that gap — pure read/aggregate diagnostics over the
+  // already-persisted chart_of_accounts + general_ledger_entries +
+  // balance_sheet_entries rows (plus the ephemeral plRows passed in from the
+  // sync's own Step 5b parse). Nothing here changes classification, report
+  // generation, or reconciliation — see this function's own doc comment.
+  const hasLinkedCoaDocument = await hasLinkedCoaDocumentForVersion(versionId);
+  const bsEntryRows = await collectBsAccountsFromEntries(companyId, versionId).catch(() => []);
+  const bsLeafRows = bsEntryRows.filter((r) => r.account_name && r.hierarchy_level !== 0);
+  const bsUniqueKeys = new Set(bsLeafRows.map((r) => normName(r.account_name)));
+  const plLeafRows = (plRows || []).filter((r) => r.account_name && !r.is_total && !r.is_header && r.node_type !== "subtotal");
+  const plUniqueKeys = new Set(plLeafRows.map((r) => normName(r.account_name)));
+
+  const isDocSourced = (r) => r.classification_method === "document_hierarchy" || r.classification_method === "bs_section" || r.classification_method === "pl_section";
+  const generatedFromBs = leaves.filter((r) => isDocSourced(r) && r.statement_type === "balance_sheet").length;
+  const generatedFromPl = leaves.filter((r) => isDocSourced(r) && r.statement_type === "profit_loss").length;
+  const generatedByFuzzy = leaves.filter((r) => r.metadata?.doc_match_type === "fuzzy").length;
+  const AI_METHODS = new Set(["ai_hierarchy", "gemini", "ai_low_confidence"]);
+  const generatedByAi = leaves.filter((r) => AI_METHODS.has(r.classification_method)).length;
+  const needsMappingCount = leaves.filter((r) => r.metadata?.needs_mapping).length;
+
+  const coaNameSet = new Set();
+  for (const r of leaves) {
+    coaNameSet.add(normName(r.account_name));
+    if (r.base_account) coaNameSet.add(normName(r.base_account));
+  }
+  const bsLinkedCount = bsLeafRows.filter((r) => r.coa_id).length;
+  const bsUnmappedAccounts = bsLeafRows.filter((r) => !r.coa_id).map((r) => r.account_name);
+  const plLinkedCount = Array.from(plUniqueKeys).filter((k) => coaNameSet.has(k)).length;
+  const plUnmappedAccounts = plLeafRows.filter((r) => !coaNameSet.has(normName(r.account_name))).map((r) => r.account_name);
+  const glLinkedCount = accountsLinkedToGl; // reuses the coa_id-distinct count computed above
+  const glUnmappedCount = unmappedGl || 0;
+
+  // Duplicate COA Leaves — the SAME (account_number, account_name) key
+  // persisted more than once (should be structurally impossible given the
+  // upsert-by-stable-key merge in generateChartOfAccounts, checked anyway).
+  const duplicateCoaLeaves = Array.from(nameCounts.values()).filter((n) => n > 1).reduce((sum, n) => sum + (n - 1), 0);
+
+  // Duplicate Normalized Names — same normName(account_name) regardless of
+  // account_number (catches near-duplicates an account-number difference
+  // would otherwise hide from the check above).
+  const normNameGroups = new Map();
+  for (const r of leaves) {
+    const k = normName(r.account_name);
+    if (!normNameGroups.has(k)) normNameGroups.set(k, []);
+    normNameGroups.get(k).push(r);
+  }
+  const duplicateNormalizedGroups = Array.from(normNameGroups.entries()).filter(([, rows]) => rows.length > 1);
+  const duplicateNormalizedNames = duplicateNormalizedGroups.length;
+  // ...and specifically under the SAME parent — a real structural problem
+  // (two leaves for what should be one account), vs. the same name
+  // legitimately appearing under two different categories.
+  const duplicateUnderSameParent = duplicateNormalizedGroups.filter(([, rows]) => {
+    const parents = new Set(rows.map((r) => r.parent_account_id || "(root)"));
+    return parents.size < rows.length;
+  });
+
+  // Unused Hierarchy Nodes — same definition as "Orphan Nodes" above (a
+  // category row no leaf/category ever points to via parent_account_id).
+  const unusedHierarchyNodes = orphanNodes;
+
+  const nullAccountType = leaves.filter((r) => !r.account_type).map((r) => r.account_name);
+  const nullCfCategory = leaves.filter((r) => !r.cf_category).length;
+  const hierarchyCoveragePct = leaves.length ? Math.round(((leaves.length - needsMappingCount) / leaves.length) * 1000) / 10 : 0;
+
+  // "No account silently falls back to AI when a document hierarchy exists" —
+  // cross-check every AI-classified leaf's normalized name against the SAME
+  // uploaded Balance Sheet / Profit & Loss account sets used above. Should
+  // always be empty by construction (buildCoaModel tries document hierarchy,
+  // Priority 2, strictly before AI, Priority 3) — surfaced here as a
+  // regression tripwire, not a currently-expected finding.
+  const aiDespiteDocument = leaves.filter((r) => {
+    if (!AI_METHODS.has(r.classification_method)) return false;
+    const k = normName(r.account_name);
+    return bsUniqueKeys.has(k) || plUniqueKeys.has(k);
+  });
+
+  const mappingFailureReasons = [];
+  if (rowsWithNullLevels > 0) mappingFailureReasons.push(`${rowsWithNullLevels} account(s) with a NULL hierarchy level`);
+  if (rowsWithEmptyLevels > 0) mappingFailureReasons.push(`${rowsWithEmptyLevels} account(s) with an empty-string hierarchy level`);
+  if (duplicatePaths > 0) mappingFailureReasons.push(`${duplicatePaths} duplicate hierarchy path(s)`);
+  if (missingParents > 0) mappingFailureReasons.push(`${missingParents} orphan parent reference(s)`);
+  if (circularRefs > 0) mappingFailureReasons.push(`${circularRefs} hierarchy loop(s)`);
+  if (glUnmappedCount > 0) mappingFailureReasons.push(`${glUnmappedCount} unlinked GL account row(s)`);
+  if (bsUnmappedAccounts.length > 0) mappingFailureReasons.push(`${bsUnmappedAccounts.length} unmapped Balance Sheet account(s)`);
+  if (plUnmappedAccounts.length > 0) mappingFailureReasons.push(`${plUnmappedAccounts.length} unmapped Profit & Loss account(s)`);
+  if (duplicateUnderSameParent.length > 0) mappingFailureReasons.push(`${duplicateUnderSameParent.length} duplicate normalized name(s) under the same parent`);
+  if (nullAccountType.length > 0) mappingFailureReasons.push(`${nullAccountType.length} account(s) with a NULL account_type`);
+  if (aiDespiteDocument.length > 0) mappingFailureReasons.push(`${aiDespiteDocument.length} account(s) classified by AI despite existing in an uploaded document`);
+  const coaValidationPass = mappingFailureReasons.length === 0;
+
+  console.log(
+    "==============================\n" +
+    "COA Mapping Validation\n" +
+    "==============================\n\n" +
+    `Uploaded COA : ${hasLinkedCoaDocument ? "YES" : "NO"}\n\n` +
+    `Generated From Balance Sheet : ${generatedFromBs}\n\n` +
+    `Generated From Profit & Loss : ${generatedFromPl}\n\n` +
+    `Generated By Fuzzy Matching : ${generatedByFuzzy}\n\n` +
+    `Generated By AI : ${generatedByAi}\n\n` +
+    `Needs Manual Mapping : ${needsMappingCount}\n\n` +
+    `General Ledger Accounts : ${totalGl || 0}\n\n` +
+    `Balance Sheet Accounts : ${bsUniqueKeys.size}\n\n` +
+    `Profit & Loss Accounts : ${plUniqueKeys.size}\n\n` +
+    `Unique COA Accounts : ${leaves.length}\n\n` +
+    `GL Linked To COA : ${glLinkedCount} / ${totalGl || 0}\n\n` +
+    `BS Linked To COA : ${bsLinkedCount} / ${bsLeafRows.length}\n\n` +
+    `PL Linked To COA : ${plLinkedCount} / ${plUniqueKeys.size}\n\n` +
+    `Duplicate COA Leaves : ${duplicateCoaLeaves}\n\n` +
+    `Duplicate Normalized Names : ${duplicateNormalizedNames}\n\n` +
+    `Duplicate Hierarchy Paths : ${duplicatePaths}\n\n` +
+    `Unused Hierarchy Nodes : ${unusedHierarchyNodes}\n\n` +
+    `Null account_type : ${nullAccountType.length}\n\n` +
+    `Null cf_category : ${nullCfCategory}\n\n` +
+    `Needs Mapping : ${needsMappingCount}\n\n` +
+    `Hierarchy Coverage : ${hierarchyCoveragePct}%\n\n` +
+    `COA Validation : ${coaValidationPass ? "PASS" : "FAIL"}\n` +
+    "==============================",
+  );
+
+  if (!coaValidationPass) {
+    console.error(`[ChartOfAccounts][COA Mapping Validation] FAILED — ${mappingFailureReasons.join("; ")}.`);
+    if (bsUnmappedAccounts.length) {
+      console.error(
+        "Accounts Missing Hierarchy (Balance Sheet):\n" +
+        bsUnmappedAccounts.slice(0, 25).map((a) => `  Account : ${a}\n  Reason : No matching COA account (coa_id is null after linkBsToCoa)\n  Document : Balance Sheet`).join("\n\n"),
+      );
+    }
+    if (plUnmappedAccounts.length) {
+      console.error(
+        "Accounts Missing Hierarchy (Profit & Loss):\n" +
+        plUnmappedAccounts.slice(0, 25).map((a) => `  Account : ${a}\n  Reason : No COA leaf found with a matching name\n  Document : Profit & Loss`).join("\n\n"),
+      );
+    }
+    if (duplicateUnderSameParent.length) {
+      console.error(
+        "Duplicate Hierarchy:\n" +
+        duplicateUnderSameParent.slice(0, 10).map(([, rows]) =>
+          `  Account : ${rows[0].account_name}\n` +
+          rows.map((r, i) => `  Path ${i + 1}\n    ${r.hierarchy_path || "(none)"}`).join("\n"),
+        ).join("\n\n"),
+      );
+    }
+    if (glUnmappedCount > 0) {
+      const { data: unmappedGlSample } = await supabase
+        .from(TABLE_TXN).select("account_name").eq("company_id", companyId).eq("version_id", versionId).is("coa_id", null).limit(10);
+      const byName = new Map();
+      for (const r of unmappedGlSample || []) byName.set(r.account_name, (byName.get(r.account_name) || 0) + 1);
+      if (byName.size) {
+        console.error(
+          "GL Not Linked:\n" +
+          Array.from(byName.entries()).map(([name, count]) =>
+            `  Account : ${name}\n  Sample Transaction Count : ${count}\n  Reason : No matching COA account`,
+          ).join("\n\n"),
+        );
+      }
+    }
+    if (nullAccountType.length) {
+      console.error(`Null account_type:\n${nullAccountType.slice(0, 25).map((a) => `  Account : ${a}`).join("\n")}`);
+    }
+    if (aiDespiteDocument.length) {
+      console.error(
+        "AI Used Despite Document Hierarchy Existing:\n" +
+        aiDespiteDocument.slice(0, 25).map((r) => `  Account : ${r.account_name}\n  classification_method : ${r.classification_method}`).join("\n\n"),
+      );
+    }
+  }
+
+  // ── Hierarchy Quality ────────────────────────────────────────────────────
+  // Real (unpadded) depth per leaf — padLevelsWithLeafPropagation repeats the
+  // leaf's own base_account name for every trailing level past its true
+  // document-derived depth, so "real depth" is the level index at which the
+  // leaf's own name FIRST appears, not the count of populated columns (which
+  // is always 15 for every leaf, per the hierarchy-gap check above).
+  let deepestAccount = null, deepestDepth = -1, deepestPath = "";
+  let shallowestAccount = null, shallowestDepth = Infinity, shallowestPath = "";
+  let totalRealDepth = 0;
+  let totalChildren = 0;
+  const childCountByParent = new Map();
+  for (const r of all) {
+    if (!r.parent_account_id) continue;
+    childCountByParent.set(r.parent_account_id, (childCountByParent.get(r.parent_account_id) || 0) + 1);
+  }
+  for (const pid of childCountByParent.keys()) totalChildren += childCountByParent.get(pid);
+  for (const r of leaves) {
+    const leafName = r.base_account || r.account_name;
+    let realDepth = MAX_LEVELS;
+    for (let i = 0; i < MAX_LEVELS; i += 1) {
+      if (levelCols[i] && r[levelCols[i]] === leafName) { realDepth = i + 1; break; }
+    }
+    totalRealDepth += realDepth;
+    if (realDepth > deepestDepth) { deepestDepth = realDepth; deepestAccount = r.account_name; deepestPath = r.hierarchy_path || ""; }
+    if (realDepth < shallowestDepth) { shallowestDepth = realDepth; shallowestAccount = r.account_name; shallowestPath = r.hierarchy_path || ""; }
+  }
+  const avgRealDepth = leaves.length ? totalRealDepth / leaves.length : 0;
+  const avgChildrenPerNode = groups.length ? totalChildren / groups.length : 0;
+  // How much of the tree is real branching structure vs. leaves — higher
+  // means a flatter tree (fewer category nodes per leaf), lower means deeper
+  // nesting. Simple, documented ratio: leaves / (leaves + internal nodes).
+  const compressionRatio = (leaves.length + groups.length)
+    ? Math.round((leaves.length / (leaves.length + groups.length)) * 1000) / 1000
+    : 0;
+
+  console.log(
+    "==============================\n" +
+    "Hierarchy Quality\n" +
+    "==============================\n\n" +
+    `Leaf Accounts : ${leaves.length}\n\n` +
+    `Internal Nodes : ${groups.length}\n\n` +
+    `Maximum Depth : ${deepestDepth < 0 ? 0 : deepestDepth}\n\n` +
+    `Average Depth : ${avgRealDepth.toFixed(2)}\n\n` +
+    `Average Children Per Node : ${avgChildrenPerNode.toFixed(2)}\n\n` +
+    `Deepest Account : ${deepestAccount || "(none)"}\n\n` +
+    `Shallowest Account : ${shallowestAccount || "(none)"}\n\n` +
+    `Longest Path : ${deepestPath || "(none)"}\n\n` +
+    `Shortest Path : ${shallowestPath || "(none)"}\n\n` +
+    `Hierarchy Compression Ratio : ${compressionRatio}\n` +
+    "==============================",
+  );
+
+  // ── Hierarchy Sources ────────────────────────────────────────────────────
+  // "Historical COA" / "Other Company COA" are unconditionally NO — never a
+  // live lookup, because they are structurally impossible in this codebase,
+  // not merely unobserved: client_chart_of_accounts is only ever queried via
+  // createCoaMapper(companyId) (strictly scoped to THIS company) or
+  // NULL_COA_MAPPER (no query at all), gated by hasLinkedCoaDocumentForVersion
+  // (THIS version's own linked documents only — see that function's doc
+  // comment). There is no code path anywhere in generateChartOfAccounts /
+  // ensureCoaComplete that reads another company's data or a prior version's
+  // stale upload.
+  console.log(
+    "==============================\n" +
+    "Hierarchy Sources\n" +
+    "==============================\n\n" +
+    `Uploaded COA : ${hasLinkedCoaDocument ? "YES" : "NO"}\n\n` +
+    `Balance Sheet : ${bsUniqueKeys.size > 0 ? "YES" : "NO"}\n\n` +
+    `Profit & Loss : ${plUniqueKeys.size > 0 ? "YES" : "NO"}\n\n` +
+    `General Ledger : ${(totalGl || 0) > 0 ? "YES" : "NO"}\n\n` +
+    "Historical COA : NO\n\n" +
+    "Other Company COA : NO\n\n" +
+    `AI Used : ${generatedByAi} Accounts\n` +
+    "==============================",
+  );
+
   return {
     leafAccounts: leaves.length, hierarchyNodes: groups.length, maxDepth, duplicateAccounts, duplicatePaths,
     missingParents, circularRefs, orphanNodes, unmappedGlAccounts: unmappedGl || 0, totalGlAccounts: totalGl || 0,
     accountsLinkedToGl, accountsLinkedToBs, accountsLinkedToPl, accountsLinkedToCf, hierarchyValid,
+    coaMappingValidation: {
+      hasLinkedCoaDocument, generatedFromBs, generatedFromPl, generatedByFuzzy, generatedByAi, needsMappingCount,
+      bsAccountsTotal: bsUniqueKeys.size, plAccountsTotal: plUniqueKeys.size, uniqueCoaAccounts: leaves.length,
+      glLinkedCount, glUnmappedCount, bsLinkedCount, bsUnmappedCount: bsLeafRows.length - bsLinkedCount,
+      plLinkedCount, plUnmappedCount: plUniqueKeys.size - plLinkedCount,
+      duplicateCoaLeaves, duplicateNormalizedNames, duplicateHierarchyPaths: duplicatePaths, unusedHierarchyNodes,
+      nullAccountTypeCount: nullAccountType.length, nullCfCategoryCount: nullCfCategory,
+      hierarchyCoveragePct, pass: coaValidationPass, failureReasons: mappingFailureReasons,
+    },
+    hierarchyQuality: {
+      leafAccounts: leaves.length, internalNodes: groups.length, maxDepth: deepestDepth < 0 ? 0 : deepestDepth,
+      avgDepth: avgRealDepth, avgChildrenPerNode, deepestAccount, shallowestAccount, compressionRatio,
+    },
   };
 }
 
@@ -2863,7 +3638,7 @@ async function ensureAccountExistsInCoa(versionId, companyId, accountName, accou
 //   (never re-parsed here, never persisted) — needed so a GL-only account
 //   discovered at this later phase still gets Priority-2 document-hierarchy
 //   resolution before falling back to AI.
-async function ensureCoaComplete(companyId, versionId, plRows = [], hasLinkedCoaDocument = undefined) {
+async function ensureCoaComplete(companyId, versionId, plRows = [], hasLinkedCoaDocument = undefined, endingFiscalYear = null) {
   if (!companyId || !versionId) return { added: 0, skipped: 0 };
 
   // 1. Collect distinct GL account_names that have no coa_id yet.
@@ -2941,7 +3716,7 @@ async function ensureCoaComplete(companyId, versionId, plRows = [], hasLinkedCoa
     collectBsAccountsFromEntries(companyId, versionId).catch(() => []),
   ]);
   const glBucketByKey = splitAccountsAtRetainedEarnings(glRowsInOrder);
-  const { bsHierarchyByName, plHierarchyByName } = buildDocHierarchyLookups(bsRows, plRows);
+  const { bsHierarchyByName, plHierarchyByName } = buildDocHierarchyLookups(bsRows, plRows, endingFiscalYear);
   const needsAi = unmatchedByCoa.filter(
     (a) => !pickDocHierarchy(a.accountName, a.key, glBucketByKey, bsHierarchyByName, plHierarchyByName),
   );
@@ -2974,7 +3749,7 @@ async function ensureCoaComplete(companyId, versionId, plRows = [], hasLinkedCoa
       const match = matchResults.get(key);
 
       if (match?.matched) {
-        const path = [...match.levels.filter(Boolean), rawName];
+        const path = appendLeaf(match.levels.filter(Boolean), rawName);
         const finalLevels = new Array(MAX_LEVELS).fill(null);
         path.forEach((label, li) => { if (li < MAX_LEVELS) finalLevels[li] = label; });
         return {
@@ -3000,6 +3775,7 @@ async function ensureCoaComplete(companyId, versionId, plRows = [], hasLinkedCoa
           matchReason: `Matched this account's own position in the uploaded ${docHierarchy.statementType === "profit_loss" ? "Profit & Loss" : "Balance Sheet"}.`,
           finalLevels, hierarchyPath: path.join(" > "),
           needsMapping: false, matchTier: "document_hierarchy", matchConfidence: 1,
+          docMatchType: docHierarchy.matchType || "exact",
         };
       }
 
@@ -3019,7 +3795,7 @@ async function ensureCoaComplete(companyId, versionId, plRows = [], hasLinkedCoa
       const aiLevels  = aiResult?.levels || [];
 
       if (aiLevels.length) {
-        const path = [...aiLevels, rawName];
+        const path = appendLeaf(aiLevels, rawName);
         const finalLevels = new Array(MAX_LEVELS).fill(null);
         path.forEach((label, li) => { if (li < MAX_LEVELS) finalLevels[li] = label; });
         return {
@@ -3118,6 +3894,7 @@ async function ensureCoaComplete(companyId, versionId, plRows = [], hasLinkedCoa
         match_tier: leaf.matchTier || null,
         match_reason: leaf.matchReason || leaf.hierarchyReasoning || null,
         hierarchy_source: leaf.classificationMethod === "client_workbook" ? "uploaded_coa" : "ai_generated",
+        doc_match_type: leaf.docMatchType || null,
         report_tag: classifyReportTag({
           accountType: leaf.type,
           name: leaf.rawName,
@@ -3164,6 +3941,8 @@ module.exports = {
   isMetadataRow,
   loadKnownCategoryPaths,
   buildDocHierarchyLookups,
+  validateHierarchyTree,
+  logBalanceSheetHierarchyValidation,
   pickDocHierarchy,
   splitAccountsAtRetainedEarnings,
   normalizeHierarchyLabel,

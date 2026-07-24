@@ -311,7 +311,10 @@ def extract_profit_loss(wb):
                 'is_header':    False,
                 'node_type':    node_type,
             })
-        ancestor_stack.append((indent, account_name))
+        # Leaf/total/subtotal rows are never pushed onto the ancestor stack —
+        # see extract_balance_sheet's identical fix for the full explanation.
+        # Only the header/group branch above (continue'd before reaching here)
+        # is allowed to remain a parent for later rows.
 
     detected_years = sorted({r['fiscal_year'] for r in result})
     dbg(f'Extracted {len(result)} rows, years={detected_years}')
@@ -347,7 +350,7 @@ def _cell_indent(v):
 
 
 def extract_balance_sheet(wb):
-    rows = get_rows(wb, r'balance\s*sheet|bs\b')
+    rows, align_indents = get_rows_with_indent(wb, r'balance\s*sheet|bs\b')
     if len(rows) < 2:
         emit_error('No data rows found in Balance Sheet')
 
@@ -378,6 +381,20 @@ def extract_balance_sheet(wb):
     header_row = rows[header_idx]
     acct_idx   = max(0, find_col(header_row, ACCOUNT_ALIASES))
 
+    # Which hierarchy signal this SHEET actually uses — checked once, not per
+    # row (see extract_profit_loss's identical check and get_rows_with_indent's
+    # doc comment): a QuickBooks-style export encodes nesting via the cell's
+    # own alignment.indent property, with ZERO leading whitespace in the text
+    # itself — _cell_indent alone would then read 0 for every row, flattening
+    # the entire document hierarchy (confirmed live: this exact bug left every
+    # Balance Sheet account's parent_path empty, collapsing Level 3/4 down to
+    # the leaf account name instead of "Current Assets"/"Fixed Assets" etc.).
+    uses_alignment_indent = any(
+        acct_idx < len(align_indents[r]) and align_indents[r][acct_idx] > 0
+        for r in range(header_idx + 1, len(rows))
+    )
+    dbg(f'BS hierarchy signal: {"cell alignment indent" if uses_alignment_indent else "leading whitespace in text"}')
+
     current_section = None
     result = []
     # Real multi-level hierarchy read from the document's own indentation —
@@ -385,7 +402,8 @@ def extract_balance_sheet(wb):
     # stack's top pops it, leaving exactly that row's real ancestor chain.
     ancestor_stack = []  # list of (indent, label)
 
-    for row in rows[header_idx + 1:]:
+    for row_idx in range(header_idx + 1, len(rows)):
+        row = rows[row_idx]
         if not row or all(v is None or str(v).strip() == '' for v in row):
             continue
 
@@ -394,7 +412,10 @@ def extract_balance_sheet(wb):
         if not raw_name:
             continue
 
-        indent = _cell_indent(raw_cell)
+        if uses_alignment_indent:
+            indent = align_indents[row_idx][acct_idx] if acct_idx < len(align_indents[row_idx]) else 0
+        else:
+            indent = _cell_indent(raw_cell)
         while ancestor_stack and ancestor_stack[-1][0] >= indent:
             ancestor_stack.pop()
         parent_path = [label for _, label in ancestor_stack]
@@ -467,7 +488,20 @@ def extract_balance_sheet(wb):
             'is_section_header': False,
             'node_type':        'total' if is_total else 'account',
         })
-        ancestor_stack.append((indent, account_name))
+        # CONFIRMED ROOT CAUSE (fixed here): a leaf/total row — one that carries
+        # its own posted amount — must NEVER be pushed onto the ancestor stack.
+        # Only a structural header/group row (no amount anywhere on the line,
+        # handled in the two branches above) can be a real parent for what
+        # follows. Previously every row was pushed unconditionally, so whenever
+        # two sibling accounts' indent readings weren't perfectly monotonic
+        # (common indent noise in real Excel exports), the first sibling was
+        # silently retained as the "parent" of the second — confirmed live:
+        # "Mitch Greene Distribution" nested under an unrelated "Eugene G &
+        # Arnold G" equity account, and "22110 Garnishment Payable" nested
+        # under sibling "22100 Employee Expense Payable" (11 of 58 real rows
+        # in one document). Level 3+ is built entirely from parent_path, so
+        # this was the direct cause of intermittent, algorithmic (not
+        # client-specific) Level 3/4 corruption. Do not re-add this push.
 
     detected_years = [fiscal_year] if result else []
     dbg(f'Extracted {len(result)} BS rows')

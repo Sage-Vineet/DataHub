@@ -686,6 +686,24 @@ function cleanBankLabel(name) {
     .trim();
 }
 
+// Canonical, case-insensitive grouping key for a bank account. Same bank + same
+// last-4 collapse into one key regardless of how the AI cased the name across
+// statements ("Truist (9118)" and "TRUIST (9118)" → identical key).
+function canonicalBankKey(cleanName, last4) {
+  return `${cleanBankLabel(cleanName)}|${String(last4 || "")}`;
+}
+
+// When two statements for the same account disagree on the bank-name casing,
+// prefer a properly-cased label ("Truist (9118)") over a shouting all-caps one
+// ("TRUIST (9118)"); otherwise keep the first-seen label.
+function pickBankDisplayLabel(existing, candidate) {
+  if (!existing) return candidate || "";
+  if (!candidate) return existing;
+  const isAllCaps = (s) => /[A-Z]/.test(s) && s === s.toUpperCase();
+  if (isAllCaps(existing) && !isAllCaps(candidate)) return candidate;
+  return existing;
+}
+
 function acctVerifyKey(bankName, period) {
   return `${cleanBankLabel(bankName)}|${period || ""}`;
 }
@@ -1125,7 +1143,16 @@ function buildBankResponseShape(allStatements) {
   let skippedCount = 0;
 
   for (const stmt of deduplicated) {
-    const bankName = String(stmt.bank_name || "Unknown Bank").trim();
+    const displayName = String(stmt.bank_name || "Unknown Bank").trim();
+    const cleanName =
+      String(stmt.bank_name_clean || "").trim() ||
+      displayName.replace(/\s*\(\d{4}\)\s*$/, "").trim() ||
+      "Unknown Bank";
+    const last4 = String(stmt.account_number || "").replace(/\D/g, "").slice(-4);
+    // Group case-insensitively by clean name + last-4 so the same account never
+    // splits into multiple dropdown entries just because the AI read the bank
+    // name in a different case on different statements.
+    const groupKey = canonicalBankKey(cleanName, last4);
     const monthKey = toMonthKey(stmt.period_end);
 
     // Partial data fallback: if period_end missing, try to derive from period_start or use placeholder
@@ -1134,22 +1161,25 @@ function buildBankResponseShape(allStatements) {
       resolvedMonthKey = toMonthKey(stmt.period_start);
     }
     if (!resolvedMonthKey) {
-      console.warn(`[BankShape] Skipping statement with no parseable date: bank="${bankName}" ending=${stmt.ending_balance}`);
+      console.warn(`[BankShape] Skipping statement with no parseable date: bank="${displayName}" ending=${stmt.ending_balance}`);
       skippedCount++;
       continue;
     }
 
-    if (!groupedBanks[bankName]) {
-      groupedBanks[bankName] = {
-        bank_name_clean: stmt.bank_name_clean || bankName.replace(/\s*\(\d{4}\)\s*$/, "").trim(),
+    if (!groupedBanks[groupKey]) {
+      groupedBanks[groupKey] = {
+        display_name: displayName,
+        bank_name_clean: cleanName,
         account_name: stmt.account_name || "",
-        account_number: String(stmt.account_number || "").slice(-4),
+        account_number: last4,
         months: {},
       };
     }
-    const g = groupedBanks[bankName];
+    const g = groupedBanks[groupKey];
+    // Reconcile label casing across statements of the same account.
+    g.display_name = pickBankDisplayLabel(g.display_name, displayName);
     if (!g.account_name && stmt.account_name) g.account_name = stmt.account_name;
-    if (!g.account_number && stmt.account_number) g.account_number = String(stmt.account_number).slice(-4);
+    if (!g.account_number && last4) g.account_number = last4;
 
     const existing = g.months[resolvedMonthKey];
     if (existing) {
@@ -1177,7 +1207,7 @@ function buildBankResponseShape(allStatements) {
 
   const allMonthKeys = new Set();
 
-  const banks = Object.entries(groupedBanks).map(([bankKey, bankData]) => {
+  const banks = Object.values(groupedBanks).map((bankData) => {
     const months = Object.entries(bankData.months)
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([mk, values]) => {
@@ -1198,7 +1228,7 @@ function buildBankResponseShape(allStatements) {
     const hasNeedsReview = months.some((m) => m.status === "Needs Review");
 
     return {
-      bank_name: bankKey,                       // "Wells Fargo (0067)" — grouping key + dropdown label
+      bank_name: bankData.display_name,          // "Wells Fargo (0067)" — dropdown label
       bank_name_clean: bankData.bank_name_clean, // "Wells Fargo"
       account_name: bankData.account_name,
       account_number: bankData.account_number,  // "0067" last-4 only
@@ -1234,11 +1264,103 @@ function buildBankResponseShape(allStatements) {
   return { banks, months, totals };
 }
 
+// Post-process an already-built bank response shape ({ banks, months, totals })
+// to merge banks that share a canonical identity (same clean name + last-4) but
+// were split into separate entries — e.g. results cached BEFORE case-insensitive
+// grouping existed ("Truist (9118)" vs "TRUIST (9118)"). Applied on read so the
+// dropdown collapses duplicates immediately, without paying for a re-extraction.
+// Idempotent: on freshly-built shapes (already merged by buildBankResponseShape)
+// nothing changes and the original object is returned untouched.
+//
+// Months are unioned rather than summed: deduplicateStatements already guarantees
+// a given account+period lives in only one source bucket, so the same monthKey
+// never legitimately appears under two case-variants of the same account.
+function mergeDuplicateBanksInShape(body) {
+  if (!body || !Array.isArray(body.banks) || body.banks.length < 2) return body;
+
+  const groups = new Map();
+  for (const bank of body.banks) {
+    const cleanName =
+      String(bank.bank_name_clean || "").trim() ||
+      String(bank.bank_name || "").replace(/\s*\(\d{2,}\)\s*$/, "").trim();
+    const last4 = String(bank.account_number || "").replace(/\D/g, "").slice(-4);
+    const key = canonicalBankKey(cleanName, last4);
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        bank_name: bank.bank_name,
+        bank_name_clean: cleanName,
+        account_name: bank.account_name || "",
+        account_number: last4,
+        monthsByKey: new Map(),
+        hasNeedsReview: false,
+      });
+    }
+    const g = groups.get(key);
+    g.bank_name = pickBankDisplayLabel(g.bank_name, bank.bank_name);
+    if (!g.account_name && bank.account_name) g.account_name = bank.account_name;
+    if (!g.account_number && last4) g.account_number = last4;
+
+    for (const acct of bank.accounts || []) {
+      if (acct.status === "Needs Review") g.hasNeedsReview = true;
+      for (const m of acct.months || []) {
+        if (m && m.monthKey && !g.monthsByKey.has(m.monthKey)) g.monthsByKey.set(m.monthKey, m);
+      }
+    }
+  }
+
+  if (groups.size === body.banks.length) return body; // no duplicates — leave as-is
+
+  const banks = Array.from(groups.values()).map((g) => {
+    const months = Array.from(g.monthsByKey.values()).sort((a, b) =>
+      String(a.monthKey).localeCompare(String(b.monthKey)),
+    );
+    const totals = months.reduce(
+      (acc, m) => ({
+        startingBalance: acc.startingBalance + (m.startingBalance || 0),
+        deposits: acc.deposits + (m.deposits || 0),
+        withdrawals: acc.withdrawals + (m.withdrawals || 0),
+        endingBalance: acc.endingBalance + (m.endingBalance || 0),
+      }),
+      { startingBalance: 0, deposits: 0, withdrawals: 0, endingBalance: 0 },
+    );
+    return {
+      bank_name: g.bank_name,
+      bank_name_clean: g.bank_name_clean,
+      account_name: g.account_name,
+      account_number: g.account_number,
+      accounts: [{ account_name: "Business Checking", months, totals, status: g.hasNeedsReview ? "Needs Review" : "Verified" }],
+    };
+  });
+
+  // Recompute the top-level month list + per-month totals from the merged banks.
+  const allMonthKeys = new Set();
+  banks.forEach((b) => (b.accounts[0].months || []).forEach((m) => allMonthKeys.add(m.monthKey)));
+  const sortedMonthKeys = Array.from(allMonthKeys).sort();
+  const months = sortedMonthKeys.map(toDisplayMonth);
+  const totals = sortedMonthKeys.map((mk) => {
+    let startingBalance = 0, deposits = 0, withdrawals = 0, endingBalance = 0;
+    banks.forEach((bank) => {
+      const m = bank.accounts[0].months.find((x) => x.monthKey === mk);
+      if (m) {
+        startingBalance += m.startingBalance || 0;
+        deposits += m.deposits || 0;
+        withdrawals += m.withdrawals || 0;
+        endingBalance += m.endingBalance || 0;
+      }
+    });
+    return { month: toDisplayMonth(mk), monthKey: mk, startingBalance, deposits, withdrawals, endingBalance };
+  });
+
+  return { ...body, banks, months, totals };
+}
+
 module.exports = {
   normalizeBankBinary,
   extractBankStatementsFromPdfBase64,
   extractBankStatementsFromExcelBuffer,
   buildBankResponseShape,
+  mergeDuplicateBanksInShape,
   toMonthKey,
   buildMonthLabel,
   toDisplayMonth,

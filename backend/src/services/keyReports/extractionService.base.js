@@ -49,6 +49,110 @@ class ExtractionServiceBase {
     return crypto.createHash("sha256").update(fileBuffer).digest("hex");
   }
 
+  // Subclasses that can tell a genuinely bad extraction from a good one (e.g.
+  // a Balance Sheet/P&L with real leaf rows but not ONE of them carrying a
+  // hierarchy) override this. CONFIRMED BUG this closes: the write-time retry
+  // safeguard in _extractFromExcelWithFallback only protects a single
+  // extraction attempt — if BOTH retries hit the same transient failure (e.g.
+  // resource contention from a concurrent sync) and still produced a flat
+  // result, that bad result got written to cache and every later sync using
+  // the SAME parser_version silently reused it forever, since a cache HIT
+  // was never re-validated. Checking suspicion again on READ closes that gap
+  // regardless of why the bad result was ever produced in the first place.
+  _isExtractionSuspicious(_rows) {
+    return false;
+  }
+
+  /**
+   * "Hierarchy Extraction Validation" — a structural sanity check on the raw
+   * rows just returned by extract() (Python or JS, cache hit or fresh),
+   * before any hierarchy assembly happens downstream. Every check here uses
+   * fields the extractor itself already sets from real document structure
+   * (node_type / is_header / is_section_header / parent_path) — never a
+   * keyword or account-name guess.
+   *
+   * "Leaf Used As Parent" is the specific regression tripwire for the bug
+   * fixed this pass (see extract_excel.py / balanceSheetExtractionService.js
+   * / profitLossExtractionService.js): a row whose parent_path contains the
+   * account_name of another row that is itself a real leaf (has its own
+   * posted amount, not a header/group) — this must always be 0 after the fix.
+   * Only runs for data types that actually carry a hierarchy (rows have a
+   * `parent_path` key at all) — a structural gate, not a hardcoded data-type
+   * name list.
+   */
+  _logHierarchyExtractionValidation(rows, fileName) {
+    if (!Array.isArray(rows) || !rows.length) return;
+    if (!Object.prototype.hasOwnProperty.call(rows[0], "parent_path")) return;
+
+    const isHeaderRow = (r) => Boolean(r.is_section_header) || Boolean(r.is_header) ||
+      r.node_type === "hierarchy_section" || r.node_type === "hierarchy_group";
+
+    const leafNames = new Set();
+    const headerNames = new Set();
+    let headerCount = 0;
+    let leafCount = 0;
+    let parentLinks = 0;
+    let totalDepth = 0;
+    let maxDepth = 0;
+    for (const r of rows) {
+      if (isHeaderRow(r)) { headerCount += 1; if (r.account_name) headerNames.add(r.account_name); }
+      else { leafCount += 1; if (r.account_name) leafNames.add(r.account_name); }
+      const path = Array.isArray(r.parent_path) ? r.parent_path.filter(Boolean) : [];
+      if (path.length) {
+        parentLinks += 1;
+        totalDepth += path.length;
+        if (path.length > maxDepth) maxDepth = path.length;
+      }
+    }
+
+    let leafUsedAsParent = 0;
+    let headerUsedAsParent = 0;
+    let brokenPaths = 0;
+    let circularPaths = 0;
+    for (const r of rows) {
+      const path = Array.isArray(r.parent_path) ? r.parent_path : [];
+      if (path.some((label) => !label || !String(label).trim())) brokenPaths += 1;
+      if (r.account_name && path.includes(r.account_name)) circularPaths += 1;
+      for (const label of path) {
+        if (!label) continue;
+        if (label === r.account_name) continue; // already counted as circular above
+        if (leafNames.has(label)) { leafUsedAsParent += 1; break; }
+      }
+      for (const label of path) {
+        if (label && headerNames.has(label)) { headerUsedAsParent += 1; break; }
+      }
+    }
+
+    const avgDepth = parentLinks ? totalDepth / parentLinks : 0;
+    const valid = leafUsedAsParent === 0 && brokenPaths === 0 && circularPaths === 0;
+
+    this.logger.log(
+      `\n==============================\n` +
+      `Hierarchy Extraction Validation${fileName ? ` (${fileName})` : ""}\n` +
+      `==============================\n` +
+      `Rows Parsed        : ${rows.length}\n` +
+      `Header Nodes        : ${headerCount}\n` +
+      `Leaf Nodes          : ${leafCount}\n` +
+      `Parent Links        : ${parentLinks}\n` +
+      `Leaf Used As Parent : ${leafUsedAsParent}\n` +
+      `Header Used As Parent : ${headerUsedAsParent}\n` +
+      `Average Depth       : ${avgDepth.toFixed(2)}\n` +
+      `Maximum Depth       : ${maxDepth}\n` +
+      `Broken Paths        : ${brokenPaths}\n` +
+      `Circular Paths      : ${circularPaths}\n` +
+      `Hierarchy Valid     : ${valid ? "YES" : "NO"}\n` +
+      `==============================`,
+    );
+    if (!valid) {
+      this.logger.error(
+        `HIERARCHY EXTRACTION DEFECT: leafUsedAsParent=${leafUsedAsParent}, brokenPaths=${brokenPaths}, ` +
+        `circularPaths=${circularPaths} in "${fileName}" — a real posted account is acting as another ` +
+        `account's structural parent, or a parent_path entry is empty/self-referential. This should be ` +
+        `impossible after the ancestor-stack fix; investigate this specific file.`,
+      );
+    }
+  }
+
   async _readExtractionCache(companyId, documentId, fingerprint) {
     if (!docCacheEnabled() || !companyId || !documentId) return null;
     try {
@@ -66,6 +170,13 @@ class ExtractionServiceBase {
       if (error || !data) return null;
       const ed = data.extracted_data;
       if (!ed || !Array.isArray(ed.rows)) return null;
+      if (this._isExtractionSuspicious(ed.rows)) {
+        this.logger.warn(
+          `Cached extraction for document ${documentId} looks suspicious (no hierarchy on any leaf row) — ` +
+          `treating as a cache miss and re-extracting instead of trusting it.`,
+        );
+        return null;
+      }
       return ed;
     } catch {
       // Table not present (migration 065 not applied) or any other error → miss.
@@ -138,6 +249,8 @@ class ExtractionServiceBase {
         this.logger.warn(`[${this.dataType}] No data extracted from "${fileName}"`);
         return { success: false, fileName, rowsExtracted: 0, error: 'No data found in file', cacheHit };
       }
+
+      this._logHierarchyExtractionValidation(extractedData.rows, fileName);
 
       // Persist the fresh extraction so the next re-sync / duplicated version
       // reuses it. Only on a miss; version-agnostic by fingerprint.
