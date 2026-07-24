@@ -176,7 +176,23 @@ class ProfitLossExtractionService extends ExtractionServiceBase {
     // which previously never produced a usable `section` at all. Bump so
     // every cached P&L parse — which carries the OLD, wrong section — is
     // re-extracted rather than serving stale NULLs forever.
-    this.parserVersion = 'v5';
+    // v6: added a retry-and-sanity-check around the Python extraction call
+    // (_extractFromExcelWithFallback) — a run that returns real leaf rows but
+    // with EVERY parent_path empty is now retried once before being accepted,
+    // since a transient bad run could otherwise get cached under the current
+    // parser_version and silently persist. Bump so any such bad cached parse
+    // is discarded and re-attempted with the new safeguard.
+    // v7: CONFIRMED ROOT CAUSE — the ancestor stack (both this JS fallback and
+    // extract_excel.py's Python primary path) pushed EVERY row, including a
+    // real leaf/total/subtotal account with its own posted amount, onto the
+    // parent_path stack. Whenever two sibling accounts' extracted indent
+    // values weren't perfectly monotonic (common indent noise in real
+    // exports), the first sibling was silently retained as the "parent" of
+    // the second, corrupting Level 3+ in the generated Chart of Accounts.
+    // Fixed: only header/group rows (no amount) may remain ancestors. Bump so
+    // every previously-cached parse — which may carry a phantom leaf-as-
+    // parent entry in parent_path — is re-extracted with the fix applied.
+    this.parserVersion = 'v7';
   }
 
   async extract({ fileName, fileBuffer }) {
@@ -189,20 +205,52 @@ class ProfitLossExtractionService extends ExtractionServiceBase {
   }
 
   // ── Excel: Python primary, JS fallback ─────────────────────────────────────
+  // See balanceSheetExtractionService.js's identical method for the full
+  // rationale — retries Python once before falling back to JS, and treats a
+  // suspiciously flat result (real leaf rows but zero hierarchy) as worth
+  // retrying too, not just an outright failure, since a bad flat result once
+  // cached under the current parser_version silently persists.
+  // Shared with the base class's cache-read gate (_readExtractionCache) so a
+  // bad result is caught the same way whether it was just extracted or read
+  // back from a previously-cached (and possibly stale/bad) entry.
+  _isExtractionSuspicious(rows) {
+    const leafRows = (rows || []).filter((r) => !r.is_header && !r.is_total);
+    const rowsWithParent = leafRows.filter((r) => Array.isArray(r.parent_path) && r.parent_path.length > 0);
+    return leafRows.length > 3 && rowsWithParent.length === 0;
+  }
+
   async _extractFromExcelWithFallback(fileBuffer, fileName) {
-    try {
-      this.logger.log(`Trying Python extraction for Excel "${fileName}"`);
-      const result = await extractWithPython('extract_excel.py', fileBuffer, {
-        type: 'profit_loss',
-        filename: fileName,
-      });
-      if (result.rows && result.rows.length > 0) {
-        this.logger.log(`Python extracted ${result.rows.length} rows from "${fileName}"`);
-        return { rows: result.rows, detectedYears: result.detected_years };
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const suffix = attempt > 1 ? ` (retry ${attempt})` : '';
+      try {
+        this.logger.log(`Trying Python extraction for Excel "${fileName}"${suffix}`);
+        const result = await extractWithPython('extract_excel.py', fileBuffer, {
+          type: 'profit_loss',
+          filename: fileName,
+        });
+        if (result.rows && result.rows.length > 0) {
+          const suspiciouslyFlat = this._isExtractionSuspicious(result.rows);
+          if (suspiciouslyFlat && attempt === 1) {
+            this.logger.warn(
+              `Python extraction for "${fileName}" returned ${result.rows.length} row(s) with NO hierarchy ` +
+              `at all (every parent_path empty) — suspicious for a real P&L, retrying once before accepting it.`,
+            );
+            continue;
+          }
+          if (suspiciouslyFlat) {
+            this.logger.warn(
+              `Python extraction for "${fileName}" is STILL flat after a retry — accepting it (no better source ` +
+              `available) but this will be re-checked and re-extracted on the next sync instead of being trusted ` +
+              `from cache.`,
+            );
+          }
+          this.logger.log(`Python extracted ${result.rows.length} rows from "${fileName}"`);
+          return { rows: result.rows, detectedYears: result.detected_years };
+        }
+        this.logger.warn(`Python returned 0 rows for "${fileName}"${attempt < 2 ? ', retrying' : ', falling back to JS'}`);
+      } catch (err) {
+        this.logger.warn(`Python extraction failed for "${fileName}"${attempt < 2 ? ', retrying' : ', falling back to JS'}: ${err.message}`);
       }
-      this.logger.warn(`Python returned 0 rows for "${fileName}", falling back to JS`);
-    } catch (err) {
-      this.logger.warn(`Python extraction failed for "${fileName}", falling back to JS: ${err.message}`);
     }
     return this._extractFromExcel(fileBuffer, fileName);
   }
@@ -426,7 +474,11 @@ class ProfitLossExtractionService extends ExtractionServiceBase {
           node_type: isSubtotal ? 'subtotal' : isTotal ? 'total' : 'account',
         });
       }
-      ancestorStack.push({ indent, label: accountName });
+      // CONFIRMED ROOT CAUSE (fixed here, mirrors balanceSheetExtractionService.js
+      // / extract_excel.py's identical fix): a leaf/total/subtotal row — one
+      // with its own posted amount — must never be pushed onto the ancestor
+      // stack. Only the header/group branch above (which `continue`s before
+      // reaching here) may remain a parent for later rows.
     }
 
     this.logger.log(`  "${fileName}": Rows detected=${rowsDetected}, extracted=${rows.length}, rejected=${rowsRejected}`);

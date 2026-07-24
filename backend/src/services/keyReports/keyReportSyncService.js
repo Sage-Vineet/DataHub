@@ -907,7 +907,15 @@ async function generateFinancialTables(version, opts = {}) {
   logger.log(`  Uploaded COA linked to this version: ${hasLinkedCoaDocument ? 'YES' : 'NO'}`);
   let coaSummary = null;
   try {
-    coaSummary = await generateChartOfAccounts(companyId, versionId, null, { plRows: plAccountRows, hasLinkedCoaDocument });
+    coaSummary = await generateChartOfAccounts(companyId, versionId, null, {
+      plRows: plAccountRows,
+      hasLinkedCoaDocument,
+      // Threaded through so buildDocHierarchyLookups' deepest-wins tie-break
+      // can prefer the Ending Balance Sheet when it and the Opening Balance
+      // Sheet give the same account equal real depth (never re-derived here
+      // — this is the SAME gate the sync already validated against).
+      endingFiscalYear: gate?.endingBs?.fiscal_year ?? null,
+    });
     logger.log(`  ✓ Chart of Accounts: ${coaSummary.leafCount || 0} accounts classified (${coaSummary.inserted || 0} new, ${coaSummary.updated || 0} updated, ${coaSummary.deleted || 0} removed)`);
     if (coaSummary.sourceCounts) {
       const sc = coaSummary.sourceCounts;
@@ -944,7 +952,7 @@ async function generateFinancialTables(version, opts = {}) {
   // resolve every GL account via in-memory lookup without any DB writes.
   logger.log('--- Phase 2c: Complete COA from unlinked GL accounts ---');
   try {
-    const completionResult = await ensureCoaComplete(companyId, versionId, plAccountRows, hasLinkedCoaDocument);
+    const completionResult = await ensureCoaComplete(companyId, versionId, plAccountRows, hasLinkedCoaDocument, gate?.endingBs?.fiscal_year ?? null);
     logger.log(`  ✓ COA completion: ${completionResult.added} account(s) added, ${completionResult.skipped} already present`);
     if (completionResult.added > 0) {
       // Re-run GL→COA linking so newly added accounts get their coa_id
@@ -968,7 +976,7 @@ async function generateFinancialTables(version, opts = {}) {
   mark('coa_linking');
 
   try {
-    await printCoaValidationBlock(companyId, versionId);
+    await printCoaValidationBlock(companyId, versionId, plAccountRows);
   } catch (validationBlockErr) {
     logger.warn(`  COA Validation block failed: ${validationBlockErr.message}`);
   }
@@ -1213,13 +1221,64 @@ async function generateFinancialTables(version, opts = {}) {
     logger.warn(`  COA validation failed: ${vErr.message}`);
   }
 
-  // Step 7b: Profit & Loss reconciliation validation rows — formats the
+  // Step 7b: Balance Sheet reconciliation validation row — formats the result
+  // already computed (and persisted to bs_reconciliation_entries) earlier in
+  // the Reconciliation Layer, mirroring the Profit & Loss reconciliation
+  // block below (same dataType-key-becomes-section-title convention the
+  // frontend already uses for "profit_loss_reconciliation" — see
+  // KeyReportSyncDashboard.jsx's EXTRA_ROW_LABEL fallback — so this needs no
+  // frontend change to render its own "Balance Sheet Reconciliation" section).
+  // No recomputation here — generateReconciliation already ran once, earlier
+  // in the Reconciliation Layer, before Monthly BS/P&L/Cash Flow were generated.
+  if (reconciliationSummary?.ran) {
+    logger.log('--- Step 7b: Balance Sheet reconciliation validation row ---');
+    const s = reconciliationSummary.summary;
+    const matches = s.balanced;
+    const accountsResponsible = matches ? [] : (reconciliationSummary.topDiffs || []);
+    logger.log(
+      `  BS Reconciliation FY${reconciliationSummary.year}: ${matches ? 'MATCH' : 'MISMATCH'} ` +
+      `(${s.matched} matched, ${s.differences} differ, ${s.missingFromGl} missing-from-GL, ${s.missingFromBs} missing-from-BS, total variance=${s.totalVariance})`,
+    );
+    if (accountsResponsible.length) {
+      logger.log(`    Accounts responsible (${reconciliationSummary.diffCount} total, showing top ${accountsResponsible.length}): ` +
+        accountsResponsible.map((a) => `"${a.account_name}" (${a.variance >= 0 ? '+' : ''}${a.variance.toFixed(2)})`).join(', '));
+    }
+    validationRows.push({
+      dataType: 'balance_sheet_reconciliation',
+      year: reconciliationSummary.year,
+      status: matches ? 'success' : 'warning',
+      severity: matches ? 'success' : 'warning',
+      message: matches
+        ? `Uploaded Balance Sheet for ${reconciliationSummary.year} matches the GL-derived Balance Sheet (${s.matched} account(s) matched).`
+        : `Uploaded Balance Sheet for ${reconciliationSummary.year} differs from the GL-derived Balance Sheet — ${s.differences} account(s) differ, ` +
+          `${s.missingFromGl} missing from GL, ${s.missingFromBs} missing from the uploaded Balance Sheet, total variance ${s.totalVariance.toLocaleString()}.` +
+          (accountsResponsible.length
+            ? ` Accounts responsible: ${accountsResponsible.map((a) => `${a.account_name} (${a.variance >= 0 ? '+' : ''}${a.variance.toFixed(2)})`).join(', ')}` +
+              (reconciliationSummary.diffCount > accountsResponsible.length ? ` (+${reconciliationSummary.diffCount - accountsResponsible.length} more)` : '') + '.'
+            : ''),
+      metadata: {
+        year: reconciliationSummary.year,
+        matched: s.matched,
+        differences: s.differences,
+        missingFromGl: s.missingFromGl,
+        missingFromBs: s.missingFromBs,
+        excluded: s.excluded,
+        totalVariance: s.totalVariance,
+        accountsResponsible,
+        accountsResponsibleTotal: reconciliationSummary.diffCount,
+      },
+    });
+  } else {
+    logger.log(`  Step 7b: Balance Sheet reconciliation skipped (${reconciliationSummary?.summary?.reason || 'no ending balance sheet'}) — no validation row added.`);
+  }
+
+  // Step 7c: Profit & Loss reconciliation validation rows — formats the
   // results already computed (and persisted to pl_reconciliation_entries)
   // earlier in the Reconciliation Layer, before Monthly BS/P&L/Cash Flow were
   // generated. No recomputation here — accountLevelReconciliationDiff and
   // aggregateGLForBS already ran once, inside persistProfitLossReconciliation.
   if (plMappings.length) {
-    logger.log(`--- Step 7b: Profit & Loss reconciliation validation rows (${plMappings.length} file(s)) ---`);
+    logger.log(`--- Step 7c: Profit & Loss reconciliation validation rows (${plMappings.length} file(s)) ---`);
     const REASON_LABEL = {
       missing_in_gl: 'missing in GL',
       missing_in_uploaded: 'missing in uploaded P&L',
@@ -1260,10 +1319,10 @@ async function generateFinancialTables(version, opts = {}) {
       });
     }
   } else {
-    logger.log('  Step 7b: no Profit & Loss file linked — reconciliation skipped (not required).');
+    logger.log('  Step 7c: no Profit & Loss file linked — reconciliation skipped (not required).');
   }
 
-  // Step 7c: GL-vs-uploaded-P&L account validation report. Compares the AI's
+  // Step 7d: GL-vs-uploaded-P&L account validation report. Compares the AI's
   // OWN account_type (recognition-only, same call already used by COA
   // generation) against the section the uploaded P&L places an account under
   // — purely to flag disagreements for review. Never writes hierarchy, never

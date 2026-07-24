@@ -119,6 +119,28 @@ function tokenJaccard(a, b) {
   return union > 0 ? inter / union : 0;
 }
 
+// GL/account numeric codes embedded in a name (e.g. "6100" in "6100 Rent")
+// are identifiers, not fuzzy text — two accounts whose codes differ are
+// different accounts no matter how similar the surrounding words look.
+// CONFIRMED BUG this fixes: "6100 Rent" (a structural P&L subtotal heading
+// that ALSO has its own real GL activity) fuzzy-matched to "6102 Rent" (a
+// real, distinct sub-account nested under it) at >0.90 similarity — they
+// differ by a single digit as text but are unrelated accounts. Only gates
+// when BOTH names carry a numeric token and they actually differ; a name
+// with no digits on either side is unaffected (preserves matching a
+// GL-only "Checking" against a document's "1010 Checking", where only one
+// side happens to carry the code).
+function extractNumericTokens(normalized) {
+  const matches = String(normalized || "").match(/\d+/g);
+  return matches ? matches.sort() : [];
+}
+function sameNumericTokens(a, b) {
+  if (!a.length || !b.length) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false;
+  return true;
+}
+
 /**
  * Combined strict-similarity score for the Fuzzy stage — the BEST of three
  * distinct metrics, since each catches a different kind of distortion
@@ -126,10 +148,12 @@ function tokenJaccard(a, b) {
  * similarity; token Jaccard: reordered or singular/plural word variants).
  * Gated by the same accounting-modifier hard rule used elsewhere in this
  * codebase (extractModifiers/sameModifiers) — "Rent" and "Accrued Rent" must
- * never auto-match no matter how similar the remaining text is.
+ * never auto-match no matter how similar the remaining text is — and by the
+ * numeric-code gate above.
  */
 function strongSimilarity(normA, normB) {
   if (!sameModifiers(extractModifiers(normA), extractModifiers(normB))) return 0;
+  if (!sameNumericTokens(extractNumericTokens(normA), extractNumericTokens(normB))) return 0;
   return Math.max(
     levenshteinRatio(normA, normB),
     jaroWinkler(normA, normB),

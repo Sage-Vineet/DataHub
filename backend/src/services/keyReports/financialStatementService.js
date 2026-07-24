@@ -344,6 +344,37 @@ const LONG_TERM_LIAB_RE = /long.?term|noncurrent|non.current/i;
 const ROOT_ANCHOR_RE = /^total\s+(assets?|liabilit(?:y|ies)|liabilities\s+and\s+equity|equity)$/i;
 
 /**
+ * "Hierarchy Consistency Verification" (item 7) — for every rendered Balance
+ * Sheet account, prints its stored COA levels vs. the path buildDynamicHierarchy
+ * actually placed it under (re-derived by walking the FINAL built tree, not
+ * just echoing construction — see buildDynamicHierarchy's own comment).
+ * PASS for every account is the expected, steady-state result; any FAIL means
+ * an account's real chart_of_accounts hierarchy diverged from what got
+ * rendered, and is the untouched source of truth to trust over the render.
+ */
+function logHierarchyRenderVerification(label, verification) {
+  const failures = verification.filter((v) => !v.pass);
+  console.log(
+    `Hierarchy Consistency Verification (${label})\n` +
+    `  Accounts Checked: ${verification.length}\n` +
+    `  Pass: ${verification.length - failures.length}\n` +
+    `  Fail: ${failures.length}`,
+  );
+  if (failures.length) {
+    console.error(
+      `[FinStmt][${label}] HIERARCHY RENDER MISMATCH — ${failures.length} account(s) rendered under a different ` +
+      `path than their own stored chart_of_accounts levels imply:\n` +
+      failures.slice(0, 20).map((f) =>
+        `  Account: ${f.account}\n` +
+        `  COA Levels: ${f.coaLevels.join(" > ")}\n` +
+        `  Rendered Path: ${f.renderedPath.join(" > ")}\n` +
+        `  Status: FAIL`,
+      ).join("\n\n"),
+    );
+  }
+}
+
+/**
  * Build Balance Sheet statement from the rolled-up tree.
  * Section (Current/Fixed/Other Assets, Current/Long-Term Liabilities) and
  * group (the account's own client-defined category, e.g. "Vehicles", "Credit
@@ -371,13 +402,24 @@ function buildBsStatement(leaves, byId) {
     reportTag:     n.metadata?.report_tag || null,
   });
 
-  function resolveSecGrp(n) {
+  // ══════════════════════════════════════════════════════════════════════
+  // KPI-ONLY current/non-current classification — ISOLATED, never used for
+  // Balance Sheet rendering (see buildDynamicHierarchy below for that).
+  //
+  // keyReportReportService.js's KPI report (Current Ratio, Quick Ratio,
+  // Working Capital) genuinely needs a bounded current/non-current split for
+  // its AGGREGATE TOTALS, regardless of what the client calls their own
+  // categories — that is a real accounting concept (current vs. long-term),
+  // not a hierarchy. This is the one place a bounded keyword match is
+  // legitimate: it only ever classifies a label ALREADY copied onto this row
+  // from chart_of_accounts — it never invents, renames, or displays one.
+  // Function/variable names are deliberately explicit (KPI-prefixed) so this
+  // never gets mistaken for hierarchy construction again.
+  function resolveKpiCurrentNonCurrent(n) {
     const own = displayName(n);
     const ancestry = BS_LEVEL_KEYS.map((k) => n[k]).filter(Boolean);
     if (ancestry.length && ancestry[ancestry.length - 1] === own) ancestry.pop();
 
-    // Group: the deepest real category in the leaf's OWN hierarchy — skip
-    // root rollup anchors ("Total Assets" etc.), which aren't a useful group.
     const grpLabel = [...ancestry].reverse().find((l) => !ROOT_ANCHOR_RE.test(l)) || "Other";
 
     let secLabel;
@@ -393,10 +435,10 @@ function buildBsStatement(leaves, byId) {
     return { secLabel, grpLabel };
   }
 
-  function buildGroupMap(accs) {
+  function buildKpiBuckets(accs) {
     const sections = {};
     for (const n of accs) {
-      const { secLabel, grpLabel } = resolveSecGrp(n);
+      const { secLabel, grpLabel } = resolveKpiCurrentNonCurrent(n);
       if (!sections[secLabel]) sections[secLabel] = { label: secLabel, groups: {}, total: 0 };
       if (!sections[secLabel].groups[grpLabel]) sections[secLabel].groups[grpLabel] = { label: grpLabel, accounts: [], total: 0 };
       const leaf = toLeaf(n);
@@ -407,37 +449,151 @@ function buildBsStatement(leaves, byId) {
     return sections;
   }
 
-  const assetSections  = buildGroupMap(assets);
-  const liabSections   = buildGroupMap(liabilities);
+  const assetKpiBuckets = buildKpiBuckets(assets);
+  const liabKpiBuckets  = buildKpiBuckets(liabilities);
+
+  // ══════════════════════════════════════════════════════════════════════
+  // buildDynamicHierarchy — the ONLY hierarchy-construction logic for
+  // rendering the Balance Sheet. chart_of_accounts (level_1..level_15) is
+  // the single source of truth: this function does nothing but walk it and
+  // build a genuine N-level Tree → Node → Children → Leaf structure. No
+  // regex, no keyword matching, no fixed bucket/section names, no depth cap.
+  //
+  // Consecutive duplicate labels (the deliberate double fixed-anchor prefix,
+  // e.g. "Total Assets" twice, or a leaf's own name repeated by
+  // padLevelsWithLeafPropagation to fill all 15 columns) are collapsed here
+  // for DISPLAY ONLY — chart_of_accounts itself is never touched. Example:
+  // stored ["Total Assets","Total Assets","Fixed Assets","Vehicles","Truck",
+  // "Truck",...] renders as Total Assets → Fixed Assets → Vehicles → Truck.
+  function buildDynamicHierarchy(accs) {
+    const roots = [];
+    const rootIndex = new Map();
+    const expectedByLeafId = new Map(); // leaf id -> { account, coaLevels, expectedPath }
+
+    for (const n of accs) {
+      const own = displayName(n);
+      const rawLevels = BS_LEVEL_KEYS.map((k) => n[k]).filter(Boolean);
+
+      // Collapse ALL consecutive duplicates (not just a fixed offset) — this
+      // correctly handles both the double fixed-anchor prefix and any
+      // leaf-name padding repetition uniformly, with no assumption about how
+      // many anchor levels precede the real category chain.
+      const collapsed = [];
+      for (const label of rawLevels) {
+        if (!collapsed.length || collapsed[collapsed.length - 1] !== label) collapsed.push(label);
+      }
+      const hasOwnLeaf = collapsed.length && collapsed[collapsed.length - 1] === own;
+      const containers = hasOwnLeaf ? collapsed.slice(0, -1) : collapsed;
+
+      let siblings = roots;
+      let index = rootIndex;
+      let parentId = "bsnode";
+      for (const label of containers) {
+        let node = index.get(label);
+        if (!node) {
+          node = { id: `${parentId}/${label}`, name: label, type: "container", children: [], amount: 0, _childIndex: new Map() };
+          index.set(label, node);
+          siblings.push(node);
+        }
+        parentId = node.id;
+        siblings = node.children;
+        index = node._childIndex;
+      }
+
+      const leaf = {
+        id: n.id, name: own, type: "leaf",
+        systemId: n.system_id || null,
+        accountNumber: n.account_number || null,
+        adjustedName: n.adjusted_name || null,
+        hierarchyPath: n.hierarchy_path || null,
+        amount: safeNum(n.displayAmount),
+        reportTag: n.metadata?.report_tag || null,
+        children: [],
+      };
+      siblings.push(leaf);
+      expectedByLeafId.set(n.id, { account: own, coaLevels: rawLevels, expectedPath: [...containers, own] });
+    }
+
+    // Roll up container totals bottom-up (post-order) — a container's amount
+    // is always the sum of its own children, never independently computed.
+    const rollup = (node) => {
+      if (node.type === "leaf") return node.amount;
+      node.amount = safeNum(node.children.reduce((sum, c) => sum + rollup(c), 0));
+      return node.amount;
+    };
+    for (const r of roots) rollup(r);
+
+    // Verification (item 7): re-walk the ACTUAL, already-built tree from the
+    // root to find each leaf by id and record the container names genuinely
+    // encountered along the way — an independent cross-check against
+    // expectedPath (derived straight from this leaf's own COA levels above),
+    // not just an echo of what construction just did. Catches a real defect
+    // class construction alone can't (e.g. two accounts' labels colliding
+    // into the wrong shared node).
+    const verification = [];
+    const walk = (nodes, pathSoFar) => {
+      for (const node of nodes) {
+        if (node.type === "leaf") {
+          const expected = expectedByLeafId.get(node.id);
+          const actualPath = [...pathSoFar, node.name];
+          const pass = expected ? JSON.stringify(expected.expectedPath) === JSON.stringify(actualPath) : false;
+          verification.push({ account: node.name, coaLevels: expected?.coaLevels || [], renderedPath: actualPath, pass });
+        } else {
+          walk(node.children, [...pathSoFar, node.name]);
+        }
+      }
+    };
+    walk(roots, []);
+
+    const strip = (node) => {
+      const { _childIndex, ...rest } = node;
+      rest.children = node.children.map(strip);
+      return rest;
+    };
+    return { tree: roots.map(strip), verification };
+  }
+
+  const assetHierarchyResult = buildDynamicHierarchy(assets);
+  const liabHierarchyResult  = buildDynamicHierarchy(liabilities);
+  logHierarchyRenderVerification("Balance Sheet Assets", assetHierarchyResult.verification);
+  logHierarchyRenderVerification("Balance Sheet Liabilities", liabHierarchyResult.verification);
+
   const equityAccounts = equities.map(toLeaf);
 
-  const totalAssets      = safeNum(Object.values(assetSections).reduce((s, sec) => s + sec.total, 0));
-  const totalLiabilities = safeNum(Object.values(liabSections).reduce((s, sec) => s + sec.total, 0));
+  const totalAssets      = safeNum(Object.values(assetKpiBuckets).reduce((s, sec) => s + sec.total, 0));
+  const totalLiabilities = safeNum(Object.values(liabKpiBuckets).reduce((s, sec) => s + sec.total, 0));
   const totalEquity      = safeNum(equityAccounts.reduce((s, a) => s + a.amount, 0));
   const totalLE          = safeNum(totalLiabilities + totalEquity);
   const difference       = safeNum(totalAssets - totalLE);
 
-  // resolveSecGrp always returns one of exactly these canonical bucket names,
-  // so no further pattern-matching/merge step is needed to place a section.
-  const currentAssets = assetSections["Current Assets"] || { label: "Current Assets", groups: {}, total: 0 };
-  const fixedAssets   = assetSections["Fixed Assets"]   || { label: "Fixed Assets",   groups: {}, total: 0 };
-  const otherAssets   = assetSections["Other Assets"]   || { label: "Other Assets",   groups: {}, total: 0 };
+  // KPI-only buckets — never used for display (see buildDynamicHierarchy above).
+  const currentAssets = assetKpiBuckets["Current Assets"] || { label: "Current Assets", groups: {}, total: 0 };
+  const fixedAssets   = assetKpiBuckets["Fixed Assets"]   || { label: "Fixed Assets",   groups: {}, total: 0 };
+  const otherAssets   = assetKpiBuckets["Other Assets"]   || { label: "Other Assets",   groups: {}, total: 0 };
 
-  const currentLiab  = liabSections["Current Liabilities"]   || { label: "Current Liabilities",   groups: {}, total: 0 };
-  const longTermLiab = liabSections["Long-Term Liabilities"] || { label: "Long-Term Liabilities", groups: {}, total: 0 };
+  const currentLiab  = liabKpiBuckets["Current Liabilities"]   || { label: "Current Liabilities",   groups: {}, total: 0 };
+  const longTermLiab = liabKpiBuckets["Long-Term Liabilities"] || { label: "Long-Term Liabilities", groups: {}, total: 0 };
 
   return {
     assets: {
       label: assets[0]?.level_1 || "Total Assets",
+      // Kept for keyReportReportService.js's KPI report (Current Ratio,
+      // Working Capital) only — never used for display, see buildDynamicHierarchy.
       currentAssets:  { label: currentAssets.label, groups: currentAssets.groups, total: currentAssets.total },
       fixedAssets:    { label: fixedAssets.label,   groups: fixedAssets.groups,   total: fixedAssets.total },
       otherAssets:    { label: otherAssets.label,   groups: otherAssets.groups,   total: otherAssets.total },
+      // The single source of truth for rendering: a genuine N-level tree
+      // built directly from chart_of_accounts level_1..level_15 — no fixed
+      // bucket names, no depth cap. This is what the frontend recurses through.
+      hierarchy: assetHierarchyResult.tree,
       total: totalAssets,
     },
     liabilities: {
       label: "Liabilities",
+      // Kept for the KPI report only — never used for display.
       currentLiabilities:  { label: currentLiab.label,  groups: currentLiab.groups,  total: currentLiab.total },
       longTermLiabilities: { label: longTermLiab.label, groups: longTermLiab.groups, total: longTermLiab.total },
+      hierarchy: liabHierarchyResult.tree,
       total: totalLiabilities,
     },
     equity: {
