@@ -88,7 +88,7 @@ Look at the very top of Page 1 for the form number:
 Set "formType" to "1120-S", "1065", or "1120" accordingly. Default to "1120-S" if unclear.
 
 ═══════════════════════════════════════════════════════
-FORM 1120-S (S-CORPORATION) — read PAGE 1 and PAGE 3
+FORM 1120-S (S-CORPORATION) — read PAGE 1 and the FULL SCHEDULE K
 ═══════════════════════════════════════════════════════
 
 PAGE 1 — INCOME & DEDUCTIONS (Form 1120-S):
@@ -103,7 +103,11 @@ PAGE 1 — INCOME & DEDUCTIONS (Form 1120-S):
   Line 19  — Other deductions           → "allOtherExpenses" (and check attached statement for amortization)
   Line 21  — Ordinary business income   → "netIncome"
 
-PAGE 3 ONLY — SCHEDULE K (Form 1120-S), Lines 2–16f:
+SCHEDULE K (Form 1120-S) — "Shareholders' Pro Rata Share Items", Lines 2 through 17:
+  ⚠️ Schedule K SPANS TWO PAGES (typically page 3 for lines 1–14 and page 4 for
+     lines 15–18). Read BOTH pages. Do NOT stop at line 14. The "Items Affecting
+     Shareholder Basis" (line 16) and "Other Information" (line 17) lines are on
+     the SECOND page and MUST be read.
 
   ⚠️ SCHEDULE K EXTRACTION RULES — READ CAREFULLY:
   1. Look at the "Total amount" column on the RIGHT SIDE of the Schedule K table.
@@ -112,6 +116,9 @@ PAGE 3 ONLY — SCHEDULE K (Form 1120-S), Lines 2–16f:
   4. If the cell is blank, empty, has a dash (—), or contains 0 → DO NOT include it.
   5. DO NOT guess, estimate, or carry values from other parts of the form.
   6. DO NOT include Line 1 (already captured as netIncome).
+  7. DO NOT include Line 18 "Income (loss) reconciliation" — it is only a TOTAL that
+     restates Ordinary business income and is NOT a reconciling item.
+  8. Use the EXACT label text below for each line — do not paraphrase or re-case it.
 
   Line → label mapping (ONLY add lines with a visible non-zero value in "Total amount"):
   2  → "Net Rental Real Estate Income"
@@ -148,6 +155,9 @@ PAGE 3 ONLY — SCHEDULE K (Form 1120-S), Lines 2–16f:
   16d → "Distributions"
   16e → "Repayment of Loans from Shareholders"
   16f → "Foreign Taxes Paid or Accrued"
+  17a → "Investment Income"
+  17b → "Investment Expenses"
+  (SKIP line 17c "Dividend distributions paid from AE&P" and line 18 reconciliation.)
 
 ═══════════════════════════════════════════════════════
 FORM 1065 (PARTNERSHIP) — read PAGE 1 and ONLY the partnership-level SCHEDULE K page
@@ -294,6 +304,87 @@ JSON schema:
 }
 `.trim();
 
+// ── Schedule K reconciling-item label canonicalization ──────────────────────
+// The extraction + Schedule-K verification passes emit the SAME line under
+// slightly different wording/casing across years ("Nondeductible expenses" vs
+// "Nondeductible Expenses", "Investment income" vs "Investment Income"), which
+// produced DUPLICATE rows and inconsistent columns in Tax Reconciliation. Every
+// variant is mapped to one canonical label. Lines that are NOT book-to-tax
+// reconciling items are dropped — notably Line 18 "Income (loss) reconciliation"
+// (1120-S) / the analysis line, which merely restates Ordinary business income
+// (already shown as Net Income) and must never appear as a reconciling item.
+const _normKey = (s) =>
+  String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+
+// Dropped entirely (not distributive-share reconciling items).
+const SCHEDULE_K_DROP = [
+  /income .*reconciliation/,   // Line 18 (1120-S) "Income (loss) reconciliation"
+  /^reconciliation$/,
+  /ordinary business income/,  // = netIncome, captured on page 1
+];
+
+// [regex on normalized key] → canonical label. ORDER MATTERS — more specific
+// patterns first (e.g. "investment interest expense" before "interest income").
+const SCHEDULE_K_CANON = [
+  [/nondeductible expense/, "Nondeductible Expenses"],
+  [/tax exempt interest/, "Tax-Exempt Interest Income"],
+  [/other tax exempt income/, "Other Tax-Exempt Income"],
+  [/repayment of loan/, "Repayment of Loans from Shareholders"],
+  [/distribution/, "Distributions"],
+  [/investment interest expense/, "Investment Interest Expense"],
+  [/investment income/, "Investment Income"],
+  [/investment expense/, "Investment Expenses"],
+  [/interest income/, "Interest Income"],
+  [/qualified dividend/, "Qualified Dividends"],
+  [/ordinary dividend/, "Ordinary Dividends"],
+  [/dividend/, "Ordinary Dividends"],
+  [/royalt/, "Royalties"],
+  [/section 179/, "Section 179 Deduction"],
+  [/charitable/, "Charitable Contributions"],
+  [/net rental real estate/, "Net Rental Real Estate Income"],
+  [/net rental/, "Other Net Rental Income"],
+  [/short term capital gain/, "Net Short-Term Capital Gain (Loss)"],
+  [/long term capital gain/, "Net Long-Term Capital Gain (Loss)"],
+  [/section 1231/, "Net Section 1231 Gain (Loss)"],
+  [/foreign tax/, "Foreign Taxes Paid or Accrued"],
+  [/self employ/, "Net Earnings from Self-Employment"],
+  [/guaranteed payment/, "Guaranteed Payments"],
+  [/other income/, "Other Income (Loss)"],
+];
+
+// Map an arbitrary Schedule K label to its canonical form; returns null to DROP.
+function canonicalizeReconLabel(label) {
+  const key = _normKey(label);
+  if (!key) return null;
+  if (SCHEDULE_K_DROP.some((rx) => rx.test(key))) return null;
+  for (const [rx, canon] of SCHEDULE_K_CANON) if (rx.test(key)) return canon;
+  return String(label).trim(); // unknown line — keep as-is, never lose data
+}
+
+// Canonicalize + de-duplicate the reconciling items inside a tax "data" array.
+// Main line items (isReconcilingItem false) pass through untouched and in order.
+// Idempotent — safe to run on freshly-built OR already-cached data.
+function canonicalizeReconcilingData(data) {
+  if (!Array.isArray(data)) return data;
+  const out = [];
+  const idxByLabel = new Map();
+  for (const row of data) {
+    if (!row || !row.isReconcilingItem) { out.push(row); continue; }
+    const canon = canonicalizeReconLabel(row.label);
+    if (!canon) continue; // dropped (e.g. Line 18 reconciliation)
+    const val = Number(row.taxReturn || 0);
+    if (idxByLabel.has(canon)) {
+      // Same line under a variant label — keep the larger-magnitude value.
+      const idx = idxByLabel.get(canon);
+      if (Math.abs(val) > Math.abs(Number(out[idx].taxReturn || 0))) out[idx].taxReturn = val;
+    } else {
+      idxByLabel.set(canon, out.length);
+      out.push({ ...row, label: canon });
+    }
+  }
+  return out;
+}
+
 function buildTaxReturnResponseData(tax) {
   // For Form 1065 (Partnership): allOtherExpenses comes directly from Line 21
   // "Other deductions" — it already excludes guaranteed payments, interest, etc.
@@ -335,7 +426,8 @@ function buildTaxReturnResponseData(tax) {
     }
   });
 
-  return data;
+  // Canonicalize + de-dup Schedule K reconciling items and drop non-items (Line 18).
+  return canonicalizeReconcilingData(data);
 }
 
 function clearTaxExtractCache(cacheKey) {
@@ -587,6 +679,10 @@ Also scan the ENTIRE Schedule K for any additional lines with non-zero values in
 CRITICAL:
 - Use ONLY values visually printed on Schedule K in the "Total amount" column.
 - DO NOT include Line 1 (Ordinary business income — already captured separately).
+- DO NOT include the "Income (loss) reconciliation" line (Line 18 on 1120-S) — it is
+  only a total that restates ordinary business income, NOT a reconciling item.
+- Use standard IRS line names for labels (e.g. "Nondeductible Expenses", "Distributions",
+  "Other Tax-Exempt Income", "Investment Income") with consistent Title Case.
 - DO NOT guess or carry over values from other pages.
 
 Return ONLY a raw JSON array of confirmed items (empty array [] if none):
@@ -3838,6 +3934,8 @@ module.exports = {
   validateTaxExtraction,
   clearTaxExtractCache,
   buildTaxReturnResponseData,
+  canonicalizeReconLabel,
+  canonicalizeReconcilingData,
   syncTaxReturnFolder,
   extractPLForTax,
   buildPLForTaxData,

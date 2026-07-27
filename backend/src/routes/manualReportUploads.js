@@ -20,6 +20,7 @@ const {
   validateTaxExtraction,
   clearTaxExtractCache,
   buildTaxReturnResponseData,
+  canonicalizeReconcilingData,
   extractPLForTax,
   buildPLForTaxData,
   extractPLLineItemsFromRows,
@@ -859,8 +860,12 @@ router.get("/manual-report-uploads/qms-reports/:statementType/latest", async (re
 // The data array (label/taxReturn pairs) is converted back to raw field names
 // so validateTaxExtraction can run the same formula checks used at extraction time.
 function enrichTaxYearWithStatus(yearObj) {
-  if (yearObj && yearObj.status) return yearObj;
-  const dataArr = Array.isArray(yearObj?.data) ? yearObj.data : [];
+  // Always canonicalize + de-dup Schedule K reconciling items on the way out, so
+  // even previously-cached rows (duplicate/variant labels, or a spurious Line 18
+  // "Income (loss) reconciliation" row) are cleaned WITHOUT a cache rebuild.
+  const dataArr = canonicalizeReconcilingData(Array.isArray(yearObj?.data) ? yearObj.data : []);
+  const base = { ...yearObj, data: dataArr };
+  if (base.status) return base;
   const findVal = (...labels) => {
     for (const lbl of labels) {
       const item = dataArr.find((d) => d.label === lbl);
@@ -881,7 +886,7 @@ function enrichTaxYearWithStatus(yearObj) {
     netIncome:            findVal("Net Income"),
   };
   const { status } = validateTaxExtraction(reconstructed);
-  return { ...yearObj, status };
+  return { ...base, status };
 }
 
 function enrichTaxYears(taxYears) {
