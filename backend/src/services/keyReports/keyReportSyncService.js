@@ -989,6 +989,22 @@ async function generateFinancialTables(version, opts = {}) {
     logger.warn(`  COA Validation block failed: ${validationBlockErr.message}`);
   }
 
+  // ── PHASE 2d: AI Hierarchy Recommendation Engine (advisory-only) ────────────
+  // Runs strictly AFTER the deterministic COA above is fully generated and
+  // validated. Never classifies, never moves an account, never writes to
+  // chart_of_accounts — it only reads the now-authoritative hierarchy and
+  // stores OPTIONAL roll-up suggestions for a human to review. A failure
+  // here is never fatal to the sync (Trial Balance/reports must still be
+  // generated even if the advisory pass errors).
+  logger.log('--- Phase 2d: AI Hierarchy Recommendation Engine ---');
+  try {
+    const { generateRecommendations } = require('./aiHierarchyRecommendationService');
+    await generateRecommendations(companyId, versionId);
+  } catch (recoErr) {
+    logger.warn(`  AI Hierarchy Recommendation Engine failed: ${recoErr.message}`);
+  }
+  mark('ai_hierarchy_recommendations');
+
   // ── PHASE 3: Trial Balance (generated directly from the General Ledger) ─────
   logger.log('--- Phase 3: Trial Balance ---');
   let trialBalanceSummary = null;

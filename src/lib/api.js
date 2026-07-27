@@ -1666,6 +1666,27 @@ export function getChartOfAccountsHistory(versionId) {
   return request(`/key-reports/versions/${versionId}/chart-of-accounts/history`);
 }
 
+// AI Hierarchy Recommendations — advisory-only suggestions generated after
+// COA generation. Listing never changes any data; accept/ignore are the only
+// mutating actions, and accept only ever inserts via updateAccountHierarchy().
+export function getHierarchyRecommendations(versionId) {
+  return request(`/key-reports/versions/${versionId}/hierarchy-recommendations`);
+}
+
+export function acceptHierarchyRecommendation(recommendationId) {
+  return request(`/key-reports/hierarchy-recommendations/${recommendationId}/accept`, {
+    method: 'POST',
+    body: {},
+  });
+}
+
+export function ignoreHierarchyRecommendation(recommendationId) {
+  return request(`/key-reports/hierarchy-recommendations/${recommendationId}/ignore`, {
+    method: 'POST',
+    body: {},
+  });
+}
+
 // COA-mapped financial statements (monthly + yearly P&L and Balance Sheet).
 export function getFinancialStatements(versionId, { year, currency } = {}) {
   const params = new URLSearchParams();

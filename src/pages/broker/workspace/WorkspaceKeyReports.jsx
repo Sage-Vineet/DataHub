@@ -62,6 +62,7 @@ import DataRoomFilePicker from "../../../components/key-reports/DataRoomFilePick
 import KeyReportsEducationPopup from "../../../components/key-reports/KeyReportsEducationPopup";
 import KeyReportSyncDashboard from "../../../components/key-reports/KeyReportSyncDashboard";
 import ChartOfAccountsGrid from "../../../components/key-reports/ChartOfAccountsGrid";
+import AiHierarchyRecommendationsPanel from "../../../components/key-reports/AiHierarchyRecommendationsPanel";
 import GenerateProgressPanel from "../../../components/key-reports/GenerateProgressPanel";
 import { cn } from "../../../lib/utils";
 
@@ -730,6 +731,13 @@ export default function WorkspaceKeyReports() {
                     Open Reports <ExternalLink size={14} />
                   </button>
                 </div>
+              </div>
+            )}
+
+            {/* ── AI Hierarchy Recommendations (advisory-only) ─────────────── */}
+            {hasSyncedData && !generating && (
+              <div className="mt-4">
+                <AiHierarchyRecommendationsPanel versionId={selectedVersionId} notify={notify} />
               </div>
             )}
 

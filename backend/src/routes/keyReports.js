@@ -505,6 +505,65 @@ router.post("/key-reports/versions/:versionId/chart-of-accounts/reset", async (r
   }
 });
 
+// ---- AI Hierarchy Recommendations (advisory-only; never auto-applied) ------
+
+// Resolve a recommendation row and verify the caller can access its company.
+async function loadRecommendationWithAccess(req, res) {
+  const { supabase } = require("../db");
+  const { data: row } = await supabase
+    .from("key_report_coa_hierarchy_recommendations")
+    .select("id, company_id, version_id, status")
+    .eq("id", req.params.recommendationId)
+    .maybeSingle();
+  if (!row) {
+    res.status(404).json({ success: false, error: "Recommendation not found." });
+    return null;
+  }
+  if (!requireCompanyAccess(req, res, row.company_id)) return null;
+  return row;
+}
+
+// List all AI hierarchy recommendations for a version (pending + decided).
+router.get("/key-reports/versions/:versionId/hierarchy-recommendations", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const { listRecommendations } = require("../services/keyReports/aiHierarchyRecommendationService");
+    const recommendations = await listRecommendations(version.id);
+    return res.json({ success: true, recommendations });
+  } catch (error) {
+    return handleError(res, error, "GET hierarchy-recommendations");
+  }
+});
+
+// Accept a recommendation — inserts the suggested roll-up via the same
+// updateAccountHierarchy() path the manual COA editor uses. Never a direct write.
+router.post("/key-reports/hierarchy-recommendations/:recommendationId/accept", async (req, res) => {
+  try {
+    const recommendation = await loadRecommendationWithAccess(req, res);
+    if (!recommendation) return;
+    const { acceptRecommendation } = require("../services/keyReports/aiHierarchyRecommendationService");
+    const result = await acceptRecommendation(recommendation.id, req.user?.id || null);
+    const coa = await chartOfAccountsService.getChartOfAccounts(recommendation.version_id);
+    return res.json({ success: true, ...result, ...coa });
+  } catch (error) {
+    return handleError(res, error, "POST hierarchy-recommendations/accept");
+  }
+});
+
+// Ignore a recommendation — marks it decided, no hierarchy change.
+router.post("/key-reports/hierarchy-recommendations/:recommendationId/ignore", async (req, res) => {
+  try {
+    const recommendation = await loadRecommendationWithAccess(req, res);
+    if (!recommendation) return;
+    const { ignoreRecommendation } = require("../services/keyReports/aiHierarchyRecommendationService");
+    const result = await ignoreRecommendation(recommendation.id, req.user?.id || null);
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return handleError(res, error, "POST hierarchy-recommendations/ignore");
+  }
+});
+
 // ---- File references (deletion guard / "linked" badges) --------------------
 
 router.get("/key-reports/file-references", async (req, res) => {
