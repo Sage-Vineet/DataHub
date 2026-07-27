@@ -485,6 +485,14 @@ router.post("/key-reports/versions/:versionId/chart-of-accounts/save", async (re
     if (!version) return;
     const nodes = Array.isArray(req.body?.nodes) ? req.body.nodes : [];
     const result = await chartOfAccountsService.saveHierarchy(version.id, nodes, req.user?.id || null);
+    if (result.rejected) {
+      return res.status(422).json({
+        success: false,
+        code: result.code,
+        error: result.violations?.[0] || "This change would create an invalid hierarchy.",
+        violations: result.violations,
+      });
+    }
     const coa = await chartOfAccountsService.getChartOfAccounts(version.id);
     return res.json({ success: true, ...result, ...coa });
   } catch (error) {

@@ -357,7 +357,7 @@ async function chunkedInsertGeneric(table, rows, chunk = 500) {
   }
 }
 
-const { generateChartOfAccounts, validateChartOfAccounts, ensureCoaComplete, printCoaValidationBlock } = require('../chartOfAccountsService');
+const { generateChartOfAccounts, validateChartOfAccounts, ensureCoaComplete, printCoaValidationBlock, finalizeCoaHierarchy } = require('../chartOfAccountsService');
 const { replaceValidationResults } = require('./keyReportValidationService');
 const { classifyWorkflowDocuments, generateTrialBalance, generateMonthlyBalanceSheets, generateMonthlyBalanceSheetsReverse, generateReconciliation, linkGlToCoa, linkBsToCoa, coaTypeMap } = require('./keyReportAccountingService');
 const keyReportService = require('./keyReportService');
@@ -982,6 +982,19 @@ async function generateFinancialTables(version, opts = {}) {
     logger.warn(`  BS → COA link failed: ${bsLinkErr.message}`);
   }
   mark('coa_linking');
+
+  // Finalize the COA tree: derive level_1..15 from the now-persisted
+  // parent_account_id chain (the single source of truth) and validate it.
+  // Runs after every COA writer above (generateChartOfAccounts,
+  // ensureCoaComplete, both linkers) and before anything below reads
+  // level_1..15 — including the COA Validation block, the AI Hierarchy
+  // Recommendation Engine, and Trial Balance/BS/P&L/CF generation.
+  try {
+    const treeResult = await finalizeCoaHierarchy(companyId, versionId);
+    logger.log(`  ✓ COA tree finalized: ${treeResult.rewrittenRows}/${treeResult.totalRows} row(s) had level_1..15 recomputed from parent_account_id`);
+  } catch (finalizeErr) {
+    logger.warn(`  COA tree finalization failed: ${finalizeErr.message}`);
+  }
 
   try {
     await printCoaValidationBlock(companyId, versionId, plAccountRows);
