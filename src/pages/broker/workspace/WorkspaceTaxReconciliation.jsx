@@ -327,6 +327,15 @@ export default function WorkspaceTaxReconciliation() {
   // A Key Reports Version is never the QuickBooks-Manual flow.
   const isQBManual = !kr.krActive && activeSourceMode === 'quickbooks_manual';
 
+  // Layout selector (RENDER ONLY — data loading still keys off isManualMode /
+  // isManualGL). The page has two control headers: the clean "manual" header
+  // (Version selector + Sync, as in the Key Reports design) and the QuickBooks
+  // header (Start/End Year + Accounting Method). Key Reports connection mode must
+  // ALWAYS use the manual header — even while the KR context is still resolving
+  // (kr.krActive is briefly false, which would otherwise fall back to the
+  // QuickBooks header and flash the wrong controls).
+  const useManualLayout = isManualMode || krSelected;
+
   const selectedYears = useMemo(() => {
     const s = parseInt(startYear, 10);
     const e = parseInt(endYear, 10);
@@ -554,27 +563,50 @@ export default function WorkspaceTaxReconciliation() {
         let plYears = {};
         let taxRes;
         if (kr.krActive && kr.selectedVersionId) {
-          const [plEntries, taxResRaw] = await Promise.all([
-            Promise.all(selectedYears.map(async (y) => {
-              try {
-                const resp = await getKeyReportVersionReport(
-                  kr.selectedVersionId,
-                  "profit-loss",
-                  { year: String(y), period: "year" },
-                );
-                const rows = resp?.hierarchicalRows || resp?.rows || [];
-                const data = extractTaxRowsFromManualPL(rows);
-                // Skip years with no P&L so empty years don't create blank columns.
-                return data.some((d) => Number(d.pl) !== 0) ? [y, { year: y, data }] : null;
-              } catch {
-                return null;
-              }
-            })),
+          // Discover ALL fiscal years present in this version's books (a
+          // no-year P&L request returns every distinct GL/BS year) in parallel
+          // with the tax-return fetch. Driving the per-year P&L fetch off the
+          // version's actual years — instead of the Start/End Year dropdown
+          // window (selectedYears) — stops a fiscal year that falls outside that
+          // window (e.g. an older 2023 GL year) from being silently dropped.
+          const [discovery, taxResRaw] = await Promise.all([
+            getKeyReportVersionReport(kr.selectedVersionId, "profit-loss", { period: "year" })
+              .catch(() => null),
             fetch(`${API_BASE_URL}/manual-report-uploads/tax-data?clientId=${clientId || ""}${forceParam}${krVersionParam}`, { headers })
               .then((r) => r.json()).catch(() => ({ success: false })),
           ]);
-          plYears = Object.fromEntries(plEntries.filter(Boolean));
           taxRes = taxResRaw;
+
+          const versionYears = Array.isArray(discovery?.years)
+            ? discovery.years.map(Number).filter(Boolean)
+            : [];
+          const taxYearKeys = (taxResRaw?.success && taxResRaw.years)
+            ? Object.keys(taxResRaw.years).map(Number).filter(Boolean)
+            : [];
+          // Union of years with books, a tax return, or an explicit selection —
+          // de-duplicated and sorted. Empty years are dropped below.
+          const plFetchYears = [...new Set([
+            ...versionYears,
+            ...taxYearKeys,
+            ...selectedYears,
+          ])].sort((a, b) => a - b);
+
+          const plEntries = await Promise.all(plFetchYears.map(async (y) => {
+            try {
+              const resp = await getKeyReportVersionReport(
+                kr.selectedVersionId,
+                "profit-loss",
+                { year: String(y), period: "year" },
+              );
+              const rows = resp?.hierarchicalRows || resp?.rows || [];
+              const data = extractTaxRowsFromManualPL(rows);
+              // Skip years with no P&L so empty years don't create blank columns.
+              return data.some((d) => Number(d.pl) !== 0) ? [y, { year: y, data }] : null;
+            } catch {
+              return null;
+            }
+          }));
+          plYears = Object.fromEntries(plEntries.filter(Boolean));
         } else {
           const [plRes, taxResRaw] = await Promise.all([
             fetch(`${API_BASE_URL}/manual-report-uploads/pl-for-tax?clientId=${clientId || ""}${forceParam}${krVersionParam}`, { headers })
@@ -1365,7 +1397,7 @@ export default function WorkspaceTaxReconciliation() {
         </div>
       )}
 
-      {isManualMode && (
+      {useManualLayout && (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex flex-wrap items-center gap-3">
@@ -1407,7 +1439,7 @@ export default function WorkspaceTaxReconciliation() {
       )}
 
       {/* ── Controls ────────────────────────────────────────────────────── */}
-      {!isManualMode && (
+      {!useManualLayout && (
         <section className="rounded-[var(--radius-card)] border border-border bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,0.04)] lg:p-6">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
@@ -1499,7 +1531,7 @@ export default function WorkspaceTaxReconciliation() {
         <div className="border-b border-border px-5 py-4">
           <h2 className="text-[16px] font-semibold text-text-primary">Tax Reconciliation</h2>
           <p className="mt-1 text-[13px] text-text-secondary">
-            {isManualMode
+            {useManualLayout
               ? activeYears.length > 0
                 ? `Showing FY ${activeYears[0]} from uploaded P&L.`
                 : "Awaiting data load."

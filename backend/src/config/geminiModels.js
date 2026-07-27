@@ -20,10 +20,13 @@
 "use strict";
 
 // The historical default fallback chain. Callers may pass their own tuned order.
+// NOTE: "gemini-2.0-flash" was removed — Google decommissioned it and the API now
+// returns "404 model no longer available", which as the LAST fallback turned any
+// upstream failure into a hard error (and masked the real cause). Keep only
+// currently-available models here.
 const DEFAULT_GEMINI_MODELS = Object.freeze([
   "gemini-2.5-flash-lite",
   "gemini-2.5-flash",
-  "gemini-2.0-flash",
 ]);
 
 function parseList(value) {

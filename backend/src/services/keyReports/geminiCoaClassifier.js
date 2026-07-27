@@ -43,7 +43,7 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { getGeminiModels } = require("../../config/geminiModels");
 const { supabase } = require("../../db");
 
-const GEMINI_MODELS = getGeminiModels(["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"]);
+const GEMINI_MODELS = getGeminiModels(["gemini-2.5-flash-lite", "gemini-2.5-flash"]);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Maximum accounts per Gemini prompt. Smaller than the old type-only batch
