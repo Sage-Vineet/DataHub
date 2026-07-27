@@ -11,7 +11,6 @@ const { getGeminiModels } = require("../config/geminiModels");
 const GEMINI_MODELS = getGeminiModels([
   "gemini-2.5-flash-lite",
   "gemini-2.5-flash",
-  "gemini-2.0-flash",
 ]);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

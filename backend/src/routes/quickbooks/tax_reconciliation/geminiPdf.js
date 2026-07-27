@@ -20,7 +20,6 @@ const DEFAULT_PDF_PATH =
 const GEMINI_MODELS = getGeminiModels([
   "gemini-2.5-flash-lite",
   "gemini-2.5-flash",
-  "gemini-2.0-flash",
 ]);
 
 /* ===========================

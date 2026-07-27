@@ -69,7 +69,9 @@ function _clearManualUploadProgress(companyId) {
 
 // Dynamically selected via GEMINI_MODELS / GEMINI_MODEL env; this array is the
 // default fallback order used when no override is configured.
-const TAX_GEMINI_MODELS = getGeminiModels(["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"]);
+// "gemini-2.0-flash" removed — decommissioned (API returns 404), so as a fallback
+// it only converted transient failures into hard errors.
+const TAX_GEMINI_MODELS = getGeminiModels(["gemini-2.5-flash-lite", "gemini-2.5-flash"]);
 const _taxExtractCache = new Map();
 const _taxExtractSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -376,6 +378,7 @@ async function extractTaxDataFromBuffer(pdfBuffer, cacheKey) {
         } catch (err) {
           lastError = err;
           const msg = String(err.message || err);
+          console.warn(`[TaxExtract] model=${modelName} key=${cacheKey} FAILED: ${msg.slice(0, 300)}`);
           if (msg.includes("404") || msg.toLowerCase().includes("not found")) break;
           if ((msg.includes("429") || msg.toLowerCase().includes("quota")) && retries > 1) {
             await _taxExtractSleep(delay);

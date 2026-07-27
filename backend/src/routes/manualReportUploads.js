@@ -37,6 +37,19 @@ const { canAccessCompany } = require("../services/permissionService");
 const { runBsBankBalancesExtraction, runBankExtraction } = require("./quickbooks/reconciliation/bankVsBooks");
 const keyReportService = require("../services/keyReports/keyReportService");
 const { getMonthlyPlFinancials } = require("../services/keyReports/financialStatementService");
+const { decryptPdfEmptyPassword } = require("../services/keyReports/pythonBridge");
+
+// True when a PDF carries an /Encrypt dictionary (referenced from the trailer).
+// Gemini rejects encrypted PDFs with "The document has no pages", so these must
+// be decrypted first. Matches the standard trailer form "/Encrypt N G R".
+function isEncryptedPdf(buffer) {
+  if (!buffer || !buffer.length) return false;
+  try {
+    return /\/Encrypt\s+\d+\s+\d+\s+R/.test(buffer.toString("latin1"));
+  } catch {
+    return false;
+  }
+}
 
 // Version-aware cache for Key Reports-resolved tax return extraction. Kept
 // separate from the Sync All tax_return cache so existing data is untouched;
@@ -45,7 +58,12 @@ const { getMonthlyPlFinancials } = require("../services/keyReports/financialStat
 // of a single overwritten row, so switching versions / refreshing reuses the
 // cached extraction (incl. Schedule K) instead of re-calling Gemini. Bump also
 // invalidates v1 rows so the Schedule K verification fix takes effect once.
-const TAX_RETURN_KR_CACHE_TYPE = "tax_return_kr_v2";
+// v4: adds encrypted-PDF handling (auto-decrypt of owner-restricted files +
+// persisted `lockedFiles` for password-protected ones). Bumping from v3 discards
+// stale rows that froze a partial extraction (e.g. only the one unencrypted year)
+// so the new logic re-runs on next load.
+// (v3 note kept for history: v2→v3 fixed the multi-year keying / partial-cache freeze.)
+const TAX_RETURN_KR_CACHE_TYPE = "tax_return_kr_v4";
 
 // Extracts monthly Total Income and Total Expenses from the latest P&L stored in qb_synced_reports.
 // Returns { totalIncome: { "YYYY-MM": number }, totalExpenses: { "YYYY-MM": number } } or null.
@@ -946,11 +964,18 @@ async function runTaxExtraction(clientId, { datasetVersion = null, keyReportVers
     Object.keys(stored.data.tax_return.taxYears).length > 0
   ) {
     console.log(`[TaxData] Serving ${Object.keys(stored.data.tax_return.taxYears).length} year(s) from KR cache (version=${versionId})`);
+    // Re-emit the "password-protected" notice on cache hits too, so the user
+    // keeps seeing which linked returns couldn't be read (until they replace them).
+    const lockedFiles = Array.isArray(stored.data.tax_return.lockedFiles) ? stored.data.tax_return.lockedFiles : [];
+    const cachedWarnings = lockedFiles.map(
+      (name) => `"${name}" is password-protected and could not be read. Please upload an unlocked copy of this tax return.`,
+    );
     return {
       success: true,
       years: enrichTaxYears(stored.data.tax_return.taxYears),
       source: "db_cache",
       updatedAt: stored.updated_at,
+      warnings: cachedWarnings.length ? cachedWarnings : undefined,
     };
   }
 
@@ -966,6 +991,7 @@ async function runTaxExtraction(clientId, { datasetVersion = null, keyReportVers
 
   const years = {};
   const warnings = [];
+  const lockedFiles = [];
 
   const settlements = await Promise.allSettled(
     documents.map(async (doc) => {
@@ -1000,8 +1026,24 @@ async function runTaxExtraction(clientId, { datasetVersion = null, keyReportVers
         return null;
       }
 
-      const buffer = normalizeUploadBinary(uploadData.data);
+      let buffer = normalizeUploadBinary(uploadData.data);
       if (!buffer?.length) { console.warn(`[TaxData] Empty buffer for "${fileName}"`); return null; }
+
+      // Encrypted PDFs make Gemini fail with "The document has no pages" — which
+      // silently dropped the return. Try a best-effort decrypt (handles the
+      // common owner-restricted / empty-user-password case); if it still needs a
+      // real password, report it clearly instead of losing the file.
+      if (isEncryptedPdf(buffer)) {
+        console.log(`[TaxData] "${fileName}" is encrypted — attempting decrypt…`);
+        const decrypted = await decryptPdfEmptyPassword(buffer);
+        if (decrypted?.length) {
+          console.log(`[TaxData] Decrypted "${fileName}" (${buffer.length} → ${decrypted.length} bytes)`);
+          buffer = decrypted;
+        } else {
+          console.warn(`[TaxData] "${fileName}" is password-protected — cannot read`);
+          return { locked: true, fileName };
+        }
+      }
 
       console.log(`[TaxData] Sending "${fileName}" (${buffer.length} bytes) to Gemini...`);
       const cacheKey = `tax_rt_${clientId}_${uploadId}`;
@@ -1010,12 +1052,53 @@ async function runTaxExtraction(clientId, { datasetVersion = null, keyReportVers
     })
   );
 
+  // Pull a 4-digit tax year (2000-2099) out of a filename, e.g.
+  // "2023 RETURN ACCEPTED …" → 2023. Used as a fallback / tie-breaker so
+  // distinctly-named returns are never collapsed by a mis-read content year.
+  const yearFromFileName = (name) => {
+    const m = String(name || "").match(/\b(20\d{2})\b/);
+    const y = m ? Number(m[1]) : 0;
+    return y >= 2000 && y <= 2099 ? y : 0;
+  };
+
   for (const s of settlements) {
-    if (s.status === "fulfilled" && s.value?.extracted?.year) {
+    if (s.status === "fulfilled" && s.value?.locked) {
+      // Encrypted PDF that needs a real password — surface it so the user knows
+      // exactly which file to replace, instead of it vanishing from the table.
+      lockedFiles.push(s.value.fileName);
+      warnings.push(`"${s.value.fileName}" is password-protected and could not be read. Please upload an unlocked copy of this tax return.`);
+      console.warn(`[TaxData] locked (password-protected): "${s.value.fileName}"`);
+      continue;
+    }
+    if (s.status === "fulfilled" && s.value?.extracted) {
       const { extracted, fileName, status } = s.value;
-      const year = Number(extracted.year);
+      const contentYear = Number(extracted.year) || 0;
+      const fileYear = yearFromFileName(fileName);
+      // Prefer the year printed on the form; fall back to the filename year
+      // when the form year is missing / out of range so the document is never
+      // silently dropped (previously a year of 0 was filtered out entirely).
+      let year = (contentYear >= 2010 && contentYear <= 2030) ? contentYear : fileYear;
+
+      // Collision guard: if this key is already taken by a DIFFERENT document,
+      // disambiguate using the filename year so two returns can't overwrite one
+      // another (IRS forms can print the same top-right form/revision year).
+      if (
+        year && years[year] && years[year].fileName !== fileName &&
+        fileYear && fileYear !== year && !years[fileYear]
+      ) {
+        year = fileYear;
+      }
+
+      if (!year) {
+        warnings.push(`Could not determine the tax year for "${fileName}" — skipped.`);
+        console.warn(`[TaxData] No year for "${fileName}" (content=${extracted.year}) — skipped`);
+        continue;
+      }
+      if (years[year] && years[year].fileName !== fileName) {
+        warnings.push(`Two tax returns resolved to ${year} ("${years[year].fileName}" and "${fileName}"); showing the latter.`);
+      }
       years[year] = { year, fileName, status: status || "Needs Review", data: buildTaxReturnResponseData(extracted) };
-      console.log(`[TaxData] year=${year} status=${status} from "${fileName}"`);
+      console.log(`[TaxData] year=${year} (content=${contentYear}, file=${fileYear}) status=${status} from "${fileName}"`);
     } else if (s.status === "rejected") {
       const msg = s.reason?.message || String(s.reason);
       warnings.push(`Extraction failed: ${msg}`);
@@ -1029,7 +1112,7 @@ async function runTaxExtraction(clientId, { datasetVersion = null, keyReportVers
   // back to them stays a cache hit (no re-extraction).
   if (Object.keys(years).length > 0) {
     const now = new Date().toISOString();
-    const payload = { tax_return: { taxYears: years, documentSignature } };
+    const payload = { tax_return: { taxYears: years, documentSignature, lockedFiles } };
     try {
       const { data: existingRows } = await supabase
         .from("qb_synced_reports")
