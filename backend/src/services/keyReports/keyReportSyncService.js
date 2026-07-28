@@ -357,7 +357,7 @@ async function chunkedInsertGeneric(table, rows, chunk = 500) {
   }
 }
 
-const { generateChartOfAccounts, validateChartOfAccounts, ensureCoaComplete, printCoaValidationBlock } = require('../chartOfAccountsService');
+const { generateChartOfAccounts, validateChartOfAccounts, ensureCoaComplete, printCoaValidationBlock, finalizeCoaHierarchy } = require('../chartOfAccountsService');
 const { replaceValidationResults } = require('./keyReportValidationService');
 const { classifyWorkflowDocuments, generateTrialBalance, generateMonthlyBalanceSheets, generateMonthlyBalanceSheetsReverse, generateReconciliation, linkGlToCoa, linkBsToCoa, coaTypeMap } = require('./keyReportAccountingService');
 const keyReportService = require('./keyReportService');
@@ -983,11 +983,40 @@ async function generateFinancialTables(version, opts = {}) {
   }
   mark('coa_linking');
 
+  // Finalize the COA tree: derive level_1..15 from the now-persisted
+  // parent_account_id chain (the single source of truth) and validate it.
+  // Runs after every COA writer above (generateChartOfAccounts,
+  // ensureCoaComplete, both linkers) and before anything below reads
+  // level_1..15 — including the COA Validation block, the AI Hierarchy
+  // Recommendation Engine, and Trial Balance/BS/P&L/CF generation.
+  try {
+    const treeResult = await finalizeCoaHierarchy(companyId, versionId);
+    logger.log(`  ✓ COA tree finalized: ${treeResult.rewrittenRows}/${treeResult.totalRows} row(s) had level_1..15 recomputed from parent_account_id`);
+  } catch (finalizeErr) {
+    logger.warn(`  COA tree finalization failed: ${finalizeErr.message}`);
+  }
+
   try {
     await printCoaValidationBlock(companyId, versionId, plAccountRows);
   } catch (validationBlockErr) {
     logger.warn(`  COA Validation block failed: ${validationBlockErr.message}`);
   }
+
+  // ── PHASE 2d: AI Hierarchy Recommendation Engine (advisory-only) ────────────
+  // Runs strictly AFTER the deterministic COA above is fully generated and
+  // validated. Never classifies, never moves an account, never writes to
+  // chart_of_accounts — it only reads the now-authoritative hierarchy and
+  // stores OPTIONAL roll-up suggestions for a human to review. A failure
+  // here is never fatal to the sync (Trial Balance/reports must still be
+  // generated even if the advisory pass errors).
+  logger.log('--- Phase 2d: AI Hierarchy Recommendation Engine ---');
+  try {
+    const { generateRecommendations } = require('./aiHierarchyRecommendationService');
+    await generateRecommendations(companyId, versionId);
+  } catch (recoErr) {
+    logger.warn(`  AI Hierarchy Recommendation Engine failed: ${recoErr.message}`);
+  }
+  mark('ai_hierarchy_recommendations');
 
   // ── PHASE 3: Trial Balance (generated directly from the General Ledger) ─────
   logger.log('--- Phase 3: Trial Balance ---');

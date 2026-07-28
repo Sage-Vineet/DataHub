@@ -734,6 +734,8 @@ export default function WorkspaceKeyReports() {
             )}
 
             {/* ── Collapsible COA editor ─────────────────────────────────── */}
+            {/* AI Hierarchy Recommendations now render inline as per-account
+                badges inside the tree editor below, not as a separate section. */}
             {hasSyncedData && !generating && (
               <div className="mt-4">
                 <button
