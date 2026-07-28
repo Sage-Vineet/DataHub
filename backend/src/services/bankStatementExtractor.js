@@ -518,6 +518,28 @@ EXTRACTION RULES — search for these patterns anywhere in the document:
   month: 3-letter abbreviation (Jan, Feb, … Dec) from the statement end date
   year: 4-digit year from the statement end date
 
+CRITICAL — BANK NAME CONSISTENCY (prevents the SAME account splitting into duplicate banks):
+- Identify the institution's name DYNAMICALLY from the statement itself (header, logo, letterhead),
+  then return its PRIMARY, CANONICAL form — spelled the SAME way every time that bank appears, within
+  a file AND across different files. The reconciliation groups statements by bank, so an inconsistent
+  name makes one real account show up as several separate banks.
+- Derive that canonical form by REASONING from these general rules — apply them to ANY bank; do NOT
+  rely on a fixed list of known banks:
+    1. Start from the most prominent institution name printed on the statement.
+    2. Remove trailing legal / entity qualifiers and punctuation noise: ", N.A.", "N.A.", "National
+       Association", "Inc.", "LLC", "L.L.C.", "Ltd.", "Corp.", "Co.", and a trailing generic "Bank"
+       that merely follows the brand. Keep a word like "Bank" ONLY when it is inseparable from the
+       brand (i.e. removing it would change which institution is meant).
+    3. Collapse spacing / punctuation variants of the same brand to one stable form (drop stray
+       periods and extra spaces inside an acronym) and use consistent Title Case, never ALL CAPS.
+    4. Prefer the shortest form that STILL unambiguously identifies the institution.
+  The goal is convergence: every different spelling of ONE institution must reduce to a single
+  canonical string. (Illustrative of the RULE only, not a lookup — a header reading
+  "A.C.M.E. BANK, N.A." and one reading "ACME Bank" must BOTH yield the same canonical "Acme".)
+- Do NOT put the account number, branch, city, or address inside bankName.
+- IDENTITY RULE: an account is identified by its accountNumber (last 4 digits). If two statements
+  share the same last 4 digits, they are the SAME account — output the SAME bankName for both.
+
 CRITICAL — BEGINNING vs ENDING BALANCE (most common extraction error):
 - startingBalance and endingBalance are TWO DIFFERENT numbers on the statement.
 - startingBalance = balance BEFORE the statement period (often labelled "Previous Balance", "Balance Forward", or "Opening Balance").
@@ -686,11 +708,18 @@ function cleanBankLabel(name) {
     .trim();
 }
 
-// Canonical, case-insensitive grouping key for a bank account. Same bank + same
-// last-4 collapse into one key regardless of how the AI cased the name across
-// statements ("Truist (9118)" and "TRUIST (9118)" → identical key).
+// Canonical grouping key for a bank account. The account number (last 4 digits)
+// is the reliable, double-verified identity of a bank account, so when it is
+// present we key on it ALONE. The same account then collapses into ONE dropdown
+// entry no matter how differently the AI transcribed the institution name across
+// statements — e.g. "J.P.Morgan (7936)", "J.P. Morgan (7936)", and
+// "JPMorgan Chase Bank, N.A. (7936)" are all account 7936 → one bank. Only when
+// there is NO account number at all do we fall back to the normalized bank name
+// (still case-insensitive, so "Truist" and "TRUIST" share a key).
 function canonicalBankKey(cleanName, last4) {
-  return `${cleanBankLabel(cleanName)}|${String(last4 || "")}`;
+  const l4 = String(last4 || "").replace(/\D/g, "").slice(-4);
+  if (l4) return `acct|${l4}`;
+  return `name|${cleanBankLabel(cleanName)}`;
 }
 
 // When two statements for the same account disagree on the bank-name casing,

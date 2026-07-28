@@ -212,6 +212,59 @@ const computePlFinancialsFromFs = (resp) => {
   }
   return { totalIncome, totalExpenses };
 };
+
+// Derive per-month bank/cash book balances from a Key Reports financial-statements
+// response. Unlike the single point-in-time /bs-bank-balances snapshot (one
+// year-end figure per bank), the generated MONTHLY Balance Sheet
+// (resp.reports.balanceSheet.monthly) carries a book balance for every
+// current-asset leaf account in every month — the true source for a per-month
+// "Per Balance Sheet" row.
+//
+// Bank/cash accounts are current-asset leaves, so we collect them from each
+// month's assets.currentAssets.groups. Accounts are merged across months by
+// identity (systemId → account number → name); amounts are keyed "YYYY-MM" to
+// match the bank data's monthKey. Each entry keeps the { name, accountNumber }
+// shape matchBsBank() expects (plus a monthAmounts map) so the SAME matcher maps
+// a bank statement to its account. Returns null when no monthly BS is available.
+const computeBsBankBalancesByMonthFromFs = (resp) => {
+  const monthly = resp?.reports?.balanceSheet?.monthly || [];
+  const byId = new Map();
+  let latestYear = null;
+
+  for (const e of monthly) {
+    const year = Number(e?.year);
+    const monthNum = Number(e?.monthNumber);
+    if (!Number.isInteger(year) || !(monthNum >= 1 && monthNum <= 12)) continue;
+    const monthKey = `${year}-${String(monthNum).padStart(2, "0")}`;
+    if (latestYear == null || year > latestYear) latestYear = year;
+
+    const groups = e?.statement?.assets?.currentAssets?.groups || {};
+    for (const g of Object.values(groups)) {
+      for (const acc of g?.accounts || []) {
+        const name = acc?.adjustedName || acc?.name;
+        if (!name) continue;
+        const idKey = acc?.systemId || acc?.accountNumber || name;
+        let rec = byId.get(idKey);
+        if (!rec) {
+          rec = {
+            name,
+            // Prefer a 4-digit run in the name (what matchBsBank keys on); fall
+            // back to the stored account number so the number path can still fire.
+            accountNumber: _bsLastFour(name) || String(acc?.accountNumber || ""),
+            monthAmounts: {},
+          };
+          byId.set(idKey, rec);
+        }
+        const val = Number(acc?.amount);
+        if (Number.isFinite(val)) rec.monthAmounts[monthKey] = val;
+      }
+    }
+  }
+
+  const bankAccounts = Array.from(byId.values());
+  if (!bankAccounts.length) return null;
+  return { year: latestYear, bankAccounts };
+};
 const fmtAmt = (val) => {
   if (val == null || val === 0) return "-";
   return formatNumber(val, 2);
@@ -1136,6 +1189,10 @@ export default function WorkspaceReconciliation() {
   const [manualMonthStart, setManualMonthStart] = useState(null);
   const [manualMonthEnd, setManualMonthEnd] = useState(null);
   const [bsBankBalances, setBsBankBalances] = useState(null);
+  // Per-month bank/cash book balances derived from the Key Reports MONTHLY
+  // Balance Sheet. Drives a per-month "Per Balance Sheet" row; null outside Key
+  // Reports mode (falls back to the point-in-time bsBankBalances snapshot).
+  const [bsMonthlyBalances, setBsMonthlyBalances] = useState(null);
   const [plFinancials, setPlFinancials] = useState(null);
   const [reportSources, setReportSources] = useState([]);
   // Key Reports is the single source of truth: when the company has a selected
@@ -1298,6 +1355,7 @@ export default function WorkspaceReconciliation() {
       qbOneBankActivity: qbOneBankActivity ?? null,
       plFinancials: plFinancials ?? null,
       bsBankBalances: bsBankBalances ?? null,
+      bsMonthlyBalances: bsMonthlyBalances ?? null,
       savedAt: new Date().toISOString(),
     });
   }, [
@@ -1309,6 +1367,7 @@ export default function WorkspaceReconciliation() {
     qbOneBankActivity,
     plFinancials,
     bsBankBalances,
+    bsMonthlyBalances,
   ]);
 
   // Restore the cached data for the current slot on mount and whenever the
@@ -1326,6 +1385,7 @@ export default function WorkspaceReconciliation() {
     if (slot.qbOneBankActivity) setQbOneBankActivity(slot.qbOneBankActivity);
     if (slot.plFinancials) setPlFinancials(slot.plFinancials);
     if (slot.bsBankBalances) setBsBankBalances(slot.bsBankBalances);
+    if (slot.bsMonthlyBalances) setBsMonthlyBalances(slot.bsMonthlyBalances);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId, selectedReportSource, reconDataVersion]);
 
@@ -1836,7 +1896,13 @@ export default function WorkspaceReconciliation() {
   // page's sessionStorage cache, invalidated on regenerate) is reliable and cheap.
   useEffect(() => {
     const versionId = kr.krActive ? kr.selectedVersionId : null;
-    if (!clientId || !versionId) return;
+    if (!clientId || !versionId) {
+      // Not in Key Reports mode → no monthly Balance Sheet source. Clear any stale
+      // monthly balances so the point-in-time bsBankBalances snapshot (the manual /
+      // QMS source of truth for "Per Balance Sheet") is authoritative.
+      setBsMonthlyBalances(null);
+      return;
+    }
     let cancelled = false;
     (async () => {
       try {
@@ -1847,6 +1913,8 @@ export default function WorkspaceReconciliation() {
         }
         if (cancelled || !resp) return;
         setPlFinancials(computePlFinancialsFromFs(resp));
+        // Same response feeds the per-month "Per Balance Sheet" row.
+        setBsMonthlyBalances(computeBsBankBalancesByMonthFromFs(resp));
       } catch {
         /* non-fatal — leave any existing P&L figures in place */
       }
@@ -2774,6 +2842,34 @@ export default function WorkspaceReconciliation() {
 
   // ── Balance account table renderer ───────────────────────────────────────
 
+  // Resolve the "Per Balance Sheet" book balance for a bank. Preference order:
+  //   1. Key Reports MONTHLY Balance Sheet — a true per-month book balance.
+  //   2. The single point-in-time /bs-bank-balances snapshot — fills only its
+  //      year-end month (the manual / QMS fallback, and the year-end column when
+  //      the monthly BS doesn't cover it).
+  // Returns { forMonth(monthKey), ttm(ttmRows) } so the on-screen table and the
+  // Excel / PDF exports all compute the row identically.
+  const makePerBalanceSheetResolver = (bankName) => {
+    const monthlyAmounts =
+      matchBsBank(bankName, bsMonthlyBalances?.bankAccounts)?.monthAmounts || null;
+    const pointMatch = matchBsBank(bankName, bsBankBalances?.bankAccounts);
+    const pointBalance = pointMatch != null ? pointMatch.amount : null;
+    const yearEndKey = bsBankBalances?.year != null ? `${bsBankBalances.year}-12` : null;
+    return {
+      forMonth: (monthKey) => {
+        if (monthlyAmounts && monthlyAmounts[monthKey] != null) return monthlyAmounts[monthKey];
+        return pointBalance != null && monthKey === yearEndKey ? pointBalance : null;
+      },
+      // TTM "Per Balance Sheet" is a point-in-time figure — never a sum. Use the
+      // most recent month in the TTM window that has a book balance (monthly BS),
+      // else the single year-end snapshot.
+      ttm: (ttmRows) =>
+        monthlyAmounts
+          ? ([...ttmRows].reverse().find((r) => r.perBalanceSheet != null)?.perBalanceSheet ?? null)
+          : pointBalance,
+    };
+  };
+
   const renderManualBalanceAccountTable = (bank, label) => {
     const pdfMonths = filteredPdfMonths;
     const monthMap = bank
@@ -2782,27 +2878,35 @@ export default function WorkspaceReconciliation() {
     const bankLabel = label || bank?.bankName || "Bank Account";
     const colCount = pdfMonths.length + 2;
 
-    // BS bank balance for this specific bank
-    const bsMatch = matchBsBank(bank?.bankName, bsBankBalances?.bankAccounts);
-    const bsBalance = bsMatch != null ? bsMatch.amount : null;
-    // Only the December of the BS year gets the perBalanceSheet value (year-end point-in-time)
-    const bsYearEndKey = bsBankBalances?.year != null ? `${bsBankBalances.year}-12` : null;
+    // BS bank balance for this specific bank — per-month (Key Reports monthly BS)
+    // with a point-in-time year-end fallback. See makePerBalanceSheetResolver.
+    const perBS = makePerBalanceSheetResolver(bank?.bankName);
 
+    // Diagnostics — report both sources so a "no match" is never ambiguous.
     if (bank?.bankName) {
-      if (bsMatch) {
+      const monthlyMatch = matchBsBank(bank.bankName, bsMonthlyBalances?.bankAccounts);
+      const pointMatch = matchBsBank(bank.bankName, bsBankBalances?.bankAccounts);
+      if (monthlyMatch || pointMatch) {
         console.log(`[BsMatch] ${JSON.stringify({
           selectedBank: bank.bankName,
-          detectedYear: bsBankBalances?.year,
-          balanceSheetSource: bsBankBalances?.source,
-          matchedBalanceSheetFile: bsBankBalances?.fileName,
-          matchedAccount: bsMatch.name,
-          extractedAmount: bsMatch.amount,
-          perBalanceSheet: bsBalance,
+          monthlyBalanceSheet: monthlyMatch
+            ? { matchedAccount: monthlyMatch.name, months: Object.keys(monthlyMatch.monthAmounts || {}).length }
+            : null,
+          pointInTime: pointMatch
+            ? {
+                detectedYear: bsBankBalances?.year,
+                balanceSheetSource: bsBankBalances?.source,
+                matchedBalanceSheetFile: bsBankBalances?.fileName,
+                matchedAccount: pointMatch.name,
+                extractedAmount: pointMatch.amount,
+              }
+            : null,
         })}`);
       } else {
         console.warn(
           `[BsMatch] No matching bank account found in Balance Sheet for "${bank.bankName}".`,
-          `Available: ${bsBankBalances?.bankAccounts?.map((b) => b.name).join(", ") || "none (bsBankBalances is null)"}`,
+          `Monthly BS: ${bsMonthlyBalances?.bankAccounts?.map((b) => b.name).join(", ") || "none"}.`,
+          `Point-in-time: ${bsBankBalances?.bankAccounts?.map((b) => b.name).join(", ") || "none"}.`,
         );
       }
     }
@@ -2810,7 +2914,7 @@ export default function WorkspaceReconciliation() {
     // Build rows with all fields, compute derived values
     const baseRows = pdfMonths.map((monthKey) => {
       const m = monthMap[monthKey];
-      const perBalanceSheet = bsBalance != null && monthKey === bsYearEndKey ? bsBalance : null;
+      const perBalanceSheet = perBS.forMonth(monthKey);
       return {
         month: monthKey,
         startingBalance: m?.startingBalance ?? 0,
@@ -2857,14 +2961,16 @@ export default function WorkspaceReconciliation() {
       buildEmptyTTM(),
     );
 
-    // Override TTM perBalanceSheet with BS balance (point-in-time, not summed across months)
+    // TTM "Per Balance Sheet" is point-in-time (the most recent month's book
+    // balance), never summed across months. See makePerBalanceSheetResolver.
     const ttm = { ...ttmBase };
-    if (bsBalance != null) {
-      ttm.perBalanceSheet = bsBalance;
-      ttm.variance = ttm.endingBalance - bsBalance;
+    const ttmPerBS = perBS.ttm(ttmSlice);
+    if (ttmPerBS != null) {
+      ttm.perBalanceSheet = ttmPerBS;
+      ttm.variance = ttm.endingBalance - ttmPerBS;
       ttm.unreconciledDollar = ttm.variance - ttm.outstandingChecks;
       ttm.unreconciledPct =
-        bsBalance !== 0 ? (ttm.unreconciledDollar / bsBalance) * 100 : null;
+        ttmPerBS !== 0 ? (ttm.unreconciledDollar / ttmPerBS) * 100 : null;
     }
 
     const v = (f) => [...rows.map((r) => fmtAmt(r[f])), fmtAmt(ttm[f])];
@@ -3315,23 +3421,37 @@ export default function WorkspaceReconciliation() {
     if (isManual) {
       (extractedBankPdfData?.banks || []).forEach((bank) => {
         const monthMap = Object.fromEntries((bank.months || []).map((m) => [m.monthKey, m]));
+        const perBS = makePerBalanceSheetResolver(bank.bankName);
         const baseRows = months.map((mk) => {
           const m = monthMap[mk];
-          return { month: mk, startingBalance: m?.startingBalance ?? 0, deposits: m?.deposits ?? 0, withdrawals: m?.withdrawals ?? 0, endingBalance: m?.endingBalance ?? 0 };
+          return { month: mk, startingBalance: m?.startingBalance ?? 0, deposits: m?.deposits ?? 0, withdrawals: m?.withdrawals ?? 0, endingBalance: m?.endingBalance ?? 0, perBalanceSheet: perBS.forMonth(mk) };
         });
-        const rows = baseRows.map((r, i) => ({
-          ...r,
-          footingCheck: r.endingBalance - (r.startingBalance + r.deposits - r.withdrawals),
-          priorMonthCheck: i === 0 ? 0 : baseRows[i - 1].endingBalance - r.startingBalance,
-          perBalanceSheet: null, variance: null, outstandingChecks: 0, unreconciledDollar: null, unreconciledPct: null,
-        }));
-        const ttm = rows.slice(-12).reduce((acc, r, i) => ({
+        const rows = baseRows.map((r, i) => {
+          const variance = r.perBalanceSheet != null ? r.endingBalance - r.perBalanceSheet : null;
+          const unreconciledDollar = variance != null ? variance - 0 : null;
+          const unreconciledPct = variance != null && r.perBalanceSheet !== 0 ? (unreconciledDollar / r.perBalanceSheet) * 100 : null;
+          return {
+            ...r,
+            footingCheck: r.endingBalance - (r.startingBalance + r.deposits - r.withdrawals),
+            priorMonthCheck: i === 0 ? 0 : baseRows[i - 1].endingBalance - r.startingBalance,
+            variance, outstandingChecks: 0, unreconciledDollar, unreconciledPct,
+          };
+        });
+        const ttmSlice = rows.slice(-12);
+        const ttm = ttmSlice.reduce((acc, r, i) => ({
           startingBalance: i === 0 ? r.startingBalance : acc.startingBalance,
           deposits: acc.deposits + r.deposits, withdrawals: acc.withdrawals + r.withdrawals, endingBalance: r.endingBalance,
           footingCheck: acc.footingCheck + r.footingCheck, priorMonthCheck: acc.priorMonthCheck + r.priorMonthCheck,
           perBalanceSheet: null, variance: null, outstandingChecks: 0, unreconciledDollar: null, unreconciledPct: null,
         }), { startingBalance: 0, deposits: 0, withdrawals: 0, endingBalance: 0, footingCheck: 0, priorMonthCheck: 0,
               perBalanceSheet: null, variance: null, outstandingChecks: 0, unreconciledDollar: null, unreconciledPct: null });
+        const ttmPerBS = perBS.ttm(ttmSlice);
+        if (ttmPerBS != null) {
+          ttm.perBalanceSheet = ttmPerBS;
+          ttm.variance = ttm.endingBalance - ttmPerBS;
+          ttm.unreconciledDollar = ttm.variance - ttm.outstandingChecks;
+          ttm.unreconciledPct = ttmPerBS !== 0 ? (ttm.unreconciledDollar / ttmPerBS) * 100 : null;
+        }
         allRows.push(...bankRows(bank.bankName || "Bank Account", rows, ttm));
       });
     } else {
@@ -3526,17 +3646,24 @@ export default function WorkspaceReconciliation() {
       if (!bank) return;
       drawSectionTitle(bank.bankName || "Bank Account");
       const monthMap = Object.fromEntries((bank.months || []).map((m) => [m.monthKey, m]));
+      const perBS = makePerBalanceSheetResolver(bank.bankName);
       const baseRows = months.map((mk) => {
         const m = monthMap[mk];
-        return { month: mk, startingBalance: m?.startingBalance ?? 0, deposits: m?.deposits ?? 0, withdrawals: m?.withdrawals ?? 0, endingBalance: m?.endingBalance ?? 0 };
+        return { month: mk, startingBalance: m?.startingBalance ?? 0, deposits: m?.deposits ?? 0, withdrawals: m?.withdrawals ?? 0, endingBalance: m?.endingBalance ?? 0, perBalanceSheet: perBS.forMonth(mk) };
       });
-      const rows = baseRows.map((r, i) => ({
-        ...r, intercompanyDeposits: 0, intercompanyWithdraws: 0,
-        footingCheck: r.endingBalance - (r.startingBalance + r.deposits - r.withdrawals),
-        priorMonthCheck: i === 0 ? 0 : baseRows[i - 1].endingBalance - r.startingBalance,
-        perBalanceSheet: null, variance: null, outstandingChecks: 0, unreconciledDollar: null, unreconciledPct: null,
-      }));
-      const ttm = rows.slice(-12).reduce((acc, r, i) => ({
+      const rows = baseRows.map((r, i) => {
+        const variance = r.perBalanceSheet != null ? r.endingBalance - r.perBalanceSheet : null;
+        const unreconciledDollar = variance != null ? variance - 0 : null;
+        const unreconciledPct = variance != null && r.perBalanceSheet !== 0 ? (unreconciledDollar / r.perBalanceSheet) * 100 : null;
+        return {
+          ...r, intercompanyDeposits: 0, intercompanyWithdraws: 0,
+          footingCheck: r.endingBalance - (r.startingBalance + r.deposits - r.withdrawals),
+          priorMonthCheck: i === 0 ? 0 : baseRows[i - 1].endingBalance - r.startingBalance,
+          variance, outstandingChecks: 0, unreconciledDollar, unreconciledPct,
+        };
+      });
+      const ttmSlice = rows.slice(-12);
+      const ttm = ttmSlice.reduce((acc, r, i) => ({
         startingBalance: i === 0 ? r.startingBalance : acc.startingBalance,
         deposits: acc.deposits + r.deposits, withdrawals: acc.withdrawals + r.withdrawals, endingBalance: r.endingBalance,
         intercompanyDeposits: 0, intercompanyWithdraws: 0,
@@ -3544,12 +3671,21 @@ export default function WorkspaceReconciliation() {
         perBalanceSheet: null, variance: null, outstandingChecks: 0, unreconciledDollar: null, unreconciledPct: null,
       }), { startingBalance: 0, deposits: 0, withdrawals: 0, endingBalance: 0, intercompanyDeposits: 0, intercompanyWithdraws: 0,
             footingCheck: 0, priorMonthCheck: 0, perBalanceSheet: null, variance: null, outstandingChecks: 0, unreconciledDollar: null, unreconciledPct: null });
+      const ttmPerBS = perBS.ttm(ttmSlice);
+      if (ttmPerBS != null) {
+        ttm.perBalanceSheet = ttmPerBS;
+        ttm.variance = ttm.endingBalance - ttmPerBS;
+        ttm.unreconciledDollar = ttm.variance - ttm.outstandingChecks;
+        ttm.unreconciledPct = ttmPerBS !== 0 ? (ttm.unreconciledDollar / ttmPerBS) * 100 : null;
+      }
       const vals = (f) => [...rows.map((r) => r[f]), ttm[f]];
       drawTableHeader(bank.bankName, colHeaders);
       drawRow("Starting Balance", vals("startingBalance"), { bold: true });
       drawRow("Deposits", vals("deposits")); drawRow("Withdrawals", vals("withdrawals"));
       drawRow("Ending Balance", vals("endingBalance"), { bold: true }); spacer();
       drawRow("Footing Check", vals("footingCheck")); drawRow("Prior Month Check", vals("priorMonthCheck")); spacer();
+      drawRow("Per Balance Sheet", vals("perBalanceSheet"), { bold: true });
+      drawRow("Variance", vals("variance"), { rowType: "variance-amt" }); spacer();
       drawRow("Unreconciled $ Variance", vals("unreconciledDollar"), { rowType: "variance-amt" });
       drawRow("Unreconciled % Variance", vals("unreconciledPct"), { rowType: "variance-pct" });
     };
