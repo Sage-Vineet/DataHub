@@ -474,6 +474,10 @@ export function createRequestReminder(requestId, payload) {
   return request(`/requests/${requestId}/reminders`, { method: 'POST', body: payload }).then(unwrapPayload);
 }
 
+export function skipNextRequestReminder(requestId, payload = {}) {
+  return request(`/requests/${requestId}/reminders/skip-next`, { method: 'POST', body: payload }).then(unwrapPayload);
+}
+
 export function listCompanyReminders(companyId) {
   return request(`/companies/${companyId}/reminders`).then(ensureArray);
 }

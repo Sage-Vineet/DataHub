@@ -6,7 +6,6 @@ import {
   ImagePlus,
   Loader2,
   Palette,
-  Plus,
   RefreshCcw,
   Save,
   Trash2,
@@ -21,7 +20,6 @@ import {
   SUPPORTED_CIM_STYLE_FONTS,
   createCimStyleProfile,
   exportCimStyleProfileJson,
-  getCimStyleElementOverride,
   importCimStyleProfileJson,
   normalizeCimStyleProfile,
   normalizeCimStyleProfilesState,
@@ -38,6 +36,7 @@ const EDITOR_TABS = [
 ];
 
 const DEFAULT_PREVIEW_SLIDES = Array.from({ length: 38 }, (_, index) => index + 1);
+const MAX_TEMPLATE_IMPORT_BYTES = 8_500_000;
 const DEFAULT_COLOR_PRESETS = [
   "#476E2C",
   "#8BC53D",
@@ -315,7 +314,6 @@ function ProfileList({
   state,
   selectedProfileId,
   onSelect,
-  onCreate,
   onDuplicate,
   onDelete,
   onReset,
@@ -327,14 +325,8 @@ function ProfileList({
   return (
     <aside className="flex min-h-0 flex-col border-r border-border bg-[#F7F8FA]">
       <div className="border-b border-border p-3">
-        <button
-          type="button"
-          onClick={onCreate}
-          className="flex h-9 w-full items-center justify-center gap-2 rounded-md bg-[#476E2C] px-3 text-xs font-bold text-white transition hover:bg-[#365522]"
-        >
-          <Plus size={14} />
-          New Profile
-        </button>
+        <p className="text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">Template Themes</p>
+        <p className="mt-1 text-xs font-semibold text-[#050505]">{state.profiles.length} saved theme{state.profiles.length === 1 ? "" : "s"}</p>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {state.profiles.map((profile) => {
@@ -362,15 +354,21 @@ function ProfileList({
         })}
       </div>
       <div className="space-y-2 border-t border-border p-3">
+        <button
+          type="button"
+          onClick={onDuplicate}
+          className="inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-md border border-[#BFD99B] bg-white text-xs font-bold text-[#476E2C] transition hover:bg-[#EEF6E0]"
+        >
+          <Copy size={13} />
+          Copy Theme
+        </button>
+        <div className="rounded-md border border-border bg-white p-2">
+          <p className="text-[10px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">Import / Export</p>
+          <p className="mt-1 text-[11px] font-semibold leading-4 text-[#6D6E71]">
+            JSON includes colors, fonts, backgrounds, tables, charts, branding, and selected text overrides.
+          </p>
+        </div>
         <div className="grid grid-cols-2 gap-2">
-          <button
-            type="button"
-            onClick={onDuplicate}
-            className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-border bg-white text-xs font-bold text-[#476E2C] transition hover:bg-[#EEF6E0]"
-          >
-            <Copy size={13} />
-            Duplicate
-          </button>
           <button
             type="button"
             onClick={onExport}
@@ -389,6 +387,14 @@ function ProfileList({
           </button>
           <button
             type="button"
+            onClick={onReset}
+            className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-border bg-white text-xs font-bold text-[#476E2C] transition hover:bg-[#EEF6E0]"
+          >
+            <RefreshCcw size={13} />
+            Default
+          </button>
+          <button
+            type="button"
             onClick={onDelete}
             disabled={selectedProfileId === DEFAULT_CIM_STYLE_PROFILE_ID}
             className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-border bg-white text-xs font-bold text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
@@ -397,14 +403,6 @@ function ProfileList({
             Delete
           </button>
         </div>
-        <button
-          type="button"
-          onClick={onReset}
-          className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-md border border-[#BFD99B] bg-white text-xs font-bold text-[#476E2C] transition hover:bg-[#EEF6E0]"
-        >
-          <RefreshCcw size={13} />
-          Reset to Default Template
-        </button>
         <input
           ref={importRef}
           type="file"
@@ -863,11 +861,10 @@ export default function CimTemplateStyleEditor({
   const [recentColors, setRecentColors] = useState([]);
   const [error, setError] = useState("");
   const [warnings, setWarnings] = useState([]);
-  const [selectedElement, setSelectedElement] = useState(null);
+  const [statusMessage, setStatusMessage] = useState("");
 
   const changePreviewSlide = (slideNumber) => {
     setPreviewSlide(slideNumber);
-    setSelectedElement(null);
   };
 
   const selectedProfile = useMemo(() => {
@@ -953,17 +950,6 @@ export default function CimTemplateStyleEditor({
     }));
   };
 
-  const createProfile = () => {
-    const profile = createCimStyleProfile({ name: "New Brand Style" });
-    setDraftState((previous) => ({
-      ...previous,
-      activeProfileId: profile.id,
-      profiles: [...previous.profiles, profile],
-      updatedAt: new Date().toISOString(),
-    }));
-    setSelectedProfileId(profile.id);
-  };
-
   const duplicateProfile = () => {
     const profile = createCimStyleProfile({
       ...normalizedSelected,
@@ -979,6 +965,8 @@ export default function CimTemplateStyleEditor({
       updatedAt: new Date().toISOString(),
     }));
     setSelectedProfileId(profile.id);
+    setStatusMessage(`${profile.name} is ready to customize.`);
+    setError("");
   };
 
   const deleteProfile = () => {
@@ -1003,11 +991,19 @@ export default function CimTemplateStyleEditor({
       updatedAt: new Date().toISOString(),
     }));
     setSelectedProfileId(DEFAULT_CIM_STYLE_PROFILE_ID);
+    setStatusMessage("Default template selected.");
+    setError("");
   };
 
   const importProfile = async (file) => {
     if (!file) return;
     try {
+      if (!/\.json$/i.test(file.name || "") && file.type && file.type !== "application/json") {
+        throw new Error("Select a DataHub CIM theme JSON file.");
+      }
+      if (file.size > MAX_TEMPLATE_IMPORT_BYTES) {
+        throw new Error("Theme file is too large. Exported CIM themes must be under 8.5 MB.");
+      }
       const text = await file.text();
       const { profile, warnings: importWarnings } = importCimStyleProfileJson(text);
       const imported = createCimStyleProfile({
@@ -1024,13 +1020,18 @@ export default function CimTemplateStyleEditor({
       setSelectedProfileId(imported.id);
       setWarnings(importWarnings);
       setError("");
-    } catch {
-      setError("The selected style profile could not be imported.");
+      setStatusMessage(`${imported.name} imported and selected.`);
+    } catch (importError) {
+      setError(importError?.message || "The selected style profile could not be imported.");
+      setStatusMessage("");
     }
   };
 
   const exportProfile = () => {
-    downloadText(`${slugify(normalizedSelected.name)}.json`, exportCimStyleProfileJson(normalizedSelected));
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadText(`datahub-cim-theme-${slugify(normalizedSelected.name)}-${stamp}.json`, exportCimStyleProfileJson(normalizedSelected));
+    setStatusMessage(`${normalizedSelected.name} exported as a JSON theme.`);
+    setError("");
   };
 
   const handleSave = async () => {
@@ -1046,8 +1047,10 @@ export default function CimTemplateStyleEditor({
     });
     setWarnings(validation.warnings);
     setError("");
+    setStatusMessage("");
     try {
       await onSave(nextState);
+      setStatusMessage(`${validation.profile.name} saved and applied to the CIM.`);
     } catch (saveError) {
       setError(saveError?.message || "Template style profile could not be saved.");
     }
@@ -1071,8 +1074,9 @@ export default function CimTemplateStyleEditor({
           onSelect={(profileId) => {
             setSelectedProfileId(profileId);
             setDraftState((previous) => ({ ...previous, activeProfileId: profileId }));
+            setStatusMessage("");
+            setError("");
           }}
-          onCreate={createProfile}
           onDuplicate={duplicateProfile}
           onDelete={deleteProfile}
           onReset={resetToDefault}
@@ -1117,7 +1121,7 @@ export default function CimTemplateStyleEditor({
 
               {normalizedSelected.locked ? (
                 <div className="mb-4 rounded-lg border border-[#DDEBCB] bg-[#F8FCF3] p-3 text-xs font-semibold text-[#476E2C]">
-                  Duplicate the default profile to edit broker branding.
+                  Copy the default theme to edit full-CIM branding.
                 </div>
               ) : null}
 
@@ -1150,92 +1154,12 @@ export default function CimTemplateStyleEditor({
                   Slide {previewSlide}
                 </span>
               </div>
-              {!normalizedSelected.locked ? (
-                <p className="mb-2 text-[11px] font-semibold text-[#8A8F98]">
-                  Click any text on the slide to restyle just that text — like formatting a selection in PowerPoint.
-                </p>
-              ) : null}
               <div className="mx-auto max-w-3xl rounded-lg border border-border bg-[#F7F8FA] p-3">
                 {renderPreview?.({
                   profile: normalizedSelected,
                   slideNumber: previewSlide,
-                  selection: normalizedSelected.locked ? null : {
-                    selectedElementId: selectedElement?.elementId || null,
-                    onSelectElement: setSelectedElement,
-                  },
                 })}
               </div>
-              {selectedElement ? (
-                <div className="mt-3 rounded-lg border border-[#8BC53D] bg-[#F8FCF3] p-3">
-                  <div className="mb-2 flex items-center justify-between gap-2">
-                    <span className="min-w-0 truncate text-xs font-bold text-[#476E2C]" title={selectedElement.label}>
-                      Selected text: “{selectedElement.label}”
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedElement(null)}
-                      className="shrink-0 rounded p-1 text-[#6D6E71] transition hover:bg-white hover:text-[#050505]"
-                      aria-label="Deselect text"
-                    >
-                      <X size={14} />
-                    </button>
-                  </div>
-                  <div className="space-y-2">
-                    <ColorInput
-                      label="Color"
-                      value={
-                        getCimStyleElementOverride(normalizedSelected, previewSlide, selectedElement.elementId)?.color
-                        || selectedElement.currentColor
-                      }
-                      onChange={(value) => updateProfile(
-                        ["elementOverrides", String(previewSlide), String(selectedElement.elementId), "color"],
-                        value,
-                      )}
-                      {...colorPickerProps}
-                    />
-                    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
-                      <label className="block">
-                        <ControlLabel>Size (pt)</ControlLabel>
-                        <input
-                          type="number"
-                          inputMode="numeric"
-                          min={4}
-                          max={200}
-                          step={1}
-                          value={Math.round(
-                            getCimStyleElementOverride(normalizedSelected, previewSlide, selectedElement.elementId)?.fontSize
-                            || selectedElement.currentFontSize
-                            || 12,
-                          )}
-                          onChange={(event) => {
-                            const value = Number(event.target.value);
-                            if (Number.isFinite(value) && value > 0) {
-                              updateProfile(
-                                ["elementOverrides", String(previewSlide), String(selectedElement.elementId), "fontSize"],
-                                value,
-                              );
-                            }
-                          }}
-                          className="h-9 w-full rounded-md border border-border bg-white px-2.5 text-xs font-semibold text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
-                          aria-label="Selected text size in points"
-                        />
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() => updateProfile(
-                          ["elementOverrides", String(previewSlide), String(selectedElement.elementId)],
-                          {},
-                        )}
-                        className="inline-flex h-9 shrink-0 items-center gap-1 rounded-md border border-border bg-white px-2.5 text-[11px] font-bold text-[#6D6E71] transition hover:border-[#8BC53D] hover:text-[#476E2C]"
-                        title="Reset this text to the theme's styling"
-                      >
-                        <RefreshCcw size={13} />
-                        Reset
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
               <label className="mt-4 block rounded-md border border-border bg-white p-3">
                 <ControlLabel>Preview Slide</ControlLabel>
                 <SelectInput value={previewSlide} onChange={(value) => changePreviewSlide(Number(value))}>
@@ -1270,19 +1194,13 @@ export default function CimTemplateStyleEditor({
               {error ? <p className="text-xs font-bold text-red-600">{error}</p> : null}
               {warnings.length ? (
                 <p className="text-xs font-semibold text-[#A86F0B]">{warnings[0]}{warnings.length > 1 ? ` +${warnings.length - 1}` : ""}</p>
+              ) : statusMessage ? (
+                <p className="text-xs font-semibold text-[#476E2C]">{statusMessage}</p>
               ) : (
                 <p className="text-xs font-semibold text-[#6D6E71]">Version {normalizedSelected.version}</p>
               )}
             </div>
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={resetToDefault}
-                className="theme-btn-secondary"
-              >
-                <RefreshCcw size={16} />
-                Reset
-              </button>
               <button
                 type="button"
                 onClick={handleSave}

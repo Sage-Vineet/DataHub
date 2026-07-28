@@ -44,7 +44,6 @@ import { exportCimPptx } from "../../../lib/cimPptxExport";
 import {
   DEFAULT_CIM_STYLE_PROFILE,
   DEFAULT_CIM_STYLE_PROFILE_ID,
-  applyCimTemplateStyleProfile,
   applyCimTemplateStyleProfilesToLayouts,
   getActiveCimStyleProfile,
   isDefaultCimStyleProfile,
@@ -10356,23 +10355,23 @@ export default function WorkspaceCimPrep() {
           saving={styleProfilesSaving}
           onClose={() => setStyleEditorOpen(false)}
           onSave={handleSaveStyleProfiles}
-          renderPreview={({ profile, slideNumber, selection }) => (
-            <SlideCanvas
-              slideNumber={slideNumber}
-              displaySlideNumber={slideNumber}
-              layout={applyCimTemplateStyleProfile(slideNumber, layouts[slideNumber], profile)}
-              fields={fieldsBySlide[slideNumber] || []}
-              fieldValues={fieldValues}
-              assetValues={assetValues}
-              chartValues={chartValues}
-              globalDetails={effectiveGlobalDetails}
-              styleProfile={profile}
-              previewMode
-              styleSelectionMode={Boolean(selection)}
-              selectedStyleElementId={selection?.selectedElementId}
-              onSelectStyleElement={selection?.onSelectElement}
-            />
-          )}
+          renderPreview={({ profile, slideNumber }) => {
+            const previewLayouts = applyCimTemplateStyleProfilesToLayouts(layouts, profile);
+            const page = resolveCimBuilderPreviewPage(
+              { sourceSlideNumber: slideNumber, instanceIndex: 0 },
+              {
+                layouts: previewLayouts,
+                fieldsBySlide,
+                fieldValues,
+                assetValues,
+                chartValues,
+                globalDetails: effectiveGlobalDetails,
+                styleProfile: profile,
+                builderState: cimBuilderState,
+              },
+            );
+            return <CimBuilderPagePreview page={page} />;
+          }}
         />
       ) : null}
 

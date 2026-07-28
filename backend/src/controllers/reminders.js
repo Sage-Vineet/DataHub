@@ -1,31 +1,35 @@
 const { supabase } = require("../db");
 const asyncHandler = require("../utils");
 const permissionService = require("../services/permissionService");
+const requestService = require("../services/requestService");
 const {
   buildReminderFrequencyLabel,
   resolveReminderFrequencyDays,
+  resolveReminderFrequencyHours,
   getReminderDeadline,
   resolveNextReminderAt,
-  resolveScheduledReminderAt,
+  isRequestOverdue,
   isRequestResolved,
 } = require("../utils/requestReminders");
 
 function canAccessReminder(user, request) {
-  if (!user || !request) return false;
-  if (!permissionService.canAccessCompany(user, request.company_id)) return false;
-  if (permissionService.isBroker(user)) return true;
-  if (user?.effective_role === "client") {
-    return request.approval_status === "approved" && request.visible !== false && request.visible !== 0;
-  }
-  return request.approval_status === "approved" || String(request.created_by) === String(user?.id);
+  return permissionService.canAccessRequest(user, request);
+}
+
+function reminderEventType(event) {
+  return String(event?.event_type || "sent").trim().toLowerCase() || "sent";
+}
+
+function getReminderBaseTime(event) {
+  if (!event) return null;
+  return event.scheduled_for || event.sent_at;
 }
 
 function buildReminderStatus(request, nextReminderAt) {
   if (isRequestResolved(request.status)) return "resolved";
+  if (isRequestOverdue(request)) return "overdue";
   if (String(request.status || "").toLowerCase() === "blocked") return "blocked";
   if (nextReminderAt && new Date(nextReminderAt) <= new Date()) return "due";
-  const reminderDeadline = getReminderDeadline(request.due_date);
-  if (!nextReminderAt && reminderDeadline && new Date(reminderDeadline) < new Date()) return "due";
   return "active";
 }
 
@@ -45,14 +49,16 @@ const listReminders = asyncHandler(async (req, res) => {
 
   if (requestsError) return res.status(500).json({ error: requestsError.message });
 
-  const filteredRequests = (requests || [])
+  const enrichedRequests = await requestService.attachRequestAssignees((requests || [])
     .map(r => ({
       ...r,
       company_name: r.company?.name,
       company_contact_name: r.company?.contact_name,
       company_contact_email: r.company?.contact_email,
       company_contact_phone: r.company?.contact_phone
-    }))
+    })));
+
+  const filteredRequests = (enrichedRequests || [])
     .filter((request) => canAccessReminder(req.user, request));
 
   if (!filteredRequests.length) {
@@ -63,7 +69,7 @@ const listReminders = asyncHandler(async (req, res) => {
   const { data: history, error: historyError } = await supabase
     .from("request_reminders")
     .select(`
-      request_id, sent_by, sent_at,
+      *,
       user:users!request_reminders_sent_by_fkey(name, email)
     `)
     .in("request_id", requestIds)
@@ -73,6 +79,7 @@ const listReminders = asyncHandler(async (req, res) => {
 
   const historyMapped = (history || []).map(h => ({
     ...h,
+    event_type: reminderEventType(h),
     sent_by_name: h.user?.name,
     sent_by_email: h.user?.email
   }));
@@ -85,24 +92,28 @@ const listReminders = asyncHandler(async (req, res) => {
 
   const reminders = filteredRequests.map((request) => {
     const reminderHistory = reminderHistoryByRequestId[request.id] || [];
-    const lastReminder = reminderHistory[0] || null;
-    const firstReminder = reminderHistory[reminderHistory.length - 1] || null;
+    const sentHistory = reminderHistory.filter((item) => reminderEventType(item) === "sent");
+    const cadenceHistory = reminderHistory.filter((item) => {
+      const eventType = reminderEventType(item);
+      return eventType === "sent" || eventType === "skipped";
+    });
+    const overdueNotice = reminderHistory.find((item) => reminderEventType(item) === "overdue") || null;
+    const lastReminder = sentHistory[0] || null;
+    const firstReminder = sentHistory[sentHistory.length - 1] || null;
+    const lastCadenceEvent = cadenceHistory[0] || null;
     const frequencyDays = resolveReminderFrequencyDays(request.priority, request.reminder_frequency_days);
+    const frequencyHours = resolveReminderFrequencyHours(request.priority, request.reminder_frequency_days);
     const reminderFrequencyLabel = buildReminderFrequencyLabel(request.priority, request.reminder_frequency_days);
-    const reminderBaseTime = lastReminder?.sent_at || request.approved_at || request.created_at || new Date().toISOString();
+    const reminderBaseTime = getReminderBaseTime(lastCadenceEvent) || request.approved_at || request.created_at || new Date().toISOString();
     const nextReminderAt = resolveNextReminderAt(
       reminderBaseTime,
       request.priority,
       request.reminder_frequency_days,
       request.due_date,
     );
-    const nextScheduledReminderAt = resolveScheduledReminderAt(
-      reminderBaseTime,
-      request.priority,
-      request.reminder_frequency_days,
-    );
     const status = buildReminderStatus(request, nextReminderAt);
-    const sentCount = reminderHistory.length;
+    const visibleNextReminderAt = ["resolved", "overdue", "blocked"].includes(status) ? null : nextReminderAt;
+    const sentCount = sentHistory.length;
     const automaticUntil = getReminderDeadline(request.due_date);
 
     return {
@@ -111,17 +122,19 @@ const listReminders = asyncHandler(async (req, res) => {
       company_id: request.company_id,
       company_name: request.company_name,
       title: request.title,
-      message: null,
+      message: request.description || null,
       due_date: request.due_date,
       priority: request.priority,
       frequency_days: frequencyDays,
+      frequency_hours: frequencyHours,
       frequency_label: reminderFrequencyLabel,
       sent_count: sentCount,
-      first_sent_at: firstReminder?.sent_at || request.approved_at || request.created_at || null,
-      last_sent_at: lastReminder?.sent_at || request.approved_at || request.created_at || null,
-      next_due_at: nextReminderAt,
-      next_reminder_at: nextScheduledReminderAt,
+      first_sent_at: firstReminder?.sent_at || null,
+      last_sent_at: lastReminder?.sent_at || null,
+      next_due_at: visibleNextReminderAt,
+      next_reminder_at: visibleNextReminderAt,
       automatic_until: automaticUntil,
+      overdue_notice_sent_at: overdueNotice?.sent_at || null,
       status,
       workflow_status: request.status,
       submission_source: request.submission_source,
@@ -136,10 +149,10 @@ const listReminders = asyncHandler(async (req, res) => {
   });
 
   reminders.sort((a, b) => {
-    const priorityOrder = { due: 0, active: 1, blocked: 2, resolved: 3 };
+    const priorityOrder = { due: 0, overdue: 1, active: 2, blocked: 3, resolved: 4 };
     const statusDiff = (priorityOrder[a.status] ?? 9) - (priorityOrder[b.status] ?? 9);
     if (statusDiff !== 0) return statusDiff;
-    return String(a.next_reminder_at || a.next_due_at || "").localeCompare(String(b.next_reminder_at || b.next_due_at || ""));
+    return String(a.next_reminder_at || a.next_due_at || a.last_sent_at || "").localeCompare(String(b.next_reminder_at || b.next_due_at || b.last_sent_at || ""));
   });
 
   res.json(reminders);

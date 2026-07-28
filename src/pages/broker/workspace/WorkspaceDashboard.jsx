@@ -98,7 +98,7 @@ export default function WorkspaceDashboard() {
   }, [clientId]);
 
   const activeReminders = useMemo(
-    () => reminders.filter((item) => item.status === 'active' || item.status === 'due'),
+    () => reminders.filter((item) => item.status === 'active' || item.status === 'due' || item.status === 'overdue'),
     [reminders]
   );
 

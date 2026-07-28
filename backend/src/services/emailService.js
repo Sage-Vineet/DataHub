@@ -424,6 +424,7 @@ async function sendWelcomeEmail({ userId, userName, email, password, companyName
 async function sendReminderEmail({
   toName, toEmail, requestTitle, dueDate, senderName, companyName,
   requestType, description, priority, status, reminderAt, portalUrl,
+  frequencyLabel, nextReminderAt, noticeType = "reminder",
 }) {
   const formattedDue = dueDate
     ? new Date(dueDate).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
@@ -431,9 +432,16 @@ async function sendReminderEmail({
   const formattedReminderAt = reminderAt
     ? new Date(reminderAt).toLocaleString("en-US", { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" })
     : null;
+  const formattedNextReminderAt = nextReminderAt
+    ? new Date(nextReminderAt).toLocaleString("en-US", { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" })
+    : null;
   const greeting = toName ? `Hi ${toName},` : "Hi,";
   const sentBy   = senderName || "Your broker";
   const title    = escapeHtml(requestTitle || "Document Request");
+  const isOverdue = noticeType === "overdue";
+  const actionCopy = isOverdue
+    ? "This request is now overdue. Please log in to the M&A Hub portal and complete it as soon as possible."
+    : "Please log in to the M&A Hub portal to complete any outstanding documents.";
 
   const detailRows = [
     companyName    ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600;width:140px">Company</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${escapeHtml(companyName)}</td></tr>` : "",
@@ -442,42 +450,52 @@ async function sendReminderEmail({
     priority       ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Priority</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5;text-transform:capitalize">${escapeHtml(priority)}</td></tr>` : "",
     formattedDue   ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Due Date</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${formattedDue}</td></tr>` : "",
     status         ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Status</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5;text-transform:capitalize">${escapeHtml(status)}</td></tr>` : "",
+    frequencyLabel ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Cadence</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${escapeHtml(frequencyLabel)}</td></tr>` : "",
     formattedReminderAt ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Reminder Sent</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${formattedReminderAt}</td></tr>` : "",
+    formattedNextReminderAt && !isOverdue ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Next Reminder</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${formattedNextReminderAt}</td></tr>` : "",
   ].filter(Boolean).join("\n");
 
   const html = `
     <div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#333">
       <p>${greeting}</p>
-      <p>${escapeHtml(sentBy)} has sent you a reminder for the following document request:</p>
+      <p>${escapeHtml(sentBy)} has ${isOverdue ? "sent a final overdue notice" : "sent you a reminder"} for the following document request:</p>
       <table style="border-collapse:collapse;width:100%;margin:16px 0">
         <tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600;width:140px">Request</td>
             <td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${title}</td></tr>
         ${detailRows}
       </table>
-      <p>Please log in to the M&amp;A Hub portal to complete any outstanding documents.</p>
+      <p>${escapeHtml(actionCopy)}</p>
       ${portalUrl ? `<p style="margin:16px 0"><a href="${escapeHtml(portalUrl)}" style="background:#05164D;color:#fff;padding:10px 24px;border-radius:6px;text-decoration:none;font-weight:600;display:inline-block">Open Request Portal</a></p>` : ""}
-      <p style="margin-top:24px;color:#6d6e71;font-size:13px">Automated reminder — do not reply.</p>
+      <p style="margin-top:24px;color:#6d6e71;font-size:13px">Automated ${isOverdue ? "overdue notice" : "reminder"} — do not reply.</p>
     </div>`;
 
   const textLines = [
     greeting, "",
-    `${sentBy} has sent you a reminder for: ${requestTitle || "Document Request"}`,
+    `${sentBy} has sent ${isOverdue ? "a final overdue notice" : "a reminder"} for: ${requestTitle || "Document Request"}`,
     companyName         ? `Company:      ${companyName}` : "",
     requestType         ? `Type:         ${requestType}` : "",
     priority            ? `Priority:     ${priority}` : "",
     formattedDue        ? `Due:          ${formattedDue}` : "",
     status              ? `Status:       ${status}` : "",
+    frequencyLabel      ? `Cadence:      ${frequencyLabel}` : "",
     formattedReminderAt ? `Reminder Sent: ${formattedReminderAt}` : "",
+    formattedNextReminderAt && !isOverdue ? `Next Reminder: ${formattedNextReminderAt}` : "",
     description         ? `\nDescription:\n${description}` : "",
     "",
-    "Please log in to the M&A Hub portal to complete any outstanding documents.",
+    actionCopy,
     portalUrl ? `Portal: ${portalUrl}` : "",
   ].filter(Boolean).join("\n");
 
   try {
-    await _deliver(toEmail, `Reminder: Action Required for Request - ${requestTitle || "Document Request"}`, html, textLines);
+    return await _deliver(
+      toEmail,
+      `${isOverdue ? "Overdue Request" : "Reminder"}: ${requestTitle || "Document Request"}`,
+      html,
+      textLines
+    );
   } catch (err) {
     console.error(`[Email Service] Reminder email failed for <${toEmail}>: ${err.message}`);
+    return { sent: false, reason: "delivery_failed", error: err.message };
   }
 }
 
