@@ -40,6 +40,16 @@ function formatUploaderDisplay(user) {
   return label ? `${name} (${label})` : name;
 }
 
+function isMissingColumnError(error, columnName) {
+  const text = [
+    error?.message,
+    error?.details,
+    error?.hint,
+    error?.code,
+  ].filter(Boolean).join(" ");
+  return new RegExp(`(${columnName}.*does not exist|Could not find.*${columnName}|schema cache.*${columnName})`, "i").test(text);
+}
+
 // Tracks the one-time init promise so every caller can await the same work.
 let _activityTableReady = null;
 
@@ -149,8 +159,8 @@ async function getDocumentById(id) {
 async function createDocument(docData) {
   try {
     const rows = await pgQuery(
-      `INSERT INTO documents (company_id, folder_id, name, file_url, upload_id, size, ext, status, uploaded_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      `INSERT INTO documents (company_id, folder_id, name, file_url, upload_id, size, ext, status, color, uploaded_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
       [
         docData.company_id,
         docData.folder_id,
@@ -160,26 +170,39 @@ async function createDocument(docData) {
         docData.size,
         docData.ext,
         docData.status,
+        docData.color || null,
         docData.uploaded_by,
       ],
     );
     return rows[0];
   } catch {
-    const { data, error } = await supabase
+    const payload = {
+      company_id: docData.company_id,
+      folder_id: docData.folder_id,
+      name: docData.name,
+      file_url: docData.file_url,
+      upload_id: docData.upload_id || null,
+      size: docData.size,
+      ext: docData.ext,
+      status: docData.status,
+      color: docData.color || null,
+      uploaded_by: docData.uploaded_by,
+    };
+    let { data, error } = await supabase
       .from("documents")
-      .insert({
-        company_id: docData.company_id,
-        folder_id: docData.folder_id,
-        name: docData.name,
-        file_url: docData.file_url,
-        upload_id: docData.upload_id || null,
-        size: docData.size,
-        ext: docData.ext,
-        status: docData.status,
-        uploaded_by: docData.uploaded_by,
-      })
+      .insert(payload)
       .select("*")
       .single();
+    if (error && isMissingColumnError(error, "color")) {
+      delete payload.color;
+      const retry = await supabase
+        .from("documents")
+        .insert(payload)
+        .select("*")
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
     if (error) throw error;
     return data;
   }
@@ -234,6 +257,59 @@ async function deleteDocument(id) {
         await supabase.from("uploads").delete().eq("id", uploadId);
       }
     }
+  }
+}
+
+async function updateDocument(id, docData = {}) {
+  const updates = {};
+  if (docData.name !== undefined) updates.name = String(docData.name || "").trim();
+  if (docData.color !== undefined) updates.color = docData.color || null;
+
+  const keys = Object.keys(updates);
+  if (!keys.length) return getDocumentById(id);
+
+  try {
+    const set = keys.map((key, index) => `"${key}"=$${index + 1}`).join(", ");
+    const rows = await pgQuery(
+      `UPDATE documents SET ${set} WHERE id=$${keys.length + 1} RETURNING *`,
+      [...keys.map((key) => updates[key]), id],
+    );
+    return rows[0] || null;
+  } catch {
+    let { data, error } = await supabase
+      .from("documents")
+      .update(updates)
+      .eq("id", id)
+      .select("*")
+      .single();
+    if (error && isMissingColumnError(error, "color")) {
+      const retryUpdates = { ...updates };
+      delete retryUpdates.color;
+
+      if (Object.keys(retryUpdates).length) {
+        const retry = await supabase
+          .from("documents")
+          .update(retryUpdates)
+          .eq("id", id)
+          .select("*")
+          .single();
+        data = retry.data;
+        error = retry.error;
+      } else {
+        data = await getDocumentById(id);
+        error = null;
+      }
+
+      if (!error && data) {
+        return {
+          ...data,
+          color: updates.color || data.color || null,
+          color_persistence_pending: true,
+        };
+      }
+    }
+    if (error) throw error;
+    return data;
   }
 }
 
@@ -394,6 +470,7 @@ module.exports = {
   listDocumentsByFolder,
   getDocumentById,
   createDocument,
+  updateDocument,
   archiveDocument,
   unarchiveDocument,
   deleteDocument,

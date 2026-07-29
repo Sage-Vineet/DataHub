@@ -81,6 +81,7 @@ const addFolderDocument = asyncHandler(async (req, res) => {
     size,
     ext,
     status,
+    color,
     uploaded_by,
     company_id,
   } = req.body || {};
@@ -131,6 +132,7 @@ const addFolderDocument = asyncHandler(async (req, res) => {
     size,
     ext,
     status,
+    color,
     uploaded_by
   });
 
@@ -166,6 +168,16 @@ const addFolderDocument = asyncHandler(async (req, res) => {
     uploaded_by_name,
     folder_name: targetFolderId === req.params.id ? null : "General Uploads",
   });
+});
+
+const updateDocument = asyncHandler(async (req, res) => {
+  const existing = await documentService.getDocumentById(req.params.id);
+  if (!existing) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, existing.company_id)) {
+    return res.status(403).json({ error: "You do not have permission to access this company's folders." });
+  }
+  const document = await documentService.updateDocument(req.params.id, req.body || {});
+  res.json(document);
 });
 
 const archiveFolderController = asyncHandler(async (req, res) => {
@@ -216,6 +228,68 @@ const deleteDocument = asyncHandler(async (req, res) => {
   }
   await documentService.deleteDocument(req.params.id);
   res.status(204).send();
+});
+
+const bulkDeleteItems = asyncHandler(async (req, res) => {
+  const items = Array.isArray(req.body?.items) ? req.body.items : [];
+  if (!items.length) return res.status(400).json({ error: "No items provided" });
+
+  const uniqueItems = Array.from(
+    new Map(
+      items
+        .filter((item) => item?.id && (item.type === "folder" || item.type === "file"))
+        .map((item) => [`${item.type}:${item.id}`, { id: item.id, type: item.type }])
+    ).values()
+  );
+
+  if (!uniqueItems.length) return res.status(400).json({ error: "No valid items provided" });
+
+  const results = await Promise.allSettled(uniqueItems.map(async (item) => {
+    if (item.type === "folder") {
+      const existing = await folderService.getFolderById(item.id);
+      if (!existing) {
+        return { ...item, skipped: true, reason: "Not found" };
+      }
+      if (!permissionService.canAccessCompany(req.user, existing.company_id)) {
+        const err = new Error("You do not have permission to delete this folder.");
+        err.status = 403;
+        throw err;
+      }
+      await folderService.deleteFolder(item.id);
+      return item;
+    }
+
+    const existing = await documentService.getDocumentById(item.id);
+    if (!existing) {
+      return { ...item, skipped: true, reason: "Not found" };
+    }
+    if (!permissionService.canAccessCompany(req.user, existing.company_id)) {
+      const err = new Error("You do not have permission to delete this document.");
+      err.status = 403;
+      throw err;
+    }
+    await documentService.deleteDocument(item.id);
+    return item;
+  }));
+
+  const deleted = [];
+  const failed = [];
+  results.forEach((result, index) => {
+    const item = uniqueItems[index];
+    if (result.status === "fulfilled") {
+      deleted.push(result.value);
+      return;
+    }
+    const reason = result.reason || {};
+    failed.push({
+      ...item,
+      error: reason.message || "Unable to delete item",
+      code: reason.code || reason.payload?.code || null,
+      status: reason.status || reason.payload?.status || null,
+    });
+  });
+
+  res.status(failed.length ? 207 : 200).json({ deleted, failed });
 });
 
 const recordDocumentActivity = asyncHandler(async (req, res) => {
@@ -276,7 +350,9 @@ module.exports = {
   unarchiveFolderController,
   listFolderDocuments,
   addFolderDocument,
+  updateDocument,
   deleteDocument,
+  bulkDeleteItems,
   archiveDocumentController,
   unarchiveDocumentController,
   listFolderTree,

@@ -135,7 +135,8 @@ CREATE TABLE IF NOT EXISTS folders (
   name text NOT NULL,
   color text,
   created_by uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-  created_at timestamptz NOT NULL DEFAULT now()
+  created_at timestamptz NOT NULL DEFAULT now(),
+  archived_at timestamptz
 );
 
 CREATE TABLE IF NOT EXISTS uploads (
@@ -159,6 +160,7 @@ CREATE TABLE IF NOT EXISTS documents (
   size text NOT NULL,
   ext text NOT NULL,
   status document_status NOT NULL,
+  color text,
   uploaded_by uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
   uploaded_at timestamptz NOT NULL DEFAULT now(),
   archived_at timestamptz

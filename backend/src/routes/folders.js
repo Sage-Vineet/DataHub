@@ -10,7 +10,9 @@ const {
   unarchiveFolderController,
   listFolderDocuments,
   addFolderDocument,
+  updateDocument,
   deleteDocument,
+  bulkDeleteItems,
   archiveDocumentController,
   unarchiveDocumentController,
   recordDocumentActivity,
@@ -36,6 +38,8 @@ router.post("/folders/:id/archive", archiveFolderController);
 router.post("/folders/:id/unarchive", unarchiveFolderController);
 router.get("/folders/:id/documents", listFolderDocuments);
 router.post("/folders/:id/documents", addFolderDocument);
+router.post("/data-room/items/bulk-delete", bulkDeleteItems);
+router.patch("/documents/:id", updateDocument);
 router.delete("/documents/:id", deleteDocument);
 router.post("/documents/:id/archive", archiveDocumentController);
 router.post("/documents/:id/unarchive", unarchiveDocumentController);
