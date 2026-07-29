@@ -67,7 +67,10 @@ function isEncryptedPdf(buffer) {
 // v4→v5: totalRevenue prompt fix — Gemini was reading Line 6 "Total income" into
 // totalRevenue instead of Line 1c "Gross receipts or sales". Bump forces re-extraction
 // so cached wrong revenue values are replaced.
-const TAX_RETURN_KR_CACHE_TYPE = "tax_return_kr_v5";
+// v5→v6: Schedule K extraction accuracy — line-code row anchoring (16a–16f / 17a–17b are
+// stacked tightly and were mis-aligned) + M-1/M-2 cross-check in the extraction and
+// verification prompts. Bump forces re-extraction so cached Schedule K values are refreshed.
+const TAX_RETURN_KR_CACHE_TYPE = "tax_return_kr_v6";
 
 // Extracts monthly Total Income and Total Expenses from the latest P&L stored in qb_synced_reports.
 // Returns { totalIncome: { "YYYY-MM": number }, totalExpenses: { "YYYY-MM": number } } or null.

@@ -126,6 +126,22 @@ SCHEDULE K (Form 1120-S) — "Shareholders' Pro Rata Share Items", Lines 2 throu
   7. DO NOT include Line 18 "Income (loss) reconciliation" — it is only a TOTAL that
      restates Ordinary business income and is NOT a reconciling item.
   8. Use the EXACT label text below for each line — do not paraphrase or re-case it.
+  9. ROW ALIGNMENT — MATCH BY PRINTED LINE CODE, NOT BY ROW POSITION. Each amount in the
+     "Total amount" column belongs to the line whose printed code (e.g. "16c", "16d",
+     "17a") sits on the SAME horizontal row. Lines 15a–15f, 16a–16f and 17a–17b are
+     stacked very close together — do NOT shift a value up or down by a row. Read the line
+     code printed immediately to the left of each amount and attach the amount to THAT
+     code, then use that code's label from the list below. (Example: a single "912" printed
+     on the "16c" row is "Nondeductible Expenses" = 912 — it is NOT "16b" and NOT "16d".)
+  10. SELF-CHECK against the rest of THIS return before returning Schedule K values:
+      • "16c Nondeductible Expenses" normally equals Schedule M-1, line 3 ("Expenses
+        recorded on books this year not included on Schedule K") and the Schedule M-2
+        "Other reductions" total.
+      • "16d Distributions" normally equals Schedule M-2, line 7 "Distributions".
+      • "16a Tax-Exempt Interest" + "16b Other Tax-Exempt Income" normally equal the
+        Schedule M-2 Other Adjustments Account additions / Schedule M-1 tax-exempt lines.
+      If your Schedule K figure disagrees with those companion schedules, you mis-read the
+      row — re-read the "Total amount" column for that exact line code and correct it.
 
   Line → label mapping (ONLY add lines with a visible non-zero value in "Total amount"):
   2  → "Net Rental Real Estate Income"
@@ -719,15 +735,27 @@ The prior extraction produced these Schedule K reconciling items:
 ${lines || "  (none)"}
 
 YOUR TASK — for EACH item above:
-1. Go to the Schedule K page in the PDF.
-2. Find the exact line that corresponds to that label.
-3. Look at the "Total amount" column (right side of the form) for that line.
+1. Go to the Schedule K page in the PDF (it spans TWO pages on 1120-S: lines 1–14 then
+   lines 15–18). Read BOTH pages.
+2. Find the exact line by its printed line CODE (e.g. "16c", "16d", "17a"), not by row
+   position. Lines 15a–15f, 16a–16f and 17a–17b are stacked tightly — the amount belongs
+   to the line code printed on the SAME horizontal row. Never shift a value up/down a row.
+3. Look at the "Total amount" column (right side of the form) for that line code.
 4. If you see a non-zero dollar amount printed there → KEEP the item with the correct value.
 5. If the cell is blank, empty, dashed, or zero → REMOVE it from the list.
 6. Correct the value if the amount you see differs from what was extracted.
 
-Also scan the ENTIRE Schedule K for any additional lines with non-zero values in the
-"Total amount" column that were MISSED by the prior extraction — add those too.
+Then scan the ENTIRE Schedule K for any additional non-zero "Total amount" lines the prior
+extraction MISSED and ADD them. Pay special attention to the "Items Affecting Shareholder
+Basis" and "Other Information" lines, which are the most commonly populated and the most
+often mis-read: 16a Tax-Exempt Interest Income, 16b Other Tax-Exempt Income,
+16c Nondeductible Expenses, 16d Distributions, 16e Repayment of Loans from Shareholders,
+16f Foreign Taxes Paid or Accrued, 17a Investment Income, 17b Investment Expenses.
+
+CROSS-CHECK each value against the companion schedules of the SAME return and fix any that
+disagree (a disagreement means you read the wrong row):
+- "Nondeductible Expenses" (16c) ≈ Schedule M-1 line 3 and Schedule M-2 "Other reductions".
+- "Distributions" (16d) ≈ Schedule M-2 line 7 "Distributions".
 
 CRITICAL:
 - Use ONLY values visually printed on Schedule K in the "Total amount" column.
