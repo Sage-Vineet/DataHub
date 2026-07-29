@@ -1443,6 +1443,17 @@ export function deleteDocument(documentId) {
   return request(`/documents/${documentId}`, { method: 'DELETE' });
 }
 
+export function updateDocument(documentId, payload) {
+  return request(`/documents/${documentId}`, { method: 'PATCH', body: payload }).then(unwrapPayload);
+}
+
+export function bulkDeleteDataRoomItems(items) {
+  return request('/data-room/items/bulk-delete', {
+    method: 'POST',
+    body: { items },
+  }).then(unwrapPayload);
+}
+
 export function archiveDocument(documentId) {
   return request(`/documents/${documentId}/archive`, { method: 'POST' }).then(unwrapPayload);
 }
