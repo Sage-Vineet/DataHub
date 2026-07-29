@@ -94,9 +94,16 @@ FORM 1120-S (S-CORPORATION) — read PAGE 1 and the FULL SCHEDULE K
 PAGE 1 — INCOME & DEDUCTIONS (Form 1120-S):
   Line 1a  — Gross receipts or sales
   Line 1b  — Returns and allowances
-  Line 1c  — Balance (far-right column) → "totalRevenue"
+  Line 1c  — Balance = Line 1a − 1b (far-right column) → "totalRevenue"
+             ⚠️ "totalRevenue" is GROSS RECEIPTS ONLY (Line 1c). It is the top-line sales figure,
+                NOT Line 6 "Total income".
   Line 2   — Cost of goods sold         → "totalCostOfGoodsSold"
   Line 3   — Gross profit               → "grossProfit"
+  Line 4   — Net gain (loss) Form 4797  → "netGain4797" (0 if blank)
+  Line 5   — Other income (loss)        → "otherIncome"  (0 if blank; often shown as "See Statement")
+  Line 6   — Total income (loss)        → "totalIncome"
+             ⚠️ Line 6 = Line 3 + Line 4 + Line 5, and is LARGER than gross receipts. NEVER copy
+                Line 6 into "totalRevenue" — it goes in "totalIncome" only.
   Line 7   — Compensation of officers   → "officerWages"
   Line 13  — Interest                   → "interestExpense"
   Line 14  — Depreciation               → "depreciation"
@@ -263,19 +270,29 @@ PAGE 1 — INCOME & DEDUCTIONS (Form 1120):
 COMMON RULES FOR ALL FORMS
 ═══════════════════════════════════════════════════════
 
-CRITICAL — totalRevenue:
-  ALWAYS use Line 1c (the Balance/far-right column), NOT Line 1a.
-  If Line 1b is blank, Line 1c = Line 1a.
+CRITICAL — totalRevenue (the single most common extraction error — read carefully):
+  totalRevenue = "Gross receipts or sales" Balance = Line 1c (Line 1a − Line 1b), far-right column.
+  • It is NOT "Total income" (Line 6 on Form 1120-S and 1120; Line 8 on Form 1065). "Total income"
+    ADDS net gain from Form 4797 and other income on top of gross profit, so it is LARGER than gross
+    receipts. NEVER put "Total income" into totalRevenue — capture that figure in "totalIncome".
+  • It is NOT Line 1a when Line 1b (returns and allowances) is non-zero — use Line 1c.
+  • If Line 1b is blank, Line 1c = Line 1a.
+  QUICK TEST: if your totalRevenue equals your totalIncome while "Other income" (Line 5 / Line 7) is
+  non-zero, you copied the WRONG line — totalRevenue must be the SMALLER Line 1c gross-receipts value.
 
 "year": 4-digit tax year printed at top-right of Page 1 (e.g. 2023).
 
 SELF-CHECK (mandatory before returning):
-After extracting all values, mentally verify BOTH formulas:
+After extracting all values, mentally verify these formulas:
   1) grossProfit  = totalRevenue - totalCostOfGoodsSold   (must match within $5)
-  2) netIncome    = grossProfit - officerWages - depreciation - amortization
+  2) totalIncome  = grossProfit + netGain4797 + otherIncome   (must match within $5)
+  3) netIncome    = grossProfit - officerWages - depreciation - amortization
                    - interestExpense - allOtherExpenses   (must match within $5)
-If either formula fails, re-examine the relevant lines and correct the values.
+If any formula fails, re-examine the relevant lines and correct the values.
 The most common mistakes:
+  - Putting Line 6 "Total income" into totalRevenue. totalRevenue is ALWAYS Line 1c "Gross receipts
+    or sales" — the smaller top-line figure BEFORE net gain and other income are added. Line 6 goes
+    in totalIncome. (If formula 1 fails, LOWER totalRevenue to Line 1c — do NOT raise grossProfit.)
   - Using Line 1a (gross receipts) instead of Line 1c (balance after returns) for totalRevenue
   - Reading the wrong line for netIncome (must be the "Ordinary business income" line, NOT taxable income)
   - Omitting a deduction line or double-counting it in allOtherExpenses
@@ -294,6 +311,9 @@ JSON schema:
   "totalRevenue": 0,
   "totalCostOfGoodsSold": 0,
   "grossProfit": 0,
+  "netGain4797": 0,
+  "otherIncome": 0,
+  "totalIncome": 0,
   "officerWages": 0,
   "depreciation": 0,
   "amortization": 0,
@@ -457,7 +477,8 @@ async function extractTaxDataFromBuffer(pdfBuffer, cacheKey) {
           let text = result.response.text().trim();
           text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
           const parsed = JSON.parse(text);
-          ["year", "totalRevenue", "totalCostOfGoodsSold", "grossProfit", "officerWages",
+          ["year", "totalRevenue", "totalCostOfGoodsSold", "grossProfit", "netGain4797",
+            "otherIncome", "totalIncome", "officerWages",
             "depreciation", "amortization", "interestExpense", "allOtherExpenses", "netIncome"]
             .forEach((f) => { parsed[f] = Number(parsed[f]) || 0; });
           if (!parsed.formType) parsed.formType = "1120-S";
@@ -508,6 +529,8 @@ function validateTaxExtraction(extracted) {
   const interest = Number(extracted.interestExpense      || 0);
   const other    = Number(extracted.allOtherExpenses     || 0);
   const netInc   = Number(extracted.netIncome            || 0);
+  const otherInc = Number(extracted.otherIncome          || 0);
+  const totalInc = Number(extracted.totalIncome          || 0);
   const year     = Number(extracted.year                 || 0);
 
   if (year < 2010 || year > 2030) {
@@ -535,6 +558,23 @@ function validateTaxExtraction(extracted) {
     );
   }
 
+  // Guard the #1 extraction error: totalRevenue must be gross receipts (Line 1c),
+  // never "Total income" (Line 6 on 1120-S/1120, Line 8 on 1065 — which adds net
+  // gain + other income). When revenue equals total income while other income is
+  // non-zero, Line 6/8 was copied into totalRevenue. Flagging it forces the
+  // targeted second pass to re-read Line 1c.
+  if (
+    otherInc !== 0 &&
+    totalInc !== 0 &&
+    Math.abs(rev - totalInc) <= TAX_VALIDATE_TOLERANCE &&
+    Math.abs(rev - (gp + cogs)) > TAX_VALIDATE_TOLERANCE
+  ) {
+    issues.push(
+      `totalRevenue (${rev}) looks like "Total income" (Line 6/8), not gross receipts (Line 1c). ` +
+      `Gross receipts should equal grossProfit + COGS = ${gp + cogs}; other income ${otherInc} must be excluded.`
+    );
+  }
+
   return { status: issues.length === 0 ? "Verified" : "Needs Review", issues };
 }
 
@@ -551,6 +591,9 @@ PREVIOUSLY EXTRACTED (INCORRECT) VALUES:
   totalRevenue:         ${extracted.totalRevenue}
   totalCostOfGoodsSold: ${extracted.totalCostOfGoodsSold}
   grossProfit:          ${extracted.grossProfit}
+  netGain4797:          ${extracted.netGain4797}
+  otherIncome:          ${extracted.otherIncome}
+  totalIncome:          ${extracted.totalIncome}
   officerWages:         ${extracted.officerWages}
   depreciation:         ${extracted.depreciation}
   amortization:         ${extracted.amortization}
@@ -562,13 +605,19 @@ FAILED CHECKS:
 ${issues.map((i) => `  • ${i}`).join("\n")}
 
 REQUIRED FORMULAS (must hold within $5):
-  grossProfit = totalRevenue - totalCostOfGoodsSold
+  grossProfit = totalRevenue - totalCostOfGoodsSold   (totalRevenue = Line 1c gross receipts ONLY)
+  totalIncome = grossProfit + netGain4797 + otherIncome   (Line 6 / Line 8 — NOT totalRevenue)
   netIncome   = grossProfit - officerWages - depreciation - amortization - interestExpense - allOtherExpenses
 
 INSTRUCTIONS:
 1. Go back to the specific form lines mentioned in each failed check.
 2. Re-read the printed dollar amount from the original PDF image — do NOT reuse the wrong values above.
-3. Common causes of failure:
+3. Common causes of failure (check the FIRST one first — it is the most frequent):
+   • totalRevenue was taken from "Total income" (Line 6 on 1120-S/1120, Line 8 on 1065) instead of
+     Line 1c "Gross receipts or sales". If grossProfit ≠ totalRevenue − COGS, the fix is almost
+     always to LOWER totalRevenue to the Line 1c gross-receipts figure — do NOT raise grossProfit to
+     match a Line-6 revenue. grossProfit must equal Line 3 exactly as printed, and totalRevenue must
+     exclude net gain (Line 4) and other income (Line 5 / Line 7).
    • Line 1a vs Line 1c confusion for totalRevenue (always use the "Balance" column, Line 1c)
    • Wrong line for netIncome (use "Ordinary business income", NOT "Taxable income")
    • allOtherExpenses over/under-counted — verify against Line 19 (1120-S), Line 21 (1065), or Line 26 (1120)
@@ -582,6 +631,9 @@ Return ONLY a raw JSON object in the exact same schema. No markdown, no explanat
   "totalRevenue": 0,
   "totalCostOfGoodsSold": 0,
   "grossProfit": 0,
+  "netGain4797": 0,
+  "otherIncome": 0,
+  "totalIncome": 0,
   "officerWages": 0,
   "depreciation": 0,
   "amortization": 0,
@@ -623,7 +675,8 @@ async function extractTaxDataWithVerification(pdfBuffer, cacheKey) {
         .replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
       const corrected = JSON.parse(text);
 
-      ["year","totalRevenue","totalCostOfGoodsSold","grossProfit","officerWages",
+      ["year","totalRevenue","totalCostOfGoodsSold","grossProfit","netGain4797",
+       "otherIncome","totalIncome","officerWages",
        "depreciation","amortization","interestExpense","allOtherExpenses","netIncome"]
         .forEach((f) => { corrected[f] = Number(corrected[f]) || 0; });
       if (!corrected.formType) corrected.formType = extracted.formType || "1120-S";

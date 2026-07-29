@@ -64,7 +64,10 @@ function isEncryptedPdf(buffer) {
 // stale rows that froze a partial extraction (e.g. only the one unencrypted year)
 // so the new logic re-runs on next load.
 // (v3 note kept for history: v2→v3 fixed the multi-year keying / partial-cache freeze.)
-const TAX_RETURN_KR_CACHE_TYPE = "tax_return_kr_v4";
+// v4→v5: totalRevenue prompt fix — Gemini was reading Line 6 "Total income" into
+// totalRevenue instead of Line 1c "Gross receipts or sales". Bump forces re-extraction
+// so cached wrong revenue values are replaced.
+const TAX_RETURN_KR_CACHE_TYPE = "tax_return_kr_v5";
 
 // Extracts monthly Total Income and Total Expenses from the latest P&L stored in qb_synced_reports.
 // Returns { totalIncome: { "YYYY-MM": number }, totalExpenses: { "YYYY-MM": number } } or null.

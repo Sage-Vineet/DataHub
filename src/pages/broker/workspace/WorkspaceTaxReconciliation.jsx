@@ -344,14 +344,43 @@ export default function WorkspaceTaxReconciliation() {
     return Array.from({ length: hi - lo + 1 }, (_, i) => lo + i);
   }, [startYear, endYear]);
 
-  // activeYears: for manual / QMS mode derive from matrixData keys; for QB use selectedYears
+  // All fiscal years present in the loaded data (manual / QMS / Key Reports).
+  const availableYears = useMemo(
+    () => Object.keys(matrixData).map(Number).filter(Boolean).sort((a, b) => a - b),
+    [matrixData],
+  );
+
+  // activeYears (the year columns actually rendered):
+  //  • Key Reports connection mode → the loaded years narrowed to the Start/End
+  //    Year filter range (the filter defaults to the full span — see effect below).
+  //    The year filter exists ONLY in this mode.
+  //  • other manual / QMS modes → all loaded years (no year filter).
+  //  • QuickBooks → the selected Start/End Year range (which also drives the fetch).
   const activeYears = useMemo(() => {
-    if (isManualMode || isQBManual) {
-      const keys = Object.keys(matrixData).map(Number).filter(Boolean).sort();
-      return keys.length > 0 ? keys : [];
+    if (isManualMode || isQBManual || krSelected) {
+      if (!availableYears.length) return [];
+      if (krSelected) {
+        const a = parseInt(startYear, 10) || availableYears[0];
+        const b = parseInt(endYear, 10) || availableYears[availableYears.length - 1];
+        const lo = Math.min(a, b);
+        const hi = Math.max(a, b);
+        return availableYears.filter((y) => y >= lo && y <= hi);
+      }
+      return availableYears;
     }
     return selectedYears;
-  }, [isManualMode, isQBManual, matrixData, selectedYears]);
+  }, [isManualMode, isQBManual, krSelected, availableYears, startYear, endYear, selectedYears]);
+
+  // Key Reports connection mode only: the year columns come from the data itself,
+  // so default the Start/End Year filter to the full span of loaded years whenever
+  // the data (re)loads. Nothing is hidden on load; the user can then narrow the
+  // range, and that narrowing persists until the next Sync replaces the data.
+  useEffect(() => {
+    if (!krSelected) return;
+    if (!availableYears.length) return;
+    setStartYear(String(availableYears[0]));
+    setEndYear(String(availableYears[availableYears.length - 1]));
+  }, [krSelected, availableYears]);
 
   const getHeaders = useCallback(() => {
     const token = getStoredToken();
@@ -1404,6 +1433,23 @@ export default function WorkspaceTaxReconciliation() {
               {syncStatus?.message && <SyncStatus sync={syncStatus} />}
               {/* Key Reports Version selector — only when Key Reports is the active source */}
               {krSelected && <KeyReportVersionSelector clientId={clientId} variant="filter" />}
+              {/* Start/End Year filter — Key Reports connection mode ONLY. Narrows
+                  which fiscal-year columns show; options are the years in the data. */}
+              {krSelected && availableYears.length > 0 && [
+                { label: "Start Year", value: startYear, set: setStartYear },
+                { label: "End Year", value: endYear, set: setEndYear },
+              ].map(({ label, value, set }) => (
+                <label key={label} className="flex items-center gap-2 text-[13px] font-medium text-text-primary">
+                  {label}
+                  <select
+                    value={value}
+                    onChange={(e) => set(e.target.value)}
+                    className="h-9 rounded-xl border border-border bg-white px-3 text-[13px] text-text-primary outline-none transition focus:border-primary"
+                  >
+                    {availableYears.map((y) => <option key={y} value={String(y)}>{y}</option>)}
+                  </select>
+                </label>
+              ))}
             </div>
             <button
               type="button"
@@ -1533,7 +1579,7 @@ export default function WorkspaceTaxReconciliation() {
           <p className="mt-1 text-[13px] text-text-secondary">
             {useManualLayout
               ? activeYears.length > 0
-                ? `Showing FY ${activeYears[0]} from uploaded P&L.`
+                ? `Showing FY ${activeYears[0]}${activeYears.length > 1 ? `–FY ${activeYears[activeYears.length - 1]}` : ""} from uploaded P&L.`
                 : "Awaiting data load."
               : `Compare P&L, tax return, and variance columns for ${startYear}–${endYear}.`}
           </p>
