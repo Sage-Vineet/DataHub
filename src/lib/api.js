@@ -503,14 +503,19 @@ export function saveWorkspacePageStateRequest(pageKey, state, options = {}) {
 }
 
 export function getCimStyleProfilesRequest(options = {}) {
-  return request('/cim-style-profiles', options);
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/cim-style-profiles${query}`, { ...options, clientId });
 }
 
 export function saveCimStyleProfilesRequest(state, options = {}) {
-  return request('/cim-style-profiles', {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/cim-style-profiles${query}`, {
     ...options,
+    clientId,
     method: 'PUT',
-    body: { state },
+    body: { state, clientId },
   });
 }
 

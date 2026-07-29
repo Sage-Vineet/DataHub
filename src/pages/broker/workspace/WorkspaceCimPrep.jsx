@@ -9033,12 +9033,14 @@ export default function WorkspaceCimPrep() {
 
   useEffect(() => {
     let cancelled = false;
+    const defaultStyleState = normalizeCimStyleProfilesState();
+    setStyleProfilesState(defaultStyleState);
+    setActiveStyleProfileId(DEFAULT_CIM_STYLE_PROFILE_ID);
 
-    // Style profiles are a per-broker preference (not scoped to this company), so this
-    // only needs to load once on mount.
     async function loadStyleProfiles() {
+      if (!clientId) return;
       try {
-        const payload = await getCimStyleProfilesRequest();
+        const payload = await getCimStyleProfilesRequest({ clientId });
         if (cancelled) return;
         const state = normalizeCimStyleProfilesState(payload?.state || {});
         setStyleProfilesState(state);
@@ -9052,12 +9054,12 @@ export default function WorkspaceCimPrep() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [clientId]);
 
   const handleSaveStyleProfiles = useCallback(async (nextState) => {
     setStyleProfilesSaving(true);
     try {
-      const payload = await saveCimStyleProfilesRequest(nextState);
+      const payload = await saveCimStyleProfilesRequest(nextState, { clientId });
       const savedState = normalizeCimStyleProfilesState(payload?.state || nextState);
       setStyleProfilesState(savedState);
       setActiveStyleProfileId(savedState.activeProfileId || DEFAULT_CIM_STYLE_PROFILE_ID);
@@ -9069,7 +9071,7 @@ export default function WorkspaceCimPrep() {
     } finally {
       setStyleProfilesSaving(false);
     }
-  }, [showToast]);
+  }, [clientId, showToast]);
 
   const persistCimReviewState = useCallback(async (nextState, toastOptions = null) => {
     const state = normalizeCimReviewState(nextState);
