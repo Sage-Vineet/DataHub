@@ -70,7 +70,11 @@ function isEncryptedPdf(buffer) {
 // v5→v6: Schedule K extraction accuracy — line-code row anchoring (16a–16f / 17a–17b are
 // stacked tightly and were mis-aligned) + M-1/M-2 cross-check in the extraction and
 // verification prompts. Bump forces re-extraction so cached Schedule K values are refreshed.
-const TAX_RETURN_KR_CACHE_TYPE = "tax_return_kr_v6";
+// v6→v7: Schedule K vs Schedule M-2 confusion — Gemini reported the M-2 Accumulated
+// Adjustments Account balance (e.g. 10,977) as Schedule K "Distributions" (16d) when 16d was
+// blank. Prompts now restrict every reconciling-item value to the Schedule K "Total amount"
+// column and forbid sourcing from M-2 balance lines. Bump re-extracts cached wrong values.
+const TAX_RETURN_KR_CACHE_TYPE = "tax_return_kr_v7";
 
 // Extracts monthly Total Income and Total Expenses from the latest P&L stored in qb_synced_reports.
 // Returns { totalIncome: { "YYYY-MM": number }, totalExpenses: { "YYYY-MM": number } } or null.
