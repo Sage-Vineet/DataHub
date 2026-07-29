@@ -133,15 +133,23 @@ SCHEDULE K (Form 1120-S) — "Shareholders' Pro Rata Share Items", Lines 2 throu
      code printed immediately to the left of each amount and attach the amount to THAT
      code, then use that code's label from the list below. (Example: a single "912" printed
      on the "16c" row is "Nondeductible Expenses" = 912 — it is NOT "16b" and NOT "16d".)
-  10. SELF-CHECK against the rest of THIS return before returning Schedule K values:
-      • "16c Nondeductible Expenses" normally equals Schedule M-1, line 3 ("Expenses
-        recorded on books this year not included on Schedule K") and the Schedule M-2
-        "Other reductions" total.
-      • "16d Distributions" normally equals Schedule M-2, line 7 "Distributions".
-      • "16a Tax-Exempt Interest" + "16b Other Tax-Exempt Income" normally equal the
-        Schedule M-2 Other Adjustments Account additions / Schedule M-1 tax-exempt lines.
-      If your Schedule K figure disagrees with those companion schedules, you mis-read the
-      row — re-read the "Total amount" column for that exact line code and correct it.
+  10. SOURCE RESTRICTION — SCHEDULE K "Total amount" COLUMN ONLY. Every reconcilingItems
+      value MUST be read from the Schedule K "Total amount" column. NEVER take a value from
+      Schedule M-1 or from Schedule M-2 ("Analysis of the Accumulated Adjustments Account …").
+      ⚠️ Schedule M-2's "Balance at beginning of tax year", "Combine lines 1 through 5", and
+         "Balance at end of tax year" are running ACCUMULATED ADJUSTMENTS ACCOUNT (AAA)
+         BALANCES — they are NOT distributions and must NEVER be reported as "Distributions"
+         (or any other Schedule K item). Schedule M-2 has its own line labeled "Distributions";
+         do not grab the AAA balance printed next to it and call it a distribution.
+      ⚠️ "16d Distributions" is taken ONLY from Schedule K line 16d's "Total amount" cell.
+         If that cell is blank/zero, Distributions = 0 and you MUST omit it — even when
+         Schedule M-2 shows a non-zero AAA balance.
+  11. SELF-CHECK (validation ONLY — never a source of numbers): a correctly-read Schedule K
+      value usually agrees with its companion line — "16c Nondeductible Expenses" ≈ Schedule
+      M-1 line 3 / M-2 "Other reductions"; "16d Distributions" ≈ Schedule M-2 LINE 7
+      "Distributions" (NOT the M-2 balance lines). If a Schedule K "Total amount" cell is blank,
+      the item is 0 regardless of any M-2 balance. The Schedule K "Total amount" column is
+      always authoritative — if in doubt, trust the blank Schedule K cell over any M-2 figure.
 
   Line → label mapping (ONLY add lines with a visible non-zero value in "Total amount"):
   2  → "Net Rental Real Estate Income"
@@ -752,13 +760,22 @@ often mis-read: 16a Tax-Exempt Interest Income, 16b Other Tax-Exempt Income,
 16c Nondeductible Expenses, 16d Distributions, 16e Repayment of Loans from Shareholders,
 16f Foreign Taxes Paid or Accrued, 17a Investment Income, 17b Investment Expenses.
 
-CROSS-CHECK each value against the companion schedules of the SAME return and fix any that
-disagree (a disagreement means you read the wrong row):
-- "Nondeductible Expenses" (16c) ≈ Schedule M-1 line 3 and Schedule M-2 "Other reductions".
-- "Distributions" (16d) ≈ Schedule M-2 line 7 "Distributions".
+SOURCE RESTRICTION — read every value from the Schedule K "Total amount" column ONLY. NEVER
+pull a value from Schedule M-1 or Schedule M-2. In particular, Schedule M-2's Accumulated
+Adjustments Account (AAA) balance lines — "Balance at beginning of tax year", "Combine lines
+1 through 5", and "Balance at end of tax year" — are NOT distributions; never report an M-2
+balance as "Distributions". If Schedule K line 16d "Total amount" is blank/zero, there are NO
+distributions and you MUST omit that item.
+
+CROSS-CHECK for VALIDATION ONLY (never a source of numbers) — a correctly-read value usually
+agrees with its companion line: "Nondeductible Expenses" (16c) ≈ M-1 line 3 / M-2 "Other
+reductions"; "Distributions" (16d) ≈ M-2 LINE 7 "Distributions" (NOT the M-2 balance lines).
+A blank Schedule K cell always wins over any M-2 figure.
 
 CRITICAL:
 - Use ONLY values visually printed on Schedule K in the "Total amount" column.
+- NEVER report a Schedule M-2 AAA balance (e.g. "Balance at end of tax year") as a Schedule K
+  item such as "Distributions". Schedule M-2 is a different schedule and is not a value source.
 - DO NOT include Line 1 (Ordinary business income — already captured separately).
 - DO NOT include the "Income (loss) reconciliation" line (Line 18 on 1120-S) — it is
   only a total that restates ordinary business income, NOT a reconciling item.
