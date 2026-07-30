@@ -2540,39 +2540,39 @@ export function extractTemplateFields(slideNumber, layout) {
       return [
         ...pptTextField,
         ...getTemplateTokens(element.text)
-        .filter((tokenInfo) => !tokenValue(tokenInfo.token, GLOBAL_DETAIL_SENTINELS, element.text))
-        .map((tokenInfo) => {
-          const override = getFieldLabelOverride(slideNumber, element, tokenInfo);
-          const mirror = getMirroredFieldOverride(slideNumber, element, tokenInfo);
-          const mirrorElement = mirror
-            ? elements.find((candidate) => candidate.order === mirror.sourceOrder)
-            : null;
-          const mirrorToken = mirrorElement
-            ? getTemplateTokens(mirrorElement.text)[mirror.sourceTokenIndex]
-            : null;
-          return {
-            ...baseField,
-            id: makeTokenFieldId(slideNumber, element, tokenInfo),
-            text: tokenInfo.raw,
-            token: tokenInfo.token,
-            tokenKey: tokenInfo.key,
-            tokenIndex: tokenInfo.index,
-            occurrence: tokenInfo.occurrence,
-            label: override?.label || getFieldLabel(tokenInfo.raw),
-            prompt: override?.prompt || override?.label,
-            fieldKind: "text",
-            inputType: override?.inputType,
-            options: override?.options,
-            displayTemplate: override?.displayTemplate,
-            displayFormat: override?.displayFormat,
-            replaceFullText: override?.replaceFullText,
-            valueFieldId: mirrorElement && mirrorToken
-              ? makeTokenFieldId(mirror.sourceSlide, mirrorElement, mirrorToken)
-              : undefined,
-            hidden: Boolean(mirror?.hidden ?? mirror),
-            maxLength: override?.maxLength || getTokenMaxLength(tokenInfo.token),
-          };
-        }),
+          .filter((tokenInfo) => !tokenValue(tokenInfo.token, GLOBAL_DETAIL_SENTINELS, element.text))
+          .map((tokenInfo) => {
+            const override = getFieldLabelOverride(slideNumber, element, tokenInfo);
+            const mirror = getMirroredFieldOverride(slideNumber, element, tokenInfo);
+            const mirrorElement = mirror
+              ? elements.find((candidate) => candidate.order === mirror.sourceOrder)
+              : null;
+            const mirrorToken = mirrorElement
+              ? getTemplateTokens(mirrorElement.text)[mirror.sourceTokenIndex]
+              : null;
+            return {
+              ...baseField,
+              id: makeTokenFieldId(slideNumber, element, tokenInfo),
+              text: tokenInfo.raw,
+              token: tokenInfo.token,
+              tokenKey: tokenInfo.key,
+              tokenIndex: tokenInfo.index,
+              occurrence: tokenInfo.occurrence,
+              label: override?.label || getFieldLabel(tokenInfo.raw),
+              prompt: override?.prompt || override?.label,
+              fieldKind: "text",
+              inputType: override?.inputType,
+              options: override?.options,
+              displayTemplate: override?.displayTemplate,
+              displayFormat: override?.displayFormat,
+              replaceFullText: override?.replaceFullText,
+              valueFieldId: mirrorElement && mirrorToken
+                ? makeTokenFieldId(mirror.sourceSlide, mirrorElement, mirrorToken)
+                : undefined,
+              hidden: Boolean(mirror?.hidden ?? mirror),
+              maxLength: override?.maxLength || getTokenMaxLength(tokenInfo.token),
+            };
+          }),
       ];
     });
 }
@@ -5753,8 +5753,8 @@ export function SlideCanvas({
             <button
               key={`${slideNumber}-${element.order}-${element.id}`}
               type="button"
-            onClick={() => onFieldFocus(getFieldValueKey(field) || field.id)}
-            className={`absolute overflow-hidden rounded-[2px] border border-dashed outline-none transition ${[field.id, getFieldValueKey(field)].includes(activeFieldId)
+              onClick={() => onFieldFocus(getFieldValueKey(field) || field.id)}
+              className={`absolute overflow-hidden rounded-[2px] border border-dashed outline-none transition ${[field.id, getFieldValueKey(field)].includes(activeFieldId)
                 ? "border-[#8BC53D] ring-2 ring-[#8BC53D]/30"
                 : "border-[#8BC53D]/60 hover:border-[#8BC53D]"
                 }`}
@@ -10224,10 +10224,10 @@ export default function WorkspaceCimPrep() {
   const activeBuilderPageState = normalizedBuilderState.pagesByKey[activeBuilderSlideKey] || {};
   const activeBuilderPage = activeBuilderPageIndex === 0
     ? buildCimBuilderPage(
-        activeBuilderBaseElements,
-        activeBuilderPageState,
-        getCimBuilderTemplateBackground(styledLayouts[activeSlide]),
-      )
+      activeBuilderBaseElements,
+      activeBuilderPageState,
+      getCimBuilderTemplateBackground(styledLayouts[activeSlide]),
+    )
     : sanitizeCimBuilderPage(activeBuilderExtraPages[activeBuilderPageIndex - 1] || createBlankBuilderPage());
   const activeBuilderPageTabs = [
     { index: 0, label: activeBuilderPageState.deleted ? "Removed" : "Template" },
