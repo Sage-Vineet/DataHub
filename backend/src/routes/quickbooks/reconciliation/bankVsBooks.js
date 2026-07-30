@@ -24,7 +24,10 @@ const BANK_RECONCILIATION_TYPE = "bank_reconciliation";
 // v2: cache is now persistent PER document-set (per Key Report version) instead
 // of a single overwritten row, so switching versions / refreshing reuses the
 // cached extraction instead of re-calling Gemini. Bump invalidates v1 rows.
-const BANK_RECON_KR_CACHE_TYPE = "bank_reconciliation_kr_v2";
+// v3: bank-name / account-number identity healing — full account number is now read
+// (spaced-digit safe), near-identical mis-reads are folded to one account, QuickBooks
+// reconciliation reports are rejected. Bumped so frozen v2 extractions re-run.
+const BANK_RECON_KR_CACHE_TYPE = "bank_reconciliation_kr_v3";
 
 // Maps frontend REPORT_SOURCE_KEYS values → backend cache source + DataRoom folder root
 const SOURCE_CONFIG = {
