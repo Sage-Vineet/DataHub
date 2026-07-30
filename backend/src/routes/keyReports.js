@@ -248,7 +248,7 @@ async function warmReconciliationCaches(companyId, versionId) {
   if (!companyId || !versionId) return;
   try {
     const results = await Promise.allSettled([
-      // Bank statement summary (report_type "bank_reconciliation_kr_v2")
+      // Bank statement summary (report_type "bank_reconciliation_kr_v3")
       runBankExtraction(companyId, MANUAL_REPORT_UPLOAD_SOURCE, "Manual Upload Source", null, versionId),
       // Balance-Sheet bank balances (report_type "bs_bank_balances_cache_v2")
       runBsBankBalancesExtraction(companyId, MANUAL_REPORT_UPLOAD_SOURCE, "Manual Upload Source", null, null, versionId),

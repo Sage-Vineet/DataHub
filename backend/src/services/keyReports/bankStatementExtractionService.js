@@ -21,7 +21,7 @@ const {
   extractBankStatementsFromPdfBase64,
   extractBankStatementsFromExcelBuffer,
 } = require('../bankStatementExtractor');
-const { extractWithPython, detectPdfType } = require('./pythonBridge');
+const { extractWithPython } = require('./pythonBridge');
 
 function isoDateToMonthStart(dateStr) {
   if (!dateStr) return null;
@@ -143,6 +143,11 @@ function statementsToRows(statements) {
 class BankStatementExtractionService extends ExtractionServiceBase {
   constructor() {
     super('bank_statement', 'bank_statement_entries');
+    // v2-pdf-gemini-direct: bank statement PDFs now go straight to Gemini (the
+    // Python text/OCR primary path was removed for the PDF branch; Excel/CSV is
+    // unchanged). Bump so any PDF extraction cached under the old Python-first
+    // flow is discarded and re-run through Gemini.
+    this.parserVersion = 'v2-pdf-gemini-direct';
   }
 
   async extract({ fileName, fileBuffer }) {
@@ -190,28 +195,13 @@ class BankStatementExtractionService extends ExtractionServiceBase {
     return { rows, detectedYears };
   }
 
-  // ── PDF: Python text-layer primary, Gemini fallback ─────────────────────────
+  // ── PDF: read DIRECTLY by Gemini ────────────────────────────────────────────
+  // Bank statement PDFs are intentionally NOT routed through the Python
+  // text/OCR path — they go straight to Gemini, which handles the wide variety
+  // of bank layouts (multi-column, scanned, summary-only) far more reliably.
+  // (Excel/CSV bank files still use the Python-primary path in _extractFromExcel.)
   async _extractFromPdf(fileBuffer, fileName) {
-    try {
-      const pdfType = await detectPdfType(fileBuffer);
-      this.logger.log(`PDF "${fileName}" type=${pdfType}`);
-
-      const scriptName = pdfType === 'scanned' ? 'extract_pdf_ocr.py' : 'extract_pdf_text.py';
-      const result = await extractWithPython(scriptName, fileBuffer, {
-        type: 'bank_statement',
-        filename: fileName,
-      });
-      if (result.rows && result.rows.length > 0) {
-        this.logger.log(`Python (${scriptName}) extracted ${result.rows.length} bank rows from PDF "${fileName}"`);
-        const detectedYears = [...new Set(result.rows.map((r) => r.statement_year).filter(Boolean))].sort((a, b) => a - b);
-        return { rows: result.rows, detectedYears };
-      }
-      this.logger.warn(`Python returned 0 rows for PDF "${fileName}", falling back to Gemini`);
-    } catch (err) {
-      this.logger.warn(`Python PDF extraction failed for "${fileName}", falling back to Gemini: ${err.message}`);
-    }
-
-    // Gemini fallback
+    this.logger.log(`Parsing bank statement PDF "${fileName}" directly via Gemini`);
     const statements = await extractBankStatementsFromPdfBase64(fileBuffer.toString('base64'), fileName);
     this.logger.log(`Gemini PDF parser returned ${statements.length} statement(s)`);
     if (!statements || statements.length === 0) throw new Error('No bank statements found in PDF');
