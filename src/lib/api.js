@@ -239,11 +239,13 @@ export function getCimBankReconciliationRequest({
   sourceKey,
   datasetVersion,
   keyReportVersionId,
+  fiscalYear,
 } = {}) {
   const params = new URLSearchParams();
   if (clientId) params.append('clientId', clientId);
   if (datasetVersion) params.append('datasetVersion', String(datasetVersion));
   if (keyReportVersionId) params.append('keyReportVersionId', String(keyReportVersionId));
+  if (fiscalYear) params.append('fiscalYear', String(fiscalYear));
   if (sourceKey) params.append('source', sourceKey);
   if (sourceKey === 'quickbooks' || sourceKey === 'quickbooks_online') {
     return request(`/qb-bank-activity/saved?${params}`);

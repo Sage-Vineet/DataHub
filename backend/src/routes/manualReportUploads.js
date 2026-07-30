@@ -684,11 +684,30 @@ router.get("/manual-report-uploads/qms-bank-data", async (req, res) => {
     const datasetVersion = String(req.query.datasetVersion || "").trim() || null;
     const keyReportVersionId = String(req.query.keyReportVersionId || "").trim() || null;
 
+    const bsBankAccountsPromise = runBsBankBalancesExtraction(
+      clientId,
+      "quickbooks_manual_upload",
+      "Manual Upload Source",
+      null,
+      datasetVersion,
+      keyReportVersionId,
+    ).then((r) => {
+      const b = r?.body;
+      if (b?.bankAccounts?.length > 0) {
+        return { year: b.year ?? null, fileName: b.fileName ?? null, documentId: b.documentId ?? null, bankAccounts: b.bankAccounts };
+      }
+      return null;
+    }).catch((e) => {
+      console.warn(`[QMS BANK SOURCE] BS bank accounts non-fatal: ${e.message}`);
+      return null;
+    });
+
     // Bank statement is resolved from the SELECTED Key Reports version (single
     // source of truth, active when none selected); P&L financials remain QMS-scoped.
-    const [{ body: bankBody }, plFinancials] = await Promise.all([
+    const [{ body: bankBody }, plFinancials, balanceSheetBankAccounts] = await Promise.all([
       runBankExtraction(clientId, "quickbooks_manual_upload", "Manual Upload Source", datasetVersion, keyReportVersionId),
       extractPlFinancials(clientId, "quickbooks_manual_upload").catch(() => null),
+      bsBankAccountsPromise,
     ]);
 
     return res.json({
@@ -697,6 +716,7 @@ router.get("/manual-report-uploads/qms-bank-data", async (req, res) => {
       months: bankBody?.months || [],
       totals: bankBody?.totals || [],
       message: bankBody?.message,
+      balanceSheetBankAccounts,
       plFinancials,
     });
   } catch (error) {

@@ -3896,6 +3896,27 @@ function getSlide27ElementContent(element, fieldValues = {}) {
   };
 }
 
+function getSlide29ElementContent(element, fieldValues = {}) {
+  const order = Number(element?.order || 0);
+  if (order !== 28 || element?.kind !== "table") return null;
+
+  const override = fieldValues?.[getElementAutofillKey("element_override", 29, 28)];
+  if (!normalizeText(override)) return null;
+  const matrix = parseTableText(override, Number(element.rows || 0), Number(element.cols || 0));
+  const visibleTableRows = matrix
+    .map((row, index) => row.some((cell) => normalizeText(cell)) ? index + 1 : null)
+    .filter(Boolean);
+
+  return {
+    kind: "table",
+    tableMatrix: matrix,
+    visibleTableRows: visibleTableRows.length ? visibleTableRows : undefined,
+    visibleTableColumns: Array.from({ length: Number(element.cols || 0) }, (_, index) => index + 1),
+    compactTableRows: true,
+    suppressTemplateFallback: true,
+  };
+}
+
 function getElementContent(slideNumber, element, fieldsById, fieldValues, assetValues, chartValues, globalDetails, styleProfile = null) {
   if (element?.kind === "styleImage" && element.dataUrl) {
     return { kind: "image", dataUrl: element.dataUrl, name: element.name || "Brand image" };
@@ -3928,6 +3949,10 @@ function getElementContent(slideNumber, element, fieldsById, fieldValues, assetV
   if (slideNumber === 27) {
     const cashflowContent = getSlide27ElementContent(element, fieldValues);
     if (cashflowContent) return withElementLayout(slideNumber, element, cashflowContent);
+  }
+  if (slideNumber === 29) {
+    const bankReconciliationContent = getSlide29ElementContent(element, fieldValues);
+    if (bankReconciliationContent) return withElementLayout(slideNumber, element, bankReconciliationContent);
   }
   if (!element?.text) return withElementLayout(slideNumber, element, { kind: "text", text: "" });
   const elementFields = getElementFields(slideNumber, element, fieldsById);
@@ -4103,6 +4128,140 @@ function formatAutoFillThousands(value, digits = CIM_FINANCIAL_MAX_DECIMALS) {
   const numeric = Number(value || 0);
   if (!Number.isFinite(numeric) || Math.abs(numeric) < 0.0001) return "";
   return formatAutoFillNumber(numeric / 1_000, digits);
+}
+
+function isFiniteSlide29Number(value) {
+  return value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value));
+}
+
+function formatSlide29Money(value, unit = "M", digits = unit === "k" ? 0 : 2) {
+  if (!isFiniteSlide29Number(value)) return "-";
+  const numeric = Number(value);
+  const divisor = unit === "k" ? 1_000 : 1_000_000;
+  const amount = formatAutoFillNumber(Math.abs(numeric) / divisor, digits) || "0";
+  const formatted = `$${amount}${unit}`;
+  return numeric < -0.0001 ? `(${formatted})` : formatted;
+}
+
+function getSlide29VarianceStatus(variance, status = "") {
+  if (/review|open|variance|unreconciled|needs/i.test(String(status || ""))) return "Review";
+  return isFiniteSlide29Number(variance) && Math.abs(Number(variance)) > 0.01 ? "Review" : "Reconciled";
+}
+
+function getSlide29BankRows(bankReconciliation = {}) {
+  if (Array.isArray(bankReconciliation.banks) && bankReconciliation.banks.length) {
+    return bankReconciliation.banks.map((bank) => ({
+      name: bank.bankName || "Bank",
+      accountCount: Number(bank.accountCount || bank.accounts?.length || 0),
+      bankBalance: Number(bank.bankBalance || 0),
+      bookBalance: isFiniteSlide29Number(bank.bookBalance) ? Number(bank.bookBalance) : null,
+      variance: isFiniteSlide29Number(bank.variance)
+        ? Number(bank.variance)
+        : (isFiniteSlide29Number(bank.bookBalance) ? Number(bank.bankBalance || 0) - Number(bank.bookBalance) : null),
+      status: bank.status || "",
+    }));
+  }
+
+  return (bankReconciliation.accounts || []).map((account) => ({
+    name: account.bankName || account.name || "Bank account",
+    accountCount: 1,
+    bankBalance: Number(account.bankBalance || 0),
+    bookBalance: isFiniteSlide29Number(account.bookBalance) ? Number(account.bookBalance) : null,
+    variance: isFiniteSlide29Number(account.variance)
+      ? Number(account.variance)
+      : (isFiniteSlide29Number(account.bookBalance) ? Number(account.bankBalance || 0) - Number(account.bookBalance) : null),
+    status: account.status || "",
+  }));
+}
+
+function truncateSlide29CellText(value, maxLength = 32) {
+  const text = String(value || "").trim();
+  return text.length > maxLength ? `${text.slice(0, Math.max(0, maxLength - 3))}...` : text;
+}
+
+function aggregateSlide29BankRows(rows = [], name = "Other banks") {
+  const rowsWithBook = rows.filter((row) => isFiniteSlide29Number(row.bookBalance));
+  const rowsWithVariance = rows.filter((row) => isFiniteSlide29Number(row.variance));
+  const bookBalance = rowsWithBook.length
+    ? rowsWithBook.reduce((sum, row) => sum + Number(row.bookBalance || 0), 0)
+    : null;
+  const variance = rowsWithVariance.length
+    ? rowsWithVariance.reduce((sum, row) => sum + Number(row.variance || 0), 0)
+    : (bookBalance !== null ? rows.reduce((sum, row) => sum + Number(row.bankBalance || 0), 0) - bookBalance : null);
+  return {
+    name,
+    accountCount: rows.reduce((sum, row) => sum + Number(row.accountCount || 1), 0),
+    bankBalance: rows.reduce((sum, row) => sum + Number(row.bankBalance || 0), 0),
+    bookBalance,
+    variance,
+    status: rows.some((row) => getSlide29VarianceStatus(row.variance, row.status) === "Review") ? "Review" : "Reconciled",
+  };
+}
+
+function buildSlide29BankReconciliationTable(bankReconciliation = {}, totals = {}) {
+  const allBanks = getSlide29BankRows(bankReconciliation)
+    .sort((a, b) =>
+      Math.abs(Number(b.variance || 0)) - Math.abs(Number(a.variance || 0)) ||
+      Number(b.bankBalance || 0) - Number(a.bankBalance || 0) ||
+      String(a.name || "").localeCompare(String(b.name || "")));
+  const maxBankRows = 6;
+  const visibleBanks = allBanks.length > maxBankRows
+    ? [
+      ...allBanks.slice(0, maxBankRows - 1),
+      aggregateSlide29BankRows(allBanks.slice(maxBankRows - 1), `Other banks (${allBanks.length - maxBankRows + 1})`),
+    ]
+    : allBanks;
+  const totalVariance = isFiniteSlide29Number(totals.variance)
+    ? Number(totals.variance)
+    : (isFiniteSlide29Number(totals.bookBalance) ? Number(totals.bankBalance || 0) - Number(totals.bookBalance) : null);
+
+  const rows = visibleBanks.map((bank) => {
+    const label = `${truncateSlide29CellText(bank.name)}${Number(bank.accountCount || 0) > 1 ? ` (${bank.accountCount} accts)` : ""}`;
+    const status = getSlide29VarianceStatus(bank.variance, bank.status);
+    const difference = isFiniteSlide29Number(bank.variance)
+      ? `${formatSlide29Money(bank.variance, "k")} ${status}`
+      : "Book match pending";
+    return [
+      label,
+      formatSlide29Money(bank.bookBalance, "M"),
+      formatSlide29Money(bank.bankBalance, "M"),
+      difference,
+    ].join(" | ");
+  });
+
+  rows.push([
+    "Total cash balance",
+    formatSlide29Money(totals.bookBalance, "M"),
+    formatSlide29Money(totals.bankBalance, "M"),
+    isFiniteSlide29Number(totalVariance)
+      ? `${formatSlide29Money(totalVariance, "k")} ${getSlide29VarianceStatus(totalVariance)}`
+      : "Book match pending",
+  ].join(" | "));
+
+  return [
+    "Bank / account | Book / GL | Bank stmt. | Difference / status",
+    ...rows.slice(0, 7),
+  ].join("\n");
+}
+
+function buildSlide29BankReconciliationCommentary({ bankReconciliation = {}, reconciliationDate = "", variance = null, bankCount = 0 }) {
+  const bankRows = getSlide29BankRows(bankReconciliation);
+  const accountCount = bankRows.reduce((sum, row) => sum + Number(row.accountCount || 1), 0);
+  const unmatchedCount = bankRows.filter((row) => !isFiniteSlide29Number(row.bookBalance)).length;
+  const reviewBanks = bankRows
+    .filter((row) => getSlide29VarianceStatus(row.variance, row.status) === "Review")
+    .map((row) => truncateSlide29CellText(row.name, 28))
+    .slice(0, 3);
+
+  if (isFiniteSlide29Number(variance) && Math.abs(Number(variance)) <= 0.01 && unmatchedCount === 0) {
+    return `Bank statement cash reconciles to book/GL cash as of ${reconciliationDate} across ${bankCount} bank(s) and ${accountCount} account(s).`;
+  }
+
+  const varianceText = isFiniteSlide29Number(variance)
+    ? `Net reconciling difference is ${formatSlide29Money(Math.abs(Number(variance)), "k")} as of ${reconciliationDate}.`
+    : `Book/GL matching is pending for ${unmatchedCount} bank(s) as of ${reconciliationDate}.`;
+  const reviewText = reviewBanks.length ? ` Review focus: ${reviewBanks.join(", ")}.` : "";
+  return `${varianceText}${reviewText} Confirm support before circulation.`;
 }
 
 function formatAutoFillPercent(value, digits = CIM_FINANCIAL_MAX_DECIMALS) {
@@ -4811,29 +4970,40 @@ export function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   const bankReconciliation = snapshot?.bankReconciliation || {};
   if (bankReconciliation.hasData) {
     const reconciliationDate = formatAutoFillDate(bankReconciliation.date, "long") || currentLongDate;
-    const bookBalance = Number(bankReconciliation.bookBalance || latest.cashAndBankBalance || 0);
+    const hasSourcedBookBalance = isFiniteSlide29Number(bankReconciliation.bookBalance);
+    const bookBalance = hasSourcedBookBalance
+      ? Number(bankReconciliation.bookBalance)
+      : Number(latest.cashAndBankBalance || 0);
     const bankBalance = Number(bankReconciliation.bankBalance || 0);
-    const variance = Number(bankReconciliation.variance || bankBalance - bookBalance);
+    const variance = isFiniteSlide29Number(bankReconciliation.variance)
+      ? Number(bankReconciliation.variance)
+      : bankBalance - bookBalance;
+    const bankRows = getSlide29BankRows(bankReconciliation);
+    const bankCount = Number(bankReconciliation.bankCount || bankRows.length || 0);
+    const accountCount = bankRows.reduce((sum, row) => sum + Number(row.accountCount || 1), 0);
+    const sourceBankLabel = bankCount > 1
+      ? `${bankCount} banks reviewed`
+      : (bankReconciliation.bankName || bankRows[0]?.name || "Bank statement");
     add(29, 6, 0, reconciliationDate);
-    add(29, 9, 0, formatAutoFillMillions(bookBalance));
-    add(29, 14, 0, formatAutoFillMillions(bankBalance));
-    add(29, 16, 0, bankReconciliation.bankName);
+    add(29, 9, 0, formatAutoFillMillions(bookBalance) || "0");
+    add(29, 14, 0, formatAutoFillMillions(bankBalance) || "0");
+    add(29, 16, 0, sourceBankLabel);
     add(29, 16, 1, reconciliationDate);
-    add(29, 19, 0, formatAutoFillThousands(variance));
+    add(29, 19, 0, formatAutoFillThousands(Math.abs(variance)) || "0");
     add(29, 21, 0, String(bankReconciliation.itemCount || 0));
     addElementOverride(29, 24, bankReconciliation.frequency || "Monthly");
-    const accountRows = (bankReconciliation.accounts || []).slice(0, 5).map((account) => {
-      const accountVariance = Number(account.variance || account.bankBalance - account.bookBalance || 0);
-      return `${account.name || account.bankName || "Bank account"} | ${formatAutoFillMillions(account.bankBalance)} | ${accountVariance >= 0 ? "Add" : "Deduct"} | ${account.status || (Math.abs(accountVariance) < 0.01 ? "Reconciled" : "Review")}`;
-    });
-    addElementOverride(29, 28, [
-      "Account / item | Amount ($M) | Direction | Status",
-      ...accountRows,
-      `Total bank statement balance | ${formatAutoFillMillions(bankBalance)} | -- | ${Math.abs(variance) < 0.01 ? "Reconciled" : "Review"}`,
-    ].join("\n"));
-    addElementOverride(29, 31, Math.abs(variance) < 0.01
-      ? `Bank statements and book cash reconcile as of ${reconciliationDate}. ${bankReconciliation.accounts?.length || 0} account(s) were reviewed.`
-      : `A net reconciling difference of $${formatAutoFillThousands(Math.abs(variance))}k remains as of ${reconciliationDate}. Review the account-level items before circulation.`);
+    addElementOverride(29, 28, buildSlide29BankReconciliationTable(bankReconciliation, {
+      bookBalance,
+      bankBalance,
+      variance,
+    }));
+    addElementOverride(29, 31, buildSlide29BankReconciliationCommentary({
+      bankReconciliation,
+      reconciliationDate,
+      variance,
+      bankCount,
+    }));
+    addElementOverride(29, 32, `Source: ${financialSource}; Quality of Earnings - Bank Reconciliation; ${bankCount || 0} bank(s), ${accountCount || 0} account(s); as of ${reconciliationDate}.`);
   }
 
   add(30, 5, 0, formatAutoFillPercent(latest.effectiveTaxRate));
