@@ -1849,49 +1849,168 @@ function assignSystemIds(leaves, existingByKey) {
   return byKey;
 }
 
-// ── Category (parent) node materialization for parent_account_id ──────────────
+// ── Tree-first COA hierarchy: normalized node identity ──────────────────────
 // The level columns alone encode the hierarchy, but the spec also requires a
 // valid parent_account_id tree. We materialize one is_group row per distinct
 // path prefix (the level labels above the base account) and chain them, so a
 // real expandable tree can be rebuilt from parent_account_id — not just levels.
+//
+// A structural node's TRUE identity is its NORMALIZED ancestor path, not the
+// raw, case-sensitive label sequence. Two accounts landing under "Bank
+// Accounts" and "bank accounts" (a real possibility across AI batches / a
+// re-parsed document) must resolve to the SAME node, not two — this was the
+// still-live half of the historical "hundreds of phantom category nodes" bug
+// (the other half, a leaf's own name trailing its ancestor chain, was already
+// fixed by appendLeaf above). normPathKey is the single normalization point
+// every dedup/lookup below shares; the DISPLAY label/path (original casing,
+// first-seen) is kept separately for readability.
+function normPathKey(pathArr) {
+  return (pathArr || []).map(normName).join(" > ");
+}
 
 /** The category path a leaf hangs under (its levels minus the base account). */
 function leafCategoryKey(levelsArr) {
-  const path = levelsArr.filter(Boolean);
+  const path = (levelsArr || []).filter(Boolean);
   if (path.length <= 1) return null; // base account only → no parent category
-  return path.slice(0, -1).join(" > ");
+  return normPathKey(path.slice(0, -1));
 }
 
-/** Distinct category prefixes across all leaves → Map<catKey, descriptor>. */
-function buildDesiredCategories(leaves) {
-  const cats = new Map();
+/**
+ * buildCoaNodeTree — the canonical, deduplicated set of structural (category)
+ * nodes desired for this version, built ONCE from every leaf's own resolved
+ * `levels` array before any DB write. Same Map<key, descriptor> shape as
+ * before (pathArr/label/parentKey/depth/accountType/statementType) — the one
+ * change is the key: normPathKey instead of a raw, case-sensitive join.
+ */
+function buildCoaNodeTree(leaves) {
+  const nodes = new Map();
   for (const leaf of leaves) {
-    const path = leaf.levels.filter(Boolean);
+    const path = (leaf.levels || []).filter(Boolean);
     if (path.length <= 1) continue;
     const catLabels = path.slice(0, -1);
     for (let i = 0; i < catLabels.length; i += 1) {
       const prefixArr = catLabels.slice(0, i + 1);
-      const key = prefixArr.join(" > ");
-      if (cats.has(key)) continue;
-      cats.set(key, {
+      const key = normPathKey(prefixArr);
+      if (nodes.has(key)) continue;
+      nodes.set(key, {
         pathArr: prefixArr,
         label: prefixArr[prefixArr.length - 1],
-        parentKey: i === 0 ? null : prefixArr.slice(0, -1).join(" > "),
+        parentKey: i === 0 ? null : normPathKey(prefixArr.slice(0, -1)),
         depth: prefixArr.length,
         accountType: leaf.accountType,
         statementType: leaf.statementType,
       });
     }
   }
-  return cats;
+  return nodes;
+}
+
+/**
+ * validateCoaNodeTree — pre-persist sanity check over the in-memory desired
+ * node set (before any DB write). Never throws; only logs. Duplicate
+ * structural nodes should be structurally impossible given buildCoaNodeTree's
+ * Map dedup — asserted here (not just trusted) so a future edit that
+ * reintroduces raw-label keying is caught immediately instead of silently
+ * regressing. Also runs the "leaf can never become a parent" rule pre-persist:
+ * does any leaf's own full normalized path exactly match a structural node
+ * this run also wants to create? (The post-persist validateCoaTreeGlobal is
+ * the authoritative version of this same check, over the real, persisted
+ * table — this is the early-warning version.)
+ */
+function validateCoaNodeTree(tree, leaves) {
+  const structuralNodes = tree.size;
+  const postingAccounts = leaves.filter((l) => (l.levels || []).some(Boolean)).length;
+  const violations = [];
+  const displayName = (l) => l.accountName || l.account_name || l.id || "(unnamed account)";
+
+  const seenByParentLabel = new Map();
+  let duplicateStructuralNodes = 0;
+  for (const [key, node] of tree) {
+    const dupKey = `${node.parentKey || "<root>"}::${normName(node.label)}`;
+    if (seenByParentLabel.has(dupKey)) {
+      duplicateStructuralNodes += 1;
+      violations.push(`Duplicate category "${node.pathArr.join(" > ")}" would be created more than once.`);
+    } else {
+      seenByParentLabel.set(dupKey, key);
+    }
+  }
+
+  // Two DIFFERENT posting accounts resolving to the EXACT same full path is
+  // its own real violation ("no duplicate hierarchy paths" / "every posting
+  // account has exactly one path") — distinct from the leaf-used-as-parent
+  // check below, which only fires when one of them is also an ancestor.
+  const leavesByFullPath = new Map();
+  for (const leaf of leaves) {
+    const path = (leaf.levels || []).filter(Boolean);
+    if (!path.length) continue;
+    const key = normPathKey(path);
+    if (!leavesByFullPath.has(key)) leavesByFullPath.set(key, []);
+    leavesByFullPath.get(key).push(leaf);
+  }
+  let duplicateLeafPaths = 0;
+  for (const [, group] of leavesByFullPath) {
+    if (group.length > 1) {
+      duplicateLeafPaths += 1;
+      violations.push(`${group.map(displayName).join(" and ")} would resolve to the identical hierarchy path "${group[0].levels.filter(Boolean).join(" > ")}".`);
+    }
+  }
+
+  const leafFullPaths = new Set(leavesByFullPath.keys());
+  let leafUsedAsParentCount = 0;
+  for (const key of tree.keys()) {
+    if (leafFullPaths.has(key)) {
+      leafUsedAsParentCount += 1;
+      const node = tree.get(key);
+      const offendingLeaves = leavesByFullPath.get(key) || [];
+      violations.push(`"${node.pathArr.join(" > ")}" is a posting account (${offendingLeaves.map(displayName).join(", ")}) but would also become a parent category — a posting account can never have children.`);
+    }
+  }
+
+  const referencedParentKeys = new Set();
+  for (const node of tree.values()) if (node.parentKey) referencedParentKeys.add(node.parentKey);
+  const leafParentKeys = new Set();
+  for (const leaf of leaves) {
+    const k = leafCategoryKey(leaf.levels);
+    if (k) leafParentKeys.add(k);
+  }
+  let orphanNodes = 0;
+  for (const key of tree.keys()) {
+    if (!referencedParentKeys.has(key) && !leafParentKeys.has(key)) orphanNodes += 1;
+  }
+
+  let depthExceededCount = 0;
+  for (const leaf of leaves) {
+    const depth = (leaf.levels || []).filter(Boolean).length;
+    if (depth > MAX_LEVELS) {
+      depthExceededCount += 1;
+      violations.push(`${displayName(leaf)}'s hierarchy is ${depth} levels deep — exceeds the maximum of ${MAX_LEVELS}.`);
+    }
+  }
+
+  const hierarchyValid = duplicateStructuralNodes === 0 && duplicateLeafPaths === 0
+    && leafUsedAsParentCount === 0 && depthExceededCount === 0;
+
+  if (!hierarchyValid) {
+    console.warn(`[ChartOfAccounts] Pre-persist tree check found ${duplicateStructuralNodes} duplicate structural node(s), ${duplicateLeafPaths} duplicate leaf path(s), ${leafUsedAsParentCount} leaf-used-as-parent conflict(s), ${depthExceededCount} depth violation(s).`);
+  }
+
+  return {
+    structuralNodes, postingAccounts, duplicateStructuralNodes, duplicateLeafPaths,
+    orphanNodes, leafUsedAsParentCount, depthExceededCount, violations,
+    hierarchyValid,
+  };
 }
 
 /**
  * Reconcile the version's category nodes against the desired set: insert new,
  * update changed, delete stale, then chain parent_account_id. Returns
- * Map<catKey, accountId> for the leaf pass to point parents at.
+ * Map<catKey, accountId> for the leaf pass to point parents at. Replaces the
+ * former syncCategoryNodes — same body, with existing-row matching keyed by
+ * the same normalized path (normPathKey) as buildCoaNodeTree, so a legacy
+ * row persisted under old raw-casing rules still matches correctly and a
+ * casing-variant duplicate correctly collapses into it.
  */
-async function syncCategoryNodes(versionId, companyId, existingCatsData, desiredCats) {
+async function persistCoaNodeTree(versionId, companyId, existingCatsData, desiredCats) {
   // CONFIRMED BUG this fixes: staleness below is decided purely by "is this
   // row's path still desired" — a genuine duplicate (two+ rows persisted
   // for the EXACT same cat_path, from an earlier run that failed to match
@@ -1903,13 +2022,14 @@ async function syncCategoryNodes(versionId, companyId, existingCatsData, desired
   const existingByPath = new Map();
   const duplicateStaleIds = [];
   for (const row of existingCatsData || []) {
-    const p = row.metadata?.cat_path;
-    if (!p) continue;
-    if (existingByPath.has(p)) {
+    const rawPath = row.metadata?.cat_path;
+    if (!rawPath) continue;
+    const key = normPathKey(String(rawPath).split(" > ").filter(Boolean));
+    if (existingByPath.has(key)) {
       duplicateStaleIds.push(row.id);
       continue;
     }
-    existingByPath.set(p, row);
+    existingByPath.set(key, row);
   }
 
   const catIdByPath = new Map();
@@ -2008,7 +2128,11 @@ async function syncCategoryNodes(versionId, companyId, existingCatsData, desired
   const staleCatIds = [
     ...duplicateStaleIds,
     ...(existingCatsData || [])
-      .filter((row) => !desiredCats.has(row.metadata?.cat_path))
+      .filter((row) => {
+        const rawPath = row.metadata?.cat_path;
+        if (!rawPath) return false;
+        return !desiredCats.has(normPathKey(String(rawPath).split(" > ").filter(Boolean)));
+      })
       .map((row) => row.id),
   ];
   if (duplicateStaleIds.length) {
@@ -2021,6 +2145,247 @@ async function syncCategoryNodes(versionId, companyId, existingCatsData, desired
   }
 
   return catIdByPath;
+}
+
+/**
+ * resolveOrCreateCategoryChain — materialize/resolve a SINGLE ancestor chain
+ * outside the bulk-sync path, for a one-off hierarchy edit (the manual "Edit
+ * Chart of Accounts" grid, or an accepted AI Hierarchy Recommendation).
+ * Returns the id of the DEEPEST category in the chain (the new
+ * parent_account_id for the account being edited), creating any missing
+ * ancestor category rows along the way. Mirrors persistCoaNodeTree's own
+ * insert + parent-chaining logic, scoped to one path instead of the whole
+ * version's desired set.
+ */
+async function resolveOrCreateCategoryChain(versionId, companyId, ancestorPathArr, accountType, statementType) {
+  const path = (ancestorPathArr || []).filter(Boolean);
+  if (!path.length) return null;
+
+  const { data: existingCats } = await supabase
+    .from(TABLE_COA).select("id, parent_account_id, metadata").eq("version_id", versionId);
+  const existingByKey = new Map();
+  for (const row of existingCats || []) {
+    if (!row.metadata?.is_group) continue;
+    const rawPath = row.metadata?.cat_path;
+    if (!rawPath) continue;
+    const key = normPathKey(String(rawPath).split(" > ").filter(Boolean));
+    if (!existingByKey.has(key)) existingByKey.set(key, row);
+  }
+
+  let parentId = null;
+  for (let i = 0; i < path.length; i += 1) {
+    const prefixArr = path.slice(0, i + 1);
+    const key = normPathKey(prefixArr);
+    const existing = existingByKey.get(key);
+    if (existing) {
+      parentId = existing.id;
+      continue;
+    }
+    const levelsArr = new Array(MAX_LEVELS).fill(null);
+    prefixArr.forEach((label, idx) => { if (idx < MAX_LEVELS) levelsArr[idx] = label; });
+    const label = prefixArr[prefixArr.length - 1];
+    const hierarchyPath = prefixArr.join(" > ");
+    const { data: inserted, error } = await supabase.from(TABLE_COA).insert({
+      version_id: versionId,
+      company_id: companyId,
+      account_number: null,
+      account_name: label,
+      account_id_name: label,
+      parent_account_id: parentId,
+      account_type: accountType,
+      statement_type: statementType,
+      is_active: true,
+      sort_order: 0,
+      ...levelsToColumns(levelsArr),
+      hierarchy_path: hierarchyPath,
+      classification_method: "rule",
+      base_account: null,
+      original_name: label,
+      original_hierarchy: hierarchySnapshot(levelsArr, accountType, statementType, null),
+      adjusted_name: label,
+      adjusted_hierarchy: hierarchySnapshot(levelsArr, accountType, statementType, null),
+      metadata: { is_group: true, cat_path: hierarchyPath, level: prefixArr.length },
+    }).select("id").single();
+    if (error) throw error;
+    existingByKey.set(key, { id: inserted.id, parent_account_id: parentId, metadata: { is_group: true, cat_path: hierarchyPath } });
+    parentId = inserted.id;
+  }
+  return parentId;
+}
+
+/**
+ * validateCoaTreeGlobal — post-persist, authoritative validation over the
+ * FULLY PERSISTED chart_of_accounts table for this version (all statement
+ * types together, since parent_account_id chains legitimately cross
+ * statement-type boundaries via shared ancestors like "Total Equity"). This
+ * is the ground-truth twin of validateCoaNodeTree's pre-persist estimate —
+ * uses the real node_type column (migration 082) and real parent_account_id
+ * links, so it also catches anything a DIFFERENT writer (ensureCoaComplete,
+ * a manual edit, an accepted AI recommendation) introduced independently.
+ */
+async function validateCoaTreeGlobal(companyId, versionId) {
+  const levelCols = Array.from({ length: MAX_LEVELS }, (_, i) => `level_${i + 1}`);
+  const { data: allRows, error } = await supabase
+    .from(TABLE_COA)
+    .select(["id, account_name, parent_account_id, node_type, hierarchy_path", ...levelCols].join(", "))
+    .eq("version_id", versionId);
+  if (error) throw error;
+  const all = allRows || [];
+  const byId = new Map(all.map((r) => [r.id, r]));
+  const structural = all.filter((r) => r.node_type !== "account");
+  const posting = all.filter((r) => r.node_type === "account");
+
+  const structuralKey = (r) => `${r.parent_account_id || "<root>"}::${normName(r.account_name)}`;
+  const structuralCounts = new Map();
+  for (const r of structural) structuralCounts.set(structuralKey(r), (structuralCounts.get(structuralKey(r)) || 0) + 1);
+  const duplicateStructuralNodes = Array.from(structuralCounts.values()).filter((n) => n > 1).length;
+
+  const pathCounts = new Map();
+  for (const r of all) if (r.hierarchy_path) pathCounts.set(r.hierarchy_path, (pathCounts.get(r.hierarchy_path) || 0) + 1);
+  const duplicatePaths = Array.from(pathCounts.values()).filter((n) => n > 1).length;
+
+  const referencedParentIds = new Set(all.map((r) => r.parent_account_id).filter(Boolean));
+  const orphanNodes = structural.filter((r) => !referencedParentIds.has(r.id)).length;
+
+  const parentIdCounts = new Map();
+  for (const r of all) if (r.parent_account_id) parentIdCounts.set(r.parent_account_id, (parentIdCounts.get(r.parent_account_id) || 0) + 1);
+  const leafUsedAsParentCount = posting.filter((r) => parentIdCounts.get(r.id) > 0).length;
+
+  let circularReferences = 0;
+  let missingParents = 0;
+  for (const r of all) {
+    if (r.parent_account_id && !byId.has(r.parent_account_id)) { missingParents += 1; continue; }
+    const visited = new Set([r.id]);
+    let cursor = r.parent_account_id;
+    let hops = 0;
+    while (cursor && hops < MAX_LEVELS + 1) {
+      if (visited.has(cursor)) { circularReferences += 1; break; }
+      visited.add(cursor);
+      cursor = byId.get(cursor)?.parent_account_id || null;
+      hops += 1;
+    }
+  }
+
+  // Real depth, not padded-column count: padLevelsWithLeafPropagation fills
+  // every level past a leaf's real depth by repeating its deepest real value
+  // (levelsToColumns's leafName argument), so every leaf's columns are full —
+  // counting non-null columns would report every leaf as depth 15. Collapse
+  // trailing consecutive duplicates back down to their single real
+  // occurrence first (same convention already fixed in
+  // aiHierarchyRecommendationService.js's columnsToLevels).
+  let maxDepth = 0;
+  let totalDepth = 0;
+  for (const r of posting) {
+    const nonNull = levelCols.map((c) => r[c]).filter(Boolean);
+    while (nonNull.length > 1 && nonNull[nonNull.length - 1] === nonNull[nonNull.length - 2]) nonNull.pop();
+    const depth = nonNull.length;
+    if (depth > maxDepth) maxDepth = depth;
+    totalDepth += depth;
+  }
+  const avgDepth = posting.length ? totalDepth / posting.length : 0;
+
+  const parentLinksValid = missingParents === 0 && leafUsedAsParentCount === 0 && circularReferences === 0;
+  const hierarchyValid = parentLinksValid && duplicateStructuralNodes === 0 && duplicatePaths === 0 && orphanNodes === 0;
+
+  return {
+    structuralNodes: structural.length, postingAccounts: posting.length,
+    duplicateStructuralNodes, duplicatePaths, orphanNodes,
+    circularReferences, leafAccounts: posting.length, avgDepth, maxDepth,
+    parentLinksValid, hierarchyValid, leafUsedAsParentCount, missingParents,
+  };
+}
+
+/**
+ * deriveLevelsFromPersistedTree — root-to-node walk over the PERSISTED
+ * parent_account_id chain, writing level_1..15/hierarchy_path from the walked
+ * path. This is what makes the tree authoritative: level columns stop being
+ * written from the pre-tree leaf.levels array and start being DERIVED from
+ * whatever parent_account_id currently says. Reuses levelsToColumns/
+ * padLevelsWithLeafPropagation unchanged, so the padding convention (trailing
+ * levels repeat a leaf's own deepest value) stays byte-identical to today —
+ * every existing reader of level_1..15 keeps working unchanged. Idempotent
+ * and self-healing: only rows whose derived value actually differs get
+ * written, so an interrupted run is simply finished by the next call.
+ */
+async function deriveLevelsFromPersistedTree(companyId, versionId) {
+  const levelCols = Array.from({ length: MAX_LEVELS }, (_, i) => `level_${i + 1}`);
+  const { data: allRows, error } = await supabase
+    .from(TABLE_COA)
+    .select(["id, account_name, base_account, parent_account_id, metadata, hierarchy_path", ...levelCols].join(", "))
+    .eq("version_id", versionId);
+  if (error) throw error;
+  const all = allRows || [];
+  const byId = new Map(all.map((r) => [r.id, r]));
+
+  function walkPath(row) {
+    const names = [];
+    const visited = new Set();
+    let cursor = row;
+    let hops = 0;
+    while (cursor && !visited.has(cursor.id) && hops <= MAX_LEVELS + 5) {
+      visited.add(cursor.id);
+      names.push(cursor.account_name);
+      cursor = cursor.parent_account_id ? byId.get(cursor.parent_account_id) : null;
+      hops += 1;
+    }
+    return names.reverse();
+  }
+
+  const patches = [];
+  for (const row of all) {
+    const pathArr = walkPath(row);
+    const isLeaf = !row.metadata?.is_group;
+    const rawLevels = new Array(MAX_LEVELS).fill(null);
+    pathArr.forEach((label, i) => { if (i < MAX_LEVELS) rawLevels[i] = label; });
+    const newCols = levelsToColumns(rawLevels, isLeaf ? (row.base_account || row.account_name) : null);
+    const newPath = pathArr.join(" > ");
+    const changed = levelCols.some((c) => (row[c] || null) !== (newCols[c] || null)) || row.hierarchy_path !== newPath;
+    if (changed) patches.push({ id: row.id, patch: { ...newCols, hierarchy_path: newPath } });
+  }
+
+  const CHUNK = 100;
+  for (let i = 0; i < patches.length; i += CHUNK) {
+    const chunk = patches.slice(i, i + CHUNK);
+    for (const { id, patch } of chunk) {
+      const { error: updErr } = await supabase.from(TABLE_COA).update(patch).eq("id", id);
+      if (updErr) throw updErr;
+    }
+  }
+  return { totalRows: all.length, rewrittenRows: patches.length };
+}
+
+function printCoaTreeValidationBlock(counts) {
+  console.log(
+    "=====================================\n" +
+    "COA Tree Validation\n" +
+    "=====================================\n\n" +
+    `Structural Nodes : ${counts.structuralNodes}\n` +
+    `Posting Accounts : ${counts.postingAccounts}\n` +
+    `Duplicate Structural Nodes : ${counts.duplicateStructuralNodes}\n` +
+    `Duplicate Paths : ${counts.duplicatePaths}\n` +
+    `Orphan Nodes : ${counts.orphanNodes}\n` +
+    `Circular References : ${counts.circularReferences}\n` +
+    `Leaf Accounts : ${counts.leafAccounts}\n` +
+    `Average Depth : ${counts.avgDepth.toFixed(1)}\n` +
+    `Maximum Depth : ${counts.maxDepth}\n` +
+    `Parent Links Valid : ${counts.parentLinksValid ? "YES" : "NO"}\n` +
+    `Hierarchy Valid : ${counts.hierarchyValid ? "YES" : "NO"}\n` +
+    "=====================================",
+  );
+}
+
+/**
+ * finalizeCoaHierarchy — runs after ALL COA writers for a sync
+ * (generateChartOfAccounts, ensureCoaComplete) have finished. Derives
+ * level_1..15 from the now-persisted parent_account_id tree, then validates
+ * and logs the COA Tree Validation block. Never throws — a failure here must
+ * never block the rest of the sync.
+ */
+async function finalizeCoaHierarchy(companyId, versionId) {
+  const deriveResult = await deriveLevelsFromPersistedTree(companyId, versionId);
+  const counts = await validateCoaTreeGlobal(companyId, versionId);
+  printCoaTreeValidationBlock(counts);
+  return { ...deriveResult, ...counts };
 }
 
 /**
@@ -2342,7 +2707,7 @@ async function generateChartOfAccounts(companyId, versionId, batchId, opts = {})
     }
     const avgDepth = depthCount ? (totalDepth / depthCount) : 0;
     const duplicatePathCount = Array.from(pathCounts.values()).filter((n) => n > 1).length;
-    const hierarchyNodeCount = buildDesiredCategories(hierarchical).size;
+    const hierarchyNodeCount = buildCoaNodeTree(hierarchical).size;
     const aiMappedCount = hierarchical.filter((l) => l.classificationMethod === "gemini" || l.matchTier === "ai_hierarchy").length;
     const fullyResolvedCount = hierarchical.filter((l) => !l.needsMapping && !l.needsReview).length;
     const brokenPathCount = hierarchical.filter((l) => !l.needsMapping && !(l.levels || []).some(Boolean)).length;
@@ -2437,9 +2802,11 @@ async function generateChartOfAccounts(companyId, versionId, batchId, opts = {})
   const { data: validClientAccountRows } = await supabase.from("client_chart_of_accounts").select("id").eq("company_id", companyId);
   const validClientAccountIds = new Set((validClientAccountRows || []).map((r) => r.id));
 
-  // 2a) Materialize the category-node tree (parent_account_id) + assign system ids.
-  const desiredCats = buildDesiredCategories(hierarchical);
-  const catIdByPath = await syncCategoryNodes(versionId, companyId, existingCatsData, desiredCats);
+  // 2a) Build the canonical, deduplicated node tree in-memory, validate it
+  // pre-persist, THEN persist it (parent_account_id) + assign system ids.
+  const desiredCats = buildCoaNodeTree(hierarchical);
+  validateCoaNodeTree(desiredCats, hierarchical);
+  const catIdByPath = await persistCoaNodeTree(versionId, companyId, existingCatsData, desiredCats);
   const systemIdByKey = assignSystemIds(hierarchical, existingByKey);
 
   const seenKeys = new Set();
@@ -2931,6 +3298,25 @@ async function updateAccountHierarchy(accountId, patch = {}, userId = null) {
     // every future import — no separate reference-table write needed.
     meta.needs_mapping = false;
     changed = true;
+
+    // CONFIRMED BUG this fixes: this branch used to rewrite level_1..15/
+    // hierarchy_path ONLY — parent_account_id (the column report generation
+    // actually rolls up via, financialStatementService.buildTree/rollupNode)
+    // was left pointing at the account's OLD category forever. A manual edit
+    // or an accepted AI Hierarchy Recommendation therefore changed nothing
+    // about how the account rolled up in Balance Sheet/P&L — only what the
+    // grid displayed. Now that level_1..15 is re-derived FROM parent_account_id
+    // on every sync (deriveLevelsFromPersistedTree), leaving this unfixed
+    // would make it actively worse: the next sync would silently revert the
+    // edit back to its old category. Resolve/create the real ancestor chain
+    // for the new levels and re-point parent_account_id at its deepest node.
+    const ancestorPathArr = nonNull.slice(0, -1);
+    update.parent_account_id = ancestorPathArr.length
+      ? await resolveOrCreateCategoryChain(
+          row.version_id, row.company_id, ancestorPathArr,
+          update.account_type || row.account_type, update.statement_type || row.statement_type,
+        )
+      : null;
   }
 
   if (patch.isActive !== undefined && patch.isActive !== row.is_active) {
@@ -2960,10 +3346,60 @@ async function updateAccountHierarchy(accountId, patch = {}, userId = null) {
 }
 
 /** Bulk-persist an edited hierarchy (array of per-account patches). */
+/**
+ * Bulk-persist an edited hierarchy (array of per-account patches) — the
+ * commit endpoint for the tree editor's draft/undo model. Validates the
+ * WHOLE proposed batch against the version's current tree BEFORE writing
+ * anything: simulates every patch's effect on a fresh copy of the leaf set,
+ * runs it through the same buildCoaNodeTree/validateCoaNodeTree path-space
+ * checks the generation pipeline itself uses, and rejects the entire batch
+ * (no partial writes) if the result would be an invalid tree. This is the
+ * "before saving, validate... reject invalid edits" gate — everything else
+ * (parent_account_id re-chaining, level_1..15 rebuild) is already handled by
+ * updateAccountHierarchy, reused unchanged below.
+ */
 async function saveHierarchy(versionId, nodes = [], userId = null) {
+  const candidateNodes = nodes.filter((n) => n?.accountId || n?.id);
+  if (!candidateNodes.length) return { updated: 0 };
+
+  const levelCols = Array.from({ length: MAX_LEVELS }, (_, i) => `level_${i + 1}`);
+  // node_type = 'account' (migration 082, generated column) — only real
+  // posting leaves are simulated here. Including category rows would make
+  // every EXISTING category collide with the leaf-derived category
+  // buildCoaNodeTree re-derives from them, producing false-positive
+  // "duplicate structural node" rejections.
+  const { data: existingRows, error: loadErr } = await supabase
+    .from(TABLE_COA)
+    .select(["id, account_name, adjusted_name, account_type, statement_type", ...levelCols].join(", "))
+    .eq("version_id", versionId)
+    .eq("is_active", true)
+    .eq("node_type", "account");
+  if (loadErr) throw loadErr;
+
+  const patchByAccountId = new Map();
+  for (const node of candidateNodes) patchByAccountId.set(node.accountId || node.id, node);
+
+  const simulatedLeaves = (existingRows || [])
+    .map((row) => {
+      const patch = patchByAccountId.get(row.id);
+      const levels = Array.isArray(patch?.levels) ? patch.levels : columnsToLevels(row);
+      return {
+        id: row.id,
+        accountName: (patch?.adjustedName ?? row.adjusted_name) || row.account_name,
+        accountType: patch?.accountType || row.account_type,
+        statementType: patch?.statementType || row.statement_type,
+        levels,
+      };
+    });
+
+  const proposedTree = buildCoaNodeTree(simulatedLeaves);
+  const validation = validateCoaNodeTree(proposedTree, simulatedLeaves);
+  if (!validation.hierarchyValid) {
+    return { updated: 0, rejected: true, code: "HIERARCHY_INVALID", violations: validation.violations };
+  }
+
   let updated = 0;
-  for (const node of nodes) {
-    if (!node?.accountId && !node?.id) continue;
+  for (const node of candidateNodes) {
     await updateAccountHierarchy(node.accountId || node.id, {
       adjustedName: node.adjustedName,
       levels: node.levels,
@@ -2986,17 +3422,26 @@ async function resetAccount(accountId, userId = null) {
   const nonNull = levels.filter(Boolean);
   const baseAccount = original.base_account || (nonNull.length ? nonNull[nonNull.length - 1] : row.base_account);
 
+  const resetAccountType = original.account_type || row.account_type;
+  const resetStatementType = original.statement_type || row.statement_type;
+  const resetAncestorPathArr = nonNull.slice(0, -1);
+
   const update = {
     updated_at: new Date().toISOString(),
     adjusted_name: row.original_name || row.account_name,
     adjusted_hierarchy: original,
-    account_type: original.account_type || row.account_type,
-    statement_type: original.statement_type || row.statement_type,
+    account_type: resetAccountType,
+    statement_type: resetStatementType,
     base_account: baseAccount,
     hierarchy_path: nonNull.join(" > "),
     classification_method: "rule",
     metadata: { ...(row.metadata || {}), user_modified: false },
     ...levelsToColumns(levels, baseAccount || row.account_name),
+    // Same companion fix as updateAccountHierarchy: restore parent_account_id
+    // to match the restored (original) hierarchy, not just the level columns.
+    parent_account_id: resetAncestorPathArr.length
+      ? await resolveOrCreateCategoryChain(row.version_id, row.company_id, resetAncestorPathArr, resetAccountType, resetStatementType)
+      : null,
   };
   update.audit_log = appendAudit(
     row.audit_log,
@@ -3817,8 +4262,10 @@ async function ensureCoaComplete(companyId, versionId, plRows = [], hasLinkedCoa
 
   if (classifiedLeaves.length === 0) return { added: 0, skipped: unlinkedNames.size };
 
-  // 5. Sync category nodes for all new leaves.
-  const allCats = buildDesiredCategories(
+  // 5. Sync category nodes for all new leaves — same tree-first path
+  // generateChartOfAccounts uses, so the two writers can never independently
+  // create two differently-cased nodes for the same conceptual category.
+  const allCats = buildCoaNodeTree(
     classifiedLeaves.map((l) => ({ levels: l.finalLevels, accountType: l.type, statementType: l.stmtType })),
   );
   let catIdByPath = new Map();
@@ -3826,7 +4273,7 @@ async function ensureCoaComplete(companyId, versionId, plRows = [], hasLinkedCoa
     const { data: existingCats } = await supabase
       .from(TABLE_COA).select("id, parent_account_id, metadata").eq("version_id", versionId);
     const existingCatsData = (existingCats || []).filter((r) => r.metadata?.is_group);
-    catIdByPath = await syncCategoryNodes(versionId, companyId, existingCatsData, allCats);
+    catIdByPath = await persistCoaNodeTree(versionId, companyId, existingCatsData, allCats);
   } catch (catErr) {
     console.warn(`[COA][ensureComplete] Category sync error: ${catErr.message}`);
   }
@@ -3934,6 +4381,7 @@ module.exports = {
   validateChartOfAccounts,
   ensureCoaComplete,
   printCoaValidationBlock,
+  finalizeCoaHierarchy,
   // exported for unit testing
   buildCoaModel,
   buildLeafHierarchies,

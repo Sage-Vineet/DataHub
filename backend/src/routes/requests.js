@@ -9,6 +9,7 @@ const {
   approveRequest,
   deleteRequest,
   addRequestReminder,
+  skipNextRequestReminder,
   listRequestDocuments,
   addRequestDocument,
   updateNarrative,
@@ -25,6 +26,7 @@ router.patch("/requests/:id", requireAuth, updateRequest);
 router.post("/requests/:id/approve", requireAuth, approveRequest);
 router.delete("/requests/:id", requireAuth, deleteRequest);
 router.post("/requests/:id/reminders", requireAuth, addRequestReminder);
+router.post("/requests/:id/reminders/skip-next", requireAuth, skipNextRequestReminder);
 router.get("/requests/:id/documents", requireAuth, listRequestDocuments);
 router.post("/requests/:id/documents", requireAuth, addRequestDocument);
 router.patch("/requests/:id/narrative", requireAuth, updateNarrative);

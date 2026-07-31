@@ -43,6 +43,7 @@ import {
 import { CLIENT_SUB_ROLES, ROLE_META, inferSubRole } from '../../../lib/roles';
 import NewRequestModal from '../../../components/NewRequestModal';
 import RequestDocumentPreviewModal from '../../../components/RequestDocumentPreviewModal';
+import AssigneeMultiSelect, { assigneeSelectionToPayload, normalizeAssigneeSelection } from '../../../components/AssigneeMultiSelect';
 import { buildFolderOptionsFromTree } from '../../../lib/folderOptions';
 
 const CATEGORY_META = {
@@ -80,6 +81,36 @@ function normalizeVisibleFlag(value) {
   const normalized = `${value ?? ''}`.trim().toLowerCase();
   if (['false', 'no', 'n', '0'].includes(normalized)) return false;
   return true;
+}
+
+function normalizeAssignmentFromApi(request = {}) {
+  const emails = Array.isArray(request.assigned_to_emails)
+    ? request.assigned_to_emails
+    : Array.isArray(request.assignee_emails)
+    ? request.assignee_emails
+    : [];
+  if (emails.length) return normalizeAssigneeSelection(emails);
+  if (request.assigned_to_email) return normalizeAssigneeSelection([request.assigned_to_email]);
+  if (request.assigned_to && !request.assigned_to_name) return normalizeAssigneeSelection([request.assigned_to]);
+  return ['all'];
+}
+
+function getAssignmentDisplay(request = {}) {
+  if (request.assigned_to_display) return request.assigned_to_display;
+  const names = Array.isArray(request.assigned_to_names) ? request.assigned_to_names.filter(Boolean) : [];
+  if (names.length) return names.join(', ');
+  if (request.assigned_to_name) {
+    const roleLabel = request.assigned_to_sub_role ? (ROLE_META[request.assigned_to_sub_role]?.label || '') : '';
+    return roleLabel ? `${request.assigned_to_name} · ${roleLabel}` : request.assigned_to_name;
+  }
+  return 'All client team';
+}
+
+function getAssignmentExportValue(request = {}) {
+  if (Array.isArray(request.assignedToEmails) && !request.assignedToEmails.includes('all')) {
+    return request.assignedToEmails.join(', ');
+  }
+  return 'all';
 }
 
 function isEmptyBulkRow(row) {
@@ -224,7 +255,7 @@ function buildBulkTemplateWorkbook(folderOptions) {
     ['response_type', 'Yes', `Use one of: ${RESPONSE_TYPE_OPTIONS.join(', ')}`],
     ['priority', 'Yes', `Use one of: ${PRIORITY_OPTIONS.join(', ')}`],
     ['due_date', 'Yes', 'Enter date as YYYY-MM-DD (e.g. 2025-06-30). The column is pre-formatted as text to prevent Excel from changing the format.'],
-    ['assigned_to', 'No', 'Optional user id for assignment. Leave blank if unassigned.'],
+    ['assigned_to', 'No', 'Use all or leave blank for all client users. For private requests, enter client emails separated by commas.'],
     ['visible', 'No', 'Use true or false. Blank defaults to true.'],
   ]);
 
@@ -252,7 +283,7 @@ function buildRequestsExportWorkbook(requests, companyName = '') {
     response_type:  r.responseType || 'Upload',
     priority:       r.priority || 'high',
     due_date:       r.dueDate || '',
-    assigned_to:    r.assignedTo || '',
+    assigned_to:    getAssignmentExportValue(r),
     visible:        r.visible === false ? 'false' : 'true',
     id:             r.id || '',
     status:         r.status || getDisplayStatus(r.workflowStatus, r.dueDate),
@@ -290,7 +321,7 @@ function buildRequestsExportWorkbook(requests, companyName = '') {
     ['response_type', 'Yes', `Use one of: ${RESPONSE_TYPE_OPTIONS.join(', ')}`],
     ['priority',      'Yes', `Use one of: ${PRIORITY_OPTIONS.join(', ')}`],
     ['due_date',      'Yes', 'Enter date as YYYY-MM-DD (e.g. 2025-06-30). Column is pre-formatted as text.'],
-    ['assigned_to',   'No',  'Optional user id for assignment. Leave blank if unassigned.'],
+    ['assigned_to',   'No',  'Use all or leave blank for all client users. For private requests, enter client emails separated by commas.'],
     ['visible',       'No',  'Use true or false. Blank defaults to true.'],
     [],
     ['--- Read-only columns (do not modify when re-importing) ---', '', ''],
@@ -383,20 +414,20 @@ function normalizePriority(priority) {
   return normalized || 'medium';
 }
 
-function getReminderFrequencyDays(priority, explicitDays) {
+function getReminderFrequencyHours(priority, explicitDays) {
   const normalized = `${priority ?? ''}`.trim().toLowerCase();
-  const priorityDays = normalized === 'critical' || normalized === 'high' ? 1 : normalized === 'medium' ? 2 : 7;
+  const priorityHours = normalized === 'critical' ? 1 : normalized === 'high' ? 24 : normalized === 'medium' ? 48 : 72;
+  const legacyDays = normalized === 'low' ? 7 : normalized === 'medium' ? 2 : 1;
   const parsed = Number.parseInt(explicitDays, 10);
   if (Number.isFinite(parsed) && parsed > 0) {
-    return parsed === 2 && normalized !== 'medium' ? priorityDays : parsed;
+    return parsed === legacyDays || (parsed === 2 && normalized !== 'medium') ? priorityHours : parsed * 24;
   }
-  return priorityDays;
+  return priorityHours;
 }
 
-function getReminderFrequencyLabel(days) {
-  if (days === 1) return 'daily';
-  if (days === 7) return 'weekly';
-  return `every ${days} days`;
+function getReminderFrequencyLabel(hours) {
+  if (hours === 1) return 'every hour';
+  return `every ${hours} hours`;
 }
 
 function getPriorityMeta(priority) {
@@ -474,7 +505,7 @@ function mapApiRequestToUi(request) {
     subLabel: request.sub_label || '',
     description: request.description || '',
   });
-  const reminderFrequencyDays = getReminderFrequencyDays(request.priority, request.reminder_frequency_days);
+  const reminderFrequencyHours = getReminderFrequencyHours(request.priority, request.reminder_frequency_days);
   return {
     id: request.id,
     name: request.title || 'Untitled Request',
@@ -491,12 +522,9 @@ function mapApiRequestToUi(request) {
     createdAt: request.created_at ? request.created_at.slice(0, 10) : formatToday(),
     updatedAt: request.updated_at ? request.updated_at.slice(0, 10) : (request.created_at ? request.created_at.slice(0, 10) : formatToday()),
     assignedTo: request.assigned_to || null,
-    assignedToDisplay: (() => {
-      if (!request.assigned_to) return 'Unassigned';
-      const name = request.assigned_to_name || request.assigned_to;
-      const roleLabel = request.assigned_to_sub_role ? (ROLE_META[request.assigned_to_sub_role]?.label || '') : '';
-      return roleLabel ? `${name} · ${roleLabel}` : name;
-    })(),
+    assignedToEmails: normalizeAssignmentFromApi(request),
+    assignedToUserIds: Array.isArray(request.assigned_to_user_ids) ? request.assigned_to_user_ids : (request.assigned_to ? [request.assigned_to] : []),
+    assignedToDisplay: getAssignmentDisplay(request),
     visible: request.visible !== false,
     approvalStatus: request.approval_status || 'approved',
     submissionSource: request.submission_source || 'broker',
@@ -507,8 +535,8 @@ function mapApiRequestToUi(request) {
 
     linkedDocuments: [],
     reminderHistory: [],
-    reminderFrequencyDays,
-    notificationFrequency: getReminderFrequencyLabel(reminderFrequencyDays),
+    reminderFrequencyDays: Math.max(1, Math.ceil(reminderFrequencyHours / 24)),
+    notificationFrequency: getReminderFrequencyLabel(reminderFrequencyHours),
   };
 }
 
@@ -519,7 +547,8 @@ function mapUiPatchToApi(patch) {
   if (patch.priority !== undefined) apiPatch.priority = patch.priority;
   if (patch.workflowStatus !== undefined) apiPatch.status = patch.workflowStatus;
   if (patch.dueDate !== undefined) apiPatch.due_date = patch.dueDate;
-  if (patch.assignedTo !== undefined) apiPatch.assigned_to = patch.assignedTo || null;
+  if (patch.assignedToEmails !== undefined) apiPatch.assigned_to = assigneeSelectionToPayload(patch.assignedToEmails);
+  else if (patch.assignedTo !== undefined) apiPatch.assigned_to = patch.assignedTo || null;
   if (patch.visible !== undefined) apiPatch.visible = patch.visible;
   return apiPatch;
 }
@@ -543,7 +572,7 @@ function buildCreateRequestPayload(form) {
       priority: normalizePriority(form.priority),
       status: 'pending',
       due_date: form.dueDate,
-      assigned_to: form.assignedTo || null,
+      assigned_to: assigneeSelectionToPayload(form.assignedToEmails),
     visible: true,
   };
 }
@@ -869,7 +898,7 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
   const [savingRequestDetails, setSavingRequestDetails] = useState(false);
   const [savingNarrative, setSavingNarrative] = useState(false);
   const [unblocking, setUnblocking] = useState(false);
-  const [assignedToDraft, setAssignedToDraft] = useState(request?.assignedTo || '');
+  const [assignedToDraft, setAssignedToDraft] = useState(request?.assignedToEmails || ['all']);
   const [savingAssignment, setSavingAssignment] = useState(false);
 
   useEffect(() => {
@@ -882,7 +911,7 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
       priority: request?.priority || 'high',
       dueDate: request?.dueDate || formatToday(),
     });
-    setAssignedToDraft(request?.assignedTo || '');
+    setAssignedToDraft(request?.assignedToEmails || ['all']);
   }, [request?.id]);
 
   if (!request) return null;
@@ -966,7 +995,7 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
     if (savingAssignment) return;
     setSavingAssignment(true);
     await onUpdateRequest(request.id, {
-      assignedTo: newAssignedTo || null,
+      assignedToEmails: normalizeAssigneeSelection(newAssignedTo),
       updatedAt: formatToday(),
     });
     setSavingAssignment(false);
@@ -1154,23 +1183,17 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
                   { label: 'Response Type', value: <span className="font-semibold text-[#050505]">{request.responseType}</span> },
                   { label: 'Assigned To', value: (
                     <div className="flex items-center gap-2">
-                      <select
+                      <AssigneeMultiSelect
+                        users={clientTeamUsers}
                         value={assignedToDraft}
-                        onChange={async (e) => {
-                          const val = e.target.value;
-                          setAssignedToDraft(val);
-                          await saveAssignment(val);
+                        onChange={async (nextValue) => {
+                          setAssignedToDraft(nextValue);
+                          await saveAssignment(nextValue);
                         }}
                         disabled={savingAssignment}
-                        className="flex-1 min-w-0 rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs font-semibold text-[#050505] focus:outline-none focus:ring-1 focus:ring-[#8BC53D] disabled:opacity-60"
-                      >
-                        <option value="">— Unassigned —</option>
-                        {clientTeamUsers.map((u) => (
-                          <option key={u.id} value={u.id}>
-                            {u.name}{u.role_label ? ` · ${u.role_label}` : ''}
-                          </option>
-                        ))}
-                      </select>
+                        compact
+                        className="min-w-0 flex-1"
+                      />
                       {savingAssignment && <span className="text-[10px] text-[#A5A5A5] flex-shrink-0">Saving…</span>}
                     </div>
                   ) },
@@ -1317,8 +1340,8 @@ export default function WorkspaceRequests() {
   const [deletingRequestId, setDeletingRequestId] = useState(null);
   // Client team users for the "Assign To" dropdown
   const [clientTeamUsers, setClientTeamUsers] = useState([]);
-  // Approval-with-assign flow: holds the request being approved so broker can pick assignee
-  const [pendingApproval, setPendingApproval] = useState(null); // { requestId, assignedTo: '' }
+  // Approval-with-assign flow: holds the request being approved so broker can pick assignees.
+  const [pendingApproval, setPendingApproval] = useState(null); // { requestId, assignedToEmails: ['all'] }
 
   const loadRequests = async () => {
     if (!clientId) return;
@@ -1359,6 +1382,7 @@ export default function WorkspaceRequests() {
         }).map((u) => ({
           id: u.id,
           name: u.name || u.email || 'Unknown',
+          email: u.email || '',
           role_label: ROLE_META[u.sub_role || inferSubRole(u)]?.label || '',
         }));
         setClientTeamUsers(companyClients);
@@ -1551,13 +1575,13 @@ export default function WorkspaceRequests() {
   const handleApproveRequest = (requestOrId) => {
     const requestId = typeof requestOrId === 'object' ? requestOrId?.id : requestOrId;
     if (!requestId) return;
-    setPendingApproval({ requestId, assignedTo: '' });
+    setPendingApproval({ requestId, assignedToEmails: ['all'] });
   };
 
   // Step 2: broker confirms approval (with optional assignee)
   const confirmApproveRequest = async () => {
     if (!pendingApproval?.requestId) return;
-    const { requestId, assignedTo } = pendingApproval;
+    const { requestId, assignedToEmails } = pendingApproval;
 
     setApprovingRequestId(requestId);
     setError('');
@@ -1565,7 +1589,7 @@ export default function WorkspaceRequests() {
     setPendingApproval(null);
 
     try {
-      const approved = await approveRequest(requestId, assignedTo || null);
+      const approved = await approveRequest(requestId, assigneeSelectionToPayload(assignedToEmails));
       const normalized = mapApiRequestToUi(approved);
       setRequestState((prev) => prev.map((item) => (item.id === requestId ? { ...item, ...normalized } : item)));
       setSuccess('Request approved and sent to the client portal.');
@@ -1921,22 +1945,15 @@ export default function WorkspaceRequests() {
         <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-white/30 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 space-y-4">
             <h3 className="text-base font-bold text-[#05164D]">Approve & Assign Request</h3>
-            <p className="text-sm text-gray-500">Optionally assign this request to a specific client team member. Leave blank to make it visible to all.</p>
+            <p className="text-sm text-gray-500">Choose all client users or select the exact people who should see and receive this request.</p>
             {clientTeamUsers.length > 0 && (
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Assign To (Client Team)</label>
-                <select
-                  value={pendingApproval.assignedTo}
-                  onChange={(e) => setPendingApproval((p) => ({ ...p, assignedTo: e.target.value }))}
-                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm"
-                >
-                  <option value="">— Unassigned (visible to all) —</option>
-                  {clientTeamUsers.map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.name}{u.role_label ? ` · ${u.role_label}` : ''}
-                    </option>
-                  ))}
-                </select>
+                <AssigneeMultiSelect
+                  users={clientTeamUsers}
+                  value={pendingApproval.assignedToEmails}
+                  onChange={(assignedToEmails) => setPendingApproval((p) => ({ ...p, assignedToEmails }))}
+                />
               </div>
             )}
             {clientTeamUsers.length === 0 && (

@@ -10,6 +10,7 @@ const app = require("./app");
 const db = require("./db");
 const { Pool } = require("pg");
 const { checkEmailHealth } = require("./services/emailService");
+const { startReminderAutomation } = require("./services/requestReminderAutomationService");
 
 const port = process.env.PORT || 4000;
 
@@ -164,6 +165,94 @@ async function ensureBankReconAddbackItemsTable() {
   }
 }
 
+async function ensureReminderAutomationSchema() {
+  if (!process.env.DATABASE_URL) return;
+  const isLocal = process.env.DATABASE_URL.includes("localhost") ||
+                  process.env.DATABASE_URL.includes("127.0.0.1");
+  const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: isLocal ? false : { rejectUnauthorized: false },
+    connectionTimeoutMillis: 8000,
+    idleTimeoutMillis: 5000,
+  });
+  try {
+    await pool.query(`
+      ALTER TABLE request_reminders
+        ADD COLUMN IF NOT EXISTS event_type text NOT NULL DEFAULT 'sent',
+        ADD COLUMN IF NOT EXISTS delivery_channel text NOT NULL DEFAULT 'email_in_app',
+        ADD COLUMN IF NOT EXISTS scheduled_for timestamptz,
+        ADD COLUMN IF NOT EXISTS metadata jsonb NOT NULL DEFAULT '{}'::jsonb;
+
+      ALTER TABLE request_reminders
+        DROP CONSTRAINT IF EXISTS request_reminders_event_type_check;
+
+      ALTER TABLE request_reminders
+        ADD CONSTRAINT request_reminders_event_type_check
+        CHECK (event_type IN ('sent', 'skipped', 'overdue'));
+
+      CREATE INDEX IF NOT EXISTS idx_request_reminders_request_event_sent
+        ON request_reminders(request_id, event_type, sent_at DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_request_reminders_scheduled_for
+        ON request_reminders(scheduled_for)
+        WHERE scheduled_for IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS user_notifications (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        type text NOT NULL,
+        title text NOT NULL,
+        message text NOT NULL,
+        is_read boolean NOT NULL DEFAULT false,
+        metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+        created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+
+      ALTER TABLE user_notifications
+        ADD COLUMN IF NOT EXISTS type text NOT NULL DEFAULT 'general',
+        ADD COLUMN IF NOT EXISTS title text NOT NULL DEFAULT 'Notification',
+        ADD COLUMN IF NOT EXISTS message text NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS is_read boolean NOT NULL DEFAULT false,
+        ADD COLUMN IF NOT EXISTS metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+        ADD COLUMN IF NOT EXISTS created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+
+      CREATE INDEX IF NOT EXISTS idx_user_notifications_user_created
+        ON user_notifications(user_id, created_at DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_user_notifications_unread
+        ON user_notifications(user_id, is_read, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS request_assignees (
+        request_id uuid NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+        user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (request_id, user_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_request_assignees_user
+        ON request_assignees(user_id);
+
+      CREATE INDEX IF NOT EXISTS idx_request_assignees_request_created
+        ON request_assignees(request_id, created_at);
+
+      INSERT INTO request_assignees (request_id, user_id)
+      SELECT id, assigned_to
+      FROM requests
+      WHERE assigned_to IS NOT NULL
+      ON CONFLICT DO NOTHING;
+
+      SELECT pg_notify('pgrst', 'reload schema');
+    `);
+    console.log("[Startup] reminder automation schema ready");
+  } catch (err) {
+    console.warn("[Startup] Could not prepare reminder automation schema:", err.message);
+  } finally {
+    await pool.end().catch(() => {});
+  }
+}
+
 (async () => {
   try {
     await db.ready;
@@ -186,6 +275,11 @@ async function ensureBankReconAddbackItemsTable() {
       ensureBankReconAddbackItemsTable().catch((err) =>
         console.warn("[Startup] bank_reconciliation_addback_items table init failed:", err.message)
       );
+      ensureReminderAutomationSchema().catch((err) =>
+        console.warn("[Startup] reminder automation schema init failed:", err.message)
+      ).finally(() => {
+        startReminderAutomation();
+      });
       checkEmailHealth().catch((err) =>
         console.warn("[Startup] Email health check threw:", err.message)
       );

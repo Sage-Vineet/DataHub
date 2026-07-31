@@ -239,11 +239,13 @@ export function getCimBankReconciliationRequest({
   sourceKey,
   datasetVersion,
   keyReportVersionId,
+  fiscalYear,
 } = {}) {
   const params = new URLSearchParams();
   if (clientId) params.append('clientId', clientId);
   if (datasetVersion) params.append('datasetVersion', String(datasetVersion));
   if (keyReportVersionId) params.append('keyReportVersionId', String(keyReportVersionId));
+  if (fiscalYear) params.append('fiscalYear', String(fiscalYear));
   if (sourceKey) params.append('source', sourceKey);
   if (sourceKey === 'quickbooks' || sourceKey === 'quickbooks_online') {
     return request(`/qb-bank-activity/saved?${params}`);
@@ -474,6 +476,10 @@ export function createRequestReminder(requestId, payload) {
   return request(`/requests/${requestId}/reminders`, { method: 'POST', body: payload }).then(unwrapPayload);
 }
 
+export function skipNextRequestReminder(requestId, payload = {}) {
+  return request(`/requests/${requestId}/reminders/skip-next`, { method: 'POST', body: payload }).then(unwrapPayload);
+}
+
 export function listCompanyReminders(companyId) {
   return request(`/companies/${companyId}/reminders`).then(ensureArray);
 }
@@ -499,14 +505,19 @@ export function saveWorkspacePageStateRequest(pageKey, state, options = {}) {
 }
 
 export function getCimStyleProfilesRequest(options = {}) {
-  return request('/cim-style-profiles', options);
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/cim-style-profiles${query}`, { ...options, clientId });
 }
 
 export function saveCimStyleProfilesRequest(state, options = {}) {
-  return request('/cim-style-profiles', {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/cim-style-profiles${query}`, {
     ...options,
+    clientId,
     method: 'PUT',
-    body: { state },
+    body: { state, clientId },
   });
 }
 
@@ -1434,6 +1445,17 @@ export function deleteDocument(documentId) {
   return request(`/documents/${documentId}`, { method: 'DELETE' });
 }
 
+export function updateDocument(documentId, payload) {
+  return request(`/documents/${documentId}`, { method: 'PATCH', body: payload }).then(unwrapPayload);
+}
+
+export function bulkDeleteDataRoomItems(items) {
+  return request('/data-room/items/bulk-delete', {
+    method: 'POST',
+    body: { items },
+  }).then(unwrapPayload);
+}
+
 export function archiveDocument(documentId) {
   return request(`/documents/${documentId}/archive`, { method: 'POST' }).then(unwrapPayload);
 }
@@ -1664,6 +1686,27 @@ export function resetChartOfAccounts(versionId) {
 // Classification + adjustment audit history.
 export function getChartOfAccountsHistory(versionId) {
   return request(`/key-reports/versions/${versionId}/chart-of-accounts/history`);
+}
+
+// AI Hierarchy Recommendations — advisory-only suggestions generated after
+// COA generation. Listing never changes any data; accept/ignore are the only
+// mutating actions, and accept only ever inserts via updateAccountHierarchy().
+export function getHierarchyRecommendations(versionId) {
+  return request(`/key-reports/versions/${versionId}/hierarchy-recommendations`);
+}
+
+export function acceptHierarchyRecommendation(recommendationId) {
+  return request(`/key-reports/hierarchy-recommendations/${recommendationId}/accept`, {
+    method: 'POST',
+    body: {},
+  });
+}
+
+export function ignoreHierarchyRecommendation(recommendationId) {
+  return request(`/key-reports/hierarchy-recommendations/${recommendationId}/ignore`, {
+    method: 'POST',
+    body: {},
+  });
 }
 
 // COA-mapped financial statements (monthly + yearly P&L and Balance Sheet).

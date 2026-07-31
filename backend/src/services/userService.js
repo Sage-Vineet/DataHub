@@ -1059,22 +1059,38 @@ async function updateUser(id, userData) {
  * associated with the given company. Used for request-assignment email notifications.
  */
 async function getClientTeamMembersForCompany(companyId) {
+  if (!companyId) return [];
+  const byId = new Map();
+
+  const { data: directUsers } = await supabase
+    .from("users")
+    .select("id, name, email, sub_role")
+    .eq("company_id", companyId)
+    .in("sub_role", CLIENT_SUB_ROLES);
+
+  for (const user of directUsers || []) {
+    if (user?.id && user.email) byId.set(String(user.id), user);
+  }
+
   const { data: links } = await supabase
     .from("user_companies")
     .select("user_id")
     .eq("company_id", companyId);
 
-  if (!links?.length) return [];
+  const userIds = (links || []).map((l) => l.user_id).filter(Boolean);
+  if (userIds.length) {
+    const { data: linkedUsers } = await supabase
+      .from("users")
+      .select("id, name, email, sub_role")
+      .in("id", userIds)
+      .in("sub_role", CLIENT_SUB_ROLES);
 
-  const userIds = links.map((l) => l.user_id).filter(Boolean);
+    for (const user of linkedUsers || []) {
+      if (user?.id && user.email) byId.set(String(user.id), user);
+    }
+  }
 
-  const { data: users } = await supabase
-    .from("users")
-    .select("id, name, email, sub_role")
-    .in("id", userIds)
-    .in("sub_role", CLIENT_SUB_ROLES);
-
-  return (users || []).filter((u) => u.email);
+  return Array.from(byId.values());
 }
 
 module.exports = {

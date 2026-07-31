@@ -1,6 +1,7 @@
 export const REMINDER_STATUS_OPTIONS = [
   { value: 'all', label: 'All statuses' },
   { value: 'due', label: 'Due now' },
+  { value: 'overdue', label: 'Overdue' },
   { value: 'active', label: 'Scheduled' },
   { value: 'resolved', label: 'Resolved' },
   { value: 'blocked', label: 'Blocked' },

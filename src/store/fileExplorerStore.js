@@ -3,11 +3,10 @@ import { persist } from 'zustand/middleware';
 import {
   archiveDocument,
   archiveFolder,
+  bulkDeleteDataRoomItems,
   createCompanyFolder,
   createFolderAccess,
   createFolderDocument,
-  deleteDocument,
-  deleteFolder,
   deleteFolderAccess,
   listFolderAccess,
   listFolderDocuments,
@@ -16,6 +15,7 @@ import {
   unarchiveDocument,
   unarchiveFolder,
   uploadFile,
+  updateDocument,
   updateFolder,
 } from '../lib/api';
 
@@ -66,6 +66,12 @@ function setArchivedByIds(node, ids, archivedAt) {
   return { ...next, children: next.children.map(c => setArchivedByIds(c, ids, archivedAt)) };
 }
 
+function setColorById(node, id, color) {
+  const next = node.id === id ? { ...node, color } : node;
+  if (!next.children) return next;
+  return { ...next, children: next.children.map(c => setColorById(c, id, color)) };
+}
+
 function renameNode(node, id, newName) {
   if (node.id === id) return { ...node, name: newName };
   if (!node.children) return node;
@@ -82,10 +88,46 @@ function collectNodes(node, ids) {
   return result;
 }
 
+function collectNodesWithParents(node, ids) {
+  const result = [];
+  if (!node.children) return result;
+  node.children.forEach((child, index) => {
+    if (ids.includes(child.id)) {
+      result.push({ parentId: node.id, index, item: JSON.parse(JSON.stringify(child)) });
+    }
+    result.push(...collectNodesWithParents(child, ids));
+  });
+  return result;
+}
+
 function isAncestorOf(root, ancestorId, nodeId) {
   const ancestor = findById(root, ancestorId);
   if (!ancestor || !ancestor.children) return false;
   return !!findById(ancestor, nodeId);
+}
+
+function getTopLevelIds(root, ids) {
+  const uniqueIds = [...new Set(ids)].filter(Boolean);
+  return uniqueIds.filter((id) => !uniqueIds.some((otherId) => (
+    otherId !== id && isAncestorOf(root, otherId, id)
+  )));
+}
+
+function insertChildAt(node, parentId, child, index) {
+  if (node.id === parentId) {
+    const children = [...(node.children || [])].filter((existing) => existing.id !== child.id);
+    const nextIndex = Math.max(0, Math.min(Number.isInteger(index) ? index : children.length, children.length));
+    children.splice(nextIndex, 0, child);
+    return { ...node, children };
+  }
+  if (!node.children) return node;
+  return { ...node, children: node.children.map(c => insertChildAt(c, parentId, child, index)) };
+}
+
+function restoreRemovedNodes(root, entries) {
+  return [...(entries || [])]
+    .sort((a, b) => a.index - b.index)
+    .reduce((nextTree, entry) => insertChildAt(nextTree, entry.parentId, entry.item, entry.index), root);
 }
 
 export function formatFileSize(bytes) {
@@ -99,9 +141,23 @@ function uid() {
   return Math.random().toString(36).slice(2, 10);
 }
 
-function randomFolderColor() {
-  const colors = ['#00B0F0', '#742982', '#F68C1F', '#8BC53D', '#05164D', '#b45e08'];
-  return colors[Math.floor(Math.random() * colors.length)];
+export const DATA_ROOM_COLOR_PALETTE = [
+  '#C62026',
+  '#F68C1F',
+  '#FACC15',
+  '#8BC53D',
+  '#00648F',
+  '#742982',
+  '#050505',
+  '#6D6E71',
+];
+
+export const DEFAULT_DATA_ROOM_COLOR = '#6D6E71';
+
+export function normalizeDataRoomColor(color, fallback = DEFAULT_DATA_ROOM_COLOR) {
+  const normalized = String(color || '').trim();
+  if (/^#[0-9A-Fa-f]{6}$/.test(normalized)) return normalized.toUpperCase();
+  return fallback;
 }
 
 
@@ -112,7 +168,7 @@ function mapFolderNode(node) {
     type: 'folder',
     createdAt: node.created_at ? node.created_at.slice(0, 10) : new Date().toISOString().slice(0, 10),
     archivedAt: node.archived_at || null,
-    color: node.color || '#6D6E71',
+    color: normalizeDataRoomColor(node.color),
     children: (node.children || []).map(mapFolderNode),
   };
 }
@@ -130,6 +186,7 @@ function mapDocumentNode(doc) {
     status: doc.status || 'under-review',
     ext: doc.ext || doc.name?.split('.').pop()?.toLowerCase() || '',
     fileUrl: doc.file_url || '',
+    color: normalizeDataRoomColor(doc.color),
   };
 }
 
@@ -206,7 +263,20 @@ export const useFileExplorerStore = create(
         folderIds.forEach((folderId) => {
           root = insertDocs(root, folderId, docsByFolder[folderId] || []);
         });
-        set({ tree: root, companyId, currentPath: ['root'], expandedFolders: ['root'] });
+        set((state) => {
+          const currentId = state.currentPath[state.currentPath.length - 1];
+          const preservedPath = currentId === 'archive'
+            ? ['archive']
+            : currentId === 'root'
+              ? ['root']
+              : (getPathTo(root, currentId) || ['root']);
+          return {
+            tree: root,
+            companyId,
+            currentPath: preservedPath,
+            expandedFolders: [...new Set([...(state.expandedFolders || ['root']), ...preservedPath])],
+          };
+        });
       },
       loadFolderAccessFromApi: async (folderId) => {
         const entries = await listFolderAccess(folderId);
@@ -291,6 +361,7 @@ export const useFileExplorerStore = create(
           set({ selectedItems: [id] });
         }
       },
+      selectItems: (ids) => set({ selectedItems: [...new Set(ids)].filter(Boolean), contextMenu: null }),
       clearSelection: () => set({ selectedItems: [] }),
 
       // ── View / Sort ──
@@ -303,16 +374,17 @@ export const useFileExplorerStore = create(
       setSearchQuery: (searchQuery) => set({ searchQuery }),
 
       // ── CRUD ──
-      createFolder: async (parentId, name) => {
+      createFolder: async (parentId, name, color = DEFAULT_DATA_ROOM_COLOR) => {
         const targetParentId = parentId || 'root';
         const trimmedName = name.trim() || 'New Folder';
+        const folderColor = normalizeDataRoomColor(color);
         const tempId = `temp-${uid()}`;
         const tempFolder = {
           id: tempId,
           name: trimmedName,
           type: 'folder',
           createdAt: new Date().toISOString().split('T')[0],
-          color: randomFolderColor(),
+          color: folderColor,
           children: [],
         };
 
@@ -336,7 +408,7 @@ export const useFileExplorerStore = create(
               name: created.name,
               type: 'folder',
               createdAt: created.created_at ? created.created_at.slice(0, 10) : new Date().toISOString().split('T')[0],
-              color: created.color || tempFolder.color,
+              color: normalizeDataRoomColor(created.color, tempFolder.color),
               children: [],
             };
             set(s => {
@@ -360,7 +432,7 @@ export const useFileExplorerStore = create(
           name: trimmedName,
           type: 'folder',
           createdAt: new Date().toISOString().split('T')[0],
-          color: '#6D6E71',
+          color: folderColor,
           children: [],
         };
         set(s => ({
@@ -377,76 +449,73 @@ export const useFileExplorerStore = create(
         const node = findById(get().tree, id);
         if (node?.type === 'folder') {
           await updateFolder(id, { name: newName.trim() });
+        } else if (node?.type === 'file') {
+          await updateDocument(id, { name: newName.trim() });
         }
         set(s => ({ tree: renameNode(s.tree, id, newName.trim()), renamingId: null }));
       },
 
       deleteItems: async (ids) => {
         const tree = get().tree;
-        const deletedIds = [];
-        const blockedMessages = [];
-        // Sequential so a link-protected item (409) blocks only itself, not the batch.
-        for (const id of ids) {
-          const node = findById(tree, id);
-          try {
-            if (node?.type === 'folder') {
-              await deleteFolder(id);
-            } else if (node?.type === 'file') {
-              await deleteDocument(id);
-            }
-            deletedIds.push(id);
-          } catch (err) {
-            const isLinkProtected =
-              err?.status === 409 || err?.payload?.code === 'FILE_LINKED';
-            if (isLinkProtected) {
-              // Never silently delete a linked file — keep it in the tree and warn.
-              blockedMessages.push(
-                err?.payload?.error ||
-                  err?.message ||
-                  'This item is linked to Key Reports. Unlink it first.'
-              );
-            } else {
-              throw err;
-            }
-          }
-        }
+        const topLevelIds = getTopLevelIds(tree, ids);
+        const nodes = collectNodesWithParents(tree, topLevelIds);
+        const result = await bulkDeleteDataRoomItems(nodes.map(({ item }) => ({
+          id: item.id,
+          type: item.type,
+        })));
+        const failed = result?.failed || [];
+        const deletedIds = (result?.deleted || [])
+          .filter((item) => !item.skipped)
+          .map((item) => item.id);
         set(s => ({
           tree: removeByIds(s.tree, deletedIds),
           selectedItems: s.selectedItems.filter(i => !deletedIds.includes(i)),
           contextMenu: null,
         }));
-        if (blockedMessages.length && typeof window !== 'undefined') {
-          window.alert([...new Set(blockedMessages)].join('\n'));
+        if (failed.length && typeof window !== 'undefined') {
+          window.alert([...new Set(failed.map((item) => (
+            item.error || 'Unable to delete item'
+          )))].join('\n'));
         }
       },
 
       archiveItems: async (ids) => {
         const tree = get().tree;
         const archivedAt = new Date().toISOString();
-        await Promise.all(ids.map(async (id) => {
-          const node = findById(tree, id);
-          if (node?.type === 'folder') await archiveFolder(id);
-          else if (node?.type === 'file') await archiveDocument(id);
-        }));
         set(s => ({
           tree: setArchivedByIds(s.tree, ids, archivedAt),
           selectedItems: [],
           contextMenu: null,
         }));
+        try {
+          await Promise.all(ids.map(async (id) => {
+            const node = findById(tree, id);
+            if (node?.type === 'folder') await archiveFolder(id);
+            else if (node?.type === 'file') await archiveDocument(id);
+          }));
+        } catch (err) {
+          set({ tree });
+          throw err;
+        }
       },
 
       unarchiveItems: async (ids) => {
         const tree = get().tree;
-        await Promise.all(ids.map(async (id) => {
-          const node = findById(tree, id);
-          if (node?.type === 'folder') await unarchiveFolder(id);
-          else if (node?.type === 'file') await unarchiveDocument(id);
-        }));
         set(s => ({
           tree: setArchivedByIds(s.tree, ids, null),
           selectedItems: [],
           contextMenu: null,
         }));
+        try {
+          await Promise.all(ids.map(async (id) => {
+            const node = findById(tree, id);
+            if (node?.type === 'folder') await unarchiveFolder(id);
+            else if (node?.type === 'file') await unarchiveDocument(id);
+          }));
+        } catch (err) {
+          set({ tree });
+          throw err;
+        }
       },
 
       moveItemsTo: async (itemIds, targetId) => {
@@ -470,8 +539,63 @@ export const useFileExplorerStore = create(
         set({ tree: newTree, selectedItems: [], dragOver: null, draggingItems: [], contextMenu: null });
       },
 
+      stageRemoveItems: (ids) => {
+        const tree = get().tree;
+        const topLevelIds = getTopLevelIds(tree, ids);
+        const entries = collectNodesWithParents(tree, topLevelIds);
+        if (!entries.length) return [];
+        set(s => ({
+          tree: removeByIds(s.tree, topLevelIds),
+          selectedItems: s.selectedItems.filter((id) => !topLevelIds.includes(id)),
+          contextMenu: null,
+        }));
+        return entries;
+      },
+
+      restoreRemovedItems: (entries) => {
+        if (!entries?.length) return;
+        set(s => ({
+          tree: restoreRemovedNodes(s.tree, entries),
+          selectedItems: [],
+          contextMenu: null,
+        }));
+      },
+
+      commitDeleteEntries: async (entries) => {
+        const items = (entries || []).map(({ item }) => ({
+          id: item.id,
+          type: item.type,
+        }));
+        if (!items.length) return { deleted: [], failed: [] };
+        const result = await bulkDeleteDataRoomItems(items);
+        const failed = result?.failed || [];
+        if (failed.length) {
+          const err = new Error(failed.map((item) => item.error || 'Unable to delete item').join('\n'));
+          err.failed = failed;
+          err.deletedIds = (result?.deleted || []).filter((item) => !item.skipped).map((item) => item.id);
+          throw err;
+        }
+        return result;
+      },
+
+      updateItemColor: async (id, color) => {
+        const nextColor = normalizeDataRoomColor(color);
+        const node = findById(get().tree, id);
+        if (!node) return;
+        const previousColor = normalizeDataRoomColor(node.color);
+        set(s => ({ tree: setColorById(s.tree, id, nextColor), contextMenu: null }));
+        try {
+          if (node.type === 'folder') await updateFolder(id, { color: nextColor });
+          else if (node.type === 'file') await updateDocument(id, { color: nextColor });
+        } catch (err) {
+          set(s => ({ tree: setColorById(s.tree, id, previousColor) }));
+          throw err;
+        }
+      },
+
       uploadFiles: async (parentId, files) => {
         const MAX_FILE_BYTES = 200 * 1024 * 1024; // 200 MB — matches backend limit
+        const fileColor = DEFAULT_DATA_ROOM_COLOR;
         const folder = findById(get().tree, parentId);
         const existingNames = new Set((folder?.children || []).map(c => c.name));
         const warnings = [];
@@ -509,6 +633,7 @@ export const useFileExplorerStore = create(
               size: fileItem.file.size?.toString() || '0',
               ext: fileItem.ext || '',
               status: 'under-review',
+              color: fileColor,
               uploaded_by: get().createdBy || null,
             });
             const destinationFolderId = createdDoc.folder_id || parentId;
@@ -522,6 +647,7 @@ export const useFileExplorerStore = create(
               status: createdDoc.status || 'under-review',
               ext: createdDoc.ext || fileItem.ext,
               fileUrl: createdDoc.file_url || uploaded.fileUrl,
+              color: normalizeDataRoomColor(createdDoc.color, fileColor),
             };
             set((s) => {
               let nextTree = s.tree;
@@ -531,7 +657,7 @@ export const useFileExplorerStore = create(
                   name: createdDoc.folder_name || 'General Uploads',
                   type: 'folder',
                   createdAt: createdDoc.uploaded_at ? createdDoc.uploaded_at.slice(0, 10) : new Date().toISOString().split('T')[0],
-                  color: '#6D6E71',
+                  color: DEFAULT_DATA_ROOM_COLOR,
                   children: [],
                 });
               }
@@ -596,9 +722,6 @@ export const useFileExplorerStore = create(
     }
   )
 );
-
-
-
 
 
 

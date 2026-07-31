@@ -1,10 +1,13 @@
 const express = require("express");
 const { requireAuth } = require("../middleware/auth");
-const { isBroker } = require("../services/permissionService");
-const userPreferenceService = require("../services/userPreferenceService");
+const { canAccessCompany, isBroker } = require("../services/permissionService");
+const {
+  getSharedWorkspacePageState,
+  replaceSharedWorkspacePageState,
+} = require("../services/workspacePageStateStore");
 
 const router = express.Router();
-const PREF_KEY = "cim-template-style-profiles";
+const STYLE_PAGE_KEY = "cim-template-style-profiles";
 const MAX_PROFILES = 40;
 const MAX_IMAGE_DATA_URL_LENGTH = 6_500_000;
 
@@ -16,6 +19,19 @@ function nowIso() {
 
 function normalizeText(value, limit = 120) {
   return String(value || "").replace(/\s+/g, " ").trim().slice(0, limit);
+}
+
+function resolveClientId(req) {
+  let clientId = req.headers["x-client-id"] || req.query.clientId || req.body?.clientId;
+
+  if (!clientId && req.headers.referer) {
+    const match = req.headers.referer.match(/\/client\/([^/?#]+)/);
+    if (match) clientId = match[1];
+  }
+
+  const normalized = String(clientId || "").trim();
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  return uuidRegex.test(normalized) ? normalized : "";
 }
 
 function normalizeHex(value, fallback = "#333333") {
@@ -215,8 +231,19 @@ function sanitizeState(input = {}, user) {
 router.get("/cim-style-profiles", async (req, res) => {
   if (!isBroker(req.user)) return res.status(403).json({ error: "Only brokers can manage CIM style profiles." });
   try {
-    const value = await userPreferenceService.getPreference(req.user.id, PREF_KEY);
-    return res.json({ state: sanitizeState(value || {}, req.user) });
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.json({ state: sanitizeState({}, req.user), scope: "default" });
+    if (!canAccessCompany(req.user, clientId)) {
+      return res.status(403).json({ error: "You do not have permission to access this company CIM template." });
+    }
+
+    const value = await getSharedWorkspacePageState(clientId, STYLE_PAGE_KEY, req.user.id);
+    return res.json({
+      state: sanitizeState(value?.payload || {}, req.user),
+      scope: "company",
+      clientId,
+      updatedAt: value?.updatedAt || null,
+    });
   } catch (error) {
     console.error("[CIM Style Profiles] load failed", error);
     return res.status(500).json({ error: "Failed to load CIM style profiles." });
@@ -226,9 +253,20 @@ router.get("/cim-style-profiles", async (req, res) => {
 router.put("/cim-style-profiles", async (req, res) => {
   if (!isBroker(req.user)) return res.status(403).json({ error: "Only brokers can manage CIM style profiles." });
   try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ error: "Missing clientId." });
+    if (!canAccessCompany(req.user, clientId)) {
+      return res.status(403).json({ error: "You do not have permission to update this company CIM template." });
+    }
+
     const state = sanitizeState(req.body?.state || {}, req.user);
-    const saved = await userPreferenceService.setPreference(req.user.id, PREF_KEY, state);
-    return res.json({ state: sanitizeState(saved || state, req.user) });
+    const saved = await replaceSharedWorkspacePageState(clientId, STYLE_PAGE_KEY, state, req.user.id);
+    return res.json({
+      state: sanitizeState(saved?.payload || state, req.user),
+      scope: "company",
+      clientId,
+      updatedAt: saved?.updatedAt || null,
+    });
   } catch (error) {
     console.error("[CIM Style Profiles] save failed", error);
     return res.status(500).json({ error: "Failed to save CIM style profiles." });
