@@ -85,7 +85,7 @@ test('persistApprovedCoaTree (for contrast) DOES contain write calls -- proves t
 const ASSET_FIXED_PREFIX = ['Total Assets'];
 const LIABILITY_FIXED_PREFIX = ['Total Liabilities and Equity', 'Total Liabilities'];
 const EQUITY_FIXED_PREFIX = ['Total Liabilities and Equity', 'Total Equity', 'Equity'];
-const PL_FIXED_PREFIX = ['Total Liabilities and Equity', 'Total Equity'];
+const PL_FIXED_PREFIX = ['Total Liabilities and Equity', 'Total Equity', 'Total Equity'];
 
 function makeAssetLeaf(overrides = {}) {
   return {
@@ -139,6 +139,33 @@ test('valid two-account fixture round-trips serialize -> validate as {valid:true
   const result = coa.validateFinalCoaTree(nodes);
   assert.deepEqual(result.violations, []);
   assert.equal(result.valid, true);
+});
+
+test('serializeProposedTree includes deterministic proposal system ids and level metadata', () => {
+  const assetLeaf = makeAssetLeaf();
+  const expenseLeaf = makeExpenseLeaf();
+  const nodes = coa.serializeProposedTree([assetLeaf, expenseLeaf]);
+  const accounts = nodes.filter((n) => n.nodeType === 'ACCOUNT');
+  const byName = new Map(accounts.map((n) => [n.accountName, n]));
+
+  assert.match(byName.get('Checking').systemId, /^BS-\d{3}$/);
+  assert.match(byName.get('Salaries').systemId, /^EXP-\d{3}$/);
+  assert.deepEqual(byName.get('Checking').levels.filter(Boolean), assetLeaf.levels);
+  assert.deepEqual(byName.get('Salaries').levels.filter(Boolean), expenseLeaf.levels);
+  assert.equal(byName.get('Checking').level, assetLeaf.levels.length);
+  assert.equal(byName.get('Salaries').level, expenseLeaf.levels.length);
+});
+
+test('deserializeApprovedTree preserves reviewed proposal system ids for save-time persistence', () => {
+  const nodes = coa.serializeProposedTree([makeAssetLeaf()]);
+  const accountNode = nodes.find((n) => n.nodeType === 'ACCOUNT');
+  assert.match(accountNode.systemId, /^BS-\d{3}$/);
+
+  const { hierarchical, violations } = coa.deserializeApprovedTree(nodes);
+  assert.deepEqual(violations, []);
+  assert.equal(hierarchical.length, 1);
+  assert.equal(hierarchical[0].systemId, accountNode.systemId);
+  assert.deepEqual(hierarchical[0].levels.filter(Boolean), makeAssetLeaf().levels);
 });
 
 test('circular parentKey reference between two CATEGORY nodes is rejected', () => {
@@ -213,9 +240,8 @@ test('a node missing the correct fixed anchor prefix for its accountType is reje
 test('userEdited: true forces classificationMethod=manual_review, matchTier=null, confidence=1, needsReview/needsMapping=false', () => {
   const nodes = [
     { key: 'cat:ta1', parentKey: null, nodeType: 'CATEGORY', label: 'Total Assets', accountType: 'asset', statementType: 'balance_sheet' },
-    { key: 'cat:ta2', parentKey: 'cat:ta1', nodeType: 'CATEGORY', label: 'Total Assets', accountType: 'asset', statementType: 'balance_sheet' },
     {
-      key: 'acct:cash', parentKey: 'cat:ta2', nodeType: 'ACCOUNT', accountName: 'Cash',
+      key: 'acct:cash', parentKey: 'cat:ta1', nodeType: 'ACCOUNT', accountName: 'Cash',
       accountType: 'asset', statementType: 'balance_sheet',
       userEdited: true,
       // Deliberately "polluted" input fields that userEdited must override.

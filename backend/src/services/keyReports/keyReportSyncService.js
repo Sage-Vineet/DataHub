@@ -27,6 +27,10 @@ const clientCoaExtractionService = require('./clientCoaExtractionService');
 // memory, compared against the GL-derived Net Income, then discarded. Never
 // written to a table (see migration 056 — client requirement).
 const profitLossExtractionService = require('./profitLossExtractionService');
+const {
+  buildBalanceSheetTreeFromData,
+  buildProfitLossTreeFromData,
+} = require('./referenceTreeBuilder');
 // Reused only for the P&L validation report's "AI classification" column
 // (Step 7b) — same recognition-only call already used by COA generation,
 // never repurposed to build hierarchy here.
@@ -481,6 +485,36 @@ async function extractDocument(companyId, versionId, mapping, extractionService,
   }
 }
 
+async function loadBalanceSheetRowsForReferenceTree(companyId, versionId, fiscalYear = null) {
+  let query = supabase
+    .from('balance_sheet_entries')
+    .select('account_name, account_number, amount, section, sub_section, is_total, hierarchy_level, parent_path, fiscal_year, source_file_id, row_type, sort_order')
+    .eq('company_id', companyId)
+    .eq('version_id', versionId)
+    .or('is_generated.is.null,is_generated.eq.false')
+    .order('source_file_id', { ascending: true })
+    .order('sort_order', { ascending: true });
+  if (fiscalYear != null) query = query.eq('fiscal_year', fiscalYear);
+  const rows = await fetchAllRows(() => query);
+  if (rows.length || fiscalYear == null) return rows;
+  return fetchAllRows(() =>
+    supabase
+      .from('balance_sheet_entries')
+      .select('account_name, account_number, amount, section, sub_section, is_total, hierarchy_level, parent_path, fiscal_year, source_file_id, row_type, sort_order')
+      .eq('company_id', companyId)
+      .eq('version_id', versionId)
+      .or('is_generated.is.null,is_generated.eq.false')
+      .order('source_file_id', { ascending: true })
+      .order('sort_order', { ascending: true }),
+  );
+}
+
+function pickReferenceFiscalYear(rows, preferredYear = null) {
+  const years = [...new Set((rows || []).map((r) => Number(r.fiscal_year)).filter(Number.isInteger))].sort((a, b) => b - a);
+  if (preferredYear != null && years.includes(Number(preferredYear))) return Number(preferredYear);
+  return years[0] || null;
+}
+
 function updateStats(stats, result) {
   if (result.success) {
     stats.success += 1;
@@ -910,6 +944,26 @@ async function generateFinancialTables(version, opts = {}) {
     logger.log('  No Profit & Loss file linked.');
   }
 
+  const referenceFiscalYear = pickReferenceFiscalYear(
+    await loadBalanceSheetRowsForReferenceTree(companyId, versionId),
+    gate?.endingBs?.fiscal_year ?? null,
+  );
+  const balanceSheetRowsForTree = await loadBalanceSheetRowsForReferenceTree(companyId, versionId, referenceFiscalYear);
+  const balanceSheetTree = buildBalanceSheetTreeFromData({
+    reportName: 'Balance Sheet',
+    rows: balanceSheetRowsForTree,
+  });
+  const profitLossTree = buildProfitLossTreeFromData({
+    reportName: 'Profit and Loss',
+    periodKeys: years.map((year) => `FY ${year}`),
+    rows: plParsedByFile.flatMap((f) => f.validRows),
+  });
+  logger.log(
+    `  Reference trees created for COA matching: ` +
+    `Balance Sheet FY${referenceFiscalYear || 'all'} ${balanceSheetTree.children.length} top-level node(s), ` +
+    `Profit & Loss ${profitLossTree.children.length} top-level node(s).`,
+  );
+
   // Step 6: Chart of Accounts. Hierarchy source priority: uploaded Chart of
   // Accounts (company-scoped, then global reference) → this version's own
   // uploaded Balance Sheet section → this version's own uploaded Profit & Loss
@@ -928,6 +982,8 @@ async function generateFinancialTables(version, opts = {}) {
   const coaBuildOpts = {
     plRows: plAccountRows,
     hasLinkedCoaDocument,
+    balanceSheetTree,
+    profitLossTree,
     // Threaded through so buildDocHierarchyLookups' deepest-wins tie-break
     // can prefer the Ending Balance Sheet when it and the Opening Balance
     // Sheet give the same account equal real depth (never re-derived here
