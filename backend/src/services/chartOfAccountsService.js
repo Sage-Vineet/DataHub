@@ -85,6 +85,7 @@ function matchSourceFromTier(matchTier) {
   if (!matchTier) return null;
   if (matchTier === "bs_section") return "balance_sheet";
   if (matchTier === "pl_section") return "profit_loss";
+  if (matchTier === "document_hierarchy") return "uploaded_statement_tree";
   if (matchTier === "ai_hierarchy") return "generated";
   if (matchTier === "rule") return "generated"; // deterministic GAAP fact (Net Income / Retained Earnings), not matched from any document
   return "client_coa"; // coaAccountMatcher tier: account_number/exact/normalized/alias/fuzzy/parent_validated
@@ -103,6 +104,7 @@ function hierarchyConfidenceFromTier(matchTier, matchConfidence) {
     return Math.min(1, Math.max(0, Number(matchConfidence) || 0));
   }
   if (matchTier === "bs_section" || matchTier === "pl_section") return 0.9;
+  if (matchTier === "document_hierarchy") return Math.min(1, Math.max(0, Number(matchConfidence) || 1));
   if (matchTier === "rule") return 1.0; // deterministic GAAP fact, not evidence-dependent
   return 0;
 }
@@ -431,7 +433,9 @@ const EQUITY_FIXED_PREFIX    = Object.freeze(["Total Liabilities and Equity", "T
 // labels. Two levels is the whole fixed part; everything below is the
 // document's.
 const PL_FIXED_PREFIX = Object.freeze(["Total Liabilities and Equity", "Total Equity"]);
-
+const PROFIT_AND_LOSS_COA_PREFIX = Object.freeze([...PL_FIXED_PREFIX, "Total Equity"]);
+const BS_ASSET_COA_PREFIX = ASSET_FIXED_PREFIX;
+const BS_LIABILITY_EQUITY_COA_PREFIX = Object.freeze(["Total Liabilities and Equity", "Total Equity"]);
 function fixedPrefixFor(accountType) {
   if (accountType === "asset") return ASSET_FIXED_PREFIX;
   if (accountType === "liability") return LIABILITY_FIXED_PREFIX;
@@ -894,6 +898,150 @@ function fuzzyMatchDocHierarchy(accountName, hierarchyByName) {
   return best;
 }
 
+function inferAccountTypeFromReferencePath(statementType, path) {
+  const text = (path || []).join(" ").toLowerCase();
+  if (statementType === "balance_sheet") {
+    if (text.includes("asset")) return "asset";
+    if (text.includes("liabil")) return "liability";
+    if (text.includes("equity") || text.includes("capital") || text.includes("owner") || text.includes("member")) return "equity";
+  }
+  if (statementType === "profit_loss") {
+    if (text.includes("expense") || text.includes("cost of goods") || text.includes("cogs")) return "expense";
+    if (text.includes("income") || text.includes("revenue") || text.includes("sales")) return "income";
+  }
+  return null;
+}
+
+function balanceSheetPrefixKey(label) {
+  const normalized = normName(label).replace(/^total for\s+/, "total ");
+  if (normalized === "total assets") return "total assets";
+  if (normalized === "total liabilities and equity") return "total liabilities and equity";
+  if (normalized === "total equity") return "total equity";
+  return normalized;
+}
+
+function getBalanceSheetPrefix(accountType) {
+  const normalizedType = String(accountType || "").trim().toLowerCase();
+  if (normalizedType === "asset") return BS_ASSET_COA_PREFIX;
+  if (normalizedType === "liability" || normalizedType === "equity") return BS_LIABILITY_EQUITY_COA_PREFIX;
+  return [];
+}
+
+function applyBalanceSheetCoaPrefix({ accountType, matchedPath }) {
+  const prefix = getBalanceSheetPrefix(accountType);
+  const path = Array.isArray(matchedPath) ? matchedPath.filter(Boolean) : [];
+  if (!prefix.length) return path.slice();
+
+  const merged = prefix.slice();
+  let pathIndex = 0;
+  while (
+    pathIndex < path.length &&
+    pathIndex < prefix.length &&
+    balanceSheetPrefixKey(path[pathIndex]) === balanceSheetPrefixKey(prefix[pathIndex])
+  ) {
+    pathIndex += 1;
+  }
+  return [...merged, ...path.slice(pathIndex)];
+}
+
+function buildTreeHierarchyLookup(tree, statementType) {
+  const lookup = new Map();
+  const visit = (node, path) => {
+    if (!node || typeof node !== "object") return;
+    const nextPath = node.nodeType === "REPORT" ? path : [...path, node.name].filter(Boolean);
+    if (node.nodeType === "ACCOUNT" && node.name) {
+      const key = normName(node.name);
+      const accountType = node.accountType || inferAccountTypeFromReferencePath(statementType, nextPath);
+      const coaPath = statementType === "profit_loss"
+        ? appendLeaf([...PROFIT_AND_LOSS_COA_PREFIX, ...nextPath.slice(0, -1)], nextPath[nextPath.length - 1])
+        : statementType === "balance_sheet"
+          ? applyBalanceSheetCoaPrefix({ accountType, matchedPath: nextPath })
+        : nextPath;
+      const bucket = lookup.get(key) || [];
+      bucket.push({
+        levels: coaPath,
+        treePath: nextPath,
+        accountType,
+        statementType,
+        sourceFiscalYear: null,
+        sourceFileId: null,
+        nodeName: node.name,
+        nodeType: node.nodeType,
+        parent: coaPath.length > 1 ? coaPath[coaPath.length - 2] : null,
+        level: coaPath.length,
+        matchScore: 1,
+      });
+      lookup.set(key, bucket);
+    }
+    for (const child of node.children || []) visit(child, nextPath);
+  };
+  visit(tree, []);
+  return lookup;
+}
+
+function selectDeterministicReferenceCandidate(candidates) {
+  if (!Array.isArray(candidates)) return candidates || null;
+  if (!candidates.length) return null;
+  return candidates.slice().sort((a, b) => {
+    const bLevel = b.level || b.levels?.length || 0;
+    const aLevel = a.level || a.levels?.length || 0;
+    return bLevel - aLevel;
+  })[0];
+}
+
+function findAccountInReferenceTree({ accountName, accountCode, hierarchyLookup }) {
+  if (!hierarchyLookup) return null;
+  const key = normName(accountName);
+  const exact = selectDeterministicReferenceCandidate(hierarchyLookup.get(key));
+  if (exact) return { ...exact, matchType: "exact_name", matchScore: 1 };
+
+  if (accountCode) {
+    const code = String(accountCode).trim();
+    for (const candidates of hierarchyLookup.values()) {
+      const coded = (Array.isArray(candidates) ? candidates : [candidates])
+        .find((c) => c.accountCode && String(c.accountCode).trim() === code);
+      if (coded) return { ...coded, matchType: "account_code", matchScore: 1 };
+    }
+  }
+
+  const target = fuzzyNorm(accountName);
+  let best = null;
+  let bestScore = 0;
+  for (const [candidateKey, candidates] of hierarchyLookup) {
+    const score = strongSimilarity(target, fuzzyNorm(candidateKey));
+    if (score >= DOC_FUZZY_THRESHOLD && score > bestScore) {
+      bestScore = score;
+      best = selectDeterministicReferenceCandidate(candidates);
+    }
+  }
+  return best ? { ...best, matchType: "fuzzy", matchScore: bestScore } : null;
+}
+
+function normalizeReferenceStatementType(statementType, accountType) {
+  const st = String(statementType || "").trim().toLowerCase();
+  if (st === "balance_sheet" || st === "profit_loss") return st;
+  const at = String(accountType || "").trim().toLowerCase();
+  if (BALANCE_SHEET_TYPES.has(at)) return "balance_sheet";
+  if (["income", "revenue", "sales", "cogs", "cost_of_goods_sold", "expense", "other_income", "other_expense"].includes(at)) return "profit_loss";
+  return null;
+}
+
+function selectReferenceTree({ statementType, balanceSheetLookup, profitLossLookup }) {
+  if (statementType === "balance_sheet") return balanceSheetLookup || null;
+  if (statementType === "profit_loss") return profitLossLookup || null;
+  return null;
+}
+
+function matchGlAccountToReferenceTree({ glAccount, statementType, balanceSheetLookup, profitLossLookup }) {
+  const selectedLookup = selectReferenceTree({ statementType, balanceSheetLookup, profitLossLookup });
+  if (!selectedLookup) return null;
+  return findAccountInReferenceTree({
+    accountName: glAccount.accountName,
+    accountCode: glAccount.accountCode,
+    hierarchyLookup: selectedLookup,
+  });
+}
+
 function createDocHierarchyStats() {
   return { balanceSheet: 0, profitLoss: 0, fuzzy: 0 };
 }
@@ -909,19 +1057,24 @@ function createDocHierarchyStats() {
  *   in place for the "COA Hierarchy Generation" summary log ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â optional, has
  *   no effect on resolution itself.
  */
-function pickDocHierarchy(accountName, key, glBucketByKey, bsHierarchyByName, plHierarchyByName, stats) {
+function pickDocHierarchy(accountName, key, glBucketByKey, bsHierarchyByName, plHierarchyByName, stats, context = {}) {
   const bucket = glBucketByKey && glBucketByKey.get(key);
-  const [first, second, firstLabel, secondLabel] = bucket === "profit_loss"
-    ? [plHierarchyByName, bsHierarchyByName, "profitLoss", "balanceSheet"]
-    : [bsHierarchyByName, plHierarchyByName, "balanceSheet", "profitLoss"];
+  const statementType = normalizeReferenceStatementType(context.statementType || bucket, context.accountType);
+  const selected = selectReferenceTree({
+    statementType,
+    balanceSheetLookup: bsHierarchyByName,
+    profitLossLookup: plHierarchyByName,
+  });
+  if (!selected) return null;
 
-  let entry = first.get(key);
-  if (entry) { if (stats) stats[firstLabel]++; return { ...entry, matchType: "exact" }; }
-  entry = second.get(key);
-  if (entry) { if (stats) stats[secondLabel]++; return { ...entry, matchType: "exact" }; }
+  let entry = selectDeterministicReferenceCandidate(selected.get(key));
+  if (entry) {
+    if (stats) stats[statementType === "profit_loss" ? "profitLoss" : "balanceSheet"]++;
+    return { ...entry, matchType: entry.matchType || "exact" };
+  }
 
   // Step 3 ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â fuzzy match, tried against both statements' known accounts.
-  entry = fuzzyMatchDocHierarchy(accountName, first) || fuzzyMatchDocHierarchy(accountName, second);
+  entry = selectDeterministicReferenceCandidate(fuzzyMatchDocHierarchy(accountName, selected));
   if (entry) { if (stats) stats.fuzzy++; return { ...entry, matchType: "fuzzy" }; }
   return null;
 }
@@ -1169,23 +1322,72 @@ function logProfitLossHierarchyValidation(hierarchical, plRows, plTree, tallies 
  * @param {Array} glRowsInOrder - collectGlAccountsFromEntries's result (id-ordered)
  * @returns {Map<string, 'balance_sheet'|'profit_loss'>} normName(accountName) -> bucket
  */
-function splitAccountsAtRetainedEarnings(glRowsInOrder) {
+function normalizeGlAccountHeading(name) {
+  return normName(normalizeForGemini(name));
+}
+
+function addBucketKey(bucketByKey, accountName, bucket) {
+  const rawKey = normName(accountName);
+  const headingKey = normalizeGlAccountHeading(accountName);
+  if (rawKey) bucketByKey.set(rawKey, bucket);
+  if (headingKey) bucketByKey.set(headingKey, bucket);
+}
+
+function findFirstProfitAndLossAccount(tree) {
+  const root = tree?.nodeType === "REPORT" ? tree : tree?.data?.nodeType === "REPORT" ? tree.data : tree;
+  if (!root || typeof root !== "object") return null;
+  if (root.nodeType === "ACCOUNT" && root.name) return root;
+  for (const child of root.children || []) {
+    const match = findFirstProfitAndLossAccount(child);
+    if (match) return match;
+  }
+  return null;
+}
+
+function findGlAccountHeadingIndex(accountHeadings, accountName) {
+  const target = normalizeGlAccountHeading(accountName);
+  if (!target) return -1;
+  return accountHeadings.findIndex((name) => normalizeGlAccountHeading(name) === target);
+}
+
+function splitAccountsAtRetainedEarnings(glRowsInOrder, profitLossTree = null) {
   const uniqueOrdered = [];
   const seen = new Set();
   for (const r of glRowsInOrder || []) {
-    const name = String(r.account_name || "").trim();
+    const name = String(r.account_name || r.account_section || "").trim();
     if (!name) continue;
-    const key = normName(name);
+    const key = normalizeGlAccountHeading(name);
     if (!seen.has(key)) { seen.add(key); uniqueOrdered.push(name); }
   }
-  const reIdx = uniqueOrdered.findIndex((n) => normName(n) === "retained earnings");
-  if (reIdx === -1) {
-    console.warn('[ChartOfAccounts] "Retained Earnings" not found in the General Ledger\'s account list ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â Balance Sheet/P&L bucketing hint skipped; every account still tries both parsed hierarchies.');
+  let splitIdx = uniqueOrdered.findIndex((n) => normalizeGlAccountHeading(n) === "retained earnings");
+  if (splitIdx >= 0) {
+    console.log(
+      `[ChartOfAccounts] GL bifurcation method: RETAINED_EARNINGS_ACCOUNT_HEADING | ` +
+      `Boundary account: ${uniqueOrdered[splitIdx]} | Boundary account index: ${splitIdx} | ` +
+      `Retained Earnings included in: PROFIT_AND_LOSS`,
+    );
+  } else {
+    const firstPnlAccount = findFirstProfitAndLossAccount(profitLossTree);
+    splitIdx = findGlAccountHeadingIndex(uniqueOrdered, firstPnlAccount?.name);
+    if (splitIdx >= 0) {
+      console.log(
+        `[ChartOfAccounts] GL bifurcation method: FIRST_PNL_TREE_ACCOUNT | ` +
+        `P&L tree account: ${firstPnlAccount.name} | Matched GL heading: ${uniqueOrdered[splitIdx]} | ` +
+        `Boundary account index: ${splitIdx} | Boundary account included in: PROFIT_AND_LOSS`,
+      );
+    }
+  }
+  if (splitIdx === -1) {
+    console.warn(
+      `[ChartOfAccounts] GL bifurcation method: NOT_FOUND | Retained Earnings heading: not found | ` +
+      `First P&L tree account in GL headings: not found | Next step: existing unresolved bifurcation flow`,
+    );
     return new Map();
   }
   const bucketByKey = new Map();
-  uniqueOrdered.forEach((n, i) => bucketByKey.set(normName(n), i <= reIdx ? "balance_sheet" : "profit_loss"));
+  uniqueOrdered.forEach((n, i) => addBucketKey(bucketByKey, n, i < splitIdx ? "balance_sheet" : "profit_loss"));
   return bucketByKey;
+    console.warn('[ChartOfAccounts] "Retained Earnings" not found in the General Ledger\'s account list ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â Balance Sheet/P&L bucketing hint skipped; every account still tries both parsed hierarchies.');
 }
 
 // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ COA leaf model ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
@@ -1224,9 +1426,15 @@ function splitAccountsAtRetainedEarnings(glRowsInOrder) {
  *                           Profit-and-Loss bucketing hint (Priority 2, below
  *                           matchResults, above aiResults)
  */
-function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResults = new Map(), glBucketByKey = new Map(), endingFiscalYear = null) {
+function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResults = new Map(), glBucketByKey = new Map(), endingFiscalYear = null, referenceTrees = {}) {
   const leavesByName = new Map();
-  const { bsHierarchyByName, plHierarchyByName } = buildDocHierarchyLookups(bsRows, plRows, endingFiscalYear);
+  const docLookups = buildDocHierarchyLookups(bsRows, plRows, endingFiscalYear);
+  const bsHierarchyByName = referenceTrees.balanceSheetTree
+    ? buildTreeHierarchyLookup(referenceTrees.balanceSheetTree, "balance_sheet")
+    : docLookups.bsHierarchyByName;
+  const plHierarchyByName = referenceTrees.profitLossTree
+    ? buildTreeHierarchyLookup(referenceTrees.profitLossTree, "profit_loss")
+    : docLookups.plHierarchyByName;
 
   // A GL posting is, by definition, a real transaction ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â never a calculated
   // report/header row. If Gemini says isReportRow=true for a name that ALSO
@@ -1351,7 +1559,15 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
     // indentation (parent_path), dynamic depth, never guessed, never sent to
     // AI. Only an account neither the uploaded COA nor the uploaded
     // statements can resolve reaches AI (Priority 3, below).
-    const docHierarchy = pickDocHierarchy(name, key, glBucketByKey, bsHierarchyByName, plHierarchyByName);
+    const aiResultForReference = aiResults.get(key);
+    const evidenceAccountType = coaMatch?.accountType
+      || aiResultForReference?.accountType
+      || bsSectionToType(bsSection)
+      || typeFromPlSection(plSection);
+    const docHierarchy = pickDocHierarchy(name, key, glBucketByKey, bsHierarchyByName, plHierarchyByName, null, {
+      accountType: evidenceAccountType,
+      statementType: coaMatch?.statementType || (evidenceAccountType ? statementTypeFor(evidenceAccountType) : null),
+    });
     if (docHierarchy) {
       const bucket = leavesByName.get(key) || [];
       const target = bucket.find((l) => (number && l.accountNumber) ? l.accountNumber === number : true);
@@ -1408,7 +1624,7 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
       return;
     }
 
-    const aiResult = aiResults.get(key);
+    const aiResult = aiResultForReference;
 
     // AI identified this as a calculated/header row ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â exclude from COA,
     // UNLESS real GL transactions exist under this exact name, in which case
@@ -2211,10 +2427,14 @@ function serializeProposedTree(hierarchical) {
         const node = {
           key,
           parentKey,
+          parent_id: parentKey,
           nodeType: "CATEGORY",
           label: prefixArr[prefixArr.length - 1],
           accountType: leaf.accountType,
           statementType: leaf.statementType,
+          level: prefixArr.length,
+          systemId: null,
+          system_id: null,
         };
         categoryNodes.set(key, node);
         nodes.push(node);
@@ -2229,6 +2449,7 @@ function serializeProposedTree(hierarchical) {
     nodes.push({
       key: accountKey(leaf.accountNumber, leaf.accountName),
       parentKey,
+      parent_id: parentKey,
       nodeType: "ACCOUNT",
       accountId: leaf.accountId || null,
       accountName: leaf.accountName,
@@ -2240,11 +2461,11 @@ function serializeProposedTree(hierarchical) {
       classificationMethod: leaf.classificationMethod || null,
       matchTier: leaf.matchTier || null,
       confidence: leaf.confidence ?? null,
-      // Never assigned until persistApprovedCoaTree's assignSystemIds runs --
-      // a Proposed COA has no System ID yet, unlike serializePersistedTree's
-      // (already-approved) nodes. Field always present so the frontend can
-      // read it unconditionally either way.
-      systemId: null,
+      level: Number.isFinite(Number(leaf.level))
+        ? Number(leaf.level)
+        : (Array.isArray(leaf.levels) ? leaf.levels.filter(Boolean).length : 0),
+      systemId: leaf.systemId || leaf.system_id || null,
+      system_id: leaf.systemId || leaf.system_id || null,
       needsReview: Boolean(leaf.needsReview),
       needsMapping: Boolean(leaf.needsMapping),
       sources: Array.from(leaf.sources || []),
@@ -3213,17 +3434,27 @@ async function buildProposedCoaTree(companyId, versionId, batchId, opts = {}) {
   //     Balance Sheet / Profit & Loss (parent_path). Only accounts NEITHER
   //     the uploaded COA (1b) NOR the uploaded statements (here) can resolve
   //     are sent to AI (Priority 3) below.
-  const glBucketByKey = splitAccountsAtRetainedEarnings(glRows);
+  const glBucketByKey = splitAccountsAtRetainedEarnings(glRows, opts.profitLossTree || null);
   const {
     bsHierarchyByName, plHierarchyByName, bsTree: bsDocTree, plTree: plDocTree,
     conflictingPathsCount, resolvedByDepthCount, resolvedByFrequencyCount, resolvedByRecencyCount, mergedNodesCount,
     plConflictingPathsCount, plResolvedByDepthCount, plResolvedByFrequencyCount,
     plResolvedByRecencyCount, plMergedNodesCount,
   } = buildDocHierarchyLookups(bsRows, plRows, endingFiscalYear, { logValidation: true });
+  const referenceBsHierarchyByName = opts.balanceSheetTree
+    ? buildTreeHierarchyLookup(opts.balanceSheetTree, "balance_sheet")
+    : bsHierarchyByName;
+  const referencePlHierarchyByName = opts.profitLossTree
+    ? buildTreeHierarchyLookup(opts.profitLossTree, "profit_loss")
+    : plHierarchyByName;
   const docHierarchyStats = createDocHierarchyStats();
-  const needsAi = unmatchedByCoa.filter(
-    (a) => !pickDocHierarchy(a.accountName, a.key, glBucketByKey, bsHierarchyByName, plHierarchyByName, docHierarchyStats),
-  );
+  const needsAi = unmatchedByCoa.filter((a) => {
+    const evidenceAccountType = bsSectionToType(a.bsSection) || plSectionToType(a.plSection);
+    return !pickDocHierarchy(a.accountName, a.key, glBucketByKey, referenceBsHierarchyByName, referencePlHierarchyByName, docHierarchyStats, {
+      accountType: evidenceAccountType,
+      statementType: evidenceAccountType ? statementTypeFor(evidenceAccountType) : null,
+    });
+  });
   const docHierarchyResolvedCount = unmatchedByCoa.length - needsAi.length;
   if (mapper.entryCount || docHierarchyResolvedCount) {
     console.log(
@@ -3248,7 +3479,10 @@ async function buildProposedCoaTree(companyId, versionId, batchId, opts = {}) {
     }
   }
 
-  const { leaves } = buildCoaModel(glRows, bsRows, plRows, aiResults, matchResults, glBucketByKey, endingFiscalYear);
+  const { leaves } = buildCoaModel(glRows, bsRows, plRows, aiResults, matchResults, glBucketByKey, endingFiscalYear, {
+    balanceSheetTree: opts.balanceSheetTree || null,
+    profitLossTree: opts.profitLossTree || null,
+  });
   if (!leaves.length) {
     // buildProposedCoaTree never writes -- an empty proposal (and clearing
     // stale rows so they don't linger) is handled by persistApprovedCoaTree's
@@ -3283,7 +3517,15 @@ async function buildProposedCoaTree(companyId, versionId, batchId, opts = {}) {
     if (!existingByKey.has(key)) existingByKey.set(key, row);
   }
 
-  const hierarchical = await buildLeafHierarchies(leaves, existingByKey);
+  const hierarchicalBase = await buildLeafHierarchies(leaves, existingByKey);
+  const proposedSystemIds = assignSystemIds(hierarchicalBase, existingByKey);
+  const hierarchical = hierarchicalBase.map((leaf) => {
+    const key = accountKey(leaf.accountNumber, leaf.accountName);
+    const systemId = proposedSystemIds.get(key) || leaf.systemId || null;
+    const level = Array.isArray(leaf.levels) ? leaf.levels.filter(Boolean).length : 0;
+    if (leaf.level === level && leaf.systemId === systemId && leaf.system_id === systemId) return leaf;
+    return { ...leaf, level, systemId, system_id: systemId };
+  });
   const sourceCounts = summarizeSourceCounts(hierarchical);
   const unmappedCount = sourceCounts.needsMapping;
   if (unmappedCount) {
@@ -3950,6 +4192,7 @@ function serializePersistedTree(rows) {
   return rows.map((r) => ({
     key: r.id,
     parentKey: r.parentAccountId || null,
+    parent_id: r.parentAccountId || null,
     nodeType: r.isGroup ? "CATEGORY" : "ACCOUNT",
     accountId: r.isGroup ? null : r.id,
     label: r.isGroup ? r.accountName : undefined,
@@ -3965,11 +4208,13 @@ function serializePersistedTree(rows) {
           classificationMethod: r.classificationMethod,
         })),
     classificationMethod: r.classificationMethod || null,
+    level: Array.isArray(r.levels) ? r.levels.filter(Boolean).length : 0,
     // System ID (INC-001/EXP-001/BS-001) is only ever assigned at persist
     // time (assignSystemIds, called from persistApprovedCoaTree) -- a
     // Proposed COA's serializeProposedTree has none to report, so this is
     // populated for an already-Approved tree only. Never re-derived here.
     systemId: r.isGroup ? null : (r.systemId || null),
+    system_id: r.isGroup ? null : (r.systemId || null),
     needsReview: Boolean(r.metadata?.needs_review),
     needsMapping: Boolean(r.metadata?.needs_mapping),
     sortOrder: r.sortOrder ?? null,
@@ -4759,15 +5004,15 @@ async function ensureAccountExistsInCoa(versionId, companyId, accountName, accou
 //   discovered at this later phase still gets Priority-2 document-hierarchy
 //   resolution before falling back to AI.
 // Same guarantee as generateChartOfAccounts' wrapper above -- see its comment.
-async function ensureCoaComplete(companyId, versionId, plRows = [], hasLinkedCoaDocument = undefined, endingFiscalYear = null) {
+async function ensureCoaComplete(companyId, versionId, plRows = [], hasLinkedCoaDocument = undefined, endingFiscalYear = null, profitLossTree = null) {
   try {
-    return await _ensureCoaCompleteImpl(companyId, versionId, plRows, hasLinkedCoaDocument, endingFiscalYear);
+    return await _ensureCoaCompleteImpl(companyId, versionId, plRows, hasLinkedCoaDocument, endingFiscalYear, profitLossTree);
   } finally {
     await invalidateClassificationCache(companyId);
   }
 }
 
-async function _ensureCoaCompleteImpl(companyId, versionId, plRows = [], hasLinkedCoaDocument = undefined, endingFiscalYear = null) {
+async function _ensureCoaCompleteImpl(companyId, versionId, plRows = [], hasLinkedCoaDocument = undefined, endingFiscalYear = null, profitLossTree = null) {
   if (!companyId || !versionId) return { added: 0, skipped: 0 };
 
   await invalidateClassificationCache(companyId);
@@ -4846,7 +5091,7 @@ async function _ensureCoaCompleteImpl(companyId, versionId, plRows = [], hasLink
     collectGlAccountsFromEntries(companyId, versionId).catch(() => []),
     collectBsAccountsFromEntries(companyId, versionId).catch(() => []),
   ]);
-  const glBucketByKey = splitAccountsAtRetainedEarnings(glRowsInOrder);
+  const glBucketByKey = splitAccountsAtRetainedEarnings(glRowsInOrder, profitLossTree);
   const { bsHierarchyByName, plHierarchyByName } = buildDocHierarchyLookups(bsRows, plRows, endingFiscalYear);
   const needsAi = unmatchedByCoa.filter(
     (a) => !pickDocHierarchy(a.accountName, a.key, glBucketByKey, bsHierarchyByName, plHierarchyByName),
@@ -5261,12 +5506,24 @@ module.exports = {
   printHierarchySampleVerification,
   printHierarchyIntegrityReport,
   pickDocHierarchy,
+  buildTreeHierarchyLookup,
+  findAccountInReferenceTree,
+  selectReferenceTree,
+  matchGlAccountToReferenceTree,
   splitAccountsAtRetainedEarnings,
+  normalizeGlAccountHeading,
+  findFirstProfitAndLossAccount,
+  findGlAccountHeadingIndex,
+  applyBalanceSheetCoaPrefix,
   normalizeHierarchyLabel,
   comparePathCandidates,
   fixedPrefixFor,
+  PROFIT_AND_LOSS_COA_PREFIX,
+  BS_ASSET_COA_PREFIX,
+  BS_LIABILITY_EQUITY_COA_PREFIX,
   trimRedundantParentPath,
   validateCoaNodeTree,
   buildCoaNodeTree,
   validateCoaTreeGlobal,
 };
+
