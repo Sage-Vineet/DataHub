@@ -558,56 +558,6 @@ function EditableCell({ value, onSave }) {
   );
 }
 
-/**
- * Editable adjustment row — one editable cell per month + TTM total.
- * Defined outside the main component to keep component identity stable
- * (avoids unmounting EditableCell on every re-render).
- */
-function AdjRow({ label, rowKey, months, reconAdjustments, rowByMonth, onSave }) {
-  // Effective value = manual override (if saved for this cell, even 0) else the
-  // auto-computed value carried on that month's row (derived from the financial
-  // statements). This is what makes every row auto-populate while still letting
-  // a user override any individual cell.
-  const getAdj = (m) => {
-    const k = `${m}_${rowKey}`;
-    if (reconAdjustments && Object.prototype.hasOwnProperty.call(reconAdjustments, k)) {
-      return reconAdjustments[k];
-    }
-    return Number(rowByMonth?.[m]?.[rowKey]) || 0;
-  };
-  const ttmTotal = months.slice(-12).reduce((s, m) => s + getAdj(m), 0);
-  return (
-    <tr className="bg-white hover:bg-blue-50/20">
-      <td
-        className={cn(
-          "sticky left-0 z-[1] border border-border px-3 py-[5px] text-[12px]",
-          "text-text-primary whitespace-nowrap bg-white pl-7",
-          TABLE_LABEL_COL_WIDTH,
-        )}
-      >
-        {label}
-      </td>
-      {months.map((month) => (
-        <td key={month} className={cn("border border-border px-1 py-[2px]", TABLE_VALUE_COL_WIDTH)}>
-          <EditableCell
-            value={getAdj(month)}
-            onSave={(val) => onSave(month, rowKey, val)}
-          />
-        </td>
-      ))}
-      <td
-        className={cn(
-          "border border-border px-3 py-[7px] text-right text-[12px] tabular-nums",
-          TABLE_VALUE_COL_WIDTH,
-          ttmTotal !== 0 ? "text-text-primary" : "text-text-muted",
-        )}
-      >
-        {ttmTotal !== 0 ? formatNumber(ttmTotal, 2) : "-"}
-      </td>
-    </tr>
-  );
-}
-
 function AddbackItemRow({ item, months, onSaveAmounts, onDelete }) {
   const getAmt = (month) => Number(item.monthAmounts?.[month] ?? 0);
   const ttmTotal = months.slice(-12).reduce((sum, m) => sum + getAmt(m), 0);
@@ -2655,6 +2605,27 @@ export default function WorkspaceReconciliation() {
     </tr>
   );
 
+  // Non-editable category header row for the Activity Review adjustment
+  // section (e.g. "Changes in Assets", "P&L Account Adjustments"). Rendered
+  // even when the category has no rows underneath it, so the four categories
+  // always show as a consistent grouping.
+  const GroupHeaderRow = ({ label, months }) => (
+    <tr className="bg-slate-50">
+      <td
+        className={cn(
+          "sticky left-0 z-[1] border border-border bg-slate-50 px-3 py-[6px] text-[12px] font-semibold text-text-primary whitespace-nowrap",
+          TABLE_LABEL_COL_WIDTH,
+        )}
+      >
+        {label}
+      </td>
+      {months.map((month) => (
+        <td key={month} className={cn("border border-border bg-slate-50", TABLE_VALUE_COL_WIDTH)} />
+      ))}
+      <td className={cn("border border-border bg-slate-50", TABLE_VALUE_COL_WIDTH)} />
+    </tr>
+  );
+
   const TableColGroup = ({ months }) => (
     <colgroup>
       <col className={TABLE_LABEL_COL_WIDTH} />
@@ -3360,21 +3331,6 @@ export default function WorkspaceReconciliation() {
     const av = (f) => [...rows.map((r) => fmtAmt(r[f])), fmtAmt(ttm[f])];
     const avRaw = (f) => [...rows.map((r) => r[f] ?? null), ttm[f] ?? null];
 
-    // ── Adjustment helpers ────────────────────────────────────────────────────
-    // Each adjustment row shows its auto-computed value (carried on the month's
-    // row object, derived from the financial statements) by default; a manual
-    // per-cell override saved in reconAdjustments takes precedence when present
-    // (even a saved 0). getAdj returns that EFFECTIVE value — it feeds both the
-    // Unreconciled Variance below and each AdjRow's cells.
-    const rowByMonth = Object.fromEntries(rows.map((r) => [r.month, r]));
-    const getAdj = (month, key) => {
-      const k = `${month}_${key}`;
-      if (reconAdjustments && Object.prototype.hasOwnProperty.call(reconAdjustments, k)) {
-        return reconAdjustments[k];
-      }
-      return Number(rowByMonth[month]?.[key]) || 0;
-    };
-
     // Pre-compute addback totals per month from multi-item addback rows
     const depAddbackMap = {};
     const wdrAddbackMap = {};
@@ -3385,62 +3341,33 @@ export default function WorkspaceReconciliation() {
       });
     });
 
-    // Deposits — adjusted Unreconciled Variance
-    // NOTE: "Change in Current Assets" is intentionally NOT summed here — it is an
-    // informational raw BS delta that includes cash (already the deposits) and AR
-    // (its own row), so adding it would double-count. It is displayed only.
+    // Deposits — adjusted Unreconciled Variance.
+    // Only Addbacks (under P&L Account Adjustments) feed the variance now — the
+    // other auto-computed rows (Change in AR, Change in Current Assets, Fixed
+    // Asset Disposals, etc.) are no longer shown under Changes in Assets /
+    // Changes in Liabilities / Other Adjustments, so they no longer count here.
     const depositsUnrecAdj = rows.map((r) =>
-      r.depositsDollarVar
-      + getAdj(r.month, "changeInAR")
-      + getAdj(r.month, "changeInARRetentions")
-      + getAdj(r.month, "fixedAssetDisposals")
-      + getAdj(r.month, "depositsOther")
-      + (depAddbackMap[r.month] ?? 0),
+      r.depositsDollarVar + (depAddbackMap[r.month] ?? 0),
     );
     const depositsUnrecPctAdj = rows.map((r, i) =>
       r.salesPerFinancials !== 0 ? (depositsUnrecAdj[i] / r.salesPerFinancials) * 100 : 0,
     );
     const ttmDepositsUnrecAdj = months.slice(-12).reduce(
-      (sum, m) =>
-        sum
-        + getAdj(m, "changeInAR")
-        + getAdj(m, "changeInARRetentions")
-        + getAdj(m, "fixedAssetDisposals")
-        + getAdj(m, "depositsOther")
-        + (depAddbackMap[m] ?? 0),
+      (sum, m) => sum + (depAddbackMap[m] ?? 0),
       ttm.depositsDollarVar,
     );
     const ttmDepositsUnrecPctAdj =
       ttm.salesPerFinancials !== 0 ? (ttmDepositsUnrecAdj / ttm.salesPerFinancials) * 100 : 0;
 
-    // Withdrawals — adjusted Unreconciled Variance
+    // Withdrawals — adjusted Unreconciled Variance (Addbacks only, see note above).
     const withdrawsUnrecAdj = rows.map((r) =>
-      r.withdrawsDollarVar
-      + getAdj(r.month, "ownerWithdraws")
-      + getAdj(r.month, "changeInCurrentLiabilities")
-      + getAdj(r.month, "changeInLTLiabilities")
-      + getAdj(r.month, "depreciationExpense")
-      + getAdj(r.month, "amortizationExpense")
-      + getAdj(r.month, "badDebtExpense")
-      + getAdj(r.month, "fixedAssetPurchases")
-      + getAdj(r.month, "withdrawsOther")
-      + (wdrAddbackMap[r.month] ?? 0),
+      r.withdrawsDollarVar + (wdrAddbackMap[r.month] ?? 0),
     );
     const withdrawsUnrecPctAdj = rows.map((r, i) =>
       r.expensesPerFinancials !== 0 ? (withdrawsUnrecAdj[i] / r.expensesPerFinancials) * 100 : 0,
     );
     const ttmWithdrawsUnrecAdj = months.slice(-12).reduce(
-      (sum, m) =>
-        sum
-        + getAdj(m, "ownerWithdraws")
-        + getAdj(m, "changeInCurrentLiabilities")
-        + getAdj(m, "changeInLTLiabilities")
-        + getAdj(m, "depreciationExpense")
-        + getAdj(m, "amortizationExpense")
-        + getAdj(m, "badDebtExpense")
-        + getAdj(m, "fixedAssetPurchases")
-        + getAdj(m, "withdrawsOther")
-        + (wdrAddbackMap[m] ?? 0),
+      (sum, m) => sum + (wdrAddbackMap[m] ?? 0),
       ttm.withdrawsDollarVar,
     );
     const ttmWithdrawsUnrecPctAdj =
@@ -3461,11 +3388,11 @@ export default function WorkspaceReconciliation() {
         <DR label="% Variance" values={avRaw("depositsPctVar")} rawValues={avRaw("depositsPctVar")} rowType="variance-pct" />
         <SpacerRow colCount={colCount} />
 
-        <AdjRow label="Change in AR" rowKey="changeInAR" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
-        <AdjRow label="Change in Accts Receivable- Retentions" rowKey="changeInARRetentions" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
-        <AdjRow label="Change in Current Assets" rowKey="changeInCurrentAssets" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
-        <AdjRow label="Fixed Asset Disposals" rowKey="fixedAssetDisposals" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
-        <AdjRow label="Other" rowKey="depositsOther" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
+        <GroupHeaderRow label="Changes in Assets" months={months} />
+
+        <GroupHeaderRow label="Changes in Liabilities" months={months} />
+
+        <GroupHeaderRow label="P&L Account Adjustments" months={months} />
         <AddbacksRowGroup
           section="deposits"
           months={months}
@@ -3481,6 +3408,9 @@ export default function WorkspaceReconciliation() {
             setAddbackPickerState({ open: true, section: "deposits", startDate, endDate, months });
           }}
         />
+
+        <GroupHeaderRow label="Other Adjustments" months={months} />
+
         <DR label="Unreconciled Variance $" values={adjDepURaw} rawValues={adjDepURaw} rowType="variance-amt" />
         <DR label="Unreconciled Variance %" values={adjDepPctRaw} rawValues={adjDepPctRaw} rowType="variance-pct" />
         <SpacerRow colCount={colCount} />
@@ -3493,14 +3423,11 @@ export default function WorkspaceReconciliation() {
         <DR label="% Variance" values={avRaw("withdrawsPctVar")} rawValues={avRaw("withdrawsPctVar")} rowType="variance-pct" />
         <SpacerRow colCount={colCount} />
 
-        <AdjRow label="Owner Withdraws" rowKey="ownerWithdraws" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
-        <AdjRow label="Change in Current Liabilities" rowKey="changeInCurrentLiabilities" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
-        <AdjRow label="Change in LT Liabilities" rowKey="changeInLTLiabilities" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
-        <AdjRow label="Depreciation Expense" rowKey="depreciationExpense" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
-        <AdjRow label="Amortization Expense" rowKey="amortizationExpense" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
-        <AdjRow label="Bad Debt Expense" rowKey="badDebtExpense" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
-        <AdjRow label="Fixed Asset Purchases" rowKey="fixedAssetPurchases" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
-        <AdjRow label="Other" rowKey="withdrawsOther" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
+        <GroupHeaderRow label="Changes in Assets" months={months} />
+
+        <GroupHeaderRow label="Changes in Liabilities" months={months} />
+
+        <GroupHeaderRow label="P&L Account Adjustments" months={months} />
         <AddbacksRowGroup
           section="withdrawals"
           months={months}
@@ -3516,6 +3443,9 @@ export default function WorkspaceReconciliation() {
             setAddbackPickerState({ open: true, section: "withdrawals", startDate, endDate, months });
           }}
         />
+
+        <GroupHeaderRow label="Other Adjustments" months={months} />
+
         <DR label="Unreconciled Variance $" values={adjWdrURaw} rawValues={adjWdrURaw} rowType="variance-amt" />
         <DR label="Unreconciled Variance %" values={adjWdrPctRaw} rawValues={adjWdrPctRaw} rowType="variance-pct" />
       </FreezeTable>
@@ -3551,9 +3481,9 @@ export default function WorkspaceReconciliation() {
       const withdrawsPctVar = expensesPerFinancials !== 0 ? (withdrawsDollarVar / expensesPerFinancials) * 100 : 0;
       const withdrawsUnreconciledDollar = withdrawsDollarVar;
       const withdrawsUnreconciledPct = expensesPerFinancials !== 0 ? (withdrawsUnreconciledDollar / expensesPerFinancials) * 100 : 0;
-      // Auto-computed adjustment rows for this month, derived from the financial
-      // statements (signed cash effects). These become each AdjRow's default; a
-      // manual override in reconAdjustments still wins (see AdjRow/getAdj).
+      // Auto-computed adjustment values for this month, derived from the financial
+      // statements (signed cash effects). Carried on the row for reference; not
+      // currently rendered or summed into the Unreconciled Variance.
       const adj = activityReview?.[mk] || {};
       return {
         month: mk,
@@ -3704,39 +3634,17 @@ export default function WorkspaceReconciliation() {
     const actRows = isManual ? manualActivityRows : activityRows;
     const actTTM = isManual ? manualActivityTTM : activityTTM;
     if (actRows.length) {
-      // Match the on-screen table: manual override wins, else the auto-computed
-      // value carried on the row (derived from the financial statements).
-      const _actByMonth = Object.fromEntries(actRows.map((r) => [r.month, r]));
-      const getAdj = (month, key) => {
-        const k = `${month}_${key}`;
-        if (reconAdjustments && Object.prototype.hasOwnProperty.call(reconAdjustments, k)) {
-          return reconAdjustments[k];
-        }
-        return Number(_actByMonth[month]?.[key]) || 0;
-      };
-      const adjTTM = (key) => months.slice(-12).reduce((s, m) => s + getAdj(m, key), 0);
-      const adjVals = (key) => [...actRows.map((r) => getAdj(r.month, key)), adjTTM(key)];
+      // Only Addbacks (under P&L Account Adjustments) feed the variance — see
+      // the matching note in renderActivityTableCore.
       const depMap = {}, wdrMap = {};
       addbackItems.forEach((item) => {
         const map = item.section === "deposits" ? depMap : wdrMap;
         Object.entries(item.monthAmounts || {}).forEach(([m, amt]) => { map[m] = (map[m] || 0) + Number(amt); });
       });
-      const depUnrec = actRows.map((r) =>
-        r.depositsDollarVar + getAdj(r.month, "changeInAR") + getAdj(r.month, "changeInARRetentions")
-        + getAdj(r.month, "fixedAssetDisposals") + getAdj(r.month, "depositsOther") + (depMap[r.month] ?? 0));
-      const ttmDepUnrec = months.slice(-12).reduce((s, m) =>
-        s + getAdj(m, "changeInAR") + getAdj(m, "changeInARRetentions")
-        + getAdj(m, "fixedAssetDisposals")
-        + getAdj(m, "depositsOther") + (depMap[m] ?? 0), actTTM.depositsDollarVar ?? 0);
-      const wdrUnrec = actRows.map((r) =>
-        r.withdrawsDollarVar + getAdj(r.month, "ownerWithdraws") + getAdj(r.month, "changeInCurrentLiabilities")
-        + getAdj(r.month, "changeInLTLiabilities") + getAdj(r.month, "depreciationExpense")
-        + getAdj(r.month, "amortizationExpense") + getAdj(r.month, "badDebtExpense")
-        + getAdj(r.month, "fixedAssetPurchases") + getAdj(r.month, "withdrawsOther") + (wdrMap[r.month] ?? 0));
-      const ttmWdrUnrec = months.slice(-12).reduce((s, m) =>
-        s + getAdj(m, "ownerWithdraws") + getAdj(m, "changeInCurrentLiabilities") + getAdj(m, "changeInLTLiabilities")
-        + getAdj(m, "depreciationExpense") + getAdj(m, "amortizationExpense") + getAdj(m, "badDebtExpense")
-        + getAdj(m, "fixedAssetPurchases") + getAdj(m, "withdrawsOther") + (wdrMap[m] ?? 0), actTTM.withdrawsDollarVar ?? 0);
+      const depUnrec = actRows.map((r) => r.depositsDollarVar + (depMap[r.month] ?? 0));
+      const ttmDepUnrec = months.slice(-12).reduce((s, m) => s + (depMap[m] ?? 0), actTTM.depositsDollarVar ?? 0);
+      const wdrUnrec = actRows.map((r) => r.withdrawsDollarVar + (wdrMap[r.month] ?? 0));
+      const ttmWdrUnrec = months.slice(-12).reduce((s, m) => s + (wdrMap[m] ?? 0), actTTM.withdrawsDollarVar ?? 0);
       const adjDepURaw = [...depUnrec, ttmDepUnrec];
       const adjWdrURaw = [...wdrUnrec, ttmWdrUnrec];
       const av = (f) => [...actRows.map((r) => fmtN(r[f])), fmtN(actTTM[f])];
@@ -3749,16 +3657,15 @@ export default function WorkspaceReconciliation() {
         ["Sales per Financials", ...av("salesPerFinancials")],
         ["$ Variance", ...adjDepURaw.map((v) => fmtN(v))],
         [],
-        ["Change in AR", ...adjVals("changeInAR")],
-        ["Change in AR Retentions", ...adjVals("changeInARRetentions")],
-        ["Change in Current Assets", ...adjVals("changeInCurrentAssets")],
-        ["Fixed Asset Disposals", ...adjVals("fixedAssetDisposals")],
-        ["Other", ...adjVals("depositsOther")],
+        ["Changes in Assets"],
+        ["Changes in Liabilities"],
+        ["P&L Account Adjustments"],
         ...addbackItems.filter((i) => i.section === "deposits").map((item) => [
           `  ${item.name}`,
           ...actRows.map((r) => fmtN(item.monthAmounts[r.month])),
           actRows.slice(-12).reduce((s, r) => s + (Number(item.monthAmounts[r.month]) || 0), 0),
         ]),
+        ["Other Adjustments"],
         ["Unreconciled Variance $", ...adjDepURaw.map((v) => fmtN(v))],
         [],
         ["Total Withdrawals", ...av("totalWithdrawals")],
@@ -3767,19 +3674,15 @@ export default function WorkspaceReconciliation() {
         ["Expenses per Financials", ...av("expensesPerFinancials")],
         ["$ Variance", ...adjWdrURaw.map((v) => fmtN(v))],
         [],
-        ["Owner Withdrawals", ...adjVals("ownerWithdraws")],
-        ["Change in Current Liabilities", ...adjVals("changeInCurrentLiabilities")],
-        ["Change in LT Liabilities", ...adjVals("changeInLTLiabilities")],
-        ["Depreciation Expense", ...adjVals("depreciationExpense")],
-        ["Amortization Expense", ...adjVals("amortizationExpense")],
-        ["Bad Debt Expense", ...adjVals("badDebtExpense")],
-        ["Fixed Asset Purchases", ...adjVals("fixedAssetPurchases")],
-        ["Other", ...adjVals("withdrawsOther")],
+        ["Changes in Assets"],
+        ["Changes in Liabilities"],
+        ["P&L Account Adjustments"],
         ...addbackItems.filter((i) => i.section === "withdrawals").map((item) => [
           `  ${item.name}`,
           ...actRows.map((r) => fmtN(item.monthAmounts[r.month])),
           actRows.slice(-12).reduce((s, r) => s + (Number(item.monthAmounts[r.month]) || 0), 0),
         ]),
+        ["Other Adjustments"],
         ["Unreconciled Variance $", ...adjWdrURaw.map((v) => fmtN(v))],
       );
     }
@@ -3967,39 +3870,17 @@ export default function WorkspaceReconciliation() {
     const actTTM = isManual ? manualActivityTTM : activityTTM;
     if (actRows.length) {
       drawSectionTitle("Activity Review");
-      // Match the on-screen table: manual override wins, else the auto-computed
-      // value carried on the row (derived from the financial statements).
-      const _actByMonth = Object.fromEntries(actRows.map((r) => [r.month, r]));
-      const getAdj = (month, key) => {
-        const k = `${month}_${key}`;
-        if (reconAdjustments && Object.prototype.hasOwnProperty.call(reconAdjustments, k)) {
-          return reconAdjustments[k];
-        }
-        return Number(_actByMonth[month]?.[key]) || 0;
-      };
-      const adjTTM = (key) => months.slice(-12).reduce((s, m) => s + getAdj(m, key), 0);
-      const adjVals = (key) => [...actRows.map((r) => getAdj(r.month, key)), adjTTM(key)];
+      // Only Addbacks (under P&L Account Adjustments) feed the variance — see
+      // the matching note in renderActivityTableCore.
       const depMap = {}, wdrMap = {};
       addbackItems.forEach((item) => {
         const map = item.section === "deposits" ? depMap : wdrMap;
         Object.entries(item.monthAmounts || {}).forEach(([m, amt]) => { map[m] = (map[m] || 0) + Number(amt); });
       });
-      const depUnrec = actRows.map((r) =>
-        r.depositsDollarVar + getAdj(r.month, "changeInAR") + getAdj(r.month, "changeInARRetentions")
-        + getAdj(r.month, "fixedAssetDisposals") + getAdj(r.month, "depositsOther") + (depMap[r.month] ?? 0));
-      const ttmDepUnrec = months.slice(-12).reduce((s, m) =>
-        s + getAdj(m, "changeInAR") + getAdj(m, "changeInARRetentions")
-        + getAdj(m, "fixedAssetDisposals")
-        + getAdj(m, "depositsOther") + (depMap[m] ?? 0), actTTM.depositsDollarVar ?? 0);
-      const wdrUnrec = actRows.map((r) =>
-        r.withdrawsDollarVar + getAdj(r.month, "ownerWithdraws") + getAdj(r.month, "changeInCurrentLiabilities")
-        + getAdj(r.month, "changeInLTLiabilities") + getAdj(r.month, "depreciationExpense")
-        + getAdj(r.month, "amortizationExpense") + getAdj(r.month, "badDebtExpense")
-        + getAdj(r.month, "fixedAssetPurchases") + getAdj(r.month, "withdrawsOther") + (wdrMap[r.month] ?? 0));
-      const ttmWdrUnrec = months.slice(-12).reduce((s, m) =>
-        s + getAdj(m, "ownerWithdraws") + getAdj(m, "changeInCurrentLiabilities") + getAdj(m, "changeInLTLiabilities")
-        + getAdj(m, "depreciationExpense") + getAdj(m, "amortizationExpense") + getAdj(m, "badDebtExpense")
-        + getAdj(m, "fixedAssetPurchases") + getAdj(m, "withdrawsOther") + (wdrMap[m] ?? 0), actTTM.withdrawsDollarVar ?? 0);
+      const depUnrec = actRows.map((r) => r.depositsDollarVar + (depMap[r.month] ?? 0));
+      const ttmDepUnrec = months.slice(-12).reduce((s, m) => s + (depMap[m] ?? 0), actTTM.depositsDollarVar ?? 0);
+      const wdrUnrec = actRows.map((r) => r.withdrawsDollarVar + (wdrMap[r.month] ?? 0));
+      const ttmWdrUnrec = months.slice(-12).reduce((s, m) => s + (wdrMap[m] ?? 0), actTTM.withdrawsDollarVar ?? 0);
       const adjDepURaw = [...depUnrec, ttmDepUnrec];
       const adjWdrURaw = [...wdrUnrec, ttmWdrUnrec];
       const av = (f) => [...actRows.map((r) => r[f] ?? null), actTTM[f] ?? null];
@@ -4010,15 +3891,14 @@ export default function WorkspaceReconciliation() {
       drawRow("Sales per Financials", av("salesPerFinancials"));
       drawRow("$ Variance", av("depositsDollarVar"), { rowType: "variance-amt" });
       drawRow("% Variance", av("depositsPctVar"), { rowType: "variance-pct" }); spacer();
-      drawRow("Change in AR", adjVals("changeInAR"));
-      drawRow("Change in AR Retentions", adjVals("changeInARRetentions"));
-      drawRow("Change in Current Assets", adjVals("changeInCurrentAssets"));
-      drawRow("Fixed Asset Disposals", adjVals("fixedAssetDisposals"));
-      drawRow("Other", adjVals("depositsOther"));
+      drawRow("Changes in Assets", [], { bold: true });
+      drawRow("Changes in Liabilities", [], { bold: true });
+      drawRow("P&L Account Adjustments", [], { bold: true });
       addbackItems.filter((i) => i.section === "deposits").forEach((item) => {
         drawRow(item.name, [...actRows.map((r) => item.monthAmounts[r.month] ?? null),
           actRows.slice(-12).reduce((s, r) => s + (Number(item.monthAmounts[r.month]) || 0), 0)], { indent: 1 });
       });
+      drawRow("Other Adjustments", [], { bold: true });
       drawRow("Unreconciled Variance $", adjDepURaw, { rowType: "variance-amt" }); spacer();
       drawRow("Total Withdrawals", av("totalWithdrawals"), { bold: true });
       drawRow("Intercompany Transfers", av("intercompanyTransfers"), { indent: 1 });
@@ -4026,18 +3906,14 @@ export default function WorkspaceReconciliation() {
       drawRow("Expenses per Financials", av("expensesPerFinancials"));
       drawRow("$ Variance", av("withdrawsDollarVar"), { rowType: "variance-amt" });
       drawRow("% Variance", av("withdrawsPctVar"), { rowType: "variance-pct" }); spacer();
-      drawRow("Owner Withdrawals", adjVals("ownerWithdraws"));
-      drawRow("Change in Current Liabilities", adjVals("changeInCurrentLiabilities"));
-      drawRow("Change in LT Liabilities", adjVals("changeInLTLiabilities"));
-      drawRow("Depreciation Expense", adjVals("depreciationExpense"));
-      drawRow("Amortization Expense", adjVals("amortizationExpense"));
-      drawRow("Bad Debt Expense", adjVals("badDebtExpense"));
-      drawRow("Fixed Asset Purchases", adjVals("fixedAssetPurchases"));
-      drawRow("Other", adjVals("withdrawsOther"));
+      drawRow("Changes in Assets", [], { bold: true });
+      drawRow("Changes in Liabilities", [], { bold: true });
+      drawRow("P&L Account Adjustments", [], { bold: true });
       addbackItems.filter((i) => i.section === "withdrawals").forEach((item) => {
         drawRow(item.name, [...actRows.map((r) => item.monthAmounts[r.month] ?? null),
           actRows.slice(-12).reduce((s, r) => s + (Number(item.monthAmounts[r.month]) || 0), 0)], { indent: 1 });
       });
+      drawRow("Other Adjustments", [], { bold: true });
       drawRow("Unreconciled Variance $", adjWdrURaw, { rowType: "variance-amt" });
     }
 
