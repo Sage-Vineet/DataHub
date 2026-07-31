@@ -27,8 +27,8 @@ function checkTrue(name, actual) {
   check(name, Boolean(actual), true);
 }
 
-const BS_ANCHOR = { asset: ["Total Assets", "Total Assets"], liability: ["Total Liabilities and Equity", "Total Liabilities"] };
-const PL_ANCHOR = ["Total Liabilities and Equity", "Total Equity", "Total Equity"];
+const BS_ANCHOR = { asset: ["Total Assets"], liability: ["Total Liabilities and Equity", "Total Liabilities"] };
+const PL_ANCHOR = ["Total Liabilities and Equity", "Total Equity"];
 
 function bsRow(name, section, parentPath, year = 2024) {
   return { account_name: name, section, parent_path: parentPath, fiscal_year: year, hierarchy_level: parentPath.length, is_total: false };

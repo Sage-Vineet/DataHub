@@ -31,7 +31,7 @@ function checkTrue(name, actual) {
 // Anchor updated to match the current spec: Level 1 = Total Liabilities and
 // Equity, Level 2 = Total Equity, Level 3 = Total Equity (repeated) — not
 // "Net Income", which is no longer part of the fixed anchor at all.
-const ANCHOR = ["Total Liabilities and Equity", "Total Equity", "Total Equity"];
+const ANCHOR = ["Total Liabilities and Equity", "Total Equity"];
 
 // ── 1. Anchor shape + heading preservation ─────────────────────────────────
 console.log("\n1. Anchor shape + document heading preservation");
@@ -49,8 +49,8 @@ console.log("\n1. Anchor shape + document heading preservation");
 
   const salesPath = plHierarchyByName.get("sales").levels;
   const materialsPath = plHierarchyByName.get("materials").levels;
-  checkTrue("income and cogs share first 3 anchor levels", salesPath.slice(0, 3).join("|") === materialsPath.slice(0, 3).join("|"));
-  checkTrue("income and cogs diverge at index 3", salesPath[3] !== materialsPath[3]);
+  checkTrue("income and cogs share first 2 anchor levels", salesPath.slice(0, 2).join("|") === materialsPath.slice(0, 2).join("|"));
+  checkTrue("income and cogs diverge at index 2", salesPath[2] !== materialsPath[2]);
 }
 
 // ── 2. Anchor-label trimming still works ───────────────────────────────────
@@ -114,7 +114,7 @@ console.log("\n5. Balance Sheet side unaffected by the shared-helper refactor");
     { account_name: "Checking", section: "assets", parent_path: ["Current Assets", "Bank Accounts"], fiscal_year: 2025, hierarchy_level: 2, is_total: false },
   ];
   const { bsHierarchyByName, mergedNodesCount, conflictingPathsCount } = coa.buildDocHierarchyLookups(bsRows, [], 2025);
-  check("BS path resolved as expected", bsHierarchyByName.get("checking")?.levels, ["Total Assets", "Total Assets", "Current Assets", "Bank Accounts", "Checking"]);
+  check("BS path resolved as expected", bsHierarchyByName.get("checking")?.levels, ["Total Assets", "Current Assets", "Bank Accounts", "Checking"]);
   check("BS merged nodes counted", mergedNodesCount, 1);
   check("BS conflicting paths (same path, still 1 candidate) is 0", conflictingPathsCount, 0);
 }
@@ -150,15 +150,16 @@ console.log("\n6. buildLeafHierarchies AI pass prepends PL_FIXED_PREFIX");
     // own repeated 3rd level). A real equity ACCOUNT also named "Total Equity"
     // sitting at that exact same path is exactly the class of collision the
     // type-aware fix must allow (different node types, same label/path).
+    const COLLISION_EQUITY_ANCHOR = ["Total Liabilities and Equity", "Total Equity", "Equity"];
     const hierarchical = [
-      { accountName: "Rent", levels: [...ANCHOR, "Operating Expenses", "Rent"] },
-      { accountName: "Total Equity", levels: ["Total Liabilities and Equity", "Total Equity", "Total Equity"] },
+      { accountName: "Capital", levels: [...COLLISION_EQUITY_ANCHOR, "Owner's Equity", "Capital"] },
+      { accountName: "Equity", levels: [...COLLISION_EQUITY_ANCHOR] },
     ];
     const tree = coa.buildCoaNodeTree(hierarchical);
     const result = coa.validateCoaNodeTree(tree, hierarchical);
     checkTrue("leafUsedAsParentCount === 0 (no false positive)", result.leafUsedAsParentCount === 0);
     checkTrue("hierarchyValid === true", result.hierarchyValid === true);
-    check("groupAccountLabelCollisions === 1 (the Total Equity pair)", result.groupAccountLabelCollisions, 1);
+    check("groupAccountLabelCollisions === 1 (the Equity/Capital overlap)", result.groupAccountLabelCollisions, 1);
 
     // ── 8. financialStatementService: section labels via groupLabelFor reuse ──
     console.log("\n8. P&L section header labels derived from real parent, not level_6/level_7");
@@ -208,8 +209,8 @@ console.log("\n6. buildLeafHierarchies AI pass prepends PL_FIXED_PREFIX");
 
     // ── 9. Equity fixed anchor is 4 levels, real sub-heading survives ──────
     console.log("\n9. Equity anchor (4 levels) + document sub-heading preserved");
-    const EQUITY_ANCHOR = ["Total Liabilities and Equity", "Total Equity", "Total Equity", "Equity"];
-    check("fixedPrefixFor('equity') is the 4-level anchor", coa.fixedPrefixFor("equity"), EQUITY_ANCHOR);
+    const EQUITY_ANCHOR = ["Total Liabilities and Equity", "Total Equity", "Equity"];
+    check("fixedPrefixFor('equity') is the 3-level anchor", coa.fixedPrefixFor("equity"), EQUITY_ANCHOR);
     {
       // Worked example from spec: "Equity > Owner's Equity > Capital,
       // Distributions" -- the document's own leading "Equity" heading

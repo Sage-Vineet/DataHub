@@ -421,36 +421,28 @@ router.get("/key-reports/versions/:versionId/chart-of-accounts/history", async (
   }
 });
 
-// Rebuild a version's COA from its entry tables (general_ledger_entries +
-// balance_sheet_entries). batchId=null â†’ reads from Key Reports entry tables,
-// which is correct for all new-style syncs (resolvedBatchId is always null).
+// Regenerate a version's Proposed COA from its entry tables (general_ledger_entries
+// + balance_sheet_entries). Proposal-only: builds the in-memory tree and returns
+// it for review -- performs ZERO writes to chart_of_accounts. The prior
+// behavior (immediate persist) moved to POST .../chart-of-accounts/save, which
+// is the only place a reviewed COA is ever written.
 router.post("/key-reports/versions/:versionId/chart-of-accounts/regenerate", async (req, res) => {
   try {
     const version = await loadVersionWithAccess(req, res);
     if (!version) return;
-    console.log(`[KeyReports][Audit] COA regenerate versionId=${version.id} resolvedBatchId=${version.resolvedBatchId || 'null (entry-table path)'}`);
-    const summary = await chartOfAccountsService.generateChartOfAccounts(
+    console.log(`[KeyReports][Audit] COA proposal regenerate versionId=${version.id}`);
+    const proposal = await chartOfAccountsService.buildProposedCoaTree(
       version.companyId,
       version.id,
       version.resolvedBatchId || null,
     );
-    try {
-      await chartOfAccountsService.finalizeCoaHierarchy(version.companyId, version.id);
-    } catch (finalizeErr) {
-      console.warn(`[KeyReports][Audit] COA regenerate finalization failed: ${finalizeErr.message}`);
-    }
-    // Re-run the COA spec checks so a manual rebuild reports its own health.
-    // (Not persisted here â€” replaceValidationResults would wipe the other data
-    //  types' rows; persistence happens during a full Sync.)
-    let validation = null;
-    try {
-      validation = await chartOfAccountsService.validateChartOfAccounts(version.companyId, version.id);
-    } catch (vErr) {
-      console.warn(`[KeyReports][Audit] COA regenerate validation failed: ${vErr.message}`);
-    }
-    const coa = await chartOfAccountsService.getChartOfAccounts(version.id);
-    res.json({ success: true, summary, validation: validation ? validation.summary : null, ...coa });
-    warmFinancialStatementsCache(version.id, {});
+    const nodes = chartOfAccountsService.serializeProposedTree(proposal.hierarchical || []);
+    res.json({
+      success: true,
+      proposedTree: { nodes },
+      matchSummary: proposal.matchSummary,
+      structuralValidation: proposal.structuralValidation,
+    });
     return;
   } catch (error) {
     return handleError(res, error, "POST chart-of-accounts/regenerate");
@@ -464,6 +456,24 @@ router.patch("/key-reports/chart-of-accounts/:accountId", async (req, res) => {
   try {
     const row = await loadAccountWithAccess(req, res);
     if (!row) return;
+    // A single-account hand-edit is only meaningful against an already-
+    // Approved COA -- before the first Save, review/edit belongs to the
+    // frontend's in-memory Proposed COA, not a persisted row (there is no
+    // persisted row to safely mutate in isolation from the rest of the
+    // proposal review).
+    const { supabase } = require("../db");
+    const { data: versionRow } = await supabase
+      .from("key_report_versions")
+      .select("coa_approved_at")
+      .eq("id", row.version_id)
+      .maybeSingle();
+    if (!versionRow?.coa_approved_at) {
+      return res.status(409).json({
+        success: false,
+        code: "COA_NOT_APPROVED",
+        error: "This version's Chart of Accounts has not been Saved/Approved yet. Review and Save the proposal before editing individual accounts.",
+      });
+    }
     const account = await chartOfAccountsService.updateAccountHierarchy(
       req.params.accountId, req.body || {}, req.user?.id || null,
     );
@@ -489,23 +499,41 @@ router.post("/key-reports/chart-of-accounts/:accountId/reset", async (req, res) 
   }
 });
 
-// Bulk-save an edited hierarchy for a version.
+// Save/Approve the user's COMPLETE reviewed Chart of Accounts tree
+// (chartOfAccountsService.serializeProposedTree's flat wire-node shape --
+// the same shape GET .../chart-of-accounts and .../regenerate return).
+// Validates the whole tree, persists it transactionally, and -- ONLY on
+// success -- continues into Trial Balance/Reconciliation/Monthly Balance
+// Sheets/report snapshot generation. No report generation happens on
+// failure; no partial persistence is left behind (persistApprovedCoaTree's
+// compensating-rollback guard).
 router.post("/key-reports/versions/:versionId/chart-of-accounts/save", async (req, res) => {
   try {
     const version = await loadVersionWithAccess(req, res);
     if (!version) return;
-    const nodes = Array.isArray(req.body?.nodes) ? req.body.nodes : [];
-    const result = await chartOfAccountsService.saveHierarchy(version.id, nodes, req.user?.id || null);
-    if (result.rejected) {
+    const nodes = Array.isArray(req.body?.tree?.nodes) ? req.body.tree.nodes : [];
+    if (!nodes.length) {
       return res.status(422).json({
         success: false,
-        code: result.code,
-        error: result.violations?.[0] || "This change would create an invalid hierarchy.",
-        violations: result.violations,
+        code: "EMPTY_TREE",
+        error: "The submitted Chart of Accounts tree is empty -- nothing to save.",
+        violations: ["The submitted Chart of Accounts tree is empty."],
+      });
+    }
+    const approveResult = await keyReportService.approveCoa(version.id, nodes, req.user?.id || null);
+    if (!approveResult.success) {
+      const haltReason = approveResult.result?.summary?.haltReason;
+      const violations = approveResult.result?.summary?.violations
+        || [approveResult.result?.message || "This change would create an invalid hierarchy."];
+      return res.status(422).json({
+        success: false,
+        code: haltReason ? haltReason.toUpperCase() : "HIERARCHY_INVALID",
+        error: violations[0],
+        violations,
       });
     }
     const coa = await chartOfAccountsService.getChartOfAccounts(version.id);
-    res.json({ success: true, ...result, ...coa });
+    res.json({ success: true, ...approveResult, ...coa });
     warmFinancialStatementsCache(version.id, {});
     return;
   } catch (error) {

@@ -414,9 +414,9 @@ function normalizeHierarchyLabel(label) {
 // Matches the pre-existing unified-hierarchy convention this codebase already
 // expects for P&L accounts (see validateHierarchyConsistency's EXPECTED
 // table), extended to a full fixed anchor per statement side.
-const ASSET_FIXED_PREFIX     = Object.freeze(["Total Assets", "Total Assets"]);
+const ASSET_FIXED_PREFIX     = Object.freeze(["Total Assets"]);
 const LIABILITY_FIXED_PREFIX = Object.freeze(["Total Liabilities and Equity", "Total Liabilities"]);
-const EQUITY_FIXED_PREFIX    = Object.freeze(["Total Liabilities and Equity", "Total Equity", "Total Equity", "Equity"]);
+const EQUITY_FIXED_PREFIX    = Object.freeze(["Total Liabilities and Equity", "Total Equity", "Equity"]);
 
 // Profit & Loss ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ONE shared anchor for BOTH sides of the income statement.
 // Revenue and expense/COGS accounts are SIBLINGS directly under "Net Income";
@@ -428,9 +428,9 @@ const EQUITY_FIXED_PREFIX    = Object.freeze(["Total Liabilities and Equity", "T
 // Income) hardcoded six rollup subtotals that are CALCULATED lines in the
 // report, not structural parents of any posting account, and it forced every
 // document heading to be trimmed away as a duplicate of the anchor's own
-// labels. Three levels is the whole fixed part; everything below is the
+// labels. Two levels is the whole fixed part; everything below is the
 // document's.
-const PL_FIXED_PREFIX = Object.freeze(["Total Liabilities and Equity", "Total Equity", "Total Equity"]);
+const PL_FIXED_PREFIX = Object.freeze(["Total Liabilities and Equity", "Total Equity"]);
 
 function fixedPrefixFor(accountType) {
   if (accountType === "asset") return ASSET_FIXED_PREFIX;
@@ -477,10 +477,10 @@ function isRedundantTopLevelHeading(label, accountType) {
     // own level below the fixed anchor -- these must never be stripped.
     return ["equity", "total equity", "liabilities and equity", "total liabilities and equity"].includes(s);
   }
-  // The P&L anchor's OWN three labels ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the only thing a P&L document heading
+  // The P&L anchor's OWN fixed labels ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the only thing a P&L document heading
   // can now redundantly restate. Everything else a P&L document puts above an
   // account ("Income", "Revenue", "Cost of Goods Sold", "Operating Expenses",
-  // "Other Income", ...) is a REAL, WANTED heading under the 3-level anchor
+  // "Other Income", ...) is a REAL, WANTED heading under the 2-level anchor
   // and must survive verbatim -- "Income > Sales" and "Cost of Goods Sold >
   // Materials" are exactly the shapes the uploaded document asked for. This
   // codebase does not hardcode calculated-subtotal rows (Net Income, Gross
@@ -840,7 +840,7 @@ function buildDocHierarchyLookups(bsRows, plRows, endingFiscalYear = null, { log
   // first-seen loop. That loop was tolerable only while the 9-level fixed
   // prefix dominated every P&L path and the document's own headings were
   // trimmed away, so almost every account had exactly one candidate. Under
-  // the 3-level anchor the entire path below level 3 is document-sourced, so
+  // the 2-level anchor the entire path below level 2 is document-sourced, so
   // two comparative columns / two uploaded P&Ls disagreeing is now the normal
   // case and must be resolved by evidence, not by which file happened to be
   // parsed first.
@@ -1104,13 +1104,13 @@ function logProfitLossHierarchyValidation(hierarchical, plRows, plTree, tallies 
     const realLevels = (leaf.levels || []).filter(Boolean);
     if (leaf.needsMapping || !realLevels.length) { missingHierarchy += 1; continue; }
 
-    // Every level BELOW the 3-level anchor and ABOVE the leaf's own name came
+    // Every level BELOW the 2-level anchor and ABOVE the leaf's own name came
     // from the document's parent_path (or, for an AI-classified account, the
     // AI's own levels) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â never invented here.
     documentLevelsPreserved += Math.max(0, realLevels.length - anchorDepth - 1);
 
-    // The ONLY artificial nodes permitted are the three anchor labels, in
-    // exactly this order, at exactly levels 1-3.
+    // The ONLY artificial nodes permitted are the two anchor labels, in
+    // exactly this order, at exactly levels 1-2.
     for (let i = 0; i < anchorDepth; i += 1) {
       if (normName(realLevels[i] || "") !== normName(PL_FIXED_PREFIX[i])) { anchorAnomalies += 1; break; }
     }
@@ -1669,7 +1669,7 @@ async function loadKnownCategoryPaths(companyId, versionId, hasLinkedCoaDocument
  * parent_path in ANY uploaded document at all (see buildLeafHierarchies'
  * pass order), so there is no genuine intermediate category to report here;
  * inventing one is a guess, not a fact from the document. Now returns ONLY
- * the fixed Level 1/2 prefix ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â padLevelsWithLeafPropagation (persistence
+ * the fixed anchor prefix ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â padLevelsWithLeafPropagation (persistence
  * time) fills every remaining level with the leaf's own name instead, which
  * is honest about what the document actually gave us.
  */
@@ -1834,6 +1834,49 @@ async function buildLeafHierarchies(leaves, _existingByKey = new Map()) {
       matchConfidence: null,
     };
   });
+}
+
+/**
+ * Single place that classifies buildLeafHierarchies' output into the summary
+ * counts both buildProposedCoaTree (logging/matchSummary) and
+ * persistApprovedCoaTree (return value) need -- kept as one function so the
+ * two phases can never drift into reporting different numbers for the same
+ * tree. classificationSource here is the two-value, human-facing distinction
+ * the spec requires (DOCUMENT vs AI_FALLBACK): every matchTier that resolves
+ * from an upload (client COA match, this account's own position in the
+ * uploaded BS/P&L, or a fixed GAAP rule) counts as DOCUMENT; only a genuine
+ * AI hierarchy call (or an account AI could not confidently place at all)
+ * counts as AI_FALLBACK. Never reports "AI classified" for a document match.
+ */
+function classificationSourceLabel(leaf) {
+  if (leaf.matchTier === "ai_hierarchy") return "AI_FALLBACK";
+  if (leaf.classificationMethod === "client_workbook" || leaf.classificationMethod === "document_hierarchy" || leaf.classificationMethod === "rule") {
+    return "DOCUMENT";
+  }
+  // Nothing in the upload resolved it, and (if AI was consulted) not
+  // confidently either -- still an AI-fallback attempt, not a document match.
+  return "AI_FALLBACK";
+}
+
+function summarizeSourceCounts(hierarchical) {
+  const unmappedCount = hierarchical.filter((l) => l.needsMapping).length;
+  const aiHierarchyCount = hierarchical.filter((l) => l.matchTier === "ai_hierarchy").length;
+  const bsSectionCount = hierarchical.filter((l) => l.matchTier === "bs_section").length;
+  const plSectionCount = hierarchical.filter((l) => l.matchTier === "pl_section").length;
+  const ruleCount = hierarchical.filter((l) => l.matchTier === "rule").length;
+  const clientCoaMatchedCount = hierarchical.filter((l) => l.classificationMethod === "client_workbook").length;
+  const documentMatchedCount = hierarchical.filter((l) => classificationSourceLabel(l) === "DOCUMENT").length;
+  const aiFallbackCount = hierarchical.filter((l) => classificationSourceLabel(l) === "AI_FALLBACK").length;
+  return {
+    clientCoaMatched: clientCoaMatchedCount,
+    aiHierarchy: aiHierarchyCount,
+    bsSection: bsSectionCount,
+    plSection: plSectionCount,
+    rule: ruleCount,
+    needsMapping: unmappedCount,
+    documentMatchedCount,
+    aiFallbackCount,
+  };
 }
 
 // level_1..level_15 is a fixed-width schema supporting a MAXIMUM depth of 15
@@ -2109,6 +2152,232 @@ function validateCoaNodeTree(tree, leaves) {
     orphanNodes, leafUsedAsParentCount, depthExceededCount, violations,
     groupAccountLabelCollisions, hierarchyValid,
   };
+}
+
+// ---- Proposed-COA wire tree: serialize/deserialize/validate ----------------
+//
+// The wire format the frontend renders/edits and posts back on Save is a
+// FLAT list of nodes, each `{ key, parentKey, nodeType, ... }`, using the same
+// stable keys (normPathKey for a CATEGORY, accountKey for an ACCOUNT) that
+// already identify a node internally -- no new id scheme. parentKey is a
+// real graph edge (not a levels-array prefix string), so unlike the internal
+// `hierarchical`/`levels` representation (which is cycle-proof and
+// orphan-proof by construction, since a category is only ever synthesized
+// FROM a leaf's own levels array), a user-edited wire tree genuinely CAN
+// contain a dangling or cyclic parentKey -- deserializeApprovedTree is where
+// that is caught, by walking every account's ancestor chain to its root
+// before ever computing a levels array from it.
+
+/** Walk key -> parentKey up to a root (parentKey === null). Detects a
+ * dangling parentKey (ORPHAN) or a chain that revisits itself (CIRCULAR_REFERENCE)
+ * or exceeds the maximum supported depth, instead of looping forever. */
+function walkNodeAncestry(nodesByKey, startKey) {
+  const chain = [];
+  const seen = new Set();
+  let cur = startKey;
+  while (cur) {
+    if (seen.has(cur)) return { error: "CIRCULAR_REFERENCE", chain };
+    seen.add(cur);
+    const node = nodesByKey.get(cur);
+    if (!node) return { error: "ORPHAN", chain };
+    chain.unshift(node);
+    if (chain.length > MAX_LEVELS + 1) return { error: "DEPTH_EXCEEDED", chain };
+    cur = node.parentKey || null;
+  }
+  return { chain, error: null };
+}
+
+/**
+ * serializeProposedTree -- convert buildProposedCoaTree's (or
+ * persistApprovedCoaTree's) `hierarchical` leaves into the flat wire-tree
+ * node list the frontend renders. Pure, no DB access. Category nodes are
+ * synthesized once per distinct ancestor path (same dedup buildCoaNodeTree
+ * already does), so the fixed GAAP anchors (fixedPrefixFor) surface as the
+ * only parentKey: null roots -- everything else nests dynamically beneath
+ * them from the leaf's own document/AI-resolved levels array.
+ */
+function serializeProposedTree(hierarchical) {
+  const categoryNodes = new Map(); // normPathKey -> node
+  const nodes = [];
+  const ensureCategoryChain = (leaf) => {
+    const path = (leaf.levels || []).filter(Boolean);
+    if (path.length <= 1) return null;
+    const catLabels = path.slice(0, -1);
+    let parentKey = null;
+    for (let i = 0; i < catLabels.length; i += 1) {
+      const prefixArr = catLabels.slice(0, i + 1);
+      const key = normPathKey(prefixArr);
+      if (!categoryNodes.has(key)) {
+        const node = {
+          key,
+          parentKey,
+          nodeType: "CATEGORY",
+          label: prefixArr[prefixArr.length - 1],
+          accountType: leaf.accountType,
+          statementType: leaf.statementType,
+        };
+        categoryNodes.set(key, node);
+        nodes.push(node);
+      }
+      parentKey = key;
+    }
+    return parentKey;
+  };
+
+  for (const leaf of hierarchical) {
+    const parentKey = ensureCategoryChain(leaf);
+    nodes.push({
+      key: accountKey(leaf.accountNumber, leaf.accountName),
+      parentKey,
+      nodeType: "ACCOUNT",
+      accountId: leaf.accountId || null,
+      accountName: leaf.accountName,
+      accountNumber: leaf.accountNumber || null,
+      adjustedName: leaf.displayName && leaf.displayName !== leaf.accountName ? leaf.displayName : null,
+      accountType: leaf.accountType,
+      statementType: leaf.statementType,
+      classificationSource: classificationSourceLabel(leaf),
+      classificationMethod: leaf.classificationMethod || null,
+      matchTier: leaf.matchTier || null,
+      confidence: leaf.confidence ?? null,
+      // Never assigned until persistApprovedCoaTree's assignSystemIds runs --
+      // a Proposed COA has no System ID yet, unlike serializePersistedTree's
+      // (already-approved) nodes. Field always present so the frontend can
+      // read it unconditionally either way.
+      systemId: null,
+      needsReview: Boolean(leaf.needsReview),
+      needsMapping: Boolean(leaf.needsMapping),
+      sources: Array.from(leaf.sources || []),
+      fiscalYears: Array.from(leaf.fiscalYears || []),
+      clientAccountId: leaf.clientAccountId || null,
+      mappedNormalBalance: leaf.mappedNormalBalance || null,
+      sortOrder: leaf.sortOrder ?? null,
+      hierarchyPath: leaf.hierarchyPath || null,
+    });
+  }
+  return nodes;
+}
+
+/**
+ * deserializeApprovedTree -- the inverse of serializeProposedTree, and the
+ * ONLY place a submitted (possibly user-edited) wire tree is turned back into
+ * `hierarchical`-shaped leaves persistApprovedCoaTree can write. Every
+ * ACCOUNT node's levels array is derived by walking ITS OWN parentKey chain
+ * to a root -- one generic algorithm, not a per-field special case, and the
+ * same shape deriveLevelsFromPersistedTree uses post-persist over
+ * parent_account_id. A node with `userEdited: true` is always treated as an
+ * authoritative human classification (classificationMethod/matchTier forced
+ * to "manual_review", confidence 1) regardless of whatever classification it
+ * carried from the original proposal.
+ */
+function deserializeApprovedTree(nodes) {
+  const nodesByKey = new Map((nodes || []).map((n) => [n.key, n]));
+  const violations = [];
+  const hierarchical = [];
+
+  for (const n of nodes || []) {
+    if (n.nodeType !== "ACCOUNT") continue;
+    const { chain, error } = walkNodeAncestry(nodesByKey, n.key);
+    if (error === "CIRCULAR_REFERENCE") {
+      violations.push(`"${n.accountName || n.key}" has a circular parent reference -- an ancestor of this account is also one of its descendants.`);
+      continue;
+    }
+    if (error === "ORPHAN") {
+      violations.push(`"${n.accountName || n.key}" references a parent category that does not exist in the submitted tree.`);
+      continue;
+    }
+    if (error === "DEPTH_EXCEEDED") {
+      violations.push(`"${n.accountName || n.key}"'s hierarchy exceeds the maximum of ${MAX_LEVELS} levels.`);
+      continue;
+    }
+    const labels = chain.map((c) => (c.nodeType === "ACCOUNT" ? (c.adjustedName || c.accountName) : c.label));
+    const levels = new Array(MAX_LEVELS).fill(null);
+    labels.slice(0, MAX_LEVELS).forEach((label, i) => { levels[i] = label; });
+    const userEdited = Boolean(n.userEdited);
+    hierarchical.push({
+      accountId: n.accountId || null,
+      accountName: n.accountName,
+      accountNumber: n.accountNumber || null,
+      accountType: n.accountType,
+      statementType: n.statementType,
+      classificationSource: userEdited ? "USER_EDITED" : (n.classificationSource || null),
+      classificationMethod: userEdited ? "manual_review" : (n.classificationMethod || null),
+      matchTier: userEdited ? null : (n.matchTier || null),
+      confidence: userEdited ? 1 : (n.confidence ?? null),
+      needsReview: userEdited ? false : Boolean(n.needsReview),
+      needsMapping: userEdited ? false : Boolean(n.needsMapping),
+      sources: new Set(n.sources && n.sources.length ? n.sources : ["manual_review"]),
+      fiscalYears: new Set(n.fiscalYears || []),
+      levels,
+      hierarchyPath: labels.join(" > "),
+      baseAccount: n.adjustedName || n.accountName,
+      displayName: n.adjustedName || n.accountName,
+      clientAccountId: n.clientAccountId || null,
+      mappedNormalBalance: n.mappedNormalBalance || null,
+      sortOrder: n.sortOrder ?? null,
+      userEdited,
+    });
+  }
+  return { hierarchical, violations };
+}
+
+/**
+ * validateFinalCoaTree -- the server-side authoritative gate a submitted Save
+ * payload must clear before persistApprovedCoaTree is ever called. Reuses
+ * every existing structural check (validateCoaNodeTree: duplicate categories,
+ * duplicate leaf paths, leaf-used-as-parent, depth) and consistency check
+ * (validateHierarchyConsistency: every leaf's resolved anchor matches
+ * fixedPrefixFor its accountType) against the DESERIALIZED tree -- one
+ * hierarchy-validation algorithm, not a parallel one for the wire format.
+ * Adds only what deserializeApprovedTree's graph walk (circular reference /
+ * orphan / depth) and basic enum checks contribute on top.
+ */
+function validateFinalCoaTree(nodes) {
+  const enumViolations = [];
+  const seenKeys = new Set();
+  for (const n of nodes || []) {
+    if (seenKeys.has(n.key)) enumViolations.push(`Duplicate node key "${n.key}" in the submitted tree.`);
+    seenKeys.add(n.key);
+    if (!["CATEGORY", "ACCOUNT"].includes(n.nodeType)) {
+      enumViolations.push(`Node "${n.key}" has an invalid nodeType "${n.nodeType}".`);
+    }
+    if (n.nodeType === "ACCOUNT" && !["balance_sheet", "profit_loss"].includes(n.statementType)) {
+      enumViolations.push(`Account "${n.accountName || n.key}" has an invalid statementType "${n.statementType}".`);
+    }
+  }
+  // A CATEGORY node can never itself have nodeType ACCOUNT as its parent AND
+  // have children -- already covered structurally once deserialized (a leaf
+  // acting as a parent surfaces as another ACCOUNT's ancestor chain passing
+  // through it, which walkNodeAncestry's `c.nodeType === "ACCOUNT"` labeling
+  // would misrender, not silently accept) -- but check directly here too,
+  // cheaply, before the more expensive deserialize/rebuild pass.
+  const childCountByParent = new Map();
+  for (const n of nodes || []) {
+    if (!n.parentKey) continue;
+    childCountByParent.set(n.parentKey, (childCountByParent.get(n.parentKey) || 0) + 1);
+  }
+  for (const n of nodes || []) {
+    if (n.nodeType === "ACCOUNT" && childCountByParent.has(n.key)) {
+      enumViolations.push(`"${n.accountName || n.key}" is a posting account but has children in the submitted tree -- a posting account can never have children.`);
+    }
+  }
+
+  const { hierarchical, violations: graphViolations } = deserializeApprovedTree(nodes);
+  const violations = [...enumViolations, ...graphViolations];
+  if (violations.length) {
+    return { valid: false, violations, hierarchical };
+  }
+
+  const desiredCats = buildCoaNodeTree(hierarchical);
+  const structural = validateCoaNodeTree(desiredCats, hierarchical);
+  const consistencyIssues = validateHierarchyConsistency(hierarchical);
+  const allViolations = [
+    ...structural.violations,
+    ...consistencyIssues.map((i) =>
+      `"${i.accountName}" (${i.accountType}) is anchored under "${i.actualPrefix.filter(Boolean).join(" > ") || "(none)"}" -- expected to start with "${i.expectedPrefix.join(" > ")}".`),
+  ];
+  const valid = structural.hierarchyValid && consistencyIssues.length === 0;
+  return { valid, violations: allViolations, hierarchical, structural };
 }
 
 /**
@@ -2831,6 +3100,22 @@ function detectSiblingDrift(hierarchical) {
 // failure, before the error (if any) propagates. The exceptions themselves
 // are never suppressed -- `finally` re-throws automatically. Internals of
 // _generateChartOfAccountsImpl are otherwise completely unchanged.
+//
+// _generateChartOfAccountsImpl now composes the two-phase split
+// (buildProposedCoaTree -> persistApprovedCoaTree) so every EXISTING caller
+// of generateChartOfAccounts (e.g. the chart-of-accounts/regenerate route,
+// ad-hoc scripts) keeps its old immediate-persist behavior unchanged. The
+// new Key Reports sync pipeline calls buildProposedCoaTree directly and
+// defers persistApprovedCoaTree until the user's explicit Save/Approve --
+// see keyReportSyncService's generateCoaProposal / approveAndGenerateReports.
+async function _generateChartOfAccountsImpl(companyId, versionId, batchId, opts = {}) {
+  const proposal = await buildProposedCoaTree(companyId, versionId, batchId, opts);
+  if (proposal.skipped) return proposal;
+  return persistApprovedCoaTree(companyId, versionId, proposal.hierarchical, {
+    hasLinkedCoaDocument: proposal.hasLinkedCoaDocument,
+  });
+}
+
 async function generateChartOfAccounts(companyId, versionId, batchId, opts = {}) {
   try {
     return await _generateChartOfAccountsImpl(companyId, versionId, batchId, opts);
@@ -2839,9 +3124,19 @@ async function generateChartOfAccounts(companyId, versionId, batchId, opts = {})
   }
 }
 
-async function _generateChartOfAccountsImpl(companyId, versionId, batchId, opts = {}) {
+/**
+ * buildProposedCoaTree -- the pure, in-memory "Proposed COA" builder. Performs
+ * ZERO writes to chart_of_accounts (existing rows are only ever READ here, to
+ * let a leaf reuse its prior run's resolved hierarchy -- see buildLeafHierarchies'
+ * "Existing Working COA" priority). Everything from source-account collection
+ * through document-first/AI-fallback classification through the deduplicated
+ * category tree lives here; persistApprovedCoaTree (below) is the only
+ * function that ever writes a category or leaf row, and it only ever runs
+ * after an explicit user Save/Approve of this function's output.
+ */
+async function buildProposedCoaTree(companyId, versionId, batchId, opts = {}) {
   if (!companyId || !versionId) {
-    return { accountCount: 0, leafCount: 0, skipped: true };
+    return { accountCount: 0, leafCount: 0, skipped: true, hierarchical: [] };
   }
 
   console.log(`[KEY_REPORTS_SYNC]\nversionId=${versionId}\ncompanyId=${companyId}`);
@@ -2955,9 +3250,14 @@ async function _generateChartOfAccountsImpl(companyId, versionId, batchId, opts 
 
   const { leaves } = buildCoaModel(glRows, bsRows, plRows, aiResults, matchResults, glBucketByKey, endingFiscalYear);
   if (!leaves.length) {
-    // Nothing to build ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â clear derived rows so stale accounts don't linger.
-    await supabase.from(TABLE_COA).delete().eq("version_id", versionId);
-    return { accountCount: 0, leafCount: 0 };
+    // buildProposedCoaTree never writes -- an empty proposal (and clearing
+    // stale rows so they don't linger) is handled by persistApprovedCoaTree's
+    // own empty-hierarchical guard, once/if the user approves this result.
+    return {
+      hierarchical: [], sourceCounts: summarizeSourceCounts([]), hasLinkedCoaDocument,
+      validationIssues: [], driftIssues: [], structuralValidation: null,
+      matchSummary: { documentMatchedCount: 0, aiFallbackCount: 0, needsMappingCount: 0, totalCount: 0 },
+    };
   }
 
   // 2) Load existing rows EARLY ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â before hierarchy resolution ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â so a leaf that
@@ -2970,57 +3270,22 @@ async function _generateChartOfAccountsImpl(companyId, versionId, batchId, opts 
     .eq("version_id", versionId);
   if (exErr) throw exErr;
   // Category (is_group) rows form the parent_account_id tree; leaves are the real
-  // accounts. Keep them separate so the leaf upsert/stale-delete never touches them.
-  let existingLeavesData = (existingData || []).filter((r) => !r.metadata?.is_group);
-  const existingCatsData = (existingData || []).filter((r) => r.metadata?.is_group);
-
-  // Older schemas allowed identical leaves when account_number was NULL. Keep
-  // one deterministic row, repoint GL links, and remove the redundant copies.
-  const leavesByKey = new Map();
-  for (const row of existingLeavesData) {
-    const key = accountKey(row.account_number, row.account_name);
-    if (!leavesByKey.has(key)) leavesByKey.set(key, []);
-    leavesByKey.get(key).push(row);
-  }
-  const duplicateIds = [];
-  for (const rows of leavesByKey.values()) {
-    if (rows.length < 2) continue;
-    rows.sort((a, b) => {
-      const userDelta = Number(Boolean(b.metadata?.user_modified)) - Number(Boolean(a.metadata?.user_modified));
-      return userDelta || String(a.id).localeCompare(String(b.id));
-    });
-    const keeper = rows[0];
-    const redundantIds = rows.slice(1).map((row) => row.id);
-    const relink = await supabase.from('general_ledger_entries').update({ coa_id: keeper.id }).in('coa_id', redundantIds);
-    if (relink.error) throw relink.error;
-    duplicateIds.push(...redundantIds);
-  }
-  if (duplicateIds.length) {
-    const cleanup = await supabase.from(TABLE_COA).delete().in('id', duplicateIds);
-    if (cleanup.error) throw cleanup.error;
-    const duplicateSet = new Set(duplicateIds);
-    existingLeavesData = existingLeavesData.filter((row) => !duplicateSet.has(row.id));
-  }
+  // accounts. This is a READ-ONLY pass (buildProposedCoaTree never writes) --
+  // any pre-existing duplicate leaf rows (older schemas allowed identical
+  // leaves when account_number was NULL) are cleaned up later, transactionally,
+  // in persistApprovedCoaTree, which re-reads this same table fresh. Here we
+  // only need a first-seen-wins snapshot to let buildLeafHierarchies reuse an
+  // account's prior resolved hierarchy (existingByKey).
+  const existingLeavesData = (existingData || []).filter((r) => !r.metadata?.is_group);
   const existingByKey = new Map();
   for (const row of existingLeavesData) {
-    existingByKey.set(accountKey(row.account_number, row.account_name), row);
+    const key = accountKey(row.account_number, row.account_name);
+    if (!existingByKey.has(key)) existingByKey.set(key, row);
   }
 
   const hierarchical = await buildLeafHierarchies(leaves, existingByKey);
-  const unmappedCount = hierarchical.filter((l) => l.needsMapping).length;
-  const aiHierarchyCount = hierarchical.filter((l) => l.matchTier === "ai_hierarchy").length;
-  const bsSectionCount = hierarchical.filter((l) => l.matchTier === "bs_section").length;
-  const plSectionCount = hierarchical.filter((l) => l.matchTier === "pl_section").length;
-  const ruleCount = hierarchical.filter((l) => l.matchTier === "rule").length;
-  const clientCoaMatchedCount = hierarchical.filter((l) => l.classificationMethod === "client_workbook").length;
-  const sourceCounts = {
-    clientCoaMatched: clientCoaMatchedCount,
-    aiHierarchy: aiHierarchyCount,
-    bsSection: bsSectionCount,
-    plSection: plSectionCount,
-    rule: ruleCount,
-    needsMapping: unmappedCount,
-  };
+  const sourceCounts = summarizeSourceCounts(hierarchical);
+  const unmappedCount = sourceCounts.needsMapping;
   if (unmappedCount) {
     console.log(`[ChartOfAccounts] ${unmappedCount} account(s) did not match an existing Chart of Accounts hierarchy. Marked needs_mapping=true. Excluded from reports until manually mapped.`);
   }
@@ -3151,10 +3416,98 @@ async function _generateChartOfAccountsImpl(companyId, versionId, batchId, opts 
     });
   }
 
-  // 2a) Build the canonical, deduplicated node tree in-memory, validate it
-  // pre-persist, THEN persist it (parent_account_id) + assign system ids.
+  // 2a) Build the canonical, deduplicated node tree in-memory and validate it
+  // pre-persist. This is the exact boundary between the pure Proposed-COA
+  // phase (everything above -- zero DB writes) and persistence (everything
+  // below), which now lives in persistApprovedCoaTree and only ever runs
+  // after an explicit user Save/Approve, never unconditionally here.
   const desiredCats = buildCoaNodeTree(hierarchical);
-  validateCoaNodeTree(desiredCats, hierarchical);
+  const structuralValidation = validateCoaNodeTree(desiredCats, hierarchical);
+
+  return {
+    hierarchical, sourceCounts, hasLinkedCoaDocument, validationIssues, driftIssues,
+    structuralValidation,
+    matchSummary: {
+      documentMatchedCount: sourceCounts.documentMatchedCount,
+      aiFallbackCount: sourceCounts.aiFallbackCount,
+      needsMappingCount: sourceCounts.needsMapping,
+      totalCount: hierarchical.length,
+    },
+  };
+}
+
+/**
+ * persistApprovedCoaTree -- transactionally persist the user-reviewed,
+ * COMPLETE Proposed COA tree into chart_of_accounts. The only function that
+ * writes category/leaf rows for COA generation; buildProposedCoaTree never
+ * does. Always re-reads existing rows fresh here (never trusts a snapshot
+ * carried over from buildProposedCoaTree), since an arbitrary amount of time
+ * -- the user's review -- may have passed since that ran.
+ *
+ * @param {Array} hierarchical - buildProposedCoaTree's own `hierarchical`, or
+ *   the frontend's reviewed/edited tree deserialized back into this same
+ *   shape (see deserializeApprovedTree). A leaf with `userEdited: true` is
+ *   always treated as an authoritative human classification (match_source =
+ *   "manual_review", hierarchy_confidence = 1.0) -- the same rule already
+ *   applied below to a pre-existing account's manual edit.
+ * @returns {Promise<Object>} on structural-validation failure:
+ *   { rejected: true, code: "HIERARCHY_INVALID", violations }, no writes.
+ *   On success: the same summary shape generateChartOfAccounts always
+ *   returned (accountCount, leafCount, inserted, updated, deleted, ...).
+ */
+async function persistApprovedCoaTree(companyId, versionId, hierarchical, opts = {}) {
+  if (!hierarchical || !hierarchical.length) {
+    await supabase.from(TABLE_COA).delete().eq("version_id", versionId);
+    return { accountCount: 0, leafCount: 0 };
+  }
+
+  const validationIssues = validateHierarchyConsistency(hierarchical);
+  const driftIssues = detectSiblingDrift(hierarchical);
+  const sourceCounts = summarizeSourceCounts(hierarchical);
+
+  const { data: existingData, error: exErr } = await supabase
+    .from(TABLE_COA)
+    .select("id, system_id, normal_balance, account_number, account_name, parent_account_id, original_name, original_hierarchy, adjusted_name, adjusted_hierarchy, metadata, classification_method, match_source, hierarchy_confidence, account_type, statement_type, sort_order, client_account_id, level_1, level_2, level_3, level_4, level_5, level_6, level_7, level_8, level_9, level_10, level_11, level_12, level_13, level_14, level_15, base_account")
+    .eq("version_id", versionId);
+  if (exErr) throw exErr;
+  let existingLeavesData = (existingData || []).filter((r) => !r.metadata?.is_group);
+  const existingCatsData = (existingData || []).filter((r) => r.metadata?.is_group);
+
+  const leavesByKey = new Map();
+  for (const row of existingLeavesData) {
+    const key = accountKey(row.account_number, row.account_name);
+    if (!leavesByKey.has(key)) leavesByKey.set(key, []);
+    leavesByKey.get(key).push(row);
+  }
+  const duplicateIds = [];
+  for (const rows of leavesByKey.values()) {
+    if (rows.length < 2) continue;
+    rows.sort((a, b) => {
+      const userDelta = Number(Boolean(b.metadata?.user_modified)) - Number(Boolean(a.metadata?.user_modified));
+      return userDelta || String(a.id).localeCompare(String(b.id));
+    });
+    const keeper = rows[0];
+    const redundantIds = rows.slice(1).map((row) => row.id);
+    const relink = await supabase.from('general_ledger_entries').update({ coa_id: keeper.id }).in('coa_id', redundantIds);
+    if (relink.error) throw relink.error;
+    duplicateIds.push(...redundantIds);
+  }
+  if (duplicateIds.length) {
+    const cleanup = await supabase.from(TABLE_COA).delete().in('id', duplicateIds);
+    if (cleanup.error) throw cleanup.error;
+    const duplicateSet = new Set(duplicateIds);
+    existingLeavesData = existingLeavesData.filter((row) => !duplicateSet.has(row.id));
+  }
+  const existingByKey = new Map();
+  for (const row of existingLeavesData) {
+    existingByKey.set(accountKey(row.account_number, row.account_name), row);
+  }
+
+  const desiredCats = buildCoaNodeTree(hierarchical);
+  const structuralValidation = validateCoaNodeTree(desiredCats, hierarchical);
+  if (!structuralValidation.hierarchyValid) {
+    return { rejected: true, code: "HIERARCHY_INVALID", violations: structuralValidation.violations, structuralValidation };
+  }
   const catIdByPath = await persistCoaNodeTree(versionId, companyId, existingCatsData, desiredCats);
   const systemIdByKey = assignSystemIds(hierarchical, existingByKey);
 
@@ -3399,8 +3752,9 @@ async function _generateChartOfAccountsImpl(companyId, versionId, batchId, opts 
         }),
       });
     }
-    updates.push({ id: existing.id, patch });
+    updates.push({ id: existing.id, patch, preImage: existing });
   }
+
 
   // A client_account_id can go stale mid-run if client_chart_of_accounts is
   // replaced (delete+reinsert assigns new row ids) between when a leaf's
@@ -3411,61 +3765,105 @@ async function _generateChartOfAccountsImpl(companyId, versionId, batchId, opts 
   const isClientAccountFkError = (error) =>
     error?.code === "23503" && String(error.details || "").includes("client_account_id");
 
-  // 3) Apply updates.
-  for (const { id, patch } of updates) {
-    let { error } = await supabase.from(TABLE_COA).update(patch).eq("id", id);
-    if (error && isClientAccountFkError(error)) {
-      console.warn(`[ChartOfAccounts] Stale client_account_id on update (id=${id}) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â retrying without it.`);
-      ({ error } = await supabase.from(TABLE_COA).update({ ...patch, client_account_id: null }).eq("id", id));
+  // Only fields present in our pre-image SELECT list (this function's own
+  // `existingData` select, above) are restorable; a patch key outside that
+  // list (e.g. account_id_name, cf_category -- cosmetic/derived, never
+  // hierarchy-correctness fields) is left as whatever the failed write left
+  // it as. Documented, best-effort limitation -- see this function's own doc
+  // comment and migration 086's header comment.
+  const rollbackPatchFor = (patch, preImage) => {
+    const out = {};
+    for (const k of Object.keys(patch)) {
+      if (k === "updated_at" || !(k in preImage)) continue;
+      out[k] = preImage[k] ?? null;
     }
-    if (error) throw error;
-  }
-
-  // 4) Insert new rows (batched) and capture their ids.
-  const insertedByKey = new Map();
-  if (toInsert.length) {
-    let ins = await supabase.from(TABLE_COA).insert(toInsert).select("id, account_number, account_name");
-    if (ins.error && isClientAccountFkError(ins.error)) {
-      console.warn(`[ChartOfAccounts] Stale client_account_id in insert batch ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â retrying without it.`);
-      ins = await supabase
-        .from(TABLE_COA)
-        .insert(toInsert.map((row) => ({ ...row, client_account_id: null })))
-        .select("id, account_number, account_name");
-    }
-    if (ins.error) throw ins.error;
-    for (const row of ins.data || []) {
-      insertedByKey.set(accountKey(row.account_number, row.account_name), row.id);
-    }
-  }
-
-  // 5) Delete leaf rows whose source account disappeared (CASCADE clears their
-  //    audit). Category nodes are reconciled separately in syncCategoryNodes.
-  const staleIds = existingLeavesData
-    .filter((row) => !seenKeys.has(accountKey(row.account_number, row.account_name)))
-    .map((row) => row.id);
-  if (staleIds.length) {
-    const del = await supabase.from(TABLE_COA).delete().in("id", staleIds);
-    if (del.error) throw del.error;
-  }
-
-  // The sourceÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢account name map and per-account classification history are no
-  // longer stored in side tables. The COA leaves ARE the name map (rebuilt in
-  // memory by the report layer), and the initial "generate" classification
-  // snapshot is seeded into each new row's audit_log above. Account ids are
-  // resolved here only for the return summary.
-
-  await invalidateClassificationCache(companyId);
-
-  return {
-    accountCount: (updates.length + toInsert.length),
-    leafCount: hierarchical.length,
-    inserted: toInsert.length,
-    updated: updates.length,
-    deleted: staleIds.length,
-    validationIssues: validationIssues.length,
-    driftIssues: driftIssues.length,
-    sourceCounts,
+    return out;
   };
+
+  // Everything below this point is a real write. persistCoaNodeTree (category
+  // nodes, above) already ran -- its own upsert-by-path is idempotent, so a
+  // failure here is safe to retry from scratch (re-running Save/Approve will
+  // reconcile the category tree correctly). For the LEAF writes below, every
+  // applied change is tracked in `leafRollback` and undone, best-effort, in
+  // reverse order if any later step throws -- so a mid-write failure never
+  // leaves this version's chart_of_accounts silently half-updated: either
+  // every leaf write in this call lands, or none of them are left standing
+  // (uncovered edge case: the reversal call itself failing, logged loudly
+  // below as needing manual review -- true multi-statement atomicity would
+  // require moving this business logic into a database function, rejected
+  // as a bigger risk than this compensating-rollback approach; see migration
+  // 086's header comment).
+  const leafRollback = [];
+  try {
+    // 3) Apply updates.
+    for (const { id, patch, preImage } of updates) {
+      let { error } = await supabase.from(TABLE_COA).update(patch).eq("id", id);
+      if (error && isClientAccountFkError(error)) {
+        console.warn(`[ChartOfAccounts] Stale client_account_id on update (id=${id}) -- retrying without it.`);
+        ({ error } = await supabase.from(TABLE_COA).update({ ...patch, client_account_id: null }).eq("id", id));
+      }
+      if (error) throw error;
+      const rollbackPatch = rollbackPatchFor(patch, preImage);
+      leafRollback.push(() => supabase.from(TABLE_COA).update(rollbackPatch).eq("id", id));
+    }
+
+    // 4) Insert new rows (batched) and capture their ids.
+    const insertedByKey = new Map();
+    if (toInsert.length) {
+      let ins = await supabase.from(TABLE_COA).insert(toInsert).select("id, account_number, account_name");
+      if (ins.error && isClientAccountFkError(ins.error)) {
+        console.warn(`[ChartOfAccounts] Stale client_account_id in insert batch -- retrying without it.`);
+        ins = await supabase
+          .from(TABLE_COA)
+          .insert(toInsert.map((row) => ({ ...row, client_account_id: null })))
+          .select("id, account_number, account_name");
+      }
+      if (ins.error) throw ins.error;
+      for (const row of ins.data || []) {
+        insertedByKey.set(accountKey(row.account_number, row.account_name), row.id);
+        leafRollback.push(() => supabase.from(TABLE_COA).delete().eq("id", row.id));
+      }
+    }
+
+    // 5) Delete leaf rows whose source account disappeared (CASCADE clears their
+    //    audit). Category nodes are reconciled separately in persistCoaNodeTree.
+    const staleIds = existingLeavesData
+      .filter((row) => !seenKeys.has(accountKey(row.account_number, row.account_name)))
+      .map((row) => row.id);
+    if (staleIds.length) {
+      const staleRowsForRollback = existingLeavesData.filter((row) => staleIds.includes(row.id));
+      const del = await supabase.from(TABLE_COA).delete().in("id", staleIds);
+      if (del.error) throw del.error;
+      leafRollback.push(() => supabase.from(TABLE_COA).insert(staleRowsForRollback));
+    }
+
+    // The source-account-name map and per-account classification history are
+    // no longer stored in side tables. The COA leaves ARE the name map
+    // (rebuilt in memory by the report layer), and the initial "generate"
+    // classification snapshot is seeded into each new row's audit_log above.
+
+    await invalidateClassificationCache(companyId);
+    return {
+      accountCount: (updates.length + toInsert.length),
+      leafCount: hierarchical.length,
+      inserted: toInsert.length,
+      updated: updates.length,
+      deleted: staleIds.length,
+      validationIssues: validationIssues.length,
+      driftIssues: driftIssues.length,
+      sourceCounts,
+    };
+  } catch (writeErr) {
+    console.error(`[ChartOfAccounts] Approved-COA persistence failed for version=${versionId} -- rolling back ${leafRollback.length} leaf write(s): ${writeErr.message}`);
+    for (const undo of leafRollback.reverse()) {
+      try {
+        await undo();
+      } catch (rollbackErr) {
+        console.error(`[ChartOfAccounts] ROLLBACK FAILED for version=${versionId} -- chart_of_accounts may be left partially persisted and needs manual review: ${rollbackErr.message}`);
+      }
+    }
+    throw writeErr;
+  }
 }
 
 // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ Read model (deep tree + flat) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
@@ -3539,6 +3937,46 @@ function buildTree(flatRows) {
   return roots;
 }
 
+/**
+ * serializePersistedTree -- the Approved-COA twin of
+ * buildProposedCoaTree/serializeProposedTree's wire node-list shape, but read
+ * from the real, persisted parent_account_id chain (mapRow's `id`/
+ * `parentAccountId`) instead of the pre-persist normPathKey/accountKey
+ * strings. Same node shape either way (`{key, parentKey, nodeType, ...}`) --
+ * the frontend renders one tree component regardless of whether it's
+ * reviewing a Proposed COA or displaying an already-Approved one.
+ */
+function serializePersistedTree(rows) {
+  return rows.map((r) => ({
+    key: r.id,
+    parentKey: r.parentAccountId || null,
+    nodeType: r.isGroup ? "CATEGORY" : "ACCOUNT",
+    accountId: r.isGroup ? null : r.id,
+    label: r.isGroup ? r.accountName : undefined,
+    accountName: r.sourceName,
+    accountNumber: r.accountNumber || null,
+    adjustedName: r.adjustedName && r.adjustedName !== r.sourceName ? r.adjustedName : null,
+    accountType: r.accountType,
+    statementType: r.statementType,
+    classificationSource: r.isGroup
+      ? null
+      : (r.metadata?.user_modified ? "USER_EDITED" : classificationSourceLabel({
+          matchTier: r.metadata?.match_tier,
+          classificationMethod: r.classificationMethod,
+        })),
+    classificationMethod: r.classificationMethod || null,
+    // System ID (INC-001/EXP-001/BS-001) is only ever assigned at persist
+    // time (assignSystemIds, called from persistApprovedCoaTree) -- a
+    // Proposed COA's serializeProposedTree has none to report, so this is
+    // populated for an already-Approved tree only. Never re-derived here.
+    systemId: r.isGroup ? null : (r.systemId || null),
+    needsReview: Boolean(r.metadata?.needs_review),
+    needsMapping: Boolean(r.metadata?.needs_mapping),
+    sortOrder: r.sortOrder ?? null,
+    hierarchyPath: r.hierarchyPath || null,
+  }));
+}
+
 async function getChartOfAccounts(versionId) {
   const { data, error } = await supabase
     .from(TABLE_COA).select("*").eq("version_id", versionId)
@@ -3547,12 +3985,12 @@ async function getChartOfAccounts(versionId) {
   if (error) throw error;
 
   const rows = (data || []).map(mapRow);
-  const flat = rows.filter((r) => !r.metadata?.is_group);
-  const tree = buildTree(rows);
+  const accountCount = rows.filter((r) => !r.isGroup).length;
+  const nodes = serializePersistedTree(rows);
   // No cache, no recomputation -- a plain SELECT + parent_account_id tree
   // assembly over whatever is currently persisted.
-  console.log(`[API]\nreturned fresh persisted hierarchy (versionId=${versionId}, accounts=${flat.length})`);
-  return { versionId, flat, tree, accountCount: flat.length };
+  console.log(`[API]\nreturned fresh persisted hierarchy (versionId=${versionId}, accounts=${accountCount})`);
+  return { versionId, tree: { nodes }, accountCount };
 }
 async function loadAccount(accountId) {
   const { data, error } = await supabase.from(TABLE_COA).select("*").eq("id", accountId).single();
@@ -3645,80 +4083,6 @@ async function updateAccountHierarchy(accountId, patch = {}, userId = null, opts
   return mapRow(data);
 }
 
-/** Bulk-persist an edited hierarchy (array of per-account patches). *//** Bulk-persist an edited hierarchy (array of per-account patches). */
-/**
- * Bulk-persist an edited hierarchy (array of per-account patches) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the
- * commit endpoint for the tree editor's draft/undo model. Validates the
- * WHOLE proposed batch against the version's current tree BEFORE writing
- * anything: simulates every patch's effect on a fresh copy of the leaf set,
- * runs it through the same buildCoaNodeTree/validateCoaNodeTree path-space
- * checks the generation pipeline itself uses, and rejects the entire batch
- * (no partial writes) if the result would be an invalid tree. This is the
- * "before saving, validate... reject invalid edits" gate ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â everything else
- * (parent_account_id re-chaining, level_1..15 rebuild) is already handled by
- * updateAccountHierarchy, reused unchanged below.
- */
-async function saveHierarchy(versionId, nodes = [], userId = null) {
-  const candidateNodes = nodes.filter((n) => n?.accountId || n?.id);
-  if (!candidateNodes.length) return { updated: 0 };
-
-  const levelCols = Array.from({ length: MAX_LEVELS }, (_, i) => `level_${i + 1}`);
-  // node_type = 'account' (migration 082, generated column) Ã¢â‚¬â€ only real
-  // posting leaves are simulated here. Including category rows would make
-  // every EXISTING category collide with the leaf-derived category
-  // buildCoaNodeTree re-derives from them, producing false-positive
-  // "duplicate structural node" rejections.
-  const { data: existingRows, error: loadErr } = await supabase
-    .from(TABLE_COA)
-    .select(["id, company_id, account_name, adjusted_name, account_type, statement_type", ...levelCols].join(", "))
-    .eq("version_id", versionId)
-    .eq("is_active", true)
-    .eq("node_type", "account");
-  if (loadErr) throw loadErr;
-
-  const patchByAccountId = new Map();
-  for (const node of candidateNodes) patchByAccountId.set(node.accountId || node.id, node);
-
-  const simulatedLeaves = (existingRows || [])
-    .map((row) => {
-      const patch = patchByAccountId.get(row.id);
-      const levels = Array.isArray(patch?.levels) ? patch.levels : columnsToLevels(row);
-      return {
-        id: row.id,
-        accountName: (patch?.adjustedName ?? row.adjusted_name) || row.account_name,
-        accountType: patch?.accountType || row.account_type,
-        statementType: patch?.statementType || row.statement_type,
-        levels,
-      };
-    });
-
-  const proposedTree = buildCoaNodeTree(simulatedLeaves);
-  const validation = validateCoaNodeTree(proposedTree, simulatedLeaves);
-  if (!validation.hierarchyValid) {
-    return { updated: 0, rejected: true, code: "HIERARCHY_INVALID", violations: validation.violations };
-  }
-
-  let updated = 0;
-  for (const node of candidateNodes) {
-    await updateAccountHierarchy(node.accountId || node.id, {
-      adjustedName: node.adjustedName,
-      levels: node.levels,
-      accountType: node.accountType,
-      statementType: node.statementType,
-      isActive: node.isActive,
-      movedParent: node.movedParent,
-    }, userId, { skipFinalize: true });
-    updated += 1;
-  }
-
-  const companyId = existingRows?.[0]?.company_id || null;
-  if (companyId) {
-    await finalizeCoaHierarchy(companyId, versionId);
-    await invalidateClassificationCache(companyId);
-  }
-
-  return { updated };
-}
 
 /** Restore a single account''s adjusted classification back to its original AI one. *//** Restore a single account's adjusted classification back to its original AI one. */
 async function resetAccount(accountId, userId = null) {
@@ -4862,7 +5226,6 @@ module.exports = {
   getChartOfAccounts,
   updateAccount,
   updateAccountHierarchy,
-  saveHierarchy,
   resetAccount,
   resetVersion,
   getHistory,
@@ -4870,6 +5233,16 @@ module.exports = {
   ensureCoaComplete,
   printCoaValidationBlock,
   finalizeCoaHierarchy,
+  // Two-phase Proposed COA / Approved COA API (see keyReportSyncService's
+  // generateCoaProposal / approveAndGenerateReports)
+  buildProposedCoaTree,
+  persistApprovedCoaTree,
+  serializeProposedTree,
+  serializePersistedTree,
+  deserializeApprovedTree,
+  validateFinalCoaTree,
+  classificationSourceLabel,
+  summarizeSourceCounts,
   // exported for unit testing
   buildCoaModel,
   buildLeafHierarchies,
