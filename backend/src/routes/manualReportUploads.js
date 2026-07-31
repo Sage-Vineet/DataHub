@@ -38,6 +38,7 @@ const { canAccessCompany } = require("../services/permissionService");
 const { runBsBankBalancesExtraction, runBankExtraction } = require("./quickbooks/reconciliation/bankVsBooks");
 const keyReportService = require("../services/keyReports/keyReportService");
 const { getMonthlyPlFinancials } = require("../services/keyReports/financialStatementService");
+const { getMonthlyActivityReview } = require("../services/keyReports/activityReviewService");
 const { decryptPdfEmptyPassword } = require("../services/keyReports/pythonBridge");
 
 // True when a PDF carries an /Encrypt dictionary (referenced from the trailer).
@@ -686,9 +687,12 @@ router.get("/manual-report-uploads/qms-bank-data", async (req, res) => {
 
     // Bank statement is resolved from the SELECTED Key Reports version (single
     // source of truth, active when none selected); P&L financials remain QMS-scoped.
-    const [{ body: bankBody }, plFinancials] = await Promise.all([
+    const [{ body: bankBody }, plFinancials, activityReview] = await Promise.all([
       runBankExtraction(clientId, "quickbooks_manual_upload", "Manual Upload Source", datasetVersion, keyReportVersionId),
       extractPlFinancials(clientId, "quickbooks_manual_upload").catch(() => null),
+      keyReportVersionId
+        ? getMonthlyActivityReview(keyReportVersionId).catch(() => null)
+        : Promise.resolve(null),
     ]);
 
     return res.json({
@@ -698,6 +702,7 @@ router.get("/manual-report-uploads/qms-bank-data", async (req, res) => {
       totals: bankBody?.totals || [],
       message: bankBody?.message,
       plFinancials,
+      activityReview,
     });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || "Failed to fetch QMS bank data." });
@@ -1564,9 +1569,10 @@ router.get("/manual-upload/bank-data", async (req, res) => {
 
     // Fetch P&L financials in parallel — merges Sales/Expenses per Financials into
     // this response. In Key Reports mode (a version is selected) the figures come
-    // from THIS version's generated P&L: Sales per Financials = monthly "Total for
-    // Income", Expenses per Financials = monthly "Net Operating Income". Otherwise
-    // (plain Manual Upload) fall back to the uploaded-P&L extraction.
+    // from THIS version's generated P&L: Sales per Financials = monthly accrual
+    // revenue (revenue.total), Expenses per Financials = monthly Total Operating
+    // Expenses (operatingExpenses.total). Otherwise (plain Manual Upload) fall back
+    // to the uploaded-P&L extraction.
     const plFinancialsPromise = keyReportVersionId
       ? getMonthlyPlFinancials(keyReportVersionId).catch((e) => {
           console.warn(`[BANK SOURCE] KR P&L financials failed (non-fatal): ${e.message}`);
@@ -1576,6 +1582,18 @@ router.get("/manual-upload/bank-data", async (req, res) => {
           keyReportVersionId,
           datasetVersion,
         }).catch(() => null);
+
+    // Key Reports mode: auto-derive every Activity Review adjustment row (Change
+    // in AR, Change in Current/LT Liabilities, Depreciation, Amortization, Bad
+    // Debt, Fixed Asset Purchases/Disposals, AR Retentions) from THIS version's
+    // financial statements. Non-fatal — the frontend also mirrors this from the
+    // financial-statements payload, so a null here never blanks the table.
+    const activityReviewPromise = keyReportVersionId
+      ? getMonthlyActivityReview(keyReportVersionId).catch((e) => {
+          console.warn(`[BANK SOURCE] KR Activity Review failed (non-fatal): ${e.message}`);
+          return null;
+        })
+      : Promise.resolve(null);
 
     // Start BS bank accounts fetch in parallel — merges /bs-bank-balances into this response
     const bsBankAccountsPromise = runBsBankBalancesExtraction(
@@ -1597,7 +1615,9 @@ router.get("/manual-upload/bank-data", async (req, res) => {
     // (version-aware cache + live extraction handled by runBankExtraction). BS
     // bank accounts and P&L financials remain manual_upload-source-scoped.
     const { body: bankBody } = await runBankExtraction(clientId, MANUAL_REPORT_UPLOAD_SOURCE, "Manual Upload Source", datasetVersion, keyReportVersionId);
-    const [balanceSheetBankAccounts, plFinancials] = await Promise.all([bsBankAccountsPromise, plFinancialsPromise]);
+    const [balanceSheetBankAccounts, plFinancials, activityReview] = await Promise.all([
+      bsBankAccountsPromise, plFinancialsPromise, activityReviewPromise,
+    ]);
 
     if (!bankBody?.banks?.length) {
       return res.json({
@@ -1610,6 +1630,7 @@ router.get("/manual-upload/bank-data", async (req, res) => {
         message: bankBody?.message || "No Bank Statement is linked in the active Key Reports version. Link a Bank Statement in Key Reports and sync before using Bank Reconciliation.",
         balanceSheetBankAccounts,
         plFinancials,
+        activityReview,
       });
     }
 
@@ -1622,6 +1643,7 @@ router.get("/manual-upload/bank-data", async (req, res) => {
       syncedAt: bankBody.syncedAt,
       balanceSheetBankAccounts,
       plFinancials,
+      activityReview,
     });
   } catch (error) {
     console.error("[BANK SOURCE] Error:", error);

@@ -196,8 +196,13 @@ const saveStoredReconData = (clientId, source, version, data) => {
 
 // Derive the Activity Review's monthly P&L figures — { totalIncome, totalExpenses }
 // keyed "YYYY-MM" — from a Key Reports financial-statements response. Mirrors the
-// backend's computeMonthlyPlFinancials (revenue.total → income, operatingIncome →
-// expenses) so the numbers are identical, and keys match the bank data's monthKey.
+// backend's computeMonthlyPlFinancials exactly:
+//   Sales per Financials    ← revenue.total              (accrual revenue)
+//   Expenses per Financials ← operatingExpenses.total    (total operating expenses)
+// Expenses per Financials INCLUDES depreciation/amortization/bad debt on purpose:
+// they are added back as separate positive reconciling rows, which only nets to
+// the true cash figure when they remain in this base. (Was operatingIncome — a
+// profit figure that never reconciled withdrawals to expenses.)
 const computePlFinancialsFromFs = (resp) => {
   const monthly = resp?.reports?.profitAndLoss?.monthly || [];
   const totalIncome = {};
@@ -208,7 +213,7 @@ const computePlFinancialsFromFs = (resp) => {
     if (!Number.isInteger(year) || !(monthNum >= 1 && monthNum <= 12)) continue;
     const key = `${year}-${String(monthNum).padStart(2, "0")}`;
     totalIncome[key] = Number(e?.statement?.revenue?.total) || 0;
-    totalExpenses[key] = Number(e?.statement?.operatingIncome) || 0;
+    totalExpenses[key] = Number(e?.statement?.operatingExpenses?.total) || 0;
   }
   return { totalIncome, totalExpenses };
 };
@@ -265,6 +270,128 @@ const computeBsBankBalancesByMonthFromFs = (resp) => {
   if (!bankAccounts.length) return null;
   return { year: latestYear, bankAccounts };
 };
+
+// ── Activity Review engine (frontend mirror of activityReviewService.js) ──────
+// Derives every auto-computable Activity Review adjustment row directly from a
+// Key Reports financial-statements response — no hardcoded account names, IDs,
+// row/column positions, period type, or currency. Byte-for-byte the same logic
+// (and the same signed cash-effect convention) as the backend authoritative
+// engine, so the rendered numbers match the cached server figures exactly.
+//
+// SIGN CONVENTION (product Step 6 / indirect method): every value is that item's
+// CASH EFFECT, so the table can SUM them straight into the Unreconciled Variance:
+//   current ASSET ↑ → negative,  current ASSET ↓ → positive
+//   LIABILITY     ↑ → positive,  LIABILITY     ↓ → negative
+//   depreciation / amortization / bad debt → positive add-backs
+//   fixed-asset purchase → negative (outflow), disposal → positive (inflow)
+//
+// Classification reuses the COA-assigned account_type / report_tag already on
+// each leaf, refined by ONE bounded keyword pass only where the stored tag is
+// coarser than a row needs (same accepted pattern as the statement builder's
+// current/non-current KPI split). It never rescans or mutates anything else.
+const _AR_RETENTION_RE = /retention|retainage|holdback|retain(?:ed|age)?\s+receivab/i;
+const _ACCUM_DEP_RE    = /accumulated\s+(?:depreciation|amortization|depletion)|accum\.?\s*(?:dep|amort)/i;
+const _AMORT_RE        = /amorti[sz]/i;
+const _BAD_DEBT_RE     = /bad\s*debt|doubtful|uncollectib|allowance\s+for\s+(?:doubtful|credit)|write.?off.*receivab/i;
+const _leafName = (l) => String(l?.adjustedName || l?.name || "");
+const _isArRetention = (l) => l?.reportTag === "accounts_receivable" && _AR_RETENTION_RE.test(_leafName(l));
+const _isAccountsReceivable = (l) => l?.reportTag === "accounts_receivable" && !_AR_RETENTION_RE.test(_leafName(l));
+const _isAccumulatedDepreciation = (l) => _ACCUM_DEP_RE.test(_leafName(l));
+const _depAmortKind = (l) => {
+  const tagged = l?.reportTag === "depreciation_amortization";
+  const name = _leafName(l);
+  if (!tagged && !/depreciat|amorti[sz]|depletion/i.test(name)) return null;
+  return _AMORT_RE.test(name) ? "amortization" : "depreciation";
+};
+const _isBadDebt = (l) => _BAD_DEBT_RE.test(_leafName(l));
+const _round2 = (v) => Math.round(((Number(v) || 0) + Number.EPSILON) * 100) / 100;
+const _bucketLeaves = (bucket) => {
+  const out = [];
+  for (const g of Object.values(bucket?.groups || {})) {
+    for (const acc of g?.accounts || []) out.push(acc);
+  }
+  return out;
+};
+const _sumLeaves = (arr) => arr.reduce((s, a) => s + (Number(a?.amount) || 0), 0);
+const _bsSnapshot = (entry) => {
+  const st = entry?.statement || {};
+  const currentAssets = _bucketLeaves(st.assets?.currentAssets);
+  const fixedAssets   = _bucketLeaves(st.assets?.fixedAssets);
+  const currentLiab   = _bucketLeaves(st.liabilities?.currentLiabilities);
+  const longTermLiab  = _bucketLeaves(st.liabilities?.longTermLiabilities);
+  return {
+    ar:           _sumLeaves(currentAssets.filter(_isAccountsReceivable)),
+    arRetention:  _sumLeaves(currentAssets.filter(_isArRetention)),
+    // TOTAL current assets (cash/bank + AR + inventory + prepaids + other) — drives
+    // the informational "Change in Current Assets" row (raw BS movement).
+    currentAssetsTotal: _sumLeaves(currentAssets),
+    currentLiab:  _sumLeaves(currentLiab),
+    longTermLiab: _sumLeaves(longTermLiab),
+    grossFixed:   _sumLeaves(fixedAssets.filter((l) => !_isAccumulatedDepreciation(l))),
+  };
+};
+const _plSnapshot = (entry) => {
+  const groups = entry?.statement?.operatingExpenses?.groups || {};
+  let depreciation = 0, amortization = 0, badDebt = 0;
+  for (const g of Object.values(groups)) {
+    for (const acc of g?.accounts || []) {
+      const kind = _depAmortKind(acc);
+      if (kind === "amortization") amortization += Number(acc?.amount) || 0;
+      else if (kind === "depreciation") depreciation += Number(acc?.amount) || 0;
+      else if (_isBadDebt(acc)) badDebt += Number(acc?.amount) || 0;
+    }
+  }
+  return { depreciation, amortization, badDebt };
+};
+const _activityMonthKey = (e) => {
+  const year = Number(e?.year), monthNum = Number(e?.monthNumber);
+  if (!Number.isInteger(year) || !(monthNum >= 1 && monthNum <= 12)) return null;
+  return `${year}-${String(monthNum).padStart(2, "0")}`;
+};
+// Returns { [monthKey]: { changeInAR, changeInARRetentions, fixedAssetDisposals,
+//   changeInCurrentLiabilities, changeInLTLiabilities, depreciationExpense,
+//   amortizationExpense, badDebtExpense, fixedAssetPurchases } }.
+const computeActivityReviewFromFs = (resp) => {
+  const bsMonthly = [...(resp?.reports?.balanceSheet?.monthly || [])].sort(
+    (a, b) => (Number(a.year) - Number(b.year)) || (Number(a.monthNumber) - Number(b.monthNumber)),
+  );
+  const plByKey = {};
+  for (const e of resp?.reports?.profitAndLoss?.monthly || []) {
+    const k = _activityMonthKey(e);
+    if (k) plByKey[k] = _plSnapshot(e);
+  }
+  const out = {};
+  let prev = null;
+  for (const entry of bsMonthly) {
+    const key = _activityMonthKey(entry);
+    if (!key) continue;
+    const cur = _bsSnapshot(entry);
+    const dAR      = prev ? cur.ar - prev.ar : 0;
+    const dARRet   = prev ? cur.arRetention - prev.arRetention : 0;
+    // Raw movement in total current assets (current − previous). Informational only
+    // (includes cash), so it is displayed but never summed into Unreconciled.
+    const dCurrentAssets = prev ? cur.currentAssetsTotal - prev.currentAssetsTotal : 0;
+    const dCurLiab = prev ? cur.currentLiab - prev.currentLiab : 0;
+    const dLTLiab  = prev ? cur.longTermLiab - prev.longTermLiab : 0;
+    const dGross   = prev ? cur.grossFixed - prev.grossFixed : 0;
+    const pl = plByKey[key] || { depreciation: 0, amortization: 0, badDebt: 0 };
+    out[key] = {
+      changeInAR:                 _round2(-dAR),
+      changeInARRetentions:       _round2(-dARRet),
+      changeInCurrentAssets:      _round2(dCurrentAssets),
+      fixedAssetDisposals:        _round2(dGross < 0 ? -dGross : 0),
+      changeInCurrentLiabilities: _round2(dCurLiab),
+      changeInLTLiabilities:      _round2(dLTLiab),
+      depreciationExpense:        _round2(pl.depreciation),
+      amortizationExpense:        _round2(pl.amortization),
+      badDebtExpense:             _round2(pl.badDebt),
+      fixedAssetPurchases:        _round2(dGross > 0 ? -dGross : 0),
+    };
+    prev = cur;
+  }
+  return out;
+};
+
 const fmtAmt = (val) => {
   if (val == null || val === 0) return "-";
   return formatNumber(val, 2);
@@ -422,7 +549,7 @@ function EditableCell({ value, onSave }) {
       className={cn(
         "block w-full text-right text-[12px] tabular-nums rounded px-1 py-[3px] min-h-[20px]",
         "cursor-pointer hover:bg-blue-50/80 transition-colors select-none",
-        value !== 0 ? "text-text-primary" : "text-text-muted/40",
+        value !== 0 ? "text-text-primary" : "text-text-muted",
       )}
       title="Click to edit"
     >
@@ -436,8 +563,18 @@ function EditableCell({ value, onSave }) {
  * Defined outside the main component to keep component identity stable
  * (avoids unmounting EditableCell on every re-render).
  */
-function AdjRow({ label, rowKey, months, reconAdjustments, onSave }) {
-  const getAdj = (m) => reconAdjustments?.[`${m}_${rowKey}`] ?? 0;
+function AdjRow({ label, rowKey, months, reconAdjustments, rowByMonth, onSave }) {
+  // Effective value = manual override (if saved for this cell, even 0) else the
+  // auto-computed value carried on that month's row (derived from the financial
+  // statements). This is what makes every row auto-populate while still letting
+  // a user override any individual cell.
+  const getAdj = (m) => {
+    const k = `${m}_${rowKey}`;
+    if (reconAdjustments && Object.prototype.hasOwnProperty.call(reconAdjustments, k)) {
+      return reconAdjustments[k];
+    }
+    return Number(rowByMonth?.[m]?.[rowKey]) || 0;
+  };
   const ttmTotal = months.slice(-12).reduce((s, m) => s + getAdj(m), 0);
   return (
     <tr className="bg-white hover:bg-blue-50/20">
@@ -462,7 +599,7 @@ function AdjRow({ label, rowKey, months, reconAdjustments, onSave }) {
         className={cn(
           "border border-border px-3 py-[7px] text-right text-[12px] tabular-nums",
           TABLE_VALUE_COL_WIDTH,
-          ttmTotal !== 0 ? "text-text-primary" : "text-text-muted/40",
+          ttmTotal !== 0 ? "text-text-primary" : "text-text-muted",
         )}
       >
         {ttmTotal !== 0 ? formatNumber(ttmTotal, 2) : "-"}
@@ -512,7 +649,7 @@ function AddbackItemRow({ item, months, onSaveAmounts, onDelete }) {
         className={cn(
           "border border-border px-3 py-[7px] text-right text-[12px] tabular-nums",
           TABLE_VALUE_COL_WIDTH,
-          ttmTotal !== 0 ? "text-text-primary" : "text-text-muted/40",
+          ttmTotal !== 0 ? "text-text-primary" : "text-text-muted",
         )}
       >
         {ttmTotal !== 0 ? formatNumber(ttmTotal, 2) : "-"}
@@ -561,7 +698,7 @@ function AddbacksRowGroup({ section, months, addbackItems, onSaveAmounts, onDele
             className={cn(
               "border border-border px-3 py-[7px] text-right text-[12px] tabular-nums",
               TABLE_VALUE_COL_WIDTH,
-              totalPerMonth[month] !== 0 ? "text-text-primary" : "text-text-muted/40",
+              totalPerMonth[month] !== 0 ? "text-text-primary" : "text-text-muted",
             )}
           >
             {totalPerMonth[month] !== 0 ? formatNumber(totalPerMonth[month], 2) : "-"}
@@ -571,7 +708,7 @@ function AddbacksRowGroup({ section, months, addbackItems, onSaveAmounts, onDele
           className={cn(
             "border border-border px-3 py-[7px] text-right text-[12px] tabular-nums",
             TABLE_VALUE_COL_WIDTH,
-            ttmTotal !== 0 ? "text-text-primary" : "text-text-muted/40",
+            ttmTotal !== 0 ? "text-text-primary" : "text-text-muted",
           )}
         >
           {ttmTotal !== 0 ? formatNumber(ttmTotal, 2) : "-"}
@@ -1082,6 +1219,7 @@ function buildEmptyActivityReviewRow() {
     depositsPctVar: 0,
     changeInAR: 0,
     changeInARRetentions: 0,
+    changeInCurrentAssets: 0,
     fixedAssetDisposals: 0,
     depositsOther: 0,
     depositsUnreconciledDollar: 0,
@@ -1186,6 +1324,27 @@ export default function WorkspaceReconciliation() {
       status: "idle",
       message: "",
     });
+  // Live mirror of extractedBankPdfData so async loaders can read the latest value
+  // without adding it to their dependency arrays.
+  const extractedBankPdfDataRef = useRef(extractedBankPdfData);
+  useEffect(() => {
+    extractedBankPdfDataRef.current = extractedBankPdfData;
+  }, [extractedBankPdfData]);
+  // Apply a bank-data result WITHOUT letting an empty or failed background load
+  // blank data already on screen (restored from cache, or a prior good load).
+  // Replaces the table only when the new result actually has banks, when the
+  // caller forces it (explicit Refresh), or when nothing is shown yet. This is
+  // what guarantees "come back to the page → data stays as it is" even if a stray
+  // auto-fetch races in with an empty result. Returns true when it replaced.
+  const applyBankData = useCallback((next, { force = false } = {}) => {
+    const hasData = !!(next && Array.isArray(next.banks) && next.banks.length > 0);
+    if (hasData || force || !extractedBankPdfDataRef.current) {
+      setExtractedBankPdfData(next);
+      extractedBankPdfDataRef.current = next;
+      return true;
+    }
+    return false;
+  }, []);
   const [manualMonthStart, setManualMonthStart] = useState(null);
   const [manualMonthEnd, setManualMonthEnd] = useState(null);
   const [bsBankBalances, setBsBankBalances] = useState(null);
@@ -1194,6 +1353,12 @@ export default function WorkspaceReconciliation() {
   // Reports mode (falls back to the point-in-time bsBankBalances snapshot).
   const [bsMonthlyBalances, setBsMonthlyBalances] = useState(null);
   const [plFinancials, setPlFinancials] = useState(null);
+  // Auto-computed Activity Review adjustment rows (Change in AR, Change in
+  // Current/LT Liabilities, Depreciation, Amortization, Bad Debt, Fixed Asset
+  // Purchases/Disposals, AR Retentions), keyed "YYYY-MM". Populated in Key
+  // Reports mode from the financial-statements payload (see effect below); null
+  // otherwise. Manual per-cell overrides in reconAdjustments still win over these.
+  const [activityReview, setActivityReview] = useState(null);
   const [reportSources, setReportSources] = useState([]);
   // Key Reports is the single source of truth: when the company has a selected
   // Key Report Version, the report source is derived from that Version's flow —
@@ -1277,6 +1442,10 @@ export default function WorkspaceReconciliation() {
     setLastSyncedAt(nextState?.lastSyncedAt || null);
     setSelectedBalanceBankId(nextState?.selectedBalanceBankId || "");
     setOneBankAccountId(nextState?.oneBankAccountId || "");
+    // Restore the saved Bank Reconciliation view selections (date range + bank).
+    setManualMonthStart(nextState?.manualMonthStart ?? null);
+    setManualMonthEnd(nextState?.manualMonthEnd ?? null);
+    setSelectedManualBankName(nextState?.selectedManualBankName || "");
     setQbOneBankActivity(nextState?.qbOneBankActivity || null);
     setOneBankActivityFetchStatus({
       status: nextState?.qbOneBankActivity ? "success" : "idle",
@@ -1313,6 +1482,13 @@ export default function WorkspaceReconciliation() {
           lastSyncedAt: lastSyncedAt ?? existing.lastSyncedAt ?? null,
           selectedBalanceBankId,
           oneBankAccountId,
+          // Persist the Bank Reconciliation view selections (Start/End Date range
+          // and the chosen Bank Account) so returning to the page restores the
+          // exact same view instead of resetting to the full range / first bank.
+          manualMonthStart: manualMonthStart ?? existing.manualMonthStart ?? null,
+          manualMonthEnd: manualMonthEnd ?? existing.manualMonthEnd ?? null,
+          selectedManualBankName:
+            selectedManualBankName || existing.selectedManualBankName || "",
           qbOneBankActivity:
             qbOneBankActivity ?? existing.qbOneBankActivity ?? null,
           extractedBankPdfData: extractedBankPdfData,
@@ -1335,6 +1511,9 @@ export default function WorkspaceReconciliation() {
     lastSyncedAt,
     selectedBalanceBankId,
     oneBankAccountId,
+    manualMonthStart,
+    manualMonthEnd,
+    selectedManualBankName,
     qbOneBankActivity,
     extractedBankPdfData,
     selectedReportSource,
@@ -1349,13 +1528,25 @@ export default function WorkspaceReconciliation() {
   // returning to this version + connection mode restores the table instantly.
   useEffect(() => {
     if (!clientId || !selectedReportSource) return;
+    // Merge with the already-cached slot. On remount every data field is briefly
+    // null (fresh useState) BEFORE the restore effect / loader repopulate it, and
+    // this effect fires first — writing raw nulls here would WIPE the cache, so
+    // the next restore finds nothing and the page re-fetches everything (the slow
+    // "Loading…" on return). `value ?? existing ?? null` keeps each cached field
+    // until a fresh non-null value replaces it — same guard the workspace-state
+    // effect already uses for qbBankActivity.
+    const existing = getStoredReconData(clientId, selectedReportSource, reconDataVersion) || {};
     saveStoredReconData(clientId, selectedReportSource, reconDataVersion, {
-      extractedBankPdfData: extractedBankPdfData ?? null,
-      qbBankActivity: qbBankActivity ?? null,
-      qbOneBankActivity: qbOneBankActivity ?? null,
-      plFinancials: plFinancials ?? null,
-      bsBankBalances: bsBankBalances ?? null,
-      bsMonthlyBalances: bsMonthlyBalances ?? null,
+      extractedBankPdfData: extractedBankPdfData ?? existing.extractedBankPdfData ?? null,
+      qbBankActivity: qbBankActivity ?? existing.qbBankActivity ?? null,
+      qbOneBankActivity: qbOneBankActivity ?? existing.qbOneBankActivity ?? null,
+      plFinancials: plFinancials ?? existing.plFinancials ?? null,
+      // Auto-computed Activity Review rows — cached alongside the bank data so
+      // returning to the page restores the FULL table instantly (no re-fetch /
+      // re-compute of the financial statements, which is what made revisits slow).
+      activityReview: activityReview ?? existing.activityReview ?? null,
+      bsBankBalances: bsBankBalances ?? existing.bsBankBalances ?? null,
+      bsMonthlyBalances: bsMonthlyBalances ?? existing.bsMonthlyBalances ?? null,
       savedAt: new Date().toISOString(),
     });
   }, [
@@ -1366,6 +1557,7 @@ export default function WorkspaceReconciliation() {
     qbBankActivity,
     qbOneBankActivity,
     plFinancials,
+    activityReview,
     bsBankBalances,
     bsMonthlyBalances,
   ]);
@@ -1384,6 +1576,7 @@ export default function WorkspaceReconciliation() {
     if (slot.qbBankActivity) setQbBankActivity(slot.qbBankActivity);
     if (slot.qbOneBankActivity) setQbOneBankActivity(slot.qbOneBankActivity);
     if (slot.plFinancials) setPlFinancials(slot.plFinancials);
+    if (slot.activityReview) setActivityReview(slot.activityReview);
     if (slot.bsBankBalances) setBsBankBalances(slot.bsBankBalances);
     if (slot.bsMonthlyBalances) setBsMonthlyBalances(slot.bsMonthlyBalances);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1547,11 +1740,13 @@ export default function WorkspaceReconciliation() {
       if (activeSourceRef.current !== selectedReportSource) return;
       if (opts.datasetVersion != null &&
         String(glScopeRef.current.datasetVersion) !== String(opts.datasetVersion)) return;
-      setExtractedBankPdfData(normalized);
+      const replaced = applyBankData(normalized, { force: opts.force });
       setExtractedBankPdfFetchStatus({
         status: "success",
-        message: `Loaded ${normalized?.banks?.length ?? 0} bank(s) across ${normalized?.months?.length ?? 0
-          } month(s).`,
+        message: replaced
+          ? `Loaded ${normalized?.banks?.length ?? 0} bank(s) across ${normalized?.months?.length ?? 0
+            } month(s).`
+          : "Showing saved bank data.",
       });
     } catch (e) {
       if (activeSourceRef.current !== selectedReportSource) return;
@@ -1560,13 +1755,15 @@ export default function WorkspaceReconciliation() {
         status: "error",
         message: getErrMsg(e),
       });
-      setExtractedBankPdfData(null);
+      // Never blank data already on screen on a transient error — keep the last
+      // good/restored view; only show empty if there was nothing to begin with.
+      if (!extractedBankPdfDataRef.current) setExtractedBankPdfData(null);
     } finally {
       if (activeSourceRef.current === selectedReportSource) {
         setIsLoadingExtractedBankPdfData(false);
       }
     }
-  }, [clientId, selectedReportSource, getHeaders]);
+  }, [clientId, selectedReportSource, getHeaders, applyBankData]);
 
   const loadQMSBankData = useCallback(async () => {
     // Always read from activeSourceRef.current (not the stale closure value of selectedReportSource).
@@ -1618,7 +1815,7 @@ export default function WorkspaceReconciliation() {
     }
   }, [clientId, selectedReportSource, getHeaders]);
 
-  const loadManualBankData = useCallback(async () => {
+  const loadManualBankData = useCallback(async (opts = {}) => {
     if (activeSourceRef.current !== REPORT_SOURCE_KEYS.MANUAL_UPLOAD) {
       console.warn(`[BankData] loadManualBankData blocked — activeSource=${activeSourceRef.current} is not Manual Upload`);
       return;
@@ -1653,32 +1850,38 @@ export default function WorkspaceReconciliation() {
       // (reliable), so only apply the bank-data-merged value outside KR mode.
       if (!krVersionIdRef.current) setPlFinancials(data.plFinancials ?? null);
       if (data.empty) {
-        setExtractedBankPdfData(null);
+        // Empty background result must not blank data already on screen.
+        const replaced = applyBankData(null, { force: opts.force });
         setExtractedBankPdfFetchStatus({
           status: "success",
-          message: data.message || "No bank statements uploaded. Upload PDF or Excel files to Manual Upload Source → Bank Statement.",
+          message: replaced
+            ? (data.message || "No bank statements uploaded. Upload PDF or Excel files to Manual Upload Source → Bank Statement.")
+            : "Showing saved bank data.",
         });
         return;
       }
       const normalized = normalizeExtractedBankPdfData(data);
-      setExtractedBankPdfData(normalized);
+      const replaced = applyBankData(normalized, { force: opts.force });
       setExtractedBankPdfFetchStatus({
         status: "success",
-        message: normalized
-          ? `Loaded ${normalized.banks?.length ?? 0} bank(s).`
-          : "No bank statement data found. Upload files to Manual Upload Source → Bank Statement.",
+        message: replaced
+          ? (normalized
+            ? `Loaded ${normalized.banks?.length ?? 0} bank(s).`
+            : "No bank statement data found. Upload files to Manual Upload Source → Bank Statement.")
+          : "Showing saved bank data.",
       });
     } catch (e) {
       if (activeSourceRef.current !== selectedReportSource) return;
       setExtractedBankPdfError(getErrMsg(e));
       setExtractedBankPdfFetchStatus({ status: "error", message: getErrMsg(e) });
-      setExtractedBankPdfData(null);
+      // Keep the last good/restored view on a transient error.
+      if (!extractedBankPdfDataRef.current) setExtractedBankPdfData(null);
     } finally {
       if (activeSourceRef.current === selectedReportSource) {
         setIsLoadingExtractedBankPdfData(false);
       }
     }
-  }, [clientId, selectedReportSource, getHeaders]);
+  }, [clientId, selectedReportSource, getHeaders, applyBankData]);
 
   // Fetches BS bank balances for manual/QMS sources and stores in bsBankBalances state.
   // Silently no-ops for QB Online (no manual BS files) and on errors (show "-" fallback).
@@ -1901,6 +2104,8 @@ export default function WorkspaceReconciliation() {
       // monthly balances so the point-in-time bsBankBalances snapshot (the manual /
       // QMS source of truth for "Per Balance Sheet") is authoritative.
       setBsMonthlyBalances(null);
+      // No financial statements outside KR mode → no auto-computed adjustments.
+      setActivityReview(null);
       return;
     }
     let cancelled = false;
@@ -1913,6 +2118,8 @@ export default function WorkspaceReconciliation() {
         }
         if (cancelled || !resp) return;
         setPlFinancials(computePlFinancialsFromFs(resp));
+        // Same response auto-populates every derivable Activity Review row.
+        setActivityReview(computeActivityReviewFromFs(resp));
         // Same response feeds the per-month "Per Balance Sheet" row.
         setBsMonthlyBalances(computeBsBankBalancesByMonthFromFs(resp));
       } catch {
@@ -2292,12 +2499,14 @@ export default function WorkspaceReconciliation() {
         : 0;
     const changeInAR = 0;
     const changeInARRetentions = 0;
+    const changeInCurrentAssets = 0;
     const fixedAssetDisposals = 0;
     const depositsOther = 0;
     const depositsUnreconciledDollar =
       depositsDollarVar +
       changeInAR +
       changeInARRetentions +
+      changeInCurrentAssets +
       fixedAssetDisposals +
       depositsOther;
     const depositsUnreconciledPct =
@@ -2347,6 +2556,7 @@ export default function WorkspaceReconciliation() {
       depositsPctVar,
       changeInAR,
       changeInARRetentions,
+      changeInCurrentAssets,
       fixedAssetDisposals,
       depositsOther,
       depositsUnreconciledDollar,
@@ -2387,6 +2597,7 @@ export default function WorkspaceReconciliation() {
       changeInAR: acc.changeInAR + r.changeInAR,
       changeInARRetentions:
         acc.changeInARRetentions + r.changeInARRetentions,
+      changeInCurrentAssets: acc.changeInCurrentAssets + r.changeInCurrentAssets,
       fixedAssetDisposals: acc.fixedAssetDisposals + r.fixedAssetDisposals,
       depositsOther: acc.depositsOther + r.depositsOther,
       depositsUnreconciledDollar:
@@ -3150,7 +3361,19 @@ export default function WorkspaceReconciliation() {
     const avRaw = (f) => [...rows.map((r) => r[f] ?? null), ttm[f] ?? null];
 
     // ── Adjustment helpers ────────────────────────────────────────────────────
-    const getAdj = (month, key) => reconAdjustments?.[`${month}_${key}`] ?? 0;
+    // Each adjustment row shows its auto-computed value (carried on the month's
+    // row object, derived from the financial statements) by default; a manual
+    // per-cell override saved in reconAdjustments takes precedence when present
+    // (even a saved 0). getAdj returns that EFFECTIVE value — it feeds both the
+    // Unreconciled Variance below and each AdjRow's cells.
+    const rowByMonth = Object.fromEntries(rows.map((r) => [r.month, r]));
+    const getAdj = (month, key) => {
+      const k = `${month}_${key}`;
+      if (reconAdjustments && Object.prototype.hasOwnProperty.call(reconAdjustments, k)) {
+        return reconAdjustments[k];
+      }
+      return Number(rowByMonth[month]?.[key]) || 0;
+    };
 
     // Pre-compute addback totals per month from multi-item addback rows
     const depAddbackMap = {};
@@ -3163,6 +3386,9 @@ export default function WorkspaceReconciliation() {
     });
 
     // Deposits — adjusted Unreconciled Variance
+    // NOTE: "Change in Current Assets" is intentionally NOT summed here — it is an
+    // informational raw BS delta that includes cash (already the deposits) and AR
+    // (its own row), so adding it would double-count. It is displayed only.
     const depositsUnrecAdj = rows.map((r) =>
       r.depositsDollarVar
       + getAdj(r.month, "changeInAR")
@@ -3235,10 +3461,11 @@ export default function WorkspaceReconciliation() {
         <DR label="% Variance" values={avRaw("depositsPctVar")} rawValues={avRaw("depositsPctVar")} rowType="variance-pct" />
         <SpacerRow colCount={colCount} />
 
-        <AdjRow label="Change in AR" rowKey="changeInAR" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
-        <AdjRow label="Change in Accts Receivable- Retentions" rowKey="changeInARRetentions" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
-        <AdjRow label="Fixed Asset Disposals" rowKey="fixedAssetDisposals" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
-        <AdjRow label="Other" rowKey="depositsOther" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AdjRow label="Change in AR" rowKey="changeInAR" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
+        <AdjRow label="Change in Accts Receivable- Retentions" rowKey="changeInARRetentions" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
+        <AdjRow label="Change in Current Assets" rowKey="changeInCurrentAssets" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
+        <AdjRow label="Fixed Asset Disposals" rowKey="fixedAssetDisposals" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
+        <AdjRow label="Other" rowKey="depositsOther" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
         <AddbacksRowGroup
           section="deposits"
           months={months}
@@ -3266,14 +3493,14 @@ export default function WorkspaceReconciliation() {
         <DR label="% Variance" values={avRaw("withdrawsPctVar")} rawValues={avRaw("withdrawsPctVar")} rowType="variance-pct" />
         <SpacerRow colCount={colCount} />
 
-        <AdjRow label="Owner Withdraws" rowKey="ownerWithdraws" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
-        <AdjRow label="Change in Current Liabilities" rowKey="changeInCurrentLiabilities" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
-        <AdjRow label="Change in LT Liabilities" rowKey="changeInLTLiabilities" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
-        <AdjRow label="Depreciation Expense" rowKey="depreciationExpense" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
-        <AdjRow label="Amortization Expense" rowKey="amortizationExpense" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
-        <AdjRow label="Bad Debt Expense" rowKey="badDebtExpense" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
-        <AdjRow label="Fixed Asset Purchases" rowKey="fixedAssetPurchases" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
-        <AdjRow label="Other" rowKey="withdrawsOther" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AdjRow label="Owner Withdraws" rowKey="ownerWithdraws" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
+        <AdjRow label="Change in Current Liabilities" rowKey="changeInCurrentLiabilities" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
+        <AdjRow label="Change in LT Liabilities" rowKey="changeInLTLiabilities" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
+        <AdjRow label="Depreciation Expense" rowKey="depreciationExpense" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
+        <AdjRow label="Amortization Expense" rowKey="amortizationExpense" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
+        <AdjRow label="Bad Debt Expense" rowKey="badDebtExpense" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
+        <AdjRow label="Fixed Asset Purchases" rowKey="fixedAssetPurchases" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
+        <AdjRow label="Other" rowKey="withdrawsOther" months={months} reconAdjustments={reconAdjustments} rowByMonth={rowByMonth} onSave={saveAdjustment} />
         <AddbacksRowGroup
           section="withdrawals"
           months={months}
@@ -3324,17 +3551,29 @@ export default function WorkspaceReconciliation() {
       const withdrawsPctVar = expensesPerFinancials !== 0 ? (withdrawsDollarVar / expensesPerFinancials) * 100 : 0;
       const withdrawsUnreconciledDollar = withdrawsDollarVar;
       const withdrawsUnreconciledPct = expensesPerFinancials !== 0 ? (withdrawsUnreconciledDollar / expensesPerFinancials) * 100 : 0;
+      // Auto-computed adjustment rows for this month, derived from the financial
+      // statements (signed cash effects). These become each AdjRow's default; a
+      // manual override in reconAdjustments still wins (see AdjRow/getAdj).
+      const adj = activityReview?.[mk] || {};
       return {
         month: mk,
         totalDeposits, intercompanyTransfers: 0, externalDeposits,
         salesPerFinancials, depositsDollarVar, depositsPctVar,
-        changeInAR: 0, changeInARRetentions: 0, fixedAssetDisposals: 0,
+        changeInAR: adj.changeInAR ?? 0,
+        changeInARRetentions: adj.changeInARRetentions ?? 0,
+        changeInCurrentAssets: adj.changeInCurrentAssets ?? 0,
+        fixedAssetDisposals: adj.fixedAssetDisposals ?? 0,
         depositsOther: 0, depositsUnreconciledDollar, depositsUnreconciledPct,
         totalWithdrawals, withdrawIntercompanyTransfers: 0, externalWithdraws,
         expensesPerFinancials, withdrawsDollarVar, withdrawsPctVar,
-        ownerWithdraws: 0, changeInCurrentLiabilities: 0, changeInLTLiabilities: 0,
-        depreciationExpense: 0, amortizationExpense: 0, badDebtExpense: 0,
-        fixedAssetPurchases: 0, withdrawsOther: 0,
+        ownerWithdraws: 0,
+        changeInCurrentLiabilities: adj.changeInCurrentLiabilities ?? 0,
+        changeInLTLiabilities: adj.changeInLTLiabilities ?? 0,
+        depreciationExpense: adj.depreciationExpense ?? 0,
+        amortizationExpense: adj.amortizationExpense ?? 0,
+        badDebtExpense: adj.badDebtExpense ?? 0,
+        fixedAssetPurchases: adj.fixedAssetPurchases ?? 0,
+        withdrawsOther: 0,
         withdrawsUnreconciledDollar, withdrawsUnreconciledPct,
       };
     });
@@ -3348,7 +3587,7 @@ export default function WorkspaceReconciliation() {
       salesPerFinancials: acc.salesPerFinancials + r.salesPerFinancials,
       depositsDollarVar: acc.depositsDollarVar + r.depositsDollarVar,
       depositsPctVar: 0,
-      changeInAR: 0, changeInARRetentions: 0, fixedAssetDisposals: 0, depositsOther: 0,
+      changeInAR: 0, changeInARRetentions: 0, changeInCurrentAssets: 0, fixedAssetDisposals: 0, depositsOther: 0,
       depositsUnreconciledDollar: acc.depositsUnreconciledDollar + r.depositsUnreconciledDollar,
       depositsUnreconciledPct: 0,
       totalWithdrawals: acc.totalWithdrawals + r.totalWithdrawals,
@@ -3465,7 +3704,16 @@ export default function WorkspaceReconciliation() {
     const actRows = isManual ? manualActivityRows : activityRows;
     const actTTM = isManual ? manualActivityTTM : activityTTM;
     if (actRows.length) {
-      const getAdj = (month, key) => reconAdjustments?.[`${month}_${key}`] ?? 0;
+      // Match the on-screen table: manual override wins, else the auto-computed
+      // value carried on the row (derived from the financial statements).
+      const _actByMonth = Object.fromEntries(actRows.map((r) => [r.month, r]));
+      const getAdj = (month, key) => {
+        const k = `${month}_${key}`;
+        if (reconAdjustments && Object.prototype.hasOwnProperty.call(reconAdjustments, k)) {
+          return reconAdjustments[k];
+        }
+        return Number(_actByMonth[month]?.[key]) || 0;
+      };
       const adjTTM = (key) => months.slice(-12).reduce((s, m) => s + getAdj(m, key), 0);
       const adjVals = (key) => [...actRows.map((r) => getAdj(r.month, key)), adjTTM(key)];
       const depMap = {}, wdrMap = {};
@@ -3477,7 +3725,8 @@ export default function WorkspaceReconciliation() {
         r.depositsDollarVar + getAdj(r.month, "changeInAR") + getAdj(r.month, "changeInARRetentions")
         + getAdj(r.month, "fixedAssetDisposals") + getAdj(r.month, "depositsOther") + (depMap[r.month] ?? 0));
       const ttmDepUnrec = months.slice(-12).reduce((s, m) =>
-        s + getAdj(m, "changeInAR") + getAdj(m, "changeInARRetentions") + getAdj(m, "fixedAssetDisposals")
+        s + getAdj(m, "changeInAR") + getAdj(m, "changeInARRetentions")
+        + getAdj(m, "fixedAssetDisposals")
         + getAdj(m, "depositsOther") + (depMap[m] ?? 0), actTTM.depositsDollarVar ?? 0);
       const wdrUnrec = actRows.map((r) =>
         r.withdrawsDollarVar + getAdj(r.month, "ownerWithdraws") + getAdj(r.month, "changeInCurrentLiabilities")
@@ -3502,6 +3751,7 @@ export default function WorkspaceReconciliation() {
         [],
         ["Change in AR", ...adjVals("changeInAR")],
         ["Change in AR Retentions", ...adjVals("changeInARRetentions")],
+        ["Change in Current Assets", ...adjVals("changeInCurrentAssets")],
         ["Fixed Asset Disposals", ...adjVals("fixedAssetDisposals")],
         ["Other", ...adjVals("depositsOther")],
         ...addbackItems.filter((i) => i.section === "deposits").map((item) => [
@@ -3717,7 +3967,16 @@ export default function WorkspaceReconciliation() {
     const actTTM = isManual ? manualActivityTTM : activityTTM;
     if (actRows.length) {
       drawSectionTitle("Activity Review");
-      const getAdj = (month, key) => reconAdjustments?.[`${month}_${key}`] ?? 0;
+      // Match the on-screen table: manual override wins, else the auto-computed
+      // value carried on the row (derived from the financial statements).
+      const _actByMonth = Object.fromEntries(actRows.map((r) => [r.month, r]));
+      const getAdj = (month, key) => {
+        const k = `${month}_${key}`;
+        if (reconAdjustments && Object.prototype.hasOwnProperty.call(reconAdjustments, k)) {
+          return reconAdjustments[k];
+        }
+        return Number(_actByMonth[month]?.[key]) || 0;
+      };
       const adjTTM = (key) => months.slice(-12).reduce((s, m) => s + getAdj(m, key), 0);
       const adjVals = (key) => [...actRows.map((r) => getAdj(r.month, key)), adjTTM(key)];
       const depMap = {}, wdrMap = {};
@@ -3729,7 +3988,8 @@ export default function WorkspaceReconciliation() {
         r.depositsDollarVar + getAdj(r.month, "changeInAR") + getAdj(r.month, "changeInARRetentions")
         + getAdj(r.month, "fixedAssetDisposals") + getAdj(r.month, "depositsOther") + (depMap[r.month] ?? 0));
       const ttmDepUnrec = months.slice(-12).reduce((s, m) =>
-        s + getAdj(m, "changeInAR") + getAdj(m, "changeInARRetentions") + getAdj(m, "fixedAssetDisposals")
+        s + getAdj(m, "changeInAR") + getAdj(m, "changeInARRetentions")
+        + getAdj(m, "fixedAssetDisposals")
         + getAdj(m, "depositsOther") + (depMap[m] ?? 0), actTTM.depositsDollarVar ?? 0);
       const wdrUnrec = actRows.map((r) =>
         r.withdrawsDollarVar + getAdj(r.month, "ownerWithdraws") + getAdj(r.month, "changeInCurrentLiabilities")
@@ -3752,6 +4012,7 @@ export default function WorkspaceReconciliation() {
       drawRow("% Variance", av("depositsPctVar"), { rowType: "variance-pct" }); spacer();
       drawRow("Change in AR", adjVals("changeInAR"));
       drawRow("Change in AR Retentions", adjVals("changeInARRetentions"));
+      drawRow("Change in Current Assets", adjVals("changeInCurrentAssets"));
       drawRow("Fixed Asset Disposals", adjVals("fixedAssetDisposals"));
       drawRow("Other", adjVals("depositsOther"));
       addbackItems.filter((i) => i.section === "deposits").forEach((item) => {
@@ -3991,9 +4252,11 @@ export default function WorkspaceReconciliation() {
                   className="btn-outline flex h-10 items-center gap-1.5 px-3 text-[13px]"
                   disabled={isLoadingExtractedBankPdfData}
                   onClick={() => {
+                    // Explicit Refresh forces a full replace (can clear stale data),
+                    // unlike background auto-loads which preserve on-screen data.
                     if (isQBManual) void loadQMSBankData();
-                    else if (isManualUpload) void loadManualBankData();
-                    else void loadExtractedBankPdfData({ datasetVersion: kr.resolvedDatasetVersion });
+                    else if (isManualUpload) void loadManualBankData({ force: true });
+                    else void loadExtractedBankPdfData({ datasetVersion: kr.resolvedDatasetVersion, force: true });
                   }}
                   title="Reload data from the active source"
                 >
@@ -4005,6 +4268,9 @@ export default function WorkspaceReconciliation() {
               )}
               {/* Key Reports Version selector — only when Key Reports is the active source */}
               {krSelected && <KeyReportVersionSelector clientId={clientId} variant="filter" />}
+              {/* Bank Account dropdown — temporarily hidden in Key Reports mode:
+                  all banks are stacked below one another instead of filtering to one. */}
+              {!krSelected && (
               <div className="min-w-[280px]">
                 <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
                   Bank Account
@@ -4043,6 +4309,7 @@ export default function WorkspaceReconciliation() {
                   </select>
                 )}
               </div>
+              )}
               {/* Export dropdown */}
               <div className="relative">
                 <button
@@ -4083,9 +4350,19 @@ export default function WorkspaceReconciliation() {
           <div>
           {(isManualUpload || isManualGl || isQBManual) ? (
             extractedBankPdfData ? (
-              renderManualBalanceAccountTable(
-                extractedBankPdfData.banks.find((b) => b.bankName === selectedManualBankName) ||
-                extractedBankPdfData.banks[0],
+              // Key Reports mode: dropdown is hidden, so render every bank stacked
+              // below one another instead of only the selected one.
+              krSelected ? (
+                (extractedBankPdfData.banks || []).map((bank, i) => (
+                  <div key={bank?.bankName || i}>
+                    {renderManualBalanceAccountTable(bank)}
+                  </div>
+                ))
+              ) : (
+                renderManualBalanceAccountTable(
+                  extractedBankPdfData.banks.find((b) => b.bankName === selectedManualBankName) ||
+                  extractedBankPdfData.banks[0],
+                )
               )
             ) : extractedBankPdfFetchStatus.status === "success" ? (
               // Fetched successfully but active source has no bank statement files
