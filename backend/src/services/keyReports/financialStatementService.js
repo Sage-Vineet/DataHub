@@ -2188,16 +2188,28 @@ async function _generateFinancialStatementsImpl(versionId, options = {}) {
  * sourced from THIS Key Report version's generated P&L (the same statements the
  * /reports/financial-statements endpoint returns).
  *
- * Mapping (per product spec):
- *   Sales per Financials    ← monthly "Total for Income"  (statement.revenue.total)
- *   Expenses per Financials ← monthly "Net Operating Income" (statement.operatingIncome)
+ * Mapping (per product spec / CPA reconciliation workpaper):
+ *   Sales per Financials    ← monthly accrual revenue      (statement.revenue.total)
+ *   Expenses per Financials ← monthly Total Operating Expenses (statement.operatingExpenses.total)
+ *
+ * Expenses per Financials is the accrual OPERATING EXPENSES base the Activity
+ * Review bridges to External Withdrawals. It deliberately INCLUDES the non-cash
+ * accounts (depreciation, amortization, bad debt): those are added back as
+ * separate positive reconciling rows, which only nets to the true cash figure
+ * when they remain in this base (excluding them here AND adding them back would
+ * double-count). This replaced an earlier mapping to operatingIncome (Net
+ * Operating Income), which is a profit figure — the wrong base for a
+ * withdrawals-vs-expenses reconciliation and it never reconciled to zero.
  *
  * Keyed by "YYYY-MM" to match the Activity Review's monthKey. Spans every fiscal
  * year present in the version (no year filter), so multi-year ranges are covered.
  *
  * @returns {Promise<{ totalIncome: Object<string,number>, totalExpenses: Object<string,number> }>}
  */
-const PL_FINANCIALS_CACHE_TYPE = "kr_pl_financials_v1";
+// v2: Expenses per Financials remapped operatingIncome → operatingExpenses.total.
+// Bumped so the corrected figures invalidate any v1 rows cached under the same
+// version/sync/COA key (a code change alone does not move that key).
+const PL_FINANCIALS_CACHE_TYPE = "kr_pl_financials_v2";
 
 function computeMonthlyPlFinancials(fs) {
   const monthly = fs?.reports?.profitAndLoss?.monthly || [];
@@ -2209,7 +2221,7 @@ function computeMonthlyPlFinancials(fs) {
     if (!Number.isInteger(year) || !(monthNum >= 1 && monthNum <= 12)) continue;
     const key = `${year}-${String(monthNum).padStart(2, "0")}`;
     totalIncome[key] = round2(safeNum(entry.statement?.revenue?.total));
-    totalExpenses[key] = round2(safeNum(entry.statement?.operatingIncome));
+    totalExpenses[key] = round2(safeNum(entry.statement?.operatingExpenses?.total));
   }
   return { totalIncome, totalExpenses };
 }
