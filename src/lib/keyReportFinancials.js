@@ -78,29 +78,6 @@ function buildColumns(entries, period) {
   );
 }
 
-// Union-merge leaf accounts across periods by systemId (falling back to name),
-// preserving first-seen order. Returns leaf nodes with per-column amounts.
-function mergeAccounts(perPeriodAccounts, idPrefix) {
-  const order = [];
-  const map = new Map();
-  perPeriodAccounts.forEach(({ colKey, accounts }) => {
-    (accounts || []).forEach((acc) => {
-      const key = acc.systemId || acc.name;
-      if (!key) return;
-      if (!map.has(key)) {
-        order.push(key);
-        map.set(key, {
-          id: `${idPrefix}-${key}`,
-          name: acc.adjustedName || acc.name || "Unnamed",
-          amounts: {},
-        });
-      }
-      map.get(key).amounts[colKey] = Number(acc.amount) || 0;
-    });
-  });
-  return order.map((k) => map.get(k));
-}
-
 function totalRow(id, name, perPeriodValue) {
   const amounts = {};
   perPeriodValue.forEach(({ colKey, value }) => {
@@ -109,9 +86,13 @@ function totalRow(id, name, perPeriodValue) {
   return { id, name, type: "total", amounts };
 }
 
-// A section header with its leaf accounts followed by a subtotal row.
-function sectionNode(id, name, perPeriodAccounts, totalName, perPeriodTotal) {
-  const children = mergeAccounts(perPeriodAccounts, id);
+// A section header wrapping the backend's genuine, arbitrary-depth hierarchy
+// (see mergeDynamicHierarchy below) with a trailing subtotal row. Used for
+// every Profit & Loss section (Revenue / Cost of Sales / Operating Expenses)
+// so a document's own real sub-category depth survives instead of collapsing
+// to a flat list or a single grouping level.
+function hierarchySectionNode(id, name, entries, colKey, pickHierarchy, totalName, perPeriodTotal) {
+  const children = mergeDynamicHierarchy(entries, colKey, pickHierarchy, id);
   children.push(totalRow(`${id}-total`, totalName, perPeriodTotal));
   return { id, name, type: "header", amounts: {}, children };
 }
@@ -119,42 +100,27 @@ function sectionNode(id, name, perPeriodAccounts, totalName, perPeriodTotal) {
 function buildProfitAndLoss(entries, cols) {
   const colKey = (i) => cols[i].key;
   const per = (pick) => entries.map((e, i) => ({ colKey: colKey(i), value: pick(e.statement || {}) }));
-  const perAcc = (pick) => entries.map((e, i) => ({ colKey: colKey(i), accounts: pick(e.statement || {}) }));
 
-  const revenue = sectionNode(
-    "pl-rev", "Revenue",
-    perAcc((s) => s.revenue?.accounts || []),
+  const revenue = hierarchySectionNode(
+    "pl-rev", "Revenue", entries, colKey,
+    (s) => s.revenue?.hierarchy,
     "Total Revenue",
     per((s) => s.revenue?.total),
   );
-  const costOfSales = sectionNode(
-    "pl-cos", "Cost of Sales",
-    perAcc((s) => s.costOfSales?.accounts || []),
+  const costOfSales = hierarchySectionNode(
+    "pl-cos", "Cost of Sales", entries, colKey,
+    (s) => s.costOfSales?.hierarchy,
     "Total Cost of Sales",
     per((s) => s.costOfSales?.total),
   );
   const grossProfit = totalRow("pl-gp", "Gross Profit", per((s) => s.grossProfit));
 
-  // Operating expenses — union of named groups across periods.
-  const order = [];
-  const gmap = new Map();
-  entries.forEach((e, i) => {
-    const groups = e.statement?.operatingExpenses?.groups || {};
-    Object.entries(groups).forEach(([gName, g]) => {
-      if (!gmap.has(gName)) {
-        order.push(gName);
-        gmap.set(gName, { perAccounts: [], perTotal: [] });
-      }
-      const rec = gmap.get(gName);
-      rec.perAccounts.push({ colKey: colKey(i), accounts: g.accounts || [] });
-      rec.perTotal.push({ colKey: colKey(i), value: g.total });
-    });
-  });
-  const opexChildren = order.map((gName) =>
-    sectionNode(`pl-opex-${gName}`, gName, gmap.get(gName).perAccounts, `Total ${gName}`, gmap.get(gName).perTotal),
+  const operatingExpenses = hierarchySectionNode(
+    "pl-opex", "Operating Expenses", entries, colKey,
+    (s) => s.operatingExpenses?.hierarchy,
+    "Total Operating Expenses",
+    per((s) => s.operatingExpenses?.total),
   );
-  opexChildren.push(totalRow("pl-opex-total", "Total Operating Expenses", per((s) => s.operatingExpenses?.total)));
-  const operatingExpenses = { id: "pl-opex", name: "Operating Expenses", type: "header", amounts: {}, children: opexChildren };
 
   const operatingIncome = totalRow("pl-oi", "Operating Income", per((s) => s.operatingIncome));
   const pretaxIncome = totalRow("pl-pti", "Pretax Income", per((s) => s.pretaxIncome));
@@ -166,16 +132,17 @@ function buildProfitAndLoss(entries, cols) {
   };
 }
 
-// Merge the backend's genuine, arbitrary-depth Balance Sheet hierarchy
+// Merge the backend's genuine, arbitrary-depth hierarchy
 // (financialStatementService.js's buildDynamicHierarchy — built directly
 // from chart_of_accounts level_1..level_15; no fixed bucket names, no depth
 // cap, consecutive duplicate labels already collapsed server-side) across
 // every period, into the { id, name, type, amounts, children } shape QBRow
-// recurses through. This is the ONLY Balance Sheet hierarchy construction on
-// the frontend: it just merges whatever tree the backend already built by
-// name at each depth — it never invents, renames, or reclassifies a node.
-// Containers are matched by name; leaves are matched by systemId (falling
-// back to name), same convention as mergeAccounts above.
+// recurses through. This is the ONLY hierarchy construction on the frontend,
+// shared by every Balance Sheet section (assets/liabilities/equity) and every
+// Profit & Loss section (revenue/cost of sales/operating expenses): it just
+// merges whatever tree the backend already built by name at each depth — it
+// never invents, renames, or reclassifies a node. Containers are matched by
+// name; leaves are matched by systemId (falling back to name).
 function mergeDynamicHierarchy(entries, colKey, pickHierarchy, idPrefix) {
   function mergeLevel(perPeriodNodes, parentId) {
     const order = [];
@@ -222,18 +189,15 @@ function buildBalanceSheet(entries, cols) {
   // already carries its own rolled-up "Total …" child — used directly as the
   // top-level row(s), with no extra hardcoded "Assets"/"Liabilities" wrapper
   // or redundant appended total layered on top of it.
-  const assetRows = mergeDynamicHierarchy(entries, colKey, (s) => s.assets?.hierarchy, "bs-a");
-  const liabRows  = mergeDynamicHierarchy(entries, colKey, (s) => s.liabilities?.hierarchy, "bs-l");
-
-  const equity = sectionNode(
-    "bs-eq", "Equity",
-    entries.map((e, i) => ({ colKey: colKey(i), accounts: e.statement?.equity?.accounts || [] })),
-    "Total Equity",
-    per((s) => s.equity?.total),
-  );
+  const assetRows  = mergeDynamicHierarchy(entries, colKey, (s) => s.assets?.hierarchy, "bs-a");
+  const liabRows   = mergeDynamicHierarchy(entries, colKey, (s) => s.liabilities?.hierarchy, "bs-l");
+  // Same genuine, arbitrary-depth merge as assets/liabilities above — equity's
+  // own document sub-headings (e.g. "Owner's Equity" > "Capital") survive as
+  // real nested rows instead of collapsing into one flat account list.
+  const equityRows = mergeDynamicHierarchy(entries, colKey, (s) => s.equity?.hierarchy, "bs-eq");
   const tle = totalRow("bs-tle", "Total Liabilities and Equity", per((s) => s.totalLiabilitiesAndEquity));
 
-  return { rows: [...assetRows, ...liabRows, equity, tle], columns: { yearCols: cols } };
+  return { rows: [...assetRows, ...liabRows, ...equityRows, tle], columns: { yearCols: cols } };
 }
 
 // Cash-flow activity section. Monthly items are plain {name, amount}; yearly
@@ -297,6 +261,46 @@ function buildCashFlow(entries, cols) {
   };
 }
 
+// Fill every year in [yearStart, yearEnd] with its real entry, or an empty
+// placeholder ({ statement: {} }, which every builder above already renders as
+// all-zero amounts via its existing `|| {}`/`|| 0` guards) when the version has
+// no data for that year. An open bound defaults to the data's own min/max so a
+// partial filter (only From or only To set) never fabricates an unbounded range.
+// This makes a selected-but-dataless year appear with empty values instead of
+// silently vanishing from the report.
+function fillYearGaps(entries, yearStart, yearEnd) {
+  const years = entries.map((e) => Number(e.year)).filter(Number.isInteger);
+  const start = yearStart != null && yearStart !== "" ? Number(yearStart) : (years.length ? Math.min(...years) : null);
+  const end = yearEnd != null && yearEnd !== "" ? Number(yearEnd) : (years.length ? Math.max(...years) : null);
+  if (!Number.isInteger(start) || !Number.isInteger(end) || end < start) return entries;
+  const byYear = new Map(entries.map((e) => [Number(e.year), e]));
+  const filled = [];
+  for (let y = start; y <= end; y += 1) {
+    filled.push(byYear.get(y) || { year: y, periodLabel: `FY ${y}`, statement: {} });
+  }
+  return filled;
+}
+
+// Same gap-filling as fillYearGaps, at month granularity — every "YYYY-MM" in
+// [monthStart, monthEnd] gets its real entry or an empty placeholder.
+function fillMonthGaps(entries, monthStart, monthEnd) {
+  const existingYm = entries.map((e) => `${e.year}-${pad2(e.monthNumber)}`);
+  const startYM = monthStart ? String(monthStart).slice(0, 7) : (existingYm.length ? existingYm.reduce((a, b) => (a < b ? a : b)) : null);
+  const endYM = monthEnd ? String(monthEnd).slice(0, 7) : (existingYm.length ? existingYm.reduce((a, b) => (a > b ? a : b)) : null);
+  if (!startYM || !endYM || endYM < startYM) return entries;
+  const byYm = new Map(entries.map((e) => [`${e.year}-${pad2(e.monthNumber)}`, e]));
+  const filled = [];
+  let [y, m] = startYM.split("-").map(Number);
+  const [endY, endM] = endYM.split("-").map(Number);
+  while (y < endY || (y === endY && m <= endM)) {
+    const ym = `${y}-${pad2(m)}`;
+    filled.push(byYm.get(ym) || { year: y, monthNumber: m, statement: {} });
+    m += 1;
+    if (m > 12) { m = 1; y += 1; }
+  }
+  return filled;
+}
+
 /**
  * Convert a financial-statements response into a detail payload for one tab.
  *
@@ -315,27 +319,12 @@ export function transformKeyReportFinancials(response, { tab, period, yearStart,
   const bucket = reports[tabToTypeKey(tab)] || {};
   let entries = period === "Year" ? bucket.yearly || [] : bucket.monthly || [];
 
-  if (period === "Year" && (yearStart || yearEnd)) {
-    entries = entries.filter((e) => {
-      const y = Number(e.year);
-      if (yearStart && y < Number(yearStart)) return false;
-      if (yearEnd && y > Number(yearEnd)) return false;
-      return true;
-    });
-  }
-
-  // Month mode: restrict to the selected Date From / Date To range (compared at
-  // month granularity, since each column is one calendar month).
-  if (period !== "Year" && (monthStart || monthEnd)) {
-    const startYM = monthStart ? String(monthStart).slice(0, 7) : null;
-    const endYM = monthEnd ? String(monthEnd).slice(0, 7) : null;
-    entries = entries.filter((e) => {
-      const ym = `${e.year}-${pad2(e.monthNumber)}`;
-      if (startYM && ym < startYM) return false;
-      if (endYM && ym > endYM) return false;
-      return true;
-    });
-  }
+  // Fill (not just filter) the selected range: a year/month the user's From/To
+  // covers but the version has no data for still appears as its own column,
+  // with empty/zero amounts, rather than silently disappearing from the report.
+  entries = period === "Year"
+    ? fillYearGaps(entries, yearStart, yearEnd)
+    : fillMonthGaps(entries, monthStart, monthEnd);
 
   const cols = buildColumns(entries, period);
   if (tab === "Balance Sheet") return buildBalanceSheet(entries, cols);

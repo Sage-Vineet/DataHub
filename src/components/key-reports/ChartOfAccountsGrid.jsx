@@ -12,6 +12,7 @@ import {
   collapsePath, computeDescendantRelabel, collectCategoryOptions,
   validateDraftTree, MAX_HIERARCHY_LEVELS,
 } from "../../lib/coaTree";
+import { clearCachedFinancials } from "../../lib/keyReportFinancials";
 import { useHierarchyRecommendations } from "../../hooks/useHierarchyRecommendations";
 
 const STATEMENT_LABELS = { balance_sheet: "Balance Sheet", profit_loss: "P&L" };
@@ -76,7 +77,7 @@ function parsePathInput(value) {
   return String(value || "").split(">").map((s) => s.trim()).filter(Boolean);
 }
 
-export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }) {
+export default function ChartOfAccountsGrid({ clientId, versionId, hasSyncedData, notify }) {
   const [serverFlat, setServerFlat] = useState([]);
   const [patches, setPatches] = useState(new Map()); // accountId -> { levels?, adjustedName? }
   const [history, setHistory] = useState([]);
@@ -95,7 +96,7 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
   const [mergeEditor, setMergeEditor] = useState(null); // { id, categoryPrefixArr, value }
   const [saveErrors, setSaveErrors] = useState(null);
 
-  const rec = useHierarchyRecommendations(versionId, notify);
+  const rec = useHierarchyRecommendations(clientId, versionId, notify);
 
   // ── Data loading ─────────────────────────────────────────────────────────
   const load = useCallback(async () => {
@@ -220,6 +221,13 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
       setHistory([]);
       setFuture([]);
       setSaveErrors(null);
+      // A hierarchy edit changes chart_of_accounts.updated_at, which is one of
+      // the two signals the backend financial-statements cache keys on — but
+      // the frontend's own sessionStorage copy has no such key and would keep
+      // serving the pre-edit tree/numbers for the rest of the browser session
+      // otherwise (see WorkspaceReconciliation.jsx, which reads it before the
+      // network).
+      clearCachedFinancials(clientId, versionId);
       notify?.(`Saved ${nodes.length} account${nodes.length === 1 ? "" : "s"}.`, "success");
     } catch (e) {
       const violations = e.payload?.violations;
@@ -241,7 +249,21 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
       const res = await regenerateChartOfAccounts(versionId);
       setServerFlat(res?.flat || []);
       discardDraft();
-      notify?.("Chart of Accounts regenerated from the latest data.", "success");
+      clearCachedFinancials(clientId, versionId);
+      // Reuse the counts the backend already computed (summary.sourceCounts)
+      // instead of a generic "regenerated" message — accurately reflects how
+      // many accounts came from the uploaded documents/Chart of Accounts vs.
+      // needed AI classification vs. still need manual mapping, rather than
+      // implying AI classified everything.
+      const total = res?.summary?.accountCount ?? res?.flat?.length ?? 0;
+      const aiClassified = res?.summary?.sourceCounts?.aiHierarchy ?? 0;
+      const needsMapping = res?.summary?.sourceCounts?.needsMapping ?? 0;
+      const documentMatched = Math.max(0, total - aiClassified - needsMapping);
+      const parts = [`${total} account${total === 1 ? "" : "s"} generated.`];
+      if (documentMatched) parts.push(`${documentMatched} resolved from uploaded documents.`);
+      if (aiClassified) parts.push(`${aiClassified} required AI classification.`);
+      if (needsMapping) parts.push(`${needsMapping} require${needsMapping === 1 ? "s" : ""} manual mapping.`);
+      notify?.(`Chart of Accounts generated successfully. ${parts.join(" ")}`, "success");
     } catch (e) {
       notify?.(e.message || "Failed to regenerate Chart of Accounts.", "error");
     } finally { setRegenerating(false); }
@@ -254,6 +276,7 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
       const res = await resetChartOfAccounts(versionId);
       setServerFlat(res?.flat || []);
       discardDraft();
+      clearCachedFinancials(clientId, versionId);
       notify?.("Restored all accounts to the original AI classification.", "success");
     } catch (e) {
       notify?.(e.message || "Failed to reset hierarchy.", "error");
@@ -310,6 +333,7 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
     try {
       await resetChartOfAccount(row.id);
       await load();
+      clearCachedFinancials(clientId, versionId);
       notify?.("Account restored to original.", "success");
     } catch (e) { notify?.(e.message || "Failed to reset account.", "error"); }
   };

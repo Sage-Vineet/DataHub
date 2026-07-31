@@ -19,6 +19,7 @@ import {
   getManualCashFlowPeriods,
   listManualGlDatasetVersions,
   getFinancialStatements,
+  getKeyReportAvailablePeriods,
 } from "../../../lib/api";
 import {
   transformKeyReportFinancials,
@@ -485,6 +486,9 @@ export default function WorkspaceReports() {
   // Year range selectors — shown when reportPeriod === "Year".
   const [yearRangeStart, setYearRangeStart] = useState(null);
   const [yearRangeEnd, setYearRangeEnd] = useState(null);
+  // Selected Key Report version's actual data span — { monthly: {min,max}, yearly: {min,max} }.
+  // Drives the Monthly/Yearly filter defaults below instead of a hardcoded window.
+  const [krAvailablePeriods, setKrAvailablePeriods] = useState(null);
   // Export (Excel / PDF) dropdown + in-flight state.
   const [exportOpen, setExportOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -728,6 +732,48 @@ export default function WorkspaceReports() {
   );
   const currentSignatureRef = useRef(currentSignature);
   currentSignatureRef.current = currentSignature;
+
+  // Fetch the selected Key Report version's actual data span (Monthly/Yearly
+  // filter defaults) whenever the version changes — new-style KR (entry-tables)
+  // flow only, the same flow that reads /reports/financial-statements. Clamps an
+  // out-of-range fromDate/toDate to the new version's bounds; a still-valid user
+  // selection is left alone (respects user intent, only corrects invalid state —
+  // matches how the existing Yearly auto-init effect below already behaves).
+  useEffect(() => {
+    if (!kr.krActive || !kr.selectedVersionId || kr.version?.resolvedBatchId) {
+      setKrAvailablePeriods(null);
+      return;
+    }
+    let cancelled = false;
+    getKeyReportAvailablePeriods(kr.selectedVersionId)
+      .then((res) => {
+        if (cancelled) return;
+        const monthly = res?.monthly || { min: null, max: null };
+        const yearly = res?.yearly || { min: null, max: null };
+        setKrAvailablePeriods({ monthly, yearly });
+        if (!monthly.min || !monthly.max) return;
+        setManualFilters((prev) => {
+          const from = prev.fromDate;
+          const to = prev.toDate;
+          const needsFrom = !from || from < monthly.min || from > monthly.max;
+          const needsTo = !to || to < monthly.min || to > monthly.max;
+          if (!needsFrom && !needsTo) return prev;
+          const next = {
+            ...prev,
+            fromDate: needsFrom ? monthly.min : from,
+            toDate: needsTo ? monthly.max : to,
+          };
+          setAppliedManualFilters(next);
+          return next;
+        });
+      })
+      .catch((err) => {
+        if (!cancelled) console.warn("[KeyReports][Report] available-periods fetch failed:", err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [kr.krActive, kr.selectedVersionId, kr.version?.resolvedBatchId]);
 
   // Date From / Date To pickers now read directly from fromDate/toDate — no year round-trip.
 
@@ -1834,9 +1880,17 @@ export default function WorkspaceReports() {
       const unique = [...new Set(years)].sort((a, b) => a - b);
       if (unique.length) return unique;
     }
+    // Key Reports (new-style, entry-tables flow): use the selected version's
+    // own data span instead of a generic window — see krAvailablePeriods effect.
+    if (selectedSourceMode === "key_reports") {
+      const { min, max } = krAvailablePeriods?.yearly || {};
+      if (Number.isInteger(min) && Number.isInteger(max) && max >= min) {
+        return Array.from({ length: max - min + 1 }, (_, i) => min + i);
+      }
+    }
     // QuickBooks online: last 6 calendar years.
     return Array.from({ length: 6 }, (_, i) => currentYear - 5 + i);
-  }, [selectedSourceMode, selectedTab, manualUploadFiles, qmsFiles, manualFilterOptions]);
+  }, [selectedSourceMode, selectedTab, manualUploadFiles, qmsFiles, manualFilterOptions, krAvailablePeriods]);
 
   // Auto-initialise year range when available years change (e.g. after files load).
   useEffect(() => {

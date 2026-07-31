@@ -989,11 +989,91 @@ async function generateFinancialTables(version, opts = {}) {
   // ensureCoaComplete, both linkers) and before anything below reads
   // level_1..15 — including the COA Validation block, the AI Hierarchy
   // Recommendation Engine, and Trial Balance/BS/P&L/CF generation.
+  //
+  // Every downstream report (Trial Balance, Monthly BS, P&L, Cash Flow) reads
+  // chart_of_accounts as its single source of truth for structure — genuine
+  // structural corruption left in the FINAL persisted state is exactly as
+  // fatal to correctness as a Trial Balance imbalance, so it is held to the
+  // same halt-the-pipeline standard (see the Trial Balance imbalance halt
+  // below) rather than logged as a warning and silently left for every report
+  // generated afterward to serve wrong section totals from.
+  //
+  // Deliberately NOT gated on the full integrityReport.hierarchyValid: that
+  // flag also folds in levelsPass/hierarchyPathPass, which are keyed off
+  // deriveResult.driftCount — i.e. "did any row's PREVIOUSLY-persisted
+  // hierarchy_path/level_N disagree with what the parent chain says NOW".
+  // That is normal, expected, self-healing behavior on every regenerate where
+  // any account's classification changed since the last sync (confirmed live:
+  // a real sync corrected 216 drifted rows and finished with a fully
+  // consistent tree) — deriveLevelsFromPersistedTree already corrected it by
+  // construction, so treating "a correction happened" as "still broken" would
+  // halt nearly every normal sync. Same reasoning excludes databasePass
+  // (folds in orphan structural/category nodes — inert clutter nothing points
+  // to, not corruption of any real leaf's hierarchy) and cachePass
+  // (informational only). Only check what remains genuinely wrong in the
+  // FINAL state: a broken/circular parent chain, a classified leaf that lost
+  // its entire ancestor chain, or a leaf whose anchor doesn't match its
+  // statement side's required fixed prefix.
+  let coaHierarchyInvalid = null;
   try {
     const treeResult = await finalizeCoaHierarchy(companyId, versionId);
     logger.log(`  ✓ COA tree finalized: ${treeResult.rewrittenRows}/${treeResult.totalRows} row(s) had level_1..15 recomputed from parent_account_id`);
+    const ir = treeResult.integrityReport;
+    if (ir && (!ir.parentChainPass || !ir.coaGenerationPass || !ir.bsExtractionPass || !ir.plExtractionPass)) {
+      const problems = [];
+      if (!ir.parentChainPass) problems.push(`${ir.brokenParents} broken/circular parent reference(s)`);
+      if (!ir.coaGenerationPass) problems.push(`${ir.flattenedAccounts} classified account(s) with no parent chain at all`);
+      if (!ir.bsExtractionPass) problems.push('Balance Sheet fixed-anchor mismatch(es)');
+      if (!ir.plExtractionPass) problems.push('Profit & Loss fixed-anchor mismatch(es)');
+      coaHierarchyInvalid = {
+        message: `Chart of Accounts hierarchy failed integrity validation after finalization (${problems.join(', ')}).`,
+        details: ir,
+      };
+    }
   } catch (finalizeErr) {
     logger.warn(`  COA tree finalization failed: ${finalizeErr.message}`);
+    coaHierarchyInvalid = { message: `Chart of Accounts hierarchy finalization threw: ${finalizeErr.message}`, details: null };
+  }
+
+  if (coaHierarchyInvalid) {
+    logger.warn(`  ✗ Accounting workflow halted: coa_hierarchy_invalid — ${coaHierarchyInvalid.message}`);
+    const haltRows = await buildValidationResultsFromEntryTables(versionId, mappingsByCategory, years, logger);
+    haltRows.push({
+      dataType: 'chart_of_accounts',
+      year: null,
+      status: 'error',
+      severity: 'error',
+      message:
+        `${coaHierarchyInvalid.message} This usually means level_1..15/hierarchy_path no longer agree with the persisted ` +
+        `parent_account_id tree. Re-sync after resolving the underlying issue — reports must never be generated from an ` +
+        `unverified Chart of Accounts hierarchy.`,
+      metadata: { gate: 'coa_hierarchy_invalid', code: 'COA_HIERARCHY_INVALID', ...(coaHierarchyInvalid.details || {}) },
+    });
+    await replaceValidationResults(versionId, companyId, haltRows);
+    logger.log(`  ✓ ${haltRows.length} validation rows stored (workflow halted — Chart of Accounts hierarchy invalid)`);
+    return {
+      success: true,
+      halted: true,
+      batchId: null,
+      datasetVersion: null,
+      years,
+      extractionResults,
+      coaSummary,
+      errors: extractionErrors.length > 0 ? extractionErrors : null,
+      summary: {
+        generated: false,
+        halted: true,
+        haltReason: 'coa_hierarchy_invalid',
+        years,
+        totalRowsInserted: totalRows,
+        extractionResults,
+        documents: gate,
+        documentProcessing: docStats,
+        timings,
+        message: `Sync halted: Chart of Accounts hierarchy failed integrity validation. ${coaHierarchyInvalid.message} Re-sync after resolving the underlying issue.`,
+      },
+      message: `Sync halted: Chart of Accounts hierarchy failed integrity validation. ${coaHierarchyInvalid.message} Re-sync after resolving the underlying issue.`,
+    };
   }
 
   try {
@@ -1164,8 +1244,8 @@ async function generateFinancialTables(version, opts = {}) {
   // P&L and Cash Flow are generated after the authoritative monthly Balance
   // Sheets exist, then persisted as render-ready JSON. They are not accounting
   // source tables and opening a report never mutates COA or re-runs this pipeline.
-  logger.log('--- Phase 6: Materialize P&L and Cash Flow snapshots ---');
-  let generatedReportSummary = { profitLoss: 0, profitLossYears: [], cashFlow: 0 };
+  logger.log('--- Phase 6: Materialize P&L, Cash Flow, and Balance Sheet snapshots ---');
+  let generatedReportSummary = { profitLoss: 0, profitLossYears: [], cashFlow: 0, balanceSheet: 0 };
   try {
     const pl = await keyReportReportService.getProfitLossReport(versionId, {
       forceGenerate: true,
@@ -1185,6 +1265,22 @@ async function generateFinancialTables(version, opts = {}) {
   } catch (reportErr) {
     generatedReportSummary.error = reportErr.message;
     logger.warn(`  Generated report snapshot persistence failed: ${reportErr.message}`);
+  }
+  // Balance Sheet reuses the SAME generateFinancialStatements call the P&L/CF
+  // steps above already triggered (in-flight de-duped / qb_synced_reports-cached
+  // by generateFinancialStatements itself), so this adds no extra full computation
+  // — it only persists the already-computed BS into generated_report_snapshots.
+  try {
+    const bs = await keyReportReportService.getBalanceSheetReport(versionId, {
+      forceGenerate: true,
+      persist: true,
+      companyId,
+    });
+    generatedReportSummary.balanceSheet = bs.persistedSnapshots || 0;
+    logger.log(`  ✓ Generated report snapshots: Balance Sheet=${generatedReportSummary.balanceSheet}`);
+  } catch (bsSnapErr) {
+    generatedReportSummary.balanceSheetError = bsSnapErr.message;
+    logger.warn(`  Balance Sheet snapshot persistence failed: ${bsSnapErr.message}`);
   }
   mark('report_snapshots');
 

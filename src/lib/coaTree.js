@@ -1,8 +1,8 @@
-// Client-side Chart of Accounts tree utilities — mirrors the backend's
-// buildTree (chartOfAccountsService.js) and buildCoaNodeTree/validateCoaNodeTree
+﻿// Client-side Chart of Accounts tree utilities â€” mirrors the backend's
+// buildCoaNodeTree/validateCoaNodeTree
 // path-space checks, so the tree editor can recompute the tree and validate a
 // draft instantly (no round-trip per edit). The backend re-validates
-// authoritatively on Save regardless (saveHierarchy) — this is UX feedback,
+// authoritatively on Save regardless (saveHierarchy) â€” this is UX feedback,
 // not the enforcement point.
 
 export const MAX_HIERARCHY_LEVELS = 15;
@@ -13,88 +13,6 @@ export function normName(s) {
 
 function normPathKey(pathArr) {
   return (pathArr || []).map(normName).join(" > ");
-}
-
-// Stable ordering for the standardized top levels; everything else alpha.
-const LEVEL_ORDER = new Map([
-  ["Total Liabilities and Equity", 1], ["Total Assets", 2],
-  ["Assets", 1], ["Liabilities", 2], ["Equity", 3],
-  ["Revenue", 4], ["Cost of Goods Sold", 5], ["Operating Expenses", 6],
-]);
-
-function leafNode(acct, level) {
-  return {
-    id: acct.id,
-    accountId: acct.id,
-    name: acct.accountName || acct.adjustedName || acct.sourceName,
-    isGroup: false,
-    level: level || ((acct.levels || []).filter(Boolean).length || 1),
-    accountNumber: acct.accountNumber,
-    accountType: acct.accountType,
-    statementType: acct.statementType,
-    hierarchyPath: acct.hierarchyPath,
-    classificationMethod: acct.classificationMethod,
-    isActive: acct.isActive,
-    modified: acct.modified,
-    pendingEdit: acct.pendingEdit,
-    levels: acct.levels,
-    originalName: acct.originalName,
-    adjustedName: acct.adjustedName,
-    metadata: acct.metadata,
-    children: [],
-  };
-}
-
-/** Build a nested tree from the flat leaf list — same shape/logic as the backend's buildTree. */
-export function buildTree(flatRows) {
-  const root = { children: [], childIndex: new Map() };
-
-  for (const acct of flatRows) {
-    const path = (acct.levels || []).filter(Boolean);
-    if (!path.length) {
-      root.children.push(leafNode(acct));
-      continue;
-    }
-    let node = root;
-    for (let i = 0; i < path.length - 1; i += 1) {
-      const label = path[i];
-      const idxKey = normName(label);
-      let child = node.childIndex.get(idxKey);
-      if (!child) {
-        child = {
-          id: `cat:${node.id || "root"}/${label}`,
-          name: label,
-          isGroup: true,
-          level: i + 1,
-          pathArr: path.slice(0, i + 1),
-          statementType: acct.statementType,
-          children: [],
-          childIndex: new Map(),
-        };
-        node.childIndex.set(idxKey, child);
-        node.children.push(child);
-      }
-      node = child;
-    }
-    node.children.push(leafNode(acct, path.length));
-  }
-
-  const finalize = (n) => {
-    if (n.children) {
-      n.children.sort((a, b) => {
-        if (a.isGroup !== b.isGroup) return a.isGroup ? -1 : 1;
-        const ao = LEVEL_ORDER.get(a.name) || 999;
-        const bo = LEVEL_ORDER.get(b.name) || 999;
-        if (ao !== bo) return ao - bo;
-        return String(a.name).localeCompare(String(b.name));
-      });
-      n.children.forEach(finalize);
-    }
-    delete n.childIndex;
-    return n;
-  };
-  root.children.forEach(finalize);
-  return root.children;
 }
 
 /** Collapse consecutive duplicate labels (the leaf-padding display convention). */
@@ -133,7 +51,7 @@ export function computeDescendantRelabel(flat, oldPrefixArr, newPrefixArr) {
 }
 
 /**
- * Every distinct existing category path in the current draft — the pickable
+ * Every distinct existing category path in the current draft â€” the pickable
  * "Move to..." target list, extended with whatever new path the user types.
  */
 export function collectCategoryOptions(flat) {
@@ -204,24 +122,45 @@ export function validateDraftTree(flat) {
     }
   }
 
+  // Mirrors the backend's validateCoaNodeTree fix exactly: `nodes` holds ONLY
+  // synthesized GROUP keys (built from path.slice(0, -1)) and
+  // `leavesByFullPath` holds ONLY ACCOUNT keys. Keying both on the same bare
+  // normPathKey let a group and a posting account "collide" as plain strings
+  // even though they are different node types â€” e.g. the P&L anchor's
+  // "Net Income" group at
+  // "Total Liabilities and Equity > Total Equity > Net Income" and the
+  // synthetic equity "Net Income" leaf at that same path. That is legitimate,
+  // and the server accepts it; without this fix the grid would show a
+  // client-side validation error for a draft the server would happily commit.
+  // Namespacing the two key-spaces makes the cross-type case impossible while
+  // still catching a genuine same-type conflict (already covered above by the
+  // duplicate-structural-node and duplicate-leaf-path checks).
+  const GROUP_NS = "group::";
+  const ACCOUNT_NS = "account::";
+  const structuralPathKeys = new Set(Array.from(nodes.keys(), (k) => `${GROUP_NS}${k}`));
+  const leafPathKeys = new Set(Array.from(leavesByFullPath.keys(), (k) => `${ACCOUNT_NS}${k}`));
   let leafUsedAsParentCount = 0;
-  for (const key of nodes.keys()) {
-    if (leavesByFullPath.has(key)) {
-      leafUsedAsParentCount += 1;
-      const node = nodes.get(key);
-      const offending = leavesByFullPath.get(key) || [];
-      violations.push(
-        `"${node.pathArr.join(" > ")}" is a posting account (${offending.map(displayName).join(", ")}) but would also become a parent category.`,
-      );
-    }
+  for (const tagged of structuralPathKeys) {
+    if (!leafPathKeys.has(tagged)) continue;
+    leafUsedAsParentCount += 1;
+    const key = tagged.slice(GROUP_NS.length);
+    const node = nodes.get(key);
+    const offending = leavesByFullPath.get(key) || [];
+    violations.push(
+      `"${node.pathArr.join(" > ")}" is a posting account (${offending.map(displayName).join(", ")}) but would also become a parent category.`,
+    );
   }
+
+  // Diagnostic only, never a violation â€” a group and an account may share a label.
+  let groupAccountLabelCollisions = 0;
+  for (const key of nodes.keys()) if (leavesByFullPath.has(key)) groupAccountLabelCollisions += 1;
 
   let depthExceededCount = 0;
   for (const leaf of flat) {
     const depth = (leaf.levels || []).filter(Boolean).length;
     if (depth > MAX_HIERARCHY_LEVELS) {
       depthExceededCount += 1;
-      violations.push(`${displayName(leaf)}'s hierarchy is ${depth} levels deep — exceeds the maximum of ${MAX_HIERARCHY_LEVELS}.`);
+      violations.push(`${displayName(leaf)}'s hierarchy is ${depth} levels deep â€” exceeds the maximum of ${MAX_HIERARCHY_LEVELS}.`);
     }
   }
 
@@ -229,6 +168,6 @@ export function validateDraftTree(flat) {
     hierarchyValid: duplicateStructuralNodes === 0 && duplicateLeafPaths === 0
       && leafUsedAsParentCount === 0 && depthExceededCount === 0,
     duplicateStructuralNodes, duplicateLeafPaths, leafUsedAsParentCount, depthExceededCount,
-    violations,
+    groupAccountLabelCollisions, violations,
   };
 }

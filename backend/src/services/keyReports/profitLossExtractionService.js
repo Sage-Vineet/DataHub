@@ -208,11 +208,7 @@ class ProfitLossExtractionService extends ExtractionServiceBase {
   // See balanceSheetExtractionService.js's identical method for the full
   // rationale — retries Python once before falling back to JS, and treats a
   // suspiciously flat result (real leaf rows but zero hierarchy) as worth
-  // retrying too, not just an outright failure, since a bad flat result once
-  // cached under the current parser_version silently persists.
-  // Shared with the base class's cache-read gate (_readExtractionCache) so a
-  // bad result is caught the same way whether it was just extracted or read
-  // back from a previously-cached (and possibly stale/bad) entry.
+  // retrying too, not just an outright failure.
   _isExtractionSuspicious(rows) {
     const leafRows = (rows || []).filter((r) => !r.is_header && !r.is_total);
     const rowsWithParent = leafRows.filter((r) => Array.isArray(r.parent_path) && r.parent_path.length > 0);

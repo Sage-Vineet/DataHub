@@ -516,7 +516,7 @@ export default function WorkspaceKeyReports() {
           <h1 className="text-xl font-bold text-text-primary">Key Reports</h1>
           <p className="mt-1 text-sm text-text-secondary">
             Link your financial documents and click <strong>Generate</strong> to
-            build AI-powered financial reports.
+            build your Chart of Accounts and financial reports.
           </p>
         </div>
 
@@ -642,8 +642,8 @@ export default function WorkspaceKeyReports() {
                   </p>
                   <p className="mt-0.5 text-sm text-text-secondary">
                     {isDone || hasSyncedData
-                      ? "Re-run AI Processing, COA, and all Financial Reports with the latest linked documents."
-                      : "Run AI Processing, build Chart of Accounts, and generate all Financial Reports in one step."}
+                      ? "Re-extract your documents and rebuild the Chart of Accounts and all Financial Reports with the latest linked documents."
+                      : "Extract your documents, build the Chart of Accounts, and generate all Financial Reports in one step."}
                     {linkedDocumentCount === 0 && (
                       <span className="ml-1 font-medium text-amber-600">
                         Link at least one document first.
@@ -761,6 +761,7 @@ export default function WorkspaceKeyReports() {
                 {showCoa && (
                   <div className="mt-2">
                     <ChartOfAccountsGrid
+                      clientId={clientId}
                       versionId={selectedVersionId}
                       hasSyncedData={hasSyncedData}
                       notify={notify}

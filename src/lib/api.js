@@ -1696,6 +1696,13 @@ export function getFinancialStatements(versionId, { year, currency } = {}) {
   return request(`/key-reports/versions/${versionId}/reports/financial-statements${qs ? `?${qs}` : ""}`);
 }
 
+// Lightweight period metadata for a version — { monthly: {min,max}, yearly: {min,max} }.
+// Used to set the Reports page's Monthly/Yearly filter defaults without fetching
+// the full financial-statements payload.
+export function getKeyReportAvailablePeriods(versionId) {
+  return request(`/key-reports/versions/${versionId}/available-periods`);
+}
+
 export function listFolderAccess(folderId) {
   return request(`/folders/${folderId}/access`).then(ensureArray);
 }
