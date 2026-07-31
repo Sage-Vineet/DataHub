@@ -852,7 +852,21 @@ export function applyCimTemplateStyleProfilesToLayouts(layouts = {}, profile) {
 
 export function exportCimStyleProfileJson(profile) {
   const normalized = normalizeCimStyleProfile(profile);
-  return JSON.stringify({ kind: "datahub-cim-style-profile", version: CIM_STYLE_PROFILE_VERSION, profile: normalized }, null, 2);
+  return JSON.stringify({
+    kind: "datahub-cim-style-profile",
+    version: CIM_STYLE_PROFILE_VERSION,
+    exportedAt: new Date().toISOString(),
+    contents: [
+      "colors",
+      "typography",
+      "background",
+      "tables",
+      "charts",
+      "branding",
+      "elementOverrides",
+    ],
+    profile: normalized,
+  }, null, 2);
 }
 
 export function importCimStyleProfileJson(text) {

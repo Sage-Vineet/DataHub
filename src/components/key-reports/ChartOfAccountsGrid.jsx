@@ -1,15 +1,18 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 import {
-  RefreshCw, Loader2, Table2, Check, X, Pencil, RotateCcw, Search, Undo2, Download, FolderInput,
+  RefreshCw, Loader2, Table2, Check, X, Pencil, RotateCcw, Search, Undo2, Redo2, Download,
+  FolderInput, GitMerge, Sparkles, Save, AlertTriangle,
 } from "lucide-react";
 import {
-  getChartOfAccounts,
-  regenerateChartOfAccounts,
-  updateChartOfAccount,
-  resetChartOfAccount,
-  resetChartOfAccounts,
+  getChartOfAccounts, regenerateChartOfAccounts, resetChartOfAccount,
+  resetChartOfAccounts, saveChartOfAccounts,
 } from "../../lib/api";
+import {
+  collapsePath, computeDescendantRelabel, collectCategoryOptions,
+  validateDraftTree, MAX_HIERARCHY_LEVELS,
+} from "../../lib/coaTree";
+import { useHierarchyRecommendations } from "../../hooks/useHierarchyRecommendations";
 
 const STATEMENT_LABELS = { balance_sheet: "Balance Sheet", profit_loss: "P&L" };
 const METHOD_LABELS = {
@@ -21,7 +24,7 @@ const METHOD_LABELS = {
   gemini_category: "AI (category match)", existing_working_coa: "Existing COA",
   bs_section: "Balance Sheet section", pl_section: "P&L section",
 };
-const MAX_LEVELS = 15;
+const MAX_LEVELS = MAX_HIERARCHY_LEVELS;
 const LEVEL_INDEXES = Array.from({ length: MAX_LEVELS }, (_, i) => i);
 
 // ── Financial section / sub-section structure (mirrors the client's Excel) ───
@@ -69,29 +72,45 @@ const NEEDS_MAPPING_SECTION = {
 // systemId + acctNum + acctName + acctIdName + stmt + 15 levels + path + method + adjustedName + actions
 const TOTAL_COLS = 5 + MAX_LEVELS + 4;
 
+function parsePathInput(value) {
+  return String(value || "").split(">").map((s) => s.trim()).filter(Boolean);
+}
+
 export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }) {
-  const [flat, setFlat]               = useState([]);
+  const [serverFlat, setServerFlat] = useState([]);
+  const [patches, setPatches] = useState(new Map()); // accountId -> { levels?, adjustedName? }
+  const [history, setHistory] = useState([]);
+  const [future, setFuture] = useState([]);
   const [loading, setLoading]         = useState(false);
+  const [saving, setSaving]           = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [resettingAll, setResettingAll] = useState(false);
   const [editingId, setEditingId]     = useState(null);
   const [editName, setEditName]       = useState("");
+  const [editLevels, setEditLevels]   = useState([]); // array of MAX_LEVELS strings, source of truth while editing
   const [search, setSearch]           = useState("");
   const [mappingId, setMappingId]           = useState(null);
   const [mappingCategoryKey, setMappingCategoryKey] = useState("");
   const [mappingBaseName, setMappingBaseName]       = useState("");
-  const [mappingSaving, setMappingSaving]           = useState(false);
+  const [mergeEditor, setMergeEditor] = useState(null); // { id, categoryPrefixArr, value }
+  const [saveErrors, setSaveErrors] = useState(null);
+
+  const rec = useHierarchyRecommendations(versionId, notify);
 
   // ── Data loading ─────────────────────────────────────────────────────────
   const load = useCallback(async () => {
-    if (!versionId) { setFlat([]); return; }
+    if (!versionId) { setServerFlat([]); return; }
     setLoading(true);
     try {
       const res = await getChartOfAccounts(versionId);
-      setFlat(res?.flat || []);
+      setServerFlat(res?.flat || []);
+      setPatches(new Map());
+      setHistory([]);
+      setFuture([]);
+      setSaveErrors(null);
     } catch (e) {
       notify?.(e.message || "Failed to load Chart of Accounts.", "error");
-      setFlat([]);
+      setServerFlat([]);
     } finally {
       setLoading(false);
     }
@@ -99,13 +118,129 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
 
   useEffect(() => { load(); }, [load]);
 
-  // ── Actions ───────────────────────────────────────────────────────────────
+  // ── Draft: serverFlat + in-memory patches overlay ────────────────────────
+  // Edits (rename / edit hierarchy path / move / merge) stage here until
+  // Save — nothing is written to the server until then, and Undo/Redo step
+  // through this history.
+  const flat = useMemo(() => {
+    if (!patches.size) return serverFlat;
+    return serverFlat.map((row) => {
+      const patch = patches.get(row.id);
+      if (!patch) return row;
+      const levels = patch.levels || row.levels;
+      const hierarchyPath = patch.levels ? collapsePath(patch.levels).join(" > ") : row.hierarchyPath;
+      const adjustedName = patch.adjustedName !== undefined ? patch.adjustedName : row.adjustedName;
+      return {
+        ...row,
+        levels,
+        hierarchyPath,
+        adjustedName,
+        accountName: adjustedName || row.sourceName,
+        pendingEdit: true,
+      };
+    });
+  }, [serverFlat, patches]);
+
+  const categoryOptions = useMemo(() => collectCategoryOptions(flat), [flat]);
+  const draftValidation = useMemo(
+    () => validateDraftTree(flat.filter((r) => !r.metadata?.needs_mapping)),
+    [flat],
+  );
+
+  const pendingCount = patches.size;
+  const modifiedCount = useMemo(() => flat.filter((r) => r.modified || r.pendingEdit).length, [flat]);
+  const needsMappingCount = useMemo(() => flat.filter((r) => r.metadata?.needs_mapping).length, [flat]);
+
+  // ── History-aware patch application (undo/redo) ─────────────────────────
+  const commitPatches = useCallback((updater) => {
+    setHistory((h) => [...h, patches]);
+    setFuture([]);
+    setPatches(updater(patches));
+    setSaveErrors(null);
+  }, [patches]);
+
+  // Single primitive every edit action goes through: [{accountId, patch}, ...]
+  // applied together as ONE undo step, so a row edit that changes both name
+  // and hierarchy path (or a merge affecting many accounts) undoes in one go.
+  const applyRowEdits = useCallback((pairs) => {
+    if (!pairs.length) { notify?.("Nothing to change — already there.", "error"); return; }
+    commitPatches((prev) => {
+      const next = new Map(prev);
+      for (const { accountId, patch } of pairs) {
+        next.set(accountId, { ...next.get(accountId), ...patch });
+      }
+      return next;
+    });
+  }, [commitPatches, notify]);
+
+  const applyPatch = useCallback((accountId, patchUpdate) => {
+    applyRowEdits([{ accountId, patch: patchUpdate }]);
+  }, [applyRowEdits]);
+
+  const applyBatchRelabel = useCallback((pairs) => {
+    applyRowEdits(pairs.map((p) => ({ accountId: p.accountId, patch: { levels: p.levels } })));
+  }, [applyRowEdits]);
+
+  const undo = () => {
+    if (!history.length) return;
+    const prevSnapshot = history[history.length - 1];
+    setFuture((f) => [patches, ...f]);
+    setHistory((h) => h.slice(0, -1));
+    setPatches(prevSnapshot);
+    setSaveErrors(null);
+  };
+  const redo = () => {
+    if (!future.length) return;
+    const nextSnapshot = future[0];
+    setHistory((h) => [...h, patches]);
+    setFuture((f) => f.slice(1));
+    setPatches(nextSnapshot);
+    setSaveErrors(null);
+  };
+  const discardDraft = () => {
+    setPatches(new Map());
+    setHistory([]);
+    setFuture([]);
+    setSaveErrors(null);
+  };
+
+  // ── Save / Regenerate / Reset all ────────────────────────────────────────
+  const handleSave = async () => {
+    if (!patches.size) return;
+    const nodes = Array.from(patches.entries()).map(([accountId, patch]) => ({
+      accountId,
+      ...(patch.levels ? { levels: patch.levels, movedParent: true } : {}),
+      ...(patch.adjustedName !== undefined ? { adjustedName: patch.adjustedName } : {}),
+    }));
+    setSaving(true);
+    try {
+      const res = await saveChartOfAccounts(versionId, nodes);
+      setServerFlat(res?.flat || []);
+      setPatches(new Map());
+      setHistory([]);
+      setFuture([]);
+      setSaveErrors(null);
+      notify?.(`Saved ${nodes.length} account${nodes.length === 1 ? "" : "s"}.`, "success");
+    } catch (e) {
+      const violations = e.payload?.violations;
+      if (Array.isArray(violations) && violations.length) {
+        setSaveErrors(violations);
+        notify?.("Some changes couldn't be saved — see the details below.", "error");
+      } else {
+        notify?.(e.message || "Failed to save Chart of Accounts.", "error");
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleRegenerate = async () => {
     if (!versionId) return;
     setRegenerating(true);
     try {
       const res = await regenerateChartOfAccounts(versionId);
-      setFlat(res?.flat || []);
+      setServerFlat(res?.flat || []);
+      discardDraft();
       notify?.("Chart of Accounts regenerated from the latest data.", "success");
     } catch (e) {
       notify?.(e.message || "Failed to regenerate Chart of Accounts.", "error");
@@ -117,24 +252,59 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
     setResettingAll(true);
     try {
       const res = await resetChartOfAccounts(versionId);
-      setFlat(res?.flat || []);
+      setServerFlat(res?.flat || []);
+      discardDraft();
       notify?.("Restored all accounts to the original AI classification.", "success");
     } catch (e) {
       notify?.(e.message || "Failed to reset hierarchy.", "error");
     } finally { setResettingAll(false); }
   };
 
-  const startEdit  = (row) => { setEditingId(row.id); setEditName(row.adjustedName || row.accountName || ""); };
-  const cancelEdit = ()    => { setEditingId(null); setEditName(""); };
-  const saveEdit   = async (row) => {
-    const name = editName.trim();
-    if (!name || name === (row.adjustedName || row.accountName)) { cancelEdit(); return; }
-    try {
-      await updateChartOfAccount(row.id, { adjustedName: name });
-      cancelEdit();
-      await load();
-      notify?.("Account renamed.", "success");
-    } catch (e) { notify?.(e.message || "Failed to rename account.", "error"); }
+  // ── Edit — the WHOLE row becomes editable at once: Adjusted Name AND every
+  // Level 1..15 cell (with the Hierarchy Path field as a synced, two-way
+  // free-text view of the same levels — edit either and the other follows),
+  // committed together as one undo step. ────────────────────────────────────
+  const startEdit = (row) => {
+    setEditingId(row.id);
+    setEditName(row.adjustedName || row.accountName || "");
+    const levels = new Array(MAX_LEVELS).fill("");
+    (row.levels || []).forEach((v, i) => { if (i < MAX_LEVELS) levels[i] = v || ""; });
+    setEditLevels(levels);
+  };
+  const cancelEdit = () => { setEditingId(null); setEditName(""); setEditLevels([]); };
+  const setEditLevelAt = (i, value) => {
+    setEditLevels((prev) => {
+      const next = [...prev];
+      next[i] = value;
+      return next;
+    });
+  };
+  // The Hierarchy Path field edits the same editLevels array as one string —
+  // re-parsing it on every keystroke and padding/truncating back to MAX_LEVELS.
+  const editPathValue = collapsePath(editLevels).join(" > ");
+  const setEditPathValue = (value) => {
+    const parsed = parsePathInput(value);
+    const next = new Array(MAX_LEVELS).fill("");
+    parsed.slice(0, MAX_LEVELS).forEach((v, i) => { next[i] = v; });
+    setEditLevels(next);
+  };
+  const saveEdit = (row) => {
+    const trimmedName = editName.trim();
+    const trimmedPathArr = editLevels.map((v) => (v || "").trim()).filter(Boolean);
+    const oldPath = (row.levels || []).filter(Boolean);
+    const nameChanged = trimmedName && trimmedName !== (row.adjustedName || row.accountName);
+    const pathChanged = trimmedPathArr.length && trimmedPathArr.join(" > ") !== oldPath.join(" > ");
+    if (!nameChanged && !pathChanged) { cancelEdit(); return; }
+
+    const pairs = [];
+    if (pathChanged) {
+      for (const p of computeDescendantRelabel(flat, oldPath, trimmedPathArr)) {
+        pairs.push({ accountId: p.accountId, patch: { levels: p.levels } });
+      }
+    }
+    if (nameChanged) pairs.push({ accountId: row.id, patch: { adjustedName: trimmedName } });
+    applyRowEdits(pairs);
+    cancelEdit();
   };
   const resetRow = async (row) => {
     try {
@@ -144,78 +314,55 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
     } catch (e) { notify?.(e.message || "Failed to reset account.", "error"); }
   };
 
-  const modifiedCount = useMemo(() => flat.filter((r) => r.modified).length, [flat]);
-  const needsMappingCount = useMemo(() => flat.filter((r) => r.metadata?.needs_mapping).length, [flat]);
+  // ── Merge this account's category into another existing category ────────
+  // Repoints every OTHER account sharing this row's exact ancestor path
+  // (not just this one row) to the chosen target — the fix for two grouping
+  // nodes that ended up meaning the same thing (e.g. a name collision between
+  // a real posting account and an AI-derived category label).
+  const openMergeEditor = (row) => {
+    cancelEdit();
+    const categoryPrefixArr = collapsePath(row.levels).slice(0, -1);
+    setMergeEditor({ id: row.id, categoryPrefixArr, value: "" });
+  };
+  const closeMergeEditor = () => setMergeEditor(null);
+  const submitMergeEditor = () => {
+    if (!mergeEditor) return;
+    const targetArr = parsePathInput(mergeEditor.value);
+    if (!targetArr.length) { notify?.("Pick a category to merge into.", "error"); return; }
+    applyBatchRelabel(computeDescendantRelabel(flat, mergeEditor.categoryPrefixArr, targetArr));
+    closeMergeEditor();
+  };
 
   // ── Manual mapping for a needs_mapping account ────────────────────────────
-  // Every already-mapped account's own levels already describe a real
-  // category path (everything except its own base-account name, which is the
-  // last non-null level) — offering those as pickable targets uses hierarchy
-  // that already exists in this version, rather than inventing anything new.
-  const categoryOptions = useMemo(() => {
-    const byPath = new Map(); // "A > B > C" -> ["A","B","C"]
-    for (const row of flat) {
-      if (row.metadata?.needs_mapping) continue;
-      const raw = (row.levels || []).filter(Boolean);
-      if (raw.length < 2) continue;
-      // Collapse consecutive duplicate levels — the imported client workbook
-      // sometimes repeats a label across trailing levels to fill all 15
-      // columns, which would otherwise leave that repetition inside the
-      // derived category instead of stopping at the real ancestor chain.
-      const deduped = [];
-      for (const level of raw) {
-        if (!deduped.length || deduped[deduped.length - 1] !== level) deduped.push(level);
-      }
-      if (deduped.length < 2) continue; // need at least one ancestor above the base account
-      const categoryLevels = deduped.slice(0, -1);
-      const key = categoryLevels.join(" > ");
-      if (!byPath.has(key)) byPath.set(key, categoryLevels);
-    }
-    return Array.from(byPath.entries())
-      .map(([path, levels]) => ({ path, levels }))
-      .sort((a, b) => a.path.localeCompare(b.path));
-  }, [flat]);
-
   const startMapping = (row) => {
     setMappingId(row.id);
     setMappingCategoryKey(categoryOptions[0]?.path || "");
     setMappingBaseName(row.adjustedName || row.sourceName || "");
   };
   const cancelMapping = () => { setMappingId(null); setMappingCategoryKey(""); setMappingBaseName(""); };
-  const saveMapping = async (row) => {
+  const saveMapping = (row) => {
     const category = categoryOptions.find((c) => c.path === mappingCategoryKey);
     const baseName = mappingBaseName.trim();
     if (!category || !baseName) { notify?.("Pick a category and a name first.", "error"); return; }
-    setMappingSaving(true);
-    try {
-      await updateChartOfAccount(row.id, { levels: [...category.levels, baseName] });
-      cancelMapping();
-      await load();
-      notify?.("Account mapped.", "success");
-    } catch (e) {
-      notify?.(e.message || "Failed to map account.", "error");
-    } finally { setMappingSaving(false); }
+    applyPatch(row.id, { levels: [...category.levels, baseName] });
+    cancelMapping();
   };
 
   // ── Excel export — always exports ALL accounts regardless of current search ─
   const handleExport = () => {
     if (!flat.length) return;
 
-    // Build a full grouped map from `flat` (not filteredFlat) so export is complete.
     const allGrouped = {};
     for (const sec of SECTION_DEFS)
       for (const sg of sec.subGroups)
         allGrouped[sg.key] = [];
     allGrouped[NEEDS_MAPPING_KEY] = [];
     for (const row of flat) {
-      // No recognized type → Needs Mapping, never silently dropped from the export.
       const sgKey = TYPE_MAP[row.accountType]?.subGroupKey || NEEDS_MAPPING_KEY;
       allGrouped[sgKey].push(row);
     }
 
     const sheetRows = [];
-
-    // Column header row
     sheetRows.push([
       "System ID", "Account Number", "Account Name", "Account ID and Name",
       "Statement Type",
@@ -223,7 +370,6 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
       "Hierarchy Path", "Method", "Adjusted Name",
     ]);
 
-    // Section → sub-section → account rows
     for (const section of [...SECTION_DEFS, NEEDS_MAPPING_SECTION]) {
       sheetRows.push([section.label]);
       for (const sg of section.subGroups) {
@@ -272,7 +418,6 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
 
     for (const row of filteredFlat) {
       const mapping = TYPE_MAP[row.accountType];
-      // No recognized type → the Needs Mapping review queue, never dropped.
       const sgKey = mapping?.subGroupKey || NEEDS_MAPPING_KEY;
       out[sgKey].push(row);
     }
@@ -280,20 +425,13 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
   }, [filteredFlat]);
 
   // ── Build a flat list of row descriptors for the table body ───────────────
-  // (avoids React Fragment key issues when mapping over nested structures)
   const tableRows = useMemo(() => {
     const items = [];
-    // Needs Mapping is a real section too (not part of SECTION_DEFS/TYPE_MAP,
-    // since it has no recognized accountType) — same rendering rules apply.
     for (const section of [...SECTION_DEFS, NEEDS_MAPPING_SECTION]) {
       const sectionCount = section.subGroups.reduce(
         (n, sg) => n + (groupedData[sg.key] || []).length, 0,
       );
       if (search && sectionCount === 0) continue;
-      // Needs Mapping only earns a place in the grid when there's actually
-      // something in it — no empty-state clutter when everything's mapped.
-      // It still appears the moment any account can't be mapped, so nothing
-      // silently vanishes the way it did before this section existed.
       if (section.key === NEEDS_MAPPING_KEY && sectionCount === 0) continue;
 
       items.push({ kind: "section", section, count: sectionCount });
@@ -320,7 +458,7 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
     <div className="rounded-2xl border border-border bg-white">
       {/* ── Toolbar ─────────────────────────────────────────────────────────── */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Table2 size={18} className="text-primary" />
           <h3 className="text-base font-bold text-text-primary">Chart of Accounts</h3>
           <span className="rounded-full bg-bg-page px-2 py-0.5 text-xs text-text-muted">
@@ -336,6 +474,11 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
               {needsMappingCount} need{needsMappingCount === 1 ? "s" : ""} mapping
             </span>
           )}
+          {pendingCount > 0 && (
+            <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">
+              {pendingCount} unsaved change{pendingCount === 1 ? "" : "s"}
+            </span>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {/* Search */}
@@ -349,12 +492,37 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
             />
           </div>
           <button
+            onClick={undo}
+            disabled={!history.length}
+            title="Undo"
+            className="flex items-center gap-1 rounded-lg border border-border px-2 py-1.5 text-xs font-semibold text-text-primary hover:bg-bg-page disabled:opacity-40"
+          >
+            <Undo2 size={13} /> Undo
+          </button>
+          <button
+            onClick={redo}
+            disabled={!future.length}
+            title="Redo"
+            className="flex items-center gap-1 rounded-lg border border-border px-2 py-1.5 text-xs font-semibold text-text-primary hover:bg-bg-page disabled:opacity-40"
+          >
+            <Redo2 size={13} /> Redo
+          </button>
+          {pendingCount > 0 && (
+            <button
+              onClick={discardDraft}
+              title="Discard unsaved changes"
+              className="flex items-center gap-1 rounded-lg border border-border px-2 py-1.5 text-xs font-semibold text-text-muted hover:bg-bg-page"
+            >
+              <X size={13} /> Discard
+            </button>
+          )}
+          <button
             onClick={handleResetAll}
-            disabled={resettingAll || modifiedCount === 0}
+            disabled={resettingAll}
             className="flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-semibold text-text-primary hover:bg-bg-page disabled:opacity-50"
             title="Restore all accounts to the original AI classification"
           >
-            {resettingAll ? <Loader2 size={13} className="animate-spin" /> : <Undo2 size={13} />}
+            {resettingAll ? <Loader2 size={13} className="animate-spin" /> : <RotateCcw size={13} />}
             Reset all
           </button>
           <button
@@ -370,13 +538,46 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
             onClick={handleRegenerate}
             disabled={regenerating || !hasSyncedData}
             title={hasSyncedData ? "Re-run the analysis from this version's data" : "Run Sync first to generate the Chart of Accounts"}
-            className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-text-primary hover:bg-bg-page disabled:opacity-50"
           >
             {regenerating ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
             Regenerate
           </button>
+          <button
+            onClick={handleSave}
+            disabled={saving || !pendingCount || !draftValidation.hierarchyValid}
+            title={!draftValidation.hierarchyValid ? "Fix the issues below before saving" : "Save changes"}
+            className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+          >
+            {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+            Save{pendingCount ? ` (${pendingCount})` : ""}
+          </button>
         </div>
       </div>
+
+      {/* ── Live validation banner ────────────────────────────────────────── */}
+      {pendingCount > 0 && !draftValidation.hierarchyValid && (
+        <div className="flex items-start gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2.5">
+          <AlertTriangle size={15} className="mt-0.5 shrink-0 text-amber-600" />
+          <div className="text-xs text-amber-800">
+            <p className="font-semibold">This draft can't be saved yet:</p>
+            <ul className="mt-1 list-disc space-y-0.5 pl-4">
+              {draftValidation.violations.slice(0, 5).map((v, i) => <li key={i}>{v}</li>)}
+            </ul>
+          </div>
+        </div>
+      )}
+      {saveErrors && (
+        <div className="flex items-start gap-2 border-b border-red-200 bg-red-50 px-4 py-2.5">
+          <AlertTriangle size={15} className="mt-0.5 shrink-0 text-red-600" />
+          <div className="text-xs text-red-800">
+            <p className="font-semibold">Save rejected — the server found these problems:</p>
+            <ul className="mt-1 list-disc space-y-0.5 pl-4">
+              {saveErrors.map((v, i) => <li key={i}>{v}</li>)}
+            </ul>
+          </div>
+        </div>
+      )}
 
       {/* ── Loading ──────────────────────────────────────────────────────────── */}
       {loading ? (
@@ -414,15 +615,11 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
             </thead>
 
             <tbody>
-              {tableRows.map((item, idx) => {
-                // ── Main section header (PROFIT & LOSS ACCOUNTS / BALANCE SHEET ACCOUNTS) ──
+              {tableRows.map((item) => {
                 if (item.kind === "section") {
                   return (
                     <tr key={`sec-${item.section.key}`} style={{ backgroundColor: "#1B3A5C" }}>
-                      <td
-                        colSpan={TOTAL_COLS}
-                        className="px-4 py-2.5 text-xs font-extrabold uppercase tracking-widest text-white"
-                      >
+                      <td colSpan={TOTAL_COLS} className="px-4 py-2.5 text-xs font-extrabold uppercase tracking-widest text-white">
                         {item.section.label}
                         {search && (
                           <span className="ml-3 text-white/50 font-normal normal-case tracking-normal">
@@ -434,24 +631,17 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
                   );
                 }
 
-                // ── Sub-section header (Income / Expenses / Assets / Liabilities / Equity) ──
                 if (item.kind === "subGroup") {
                   return (
                     <tr key={`sg-${item.sg.key}`} style={{ backgroundColor: "#2C4D7A" }}>
-                      <td
-                        colSpan={TOTAL_COLS}
-                        className="px-6 py-2 text-xs font-bold text-white"
-                      >
+                      <td colSpan={TOTAL_COLS} className="px-6 py-2 text-xs font-bold text-white">
                         {item.sg.label}
-                        <span className="ml-2 text-white/40 font-normal">
-                          ({item.count})
-                        </span>
+                        <span className="ml-2 text-white/40 font-normal">({item.count})</span>
                       </td>
                     </tr>
                   );
                 }
 
-                // ── Empty placeholder ──
                 if (item.kind === "empty") {
                   return (
                     <tr key={`empty-${item.sg.key}`} className="bg-white">
@@ -462,44 +652,41 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
                   );
                 }
 
-                // ── Account row ──
                 const { row } = item;
                 const isEditing = editingId === row.id;
+                const isMerging = mergeEditor?.id === row.id;
                 const levels    = row.levels || [];
+                const rowRec    = rec.byAccountId.get(row.id);
 
                 return (
                   <Fragment key={row.id}>
                   <tr
-                    className={`border-b border-border/40 bg-white transition-colors hover:bg-gray-50 ${row.isActive === false ? "opacity-50" : ""}`}
+                    className={`border-b border-border/40 bg-white transition-colors hover:bg-gray-50 ${row.isActive === false ? "opacity-50" : ""} ${row.pendingEdit ? "bg-primary/5" : ""}`}
                   >
-                    {/* System ID */}
                     <td className="whitespace-nowrap px-3 py-1.5 font-mono text-xs font-semibold text-text-muted border-r border-border/30">
                       {row.systemId || "—"}
                     </td>
 
-                    {/* Account Number */}
                     <td className="whitespace-nowrap px-3 py-1.5 font-mono text-xs text-text-muted border-r border-border/30">
                       {row.accountNumber || ""}
                     </td>
 
-                    {/* Account Name */}
                     <td className="whitespace-nowrap px-3 py-1.5 border-r border-border/30">
                       <span className="text-text-primary text-[13px]" title={row.sourceName}>
                         {row.sourceName}
                       </span>
-                      {row.modified && (
+                      {(row.modified || row.pendingEdit) && (
                         <span className="ml-1.5 rounded-full bg-amber-200 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
                           modified
                         </span>
                       )}
+                      {rowRec && <RecommendationBadge rec={rowRec} accept={rec.accept} ignore={rec.ignore} deciding={rec.decidingId === rowRec.id} />}
                     </td>
 
-                    {/* Account ID and Name */}
                     <td className="whitespace-nowrap px-3 py-1.5 text-xs text-text-secondary border-r border-border/30">
                       {row.accountIdName || row.sourceName || "—"}
                     </td>
 
-                    {/* Statement Type */}
                     <td className="whitespace-nowrap px-3 py-1.5 border-r border-border/30">
                       <span
                         className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold ${
@@ -512,33 +699,59 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
                       </span>
                     </td>
 
-                    {/* Level 1 – Level 15 */}
                     {LEVEL_INDEXES.map((i) => (
                       <td
                         key={i}
                         className="px-2 py-1.5 text-xs text-text-secondary border-r border-border/30 max-w-[110px]"
-                        title={levels[i] || ""}
+                        title={isEditing ? "" : (levels[i] || "")}
                       >
-                        <span className="block truncate">{levels[i] || ""}</span>
+                        {isEditing ? (
+                          <input
+                            value={editLevels[i] || ""}
+                            onChange={(e) => setEditLevelAt(i, e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter")  saveEdit(row);
+                              if (e.key === "Escape") cancelEdit();
+                            }}
+                            className="w-full min-w-[80px] rounded border border-primary px-1 py-0.5 text-xs"
+                          />
+                        ) : (
+                          <span className="block truncate">{levels[i] || ""}</span>
+                        )}
                       </td>
                     ))}
 
-                    {/* Hierarchy Path */}
-                    <td
-                      className="px-3 py-1.5 text-xs text-text-muted border-r border-border/30"
-                      title={row.hierarchyPath}
-                    >
-                      <span className="block max-w-[220px] truncate">{row.hierarchyPath || "—"}</span>
+                    <td className="px-3 py-1.5 text-xs text-text-muted border-r border-border/30">
+                      {isEditing ? (
+                        <>
+                          <input
+                            list={`coa-path-options-${row.id}`}
+                            value={editPathValue}
+                            onChange={(e) => setEditPathValue(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter")  saveEdit(row);
+                              if (e.key === "Escape") cancelEdit();
+                            }}
+                            placeholder='Separate levels with ">" (e.g. Pretax Income > Interest Income)'
+                            className="w-[260px] rounded border border-primary px-2 py-0.5 text-xs"
+                          />
+                          <datalist id={`coa-path-options-${row.id}`}>
+                            {categoryOptions.map((c) => (
+                              <option key={c.path} value={`${c.path} > ${editName || row.sourceName}`} />
+                            ))}
+                          </datalist>
+                        </>
+                      ) : (
+                        <span className="block max-w-[220px] truncate" title={row.hierarchyPath}>{row.hierarchyPath || "—"}</span>
+                      )}
                     </td>
 
-                    {/* Method */}
                     <td className="whitespace-nowrap px-3 py-1.5 border-r border-border/30">
                       <span className="rounded bg-white/70 border border-border/40 px-1.5 py-0.5 text-[10px] text-text-muted">
                         {METHOD_LABELS[row.classificationMethod] || row.classificationMethod || "—"}
                       </span>
                     </td>
 
-                    {/* Adjusted Name (inline edit) */}
                     <td className="whitespace-nowrap px-3 py-1.5 border-r border-border/30">
                       {isEditing ? (
                         <div className="flex items-center gap-1">
@@ -552,12 +765,10 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
                             }}
                             className="w-40 rounded border border-primary px-2 py-0.5 text-xs"
                           />
-                          <button onClick={() => saveEdit(row)} title="Save"
-                            className="rounded p-1 text-primary hover:bg-white/60">
+                          <button onClick={() => saveEdit(row)} title="Save" className="rounded p-1 text-primary hover:bg-white/60">
                             <Check size={12} />
                           </button>
-                          <button onClick={cancelEdit} title="Cancel"
-                            className="rounded p-1 text-text-muted hover:bg-white/60">
+                          <button onClick={cancelEdit} title="Cancel" className="rounded p-1 text-text-muted hover:bg-white/60">
                             <X size={12} />
                           </button>
                         </div>
@@ -568,7 +779,6 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
                       )}
                     </td>
 
-                    {/* Actions */}
                     <td className="whitespace-nowrap px-3 py-1.5">
                       {!isEditing && (
                         <div className="flex items-center justify-end gap-1">
@@ -581,19 +791,18 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
                               <FolderInput size={12} />
                             </button>
                           )}
-                          <button
-                            onClick={() => startEdit(row)}
-                            title="Rename (adjusted name)"
-                            className="rounded p-1 text-text-muted hover:bg-white/60 hover:text-text-primary"
-                          >
+                          <button onClick={() => startEdit(row)} title="Edit this account (name, hierarchy path, parent)" className="rounded p-1 text-text-muted hover:bg-white/60 hover:text-text-primary">
                             <Pencil size={12} />
                           </button>
-                          {row.modified && (
-                            <button
-                              onClick={() => resetRow(row)}
-                              title="Restore original AI classification"
-                              className="rounded p-1 text-text-muted hover:bg-white/60 hover:text-amber-600"
-                            >
+                          <button
+                            onClick={() => (isMerging ? closeMergeEditor() : openMergeEditor(row))}
+                            title="Merge this account's category into another"
+                            className="rounded p-1 text-text-muted hover:bg-white/60 hover:text-primary"
+                          >
+                            <GitMerge size={12} />
+                          </button>
+                          {(row.modified || row.pendingEdit) && (
+                            <button onClick={() => resetRow(row)} title="Restore original AI classification" className="rounded p-1 text-text-muted hover:bg-white/60 hover:text-amber-600">
                               <RotateCcw size={12} />
                             </button>
                           )}
@@ -601,6 +810,7 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
                       )}
                     </td>
                   </tr>
+
                   {mappingId === row.id && (
                     <tr key={`map-${row.id}`} className="bg-red-50/60 border-b border-border/40">
                       <td colSpan={TOTAL_COLS} className="px-4 py-3">
@@ -615,9 +825,7 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
                               className="w-[420px] rounded border border-border px-2 py-1.5 text-xs"
                             >
                               {categoryOptions.length === 0 && <option value="">No existing categories yet</option>}
-                              {categoryOptions.map((c) => (
-                                <option key={c.path} value={c.path}>{c.path}</option>
-                              ))}
+                              {categoryOptions.map((c) => <option key={c.path} value={c.path}>{c.path}</option>)}
                             </select>
                           </div>
                           <div className="flex flex-col gap-1">
@@ -632,22 +840,48 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
                           </div>
                           <button
                             onClick={() => saveMapping(row)}
-                            disabled={mappingSaving || !categoryOptions.length}
+                            disabled={!categoryOptions.length}
                             className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
                           >
-                            {mappingSaving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
-                            Save mapping
+                            <Check size={13} /> Stage mapping
                           </button>
-                          <button
-                            onClick={cancelMapping}
-                            className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-text-primary hover:bg-white"
-                          >
+                          <button onClick={cancelMapping} className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-text-primary hover:bg-white">
+                            <X size={13} /> Cancel
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+
+                  {isMerging && (
+                    <tr key={`merge-${row.id}`} className="bg-primary/5 border-b border-border/40">
+                      <td colSpan={TOTAL_COLS} className="px-4 py-3">
+                        <div className="flex flex-wrap items-end gap-3">
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[10px] font-semibold uppercase tracking-wide text-text-muted">
+                              Merge "{mergeEditor.categoryPrefixArr.join(" > ") || "(root)"}" into
+                            </label>
+                            <input
+                              autoFocus
+                              list={`coa-merge-options-${row.id}`}
+                              value={mergeEditor.value}
+                              onChange={(e) => setMergeEditor((m) => ({ ...m, value: e.target.value }))}
+                              placeholder="Existing category this should merge into"
+                              className="w-[420px] rounded border border-primary px-2 py-1.5 text-xs"
+                            />
+                            <datalist id={`coa-merge-options-${row.id}`}>
+                              {categoryOptions.map((c) => <option key={c.path} value={c.path} />)}
+                            </datalist>
+                          </div>
+                          <button onClick={submitMergeEditor} className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90">
+                            <Check size={13} /> Stage merge
+                          </button>
+                          <button onClick={closeMergeEditor} className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-text-primary hover:bg-white">
                             <X size={13} /> Cancel
                           </button>
                         </div>
                         <p className="mt-2 text-[11px] text-text-muted">
-                          This places the account as a leaf under the selected category's existing hierarchy path
-                          — no new hierarchy is invented, only reused from what's already mapped in this Chart of Accounts.
+                          Moves every account under this same category (not just this one) to the target category.
                         </p>
                       </td>
                     </tr>
@@ -660,5 +894,45 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
         </div>
       )}
     </div>
+  );
+}
+
+function RecommendationBadge({ rec, accept, ignore, deciding }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="relative ml-1.5 inline-block">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        title="AI hierarchy suggestion available"
+        className="flex items-center gap-1 rounded-full border border-dashed border-primary bg-primary/5 px-1.5 py-0.5 text-[10px] font-medium text-primary hover:bg-primary/10"
+      >
+        <Sparkles size={10} /> Suggestion
+      </button>
+      {open && (
+        <div className="absolute left-0 top-6 z-10 w-80 rounded-xl border border-border bg-white p-3 text-left shadow-lg">
+          <p className="text-xs text-text-muted">
+            Suggested roll-up: <span className="font-semibold text-text-primary">{rec.recommendedRollup}</span>
+            {rec.recommendedParent ? <> under <span className="font-semibold">{rec.recommendedParent}</span></> : null}
+          </p>
+          {rec.reason && <p className="mt-1 text-[11px] text-text-muted">{rec.reason}</p>}
+          <div className="mt-2 flex items-center gap-2">
+            <button
+              onClick={async () => { const ok = await accept(rec.id); if (ok) setOpen(false); }}
+              disabled={deciding}
+              className="flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50"
+            >
+              <Check size={11} /> Accept
+            </button>
+            <button
+              onClick={async () => { await ignore(rec.id); setOpen(false); }}
+              disabled={deciding}
+              className="flex items-center gap-1 rounded-lg border border-border px-2.5 py-1 text-xs font-semibold text-text-muted disabled:opacity-50"
+            >
+              <X size={11} /> Ignore
+            </button>
+          </div>
+        </div>
+      )}
+    </span>
   );
 }

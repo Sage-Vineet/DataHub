@@ -24,6 +24,16 @@ async function pgQuery(sql, params = []) {
   return rows;
 }
 
+function isMissingColumnError(error, columnName) {
+  const text = [
+    error?.message,
+    error?.details,
+    error?.hint,
+    error?.code,
+  ].filter(Boolean).join(" ");
+  return new RegExp(`(${columnName}.*does not exist|Could not find.*${columnName}|schema cache.*${columnName}|42703)`, "i").test(text);
+}
+
 // Each entry: [folderName, parentIdKey, idKey?]
 // idKey is the key stored in idByName (defaults to folderName).
 // Use unique idKey values when the same name appears under different parents
@@ -387,12 +397,30 @@ async function updateFolder(id, folderData) {
  * Archives a folder (soft delete)
  */
 async function archiveFolder(id) {
+  const archivedAt = new Date().toISOString();
+  try {
+    const rows = await pgQuery("UPDATE folders SET archived_at=$1 WHERE id=$2 RETURNING *", [archivedAt, id]);
+    return rows[0] || null;
+  } catch (pgErr) {
+    if (pgErr && !isMissingColumnError(pgErr, "archived_at")) {
+      // Fall through to Supabase REST; direct PG can fail due connection config.
+    }
+  }
+
   const { data, error } = await supabase
     .from("folders")
-    .update({ archived_at: new Date().toISOString() })
+    .update({ archived_at: archivedAt })
     .eq("id", id)
     .select("*")
     .single();
+  if (error && isMissingColumnError(error, "archived_at")) {
+    const existing = await getFolderById(id);
+    return {
+      ...(existing || { id }),
+      archived_at: archivedAt,
+      archive_persistence_pending: true,
+    };
+  }
   if (error) throw error;
   return data;
 }
@@ -401,12 +429,29 @@ async function archiveFolder(id) {
  * Unarchives a folder
  */
 async function unarchiveFolder(id) {
+  try {
+    const rows = await pgQuery("UPDATE folders SET archived_at=NULL WHERE id=$1 RETURNING *", [id]);
+    return rows[0] || null;
+  } catch (pgErr) {
+    if (pgErr && !isMissingColumnError(pgErr, "archived_at")) {
+      // Fall through to Supabase REST; direct PG can fail due connection config.
+    }
+  }
+
   const { data, error } = await supabase
     .from("folders")
     .update({ archived_at: null })
     .eq("id", id)
     .select("*")
     .single();
+  if (error && isMissingColumnError(error, "archived_at")) {
+    const existing = await getFolderById(id);
+    return {
+      ...(existing || { id }),
+      archived_at: null,
+      archive_persistence_pending: true,
+    };
+  }
   if (error) throw error;
   return data;
 }

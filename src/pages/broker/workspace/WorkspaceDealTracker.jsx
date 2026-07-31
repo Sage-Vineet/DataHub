@@ -229,7 +229,7 @@ export default function WorkspaceDealTracker() {
   }, [requests]);
 
   const activeReminders = useMemo(
-    () => reminders.filter((r) => r.status === 'active' || r.status === 'due'),
+    () => reminders.filter((r) => r.status === 'active' || r.status === 'due' || r.status === 'overdue'),
     [reminders],
   );
 
