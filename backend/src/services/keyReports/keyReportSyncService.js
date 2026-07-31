@@ -949,7 +949,6 @@ async function generateFinancialTables(version, opts = {}) {
     gate?.endingBs?.fiscal_year ?? null,
   );
   const balanceSheetRowsForTree = await loadBalanceSheetRowsForReferenceTree(companyId, versionId, referenceFiscalYear);
-
   const balanceSheetTree = buildBalanceSheetTreeFromData({
     reportName: 'Balance Sheet',
     rows: balanceSheetRowsForTree,
@@ -983,6 +982,8 @@ async function generateFinancialTables(version, opts = {}) {
   const coaBuildOpts = {
     plRows: plAccountRows,
     hasLinkedCoaDocument,
+    balanceSheetTree,
+    profitLossTree,
     // Threaded through so buildDocHierarchyLookups' deepest-wins tie-break
     // can prefer the Ending Balance Sheet when it and the Opening Balance
     // Sheet give the same account equal real depth (never re-derived here
@@ -1089,7 +1090,7 @@ async function generateFinancialTables(version, opts = {}) {
   try {
     coaSummary = await persistApprovedCoaTree(companyId, versionId, validation.hierarchical, { hasLinkedCoaDocument });
     if (coaSummary.rejected) {
-      logger.warn(`  ? Approved COA persistence rejected: ${(coaSummary.violations || []).join(' | ')}`);
+      logger.warn(`  ✗ Approved COA persistence rejected: ${(coaSummary.violations || []).join(' | ')}`);
       return haltWith(
         'coa_validation_failed',
         `Chart of Accounts validation failed -- not saved, no reports generated: ${(coaSummary.violations || []).join(' ')}`,
@@ -1101,7 +1102,7 @@ async function generateFinancialTables(version, opts = {}) {
       );
     }
     await supabase.from('key_report_versions').update({ coa_approved_at: new Date().toISOString() }).eq('id', versionId);
-    logger.log(`  ? Chart of Accounts approved & persisted: ${coaSummary.leafCount || 0} accounts (${coaSummary.inserted || 0} new, ${coaSummary.updated || 0} updated, ${coaSummary.deleted || 0} removed)`);
+    logger.log(`  ✓ Chart of Accounts approved & persisted: ${coaSummary.leafCount || 0} accounts (${coaSummary.inserted || 0} new, ${coaSummary.updated || 0} updated, ${coaSummary.deleted || 0} removed)`);
   } catch (coaErr) {
     logger.warn(`  ✗ Chart of Accounts persistence failed: ${coaErr.message}`);
     return haltWith('coa_save_failed', `Chart of Accounts could not be saved -- no reports generated: ${coaErr.message}`);
@@ -1127,7 +1128,7 @@ async function generateFinancialTables(version, opts = {}) {
   // resolve every GL account via in-memory lookup without any DB writes.
   logger.log('--- Phase 2c: Complete COA from unlinked GL accounts ---');
   try {
-    const completionResult = await ensureCoaComplete(companyId, versionId, plAccountRows, hasLinkedCoaDocument, gate?.endingBs?.fiscal_year ?? null, profitLossTree);
+    const completionResult = await ensureCoaComplete(companyId, versionId, plAccountRows, hasLinkedCoaDocument, gate?.endingBs?.fiscal_year ?? null);
     logger.log(`  ✓ COA completion: ${completionResult.added} account(s) added, ${completionResult.skipped} already present`);
     if (completionResult.added > 0) {
       // Re-run GL→COA linking so newly added accounts get their coa_id
