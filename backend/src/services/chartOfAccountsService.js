@@ -29,7 +29,7 @@
 // that account ids ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â and therefore the adjustment/classification audit history
 // that FKs to them ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â survive regeneration, and user adjustments are preserved.
 // ============================================================================
-
+//for check deploy
 const { supabase } = require("../db");
 const { classifyAccountsWithAI, invalidateClassificationCache } = require("./keyReports/geminiCoaClassifier");
 const { classifyCfCategory } = require("./keyReports/cfCategoryRules");
