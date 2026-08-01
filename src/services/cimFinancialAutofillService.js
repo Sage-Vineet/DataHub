@@ -514,6 +514,155 @@ function detectReportFileYear(file) {
   return match ? Number(match[1]) : 0;
 }
 
+const BANK_BALANCE_MATCH_STOP_WORDS = new Set([
+  "bank",
+  "banks",
+  "banking",
+  "financial",
+  "corp",
+  "inc",
+  "llc",
+  "ltd",
+  "national",
+  "savings",
+  "credit",
+  "union",
+  "trust",
+  "services",
+  "group",
+  "company",
+]);
+
+function hasNumericValue(value) {
+  return value !== null && value !== undefined && value !== "";
+}
+
+function toNullableNumber(value) {
+  if (!hasNumericValue(value)) return null;
+  const numeric = toNumber(value, null);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function normalizeBankBalanceName(name) {
+  return String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getLastFourDigits(value) {
+  const match = String(value || "").match(/\b(\d{4})\b/);
+  return match ? match[1] : "";
+}
+
+function getBankBalanceWords(value, { significantOnly = false } = {}) {
+  const words = normalizeBankBalanceName(value)
+    .split(" ")
+    .filter((word) => word.length > 2 && !/^\d+$/.test(word));
+  return significantOnly
+    ? words.filter((word) => !BANK_BALANCE_MATCH_STOP_WORDS.has(word))
+    : words;
+}
+
+function normalizeBalanceSheetBankAccounts(data = {}) {
+  const payload = data?.balanceSheetBankAccounts || data?.bsBankBalances || {};
+  const accounts = Array.isArray(payload?.bankAccounts)
+    ? payload.bankAccounts
+    : Array.isArray(payload)
+    ? payload
+    : Array.isArray(data?.bankAccounts)
+    ? data.bankAccounts
+    : [];
+  const sourceYear = payload?.year || data?.year || null;
+
+  return accounts.map((account) => {
+    const name = account?.name || account?.accountName || account?.bankName || "";
+    const amount = toNullableNumber(account?.amount ?? account?.balance ?? account?.endingBalance);
+    const rawMonthAmounts = account?.monthAmounts && typeof account.monthAmounts === "object"
+      ? account.monthAmounts
+      : null;
+    const monthAmounts = rawMonthAmounts
+      ? Object.fromEntries(Object.entries(rawMonthAmounts)
+        .map(([monthKey, value]) => [monthKey, toNullableNumber(value)])
+        .filter(([, value]) => value !== null))
+      : null;
+    return {
+      name,
+      normalizedName: normalizeBankBalanceName(name),
+      accountNumber: getLastFourDigits(account?.accountNumber || account?.account_number || name),
+      amount,
+      year: account?.year || sourceYear,
+      monthAmounts,
+    };
+  }).filter((account) => account.name || account.accountNumber);
+}
+
+function findBalanceSheetBankMatch(queryName, balanceSheetAccounts = []) {
+  if (!queryName || !balanceSheetAccounts.length) return null;
+  const queryNumber = getLastFourDigits(queryName);
+  const queryNameNormalized = normalizeBankBalanceName(queryName);
+  const namedAccounts = balanceSheetAccounts.filter((account) => account.normalizedName);
+  if (queryNumber) {
+    const numberMatches = balanceSheetAccounts.filter((account) => account.accountNumber === queryNumber);
+    if (numberMatches.length === 1) return numberMatches[0];
+    if (numberMatches.length > 1) {
+      const exactNameMatch = numberMatches.filter((account) => account.normalizedName).find((account) =>
+        account.normalizedName === queryNameNormalized ||
+        queryNameNormalized.includes(account.normalizedName) ||
+        account.normalizedName.includes(queryNameNormalized));
+      if (exactNameMatch) return exactNameMatch;
+    }
+  }
+
+  const exact = namedAccounts.find((account) => account.normalizedName === queryNameNormalized);
+  if (exact) return exact;
+  const contains = namedAccounts.find((account) =>
+    account.normalizedName.includes(queryNameNormalized) ||
+    queryNameNormalized.includes(account.normalizedName));
+  if (contains) return contains;
+
+  const significantWords = getBankBalanceWords(queryName, { significantOnly: true });
+  const allWords = getBankBalanceWords(queryName);
+  for (const significantOnly of [true, false]) {
+    const queryWords = significantOnly ? significantWords : allWords;
+    if (!queryWords.length) continue;
+    let bestScore = 0;
+    let bestMatch = null;
+    namedAccounts.forEach((account) => {
+      const accountWords = getBankBalanceWords(account.name, { significantOnly });
+      const overlap = queryWords.filter((word) => accountWords.includes(word)).length;
+      const score = overlap / Math.max(queryWords.length, accountWords.length, 1);
+      if (score > bestScore) {
+        bestScore = score;
+        bestMatch = account;
+      }
+    });
+    if (bestMatch && bestScore > (significantOnly ? 0 : 0.3)) return bestMatch;
+  }
+  return null;
+}
+
+function resolveBalanceSheetBookBalance({ bankName, accountName, month, balanceSheetAccounts }) {
+  const match = findBalanceSheetBankMatch([bankName, accountName].filter(Boolean).join(" "), balanceSheetAccounts) ||
+    findBalanceSheetBankMatch(bankName, balanceSheetAccounts) ||
+    findBalanceSheetBankMatch(accountName, balanceSheetAccounts);
+  if (!match) return { amount: null, source: "" };
+
+  const monthKey = String(month || "");
+  if (match.monthAmounts && monthKey && match.monthAmounts[monthKey] !== undefined) {
+    return { amount: match.monthAmounts[monthKey], source: match.name };
+  }
+
+  const yearEndMonth = match.year ? `${match.year}-12` : "";
+  if (match.amount !== null && (!monthKey || !yearEndMonth || monthKey === yearEndMonth)) {
+    return { amount: match.amount, source: match.name };
+  }
+
+  return { amount: null, source: match.name };
+}
+
 function normalizeUploadedProfitLossRows(file) {
   const data = file?.data || {};
   const rows = Array.isArray(data.rows) ? data.rows : [];
@@ -1611,6 +1760,12 @@ function normalizeBankReconciliationSnapshot(payload = {}, endDate = "") {
   const data = payload?.found && payload?.data ? payload.data : payload;
   const endMonth = String(endDate || "").slice(0, 7);
   const accountRows = [];
+  const balanceSheetAccounts = normalizeBalanceSheetBankAccounts(data);
+  const normalizeRowStatus = (status, variance) => {
+    if (/review|open|variance|unreconciled|needs/i.test(String(status || ""))) return "Review";
+    if (variance !== null && Math.abs(variance) > 0.01) return "Review";
+    return "Reconciled";
+  };
 
   if (Array.isArray(data?.accounts)) {
     data.accounts.forEach((account) => {
@@ -1619,15 +1774,30 @@ function normalizeBankReconciliationSnapshot(payload = {}, endDate = "") {
         .sort((a, b) => String(a.month || a.monthKey || "").localeCompare(String(b.month || b.monthKey || "")));
       const latest = monthlyData[monthlyData.length - 1];
       if (!latest) return;
+      const bankBalance = toNumber(latest.endingBalance, 0);
+      const name = account.accountName || account.bankName || "Bank account";
+      const bankName = account.bankName || account.accountName || "Bank";
+      const explicitBookBalance = toNullableNumber(latest.perBalanceSheet ?? latest.bookBalance ?? latest.glBalance);
+      const balanceSheetMatch = explicitBookBalance === null
+        ? resolveBalanceSheetBookBalance({
+          bankName,
+          accountName: name,
+          month: latest.month || latest.monthKey || endMonth,
+          balanceSheetAccounts,
+        })
+        : { amount: explicitBookBalance, source: "Balance Sheet / GL" };
+      const bookBalance = explicitBookBalance ?? balanceSheetMatch.amount;
+      const variance = toNullableNumber(latest.variance) ?? (bookBalance !== null ? bankBalance - bookBalance : null);
       accountRows.push({
-        name: account.accountName || account.bankName || "Bank account",
-        bankName: account.bankName || account.accountName || "Bank",
+        name,
+        bankName,
         month: latest.month || latest.monthKey || endMonth,
         date: latest.statementEndDate || latest.endDate || endDate,
-        bankBalance: toNumber(latest.endingBalance, 0),
-        bookBalance: toNumber(latest.perBalanceSheet, 0),
-        variance: toNumber(latest.variance, toNumber(latest.endingBalance, 0) - toNumber(latest.perBalanceSheet, 0)),
-        status: latest.status || (Math.abs(toNumber(latest.variance, 0)) < 0.01 ? "Reconciled" : "Review"),
+        bankBalance,
+        bookBalance,
+        variance,
+        status: normalizeRowStatus(latest.status, variance),
+        bookSource: balanceSheetMatch.source || "",
       });
     });
   }
@@ -1639,37 +1809,110 @@ function normalizeBankReconciliationSnapshot(payload = {}, endDate = "") {
         .sort((a, b) => String(a.monthKey || a.month || "").localeCompare(String(b.monthKey || b.month || "")));
       const latest = months[months.length - 1];
       if (!latest) return;
+      const month = latest.monthKey || latest.month || endMonth;
+      const name = account.accountName || account.account_name || bank.account_name || bank.bankName || bank.bank_name || "Bank account";
+      const bankName = bank.bankName || bank.bank_name || account.bankName || account.bank_name || name || "Bank";
+      const bankBalance = toNumber(latest.endingBalance, 0);
+      const explicitBookBalance = toNullableNumber(latest.perBalanceSheet ?? latest.bookBalance ?? latest.glBalance);
+      const balanceSheetMatch = explicitBookBalance === null
+        ? resolveBalanceSheetBookBalance({ bankName, accountName: name, month, balanceSheetAccounts })
+        : { amount: explicitBookBalance, source: "Balance Sheet / GL" };
+      const bookBalance = explicitBookBalance ?? balanceSheetMatch.amount;
+      const variance = toNullableNumber(latest.variance) ?? (bookBalance !== null ? bankBalance - bookBalance : null);
       accountRows.push({
-        name: account.accountName || bank.account_name || bank.bankName || bank.bank_name || "Bank account",
-        bankName: bank.bankName || bank.bank_name || account.bankName || "Bank",
-        month: latest.monthKey || latest.month || endMonth,
+        name,
+        bankName,
+        month,
         date: latest.statementEndDate || latest.statement_end_date || endDate,
-        bankBalance: toNumber(latest.endingBalance, 0),
-        bookBalance: toNumber(latest.perBalanceSheet ?? latest.bookBalance, 0),
-        variance: toNumber(latest.variance, 0),
-        status: latest.status || account.status || "Verified",
+        bankBalance,
+        bookBalance,
+        variance,
+        status: normalizeRowStatus(latest.status || account.status, variance),
+        bookSource: balanceSheetMatch.source || "",
       });
     });
   });
 
-  const latestMonth = accountRows.map((row) => row.month).sort().pop() || endMonth;
-  const latestRows = accountRows.filter((row) => row.month === latestMonth);
+  const latestMonth = accountRows.map((row) => row.month).filter(Boolean).sort().pop() || endMonth;
+  const latestRows = accountRows;
   const bankBalance = latestRows.reduce((sum, row) => sum + row.bankBalance, 0);
-  const statedBookBalance = latestRows.reduce((sum, row) => sum + row.bookBalance, 0);
-  const bookBalance = statedBookBalance || bankBalance;
-  const variance = latestRows.reduce((sum, row) => sum + (row.variance || row.bankBalance - row.bookBalance), 0)
-    || bankBalance - bookBalance;
+  const rowsWithBookBalance = latestRows.filter((row) => row.bookBalance !== null);
+  const rowsWithVariance = latestRows.filter((row) => row.variance !== null);
+  const statedBookBalance = rowsWithBookBalance.reduce((sum, row) => sum + row.bookBalance, 0);
+  const bookBalance = rowsWithBookBalance.length ? statedBookBalance : null;
+  const variance = rowsWithVariance.length
+    ? rowsWithVariance.reduce((sum, row) => sum + row.variance, 0)
+    : (bookBalance !== null ? bankBalance - bookBalance : null);
+  const byBank = new Map();
+  latestRows.forEach((row) => {
+    const bankName = row.bankName || "Bank";
+    const existing = byBank.get(bankName) || {
+      bankName,
+      accountCount: 0,
+      bankBalance: 0,
+      bookBalance: 0,
+      bookBalanceCount: 0,
+      variance: 0,
+      varianceCount: 0,
+      itemCount: 0,
+      status: "Reconciled",
+      accounts: [],
+    };
+    const rowBookBalance = row.bookBalance !== null ? toNumber(row.bookBalance, 0) : null;
+    const rowVariance = row.variance !== null
+      ? toNumber(row.variance, 0)
+      : (rowBookBalance !== null ? row.bankBalance - rowBookBalance : null);
+    const rowStatus = normalizeRowStatus(row.status, rowVariance);
+    existing.accountCount += 1;
+    existing.bankBalance += toNumber(row.bankBalance, 0);
+    if (rowBookBalance !== null) {
+      existing.bookBalance += rowBookBalance;
+      existing.bookBalanceCount += 1;
+    }
+    if (rowVariance !== null) {
+      existing.variance += rowVariance;
+      existing.varianceCount += 1;
+      existing.itemCount += Math.abs(rowVariance) > 0.01 ? 1 : 0;
+    }
+    existing.status = existing.status === "Review" || rowStatus === "Review"
+      ? "Review"
+      : "Reconciled";
+    existing.accounts.push({ ...row, bookBalance: rowBookBalance, variance: rowVariance, status: rowStatus });
+    byBank.set(bankName, existing);
+  });
+  const bankSummaries = Array.from(byBank.values())
+    .map((bank) => ({
+      ...bank,
+      hasBookBalance: bank.bookBalanceCount > 0,
+      hasVariance: bank.varianceCount > 0 || bank.bookBalanceCount > 0,
+      bookBalance: bank.bookBalanceCount > 0 ? bank.bookBalance : null,
+      variance: bank.varianceCount > 0
+        ? bank.variance
+        : (bank.bookBalanceCount > 0 ? bank.bankBalance - bank.bookBalance : null),
+    }))
+    .sort((a, b) =>
+      Math.abs(toNumber(b.variance, 0)) - Math.abs(toNumber(a.variance, 0)) ||
+      b.bankBalance - a.bankBalance ||
+      a.bankName.localeCompare(b.bankName));
 
   return {
     hasData: latestRows.length > 0,
     date: latestRows.map((row) => row.date).filter(Boolean).sort().pop() || endDate,
     bankName: Array.from(new Set(latestRows.map((row) => row.bankName).filter(Boolean))).join(", "),
     frequency: Array.isArray(data?.months) && data.months.length > 1 ? "Monthly" : "Periodic",
+    month: latestMonth,
     bankBalance,
     bookBalance,
     variance,
-    itemCount: latestRows.filter((row) => Math.abs(row.variance || row.bankBalance - row.bookBalance) > 0.01).length,
+    hasBookBalance: rowsWithBookBalance.length > 0,
+    hasVariance: variance !== null,
+    itemCount: rowsWithVariance.length
+      ? rowsWithVariance.filter((row) => Math.abs(row.variance) > 0.01).length
+      : latestRows.filter((row) => row.bookBalance !== null && Math.abs(row.bankBalance - row.bookBalance) > 0.01).length,
     accounts: latestRows,
+    banks: bankSummaries,
+    bankCount: bankSummaries.length,
+    balanceSheetMatchCount: rowsWithBookBalance.length,
   };
 }
 
@@ -2077,6 +2320,7 @@ export async function loadCimFinancialAutofillSnapshot({
       sourceKey: normalizedSource,
       datasetVersion,
       keyReportVersionId: selectedReportVersionId,
+      fiscalYear: selectedFiscalYear,
     }).catch(() => null),
     normalizedSource === REPORT_SOURCE_KEYS.QUICKBOOKS
       ? Promise.all(sortedAscending.map((year) => getCimTaxReconciliationRequest({

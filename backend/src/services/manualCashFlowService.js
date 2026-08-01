@@ -843,7 +843,7 @@ function generatedCfToRows(cf) {
 
 // Dynamically selected via GEMINI_MODELS / GEMINI_MODEL env; this array is the
 // default fallback order used when no override is configured.
-const GEMINI_CF_MODELS = getGeminiModels(["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"]);
+const GEMINI_CF_MODELS = getGeminiModels(["gemini-2.5-flash-lite", "gemini-2.5-flash"]);
 const GEMINI_CF_SLEEP = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function serializeFinancialRows(nodes, indent = 0) {

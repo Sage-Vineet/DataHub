@@ -200,6 +200,74 @@ async function runPythonScriptInner(scriptName, fileBuffer, extraArgs = []) {
 }
 
 
+// ── Binary-output subprocess helper ─────────────────────────────────────────
+// Like runPythonScript, but the script emits RAW BYTES on stdout (not JSON) —
+// used by decrypt_pdf.py, which returns a decrypted PDF. Resolves with
+// { ok, code, stdout: Buffer } instead of throwing on non-zero exit, so the
+// caller can distinguish "needs password" (code 3) from "no backend" (code 4).
+async function runPythonBinary(scriptName, fileBuffer, extraArgs = []) {
+  return runExclusive(() => runPythonBinaryInner(scriptName, fileBuffer, extraArgs));
+}
+
+async function runPythonBinaryInner(scriptName, fileBuffer, extraArgs = []) {
+  const pythonCmd = await detectPython();
+  if (!pythonCmd) return { ok: false, code: null, stdout: Buffer.alloc(0), reason: 'python-missing' };
+
+  const scriptPath = path.join(PYTHON_DIR, scriptName);
+  return new Promise((resolve) => {
+    const proc = spawn(pythonCmd, [scriptPath, ...extraArgs], {
+      cwd: PYTHON_DIR,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: false,
+    });
+
+    const chunks = [];
+    let stderr = '';
+    let settled = false;
+    const done = (val) => { if (!settled) { settled = true; clearTimeout(timer); resolve(val); } };
+
+    const timer = setTimeout(() => { proc.kill('SIGKILL'); done({ ok: false, code: null, stdout: Buffer.alloc(0), reason: 'timeout' }); }, TIMEOUT_MS);
+
+    proc.stdout.on('data', (c) => chunks.push(c));
+    proc.stderr.on('data', (c) => {
+      stderr += c;
+      if (process.env.NODE_ENV !== 'test') {
+        c.toString().split('\n').filter(Boolean).forEach((l) => console.debug(`[python/${scriptName}] ${l}`));
+      }
+    });
+    proc.on('error', () => done({ ok: false, code: null, stdout: Buffer.alloc(0), reason: 'spawn-error' }));
+    proc.on('close', (code) => {
+      const stdout = Buffer.concat(chunks);
+      done({ ok: code === 0 && stdout.length > 0, code, stdout, stderr });
+    });
+
+    proc.stdin.on('error', () => { /* Python exited early — surfaced via close */ });
+    try {
+      proc.stdin.write(fileBuffer, (err) => { if (!err) proc.stdin.end(); });
+    } catch { done({ ok: false, code: null, stdout: Buffer.alloc(0), reason: 'stdin-error' }); }
+  });
+}
+
+/**
+ * Best-effort decrypt of an encrypted-but-not-password-locked PDF (empty user
+ * password / owner-restricted). Returns the decrypted Buffer on success, or null
+ * when the PDF needs a real password or no decrypt backend is available. Never
+ * throws — the tax path degrades to a clear "password-protected" warning.
+ *
+ * @param {Buffer} pdfBuffer
+ * @returns {Promise<Buffer|null>}
+ */
+async function decryptPdfEmptyPassword(pdfBuffer) {
+  try {
+    const res = await runPythonBinary('decrypt_pdf.py', pdfBuffer, []);
+    if (res.ok && res.stdout && res.stdout.length > 0) return res.stdout;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
@@ -283,4 +351,4 @@ async function checkPythonAvailability() {
 }
 
 
-module.exports = { extractWithPython, detectPdfType, checkPythonAvailability };
+module.exports = { extractWithPython, detectPdfType, checkPythonAvailability, decryptPdfEmptyPassword };

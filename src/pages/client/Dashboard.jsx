@@ -33,6 +33,7 @@ const REQUEST_STATUS_META = {
 
 const REMINDER_STATUS_META = {
   due: { label: 'Needs Attention', tone: '#B91C1C', bg: '#FEE2E2' },
+  overdue: { label: 'Overdue', tone: '#991B1B', bg: '#FEE2E2' },
   active: { label: 'Scheduled', tone: '#2563EB', bg: '#DBEAFE' },
   blocked: { label: 'Blocked', tone: '#991B1B', bg: '#FEE2E2' },
   resolved: { label: 'Resolved', tone: '#166534', bg: '#DCFCE7' },
@@ -318,7 +319,7 @@ export default function ClientDashboard() {
   }), [requests]);
 
   const reminderSummary = useMemo(() => ({
-    due: reminders.filter((r) => r.status === 'due').length,
+    due: reminders.filter((r) => r.status === 'due' || r.status === 'overdue').length,
     active: reminders.filter((r) => r.status === 'active').length,
   }), [reminders]);
 
@@ -375,7 +376,7 @@ export default function ClientDashboard() {
   );
 
   const topReminder = useMemo(
-    () => reminders.find((r) => r.status === 'due') || reminders.find((r) => r.status === 'active') || null,
+    () => reminders.find((r) => r.status === 'overdue') || reminders.find((r) => r.status === 'due') || reminders.find((r) => r.status === 'active') || null,
     [reminders],
   );
 

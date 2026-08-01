@@ -123,7 +123,11 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   coa.buildTreeHierarchyLookup(builtBsTree, "balance_sheet").get("provident bank money market checking")[0].levels,
+<<<<<<< HEAD
   ["Total Assets", "Total for Current Assets", "Total for Bank Accounts", "Provident Bank Money Market Checking"],
+=======
+  ["Total Assets", "Current Assets", "Bank Accounts", "Provident Bank Money Market Checking"],
+>>>>>>> d269e83398c8b08758208e60fe8a591fac6816d8
 );
 
 const builtPlTree = buildProfitLossTreeFromData({
@@ -144,6 +148,7 @@ assert.deepStrictEqual(builtGrossProfit.children.map((n) => n.name), ["Total for
 assert.strictEqual(builtNetOperatingIncome.children.find((n) => n.name === "Total for Expenses").relationship, "SUBTRACT");
 assert.deepStrictEqual(
   coa.buildTreeHierarchyLookup(builtPlTree, "profit_loss").get("rent & lease")[0].levels,
+<<<<<<< HEAD
   ["Total Liabilities and Equity", "Total Equity", "Total Equity", "Net Income", "Net Operating Income", "Total for Expenses", "Rent & Lease"],
 );
 assert.deepStrictEqual(
@@ -161,6 +166,25 @@ assert.deepStrictEqual(plLookup.get("product sales")[0].levels, [
 ]);
 assert.strictEqual(bsLookup.get("hdfc bank")[0].level, 3);
 assert.strictEqual(bsLookup.get("accounts payable")[0].level, 4);
+=======
+  ["Total Liabilities and Equity", "Total Equity", "Total Equity", "Net Income", "Net Operating Income", "Expenses", "Rent & Lease"],
+);
+assert.deepStrictEqual(
+  coa.buildTreeHierarchyLookup(builtPlTree, "profit_loss").get("sales")[0].levels,
+  ["Total Liabilities and Equity", "Total Equity", "Total Equity", "Net Income", "Net Operating Income", "Gross Profit", "Income", "Sales"],
+);
+
+assert.deepStrictEqual(bsLookup.get("hdfc bank")[0].levels, ["Total Assets", "Current Assets", "HDFC Bank"]);
+assert.deepStrictEqual(bsLookup.get("accounts payable")[0].levels, [
+  "Total Liabilities and Equity", "Total Liabilities", "Accounts Payable",
+]);
+assert.deepStrictEqual(plLookup.get("product sales")[0].levels, [
+  "Total Liabilities and Equity", "Total Equity", "Total Equity",
+  "Net Income", "Net Operating Income", "Gross Profit", "Income", "Product Sales",
+]);
+assert.strictEqual(bsLookup.get("hdfc bank")[0].level, 3);
+assert.strictEqual(bsLookup.get("accounts payable")[0].level, 3);
+>>>>>>> d269e83398c8b08758208e60fe8a591fac6816d8
 assert.strictEqual(plLookup.get("product sales")[0].level, 8);
 assert.deepStrictEqual(balanceSheetTree, originalBs);
 assert.deepStrictEqual(profitLossTree, originalPl);
@@ -169,6 +193,7 @@ assert.strictEqual(coa.selectReferenceTree({ statementType: "balance_sheet", bal
 assert.strictEqual(coa.selectReferenceTree({ statementType: "profit_loss", balanceSheetLookup: bsLookup, profitLossLookup: plLookup }), plLookup);
 assert.strictEqual(coa.selectReferenceTree({ statementType: null, balanceSheetLookup: bsLookup, profitLossLookup: plLookup }), null);
 
+<<<<<<< HEAD
 const assetMatch = coa.matchGlAccountToReferenceTree({
   glAccount: { accountName: " HDFC   Bank ".replace(/\s+/g, " "), accountType: "asset" },
   statementType: "balance_sheet",
@@ -178,6 +203,15 @@ const assetMatch = coa.matchGlAccountToReferenceTree({
 assert.strictEqual(assetMatch.nodeName, "HDFC Bank");
 assert.deepStrictEqual(assetMatch.levels, ["Total Assets", "Total for Current Assets", "HDFC Bank"]);
 assert.strictEqual(assetMatch.matchType, "exact_name");
+=======
+const assetMatch = coa.pickDocHierarchy("HDFC Bank", "hdfc bank", null, bsLookup, plLookup, null, {
+  statementType: "balance_sheet",
+  accountType: "asset",
+});
+assert.strictEqual(assetMatch.nodeName, "HDFC Bank");
+assert.deepStrictEqual(assetMatch.levels, ["Total Assets", "Current Assets", "HDFC Bank"]);
+assert.strictEqual(assetMatch.matchType, "exact");
+>>>>>>> d269e83398c8b08758208e60fe8a591fac6816d8
 
 const liabilityMatch = coa.pickDocHierarchy("Net Income", "net income", null, bsLookup, plLookup, null, { accountType: "equity" });
 assert.deepStrictEqual(liabilityMatch.levels, ["Total Liabilities and Equity", "Total Equity", "Net Income"]);
@@ -185,19 +219,31 @@ assert.deepStrictEqual(liabilityMatch.levels, ["Total Liabilities and Equity", "
 const incomeMatch = coa.pickDocHierarchy("Product Sales", "product sales", null, bsLookup, plLookup, null, { accountType: "income" });
 assert.deepStrictEqual(incomeMatch.levels, [
   "Total Liabilities and Equity", "Total Equity", "Total Equity",
+<<<<<<< HEAD
   "Net Income", "Net Operating Income", "Gross Profit", "Total for Income", "Product Sales",
+=======
+  "Net Income", "Net Operating Income", "Gross Profit", "Income", "Product Sales",
+>>>>>>> d269e83398c8b08758208e60fe8a591fac6816d8
 ]);
 
 const expenseMatch = coa.pickDocHierarchy("Office Rent", "office rent", null, bsLookup, plLookup, null, { accountType: "expense" });
 assert.deepStrictEqual(expenseMatch.levels, [
   "Total Liabilities and Equity", "Total Equity", "Total Equity",
+<<<<<<< HEAD
   "Net Income", "Net Operating Income", "Gross Profit", "Total for Expenses", "Office Rent",
+=======
+  "Net Income", "Net Operating Income", "Gross Profit", "Expenses", "Office Rent",
+>>>>>>> d269e83398c8b08758208e60fe8a591fac6816d8
 ]);
 
 const sameNamePl = coa.pickDocHierarchy("Interest", "interest", null, bsLookup, plLookup, null, { statementType: "profit_loss" });
 assert.deepStrictEqual(sameNamePl.levels, [
   "Total Liabilities and Equity", "Total Equity", "Total Equity",
+<<<<<<< HEAD
   "Net Income", "Net Operating Income", "Gross Profit", "Total for Income", "Interest",
+=======
+  "Net Income", "Net Operating Income", "Gross Profit", "Income", "Interest",
+>>>>>>> d269e83398c8b08758208e60fe8a591fac6816d8
 ]);
 
 const noCrossFallback = coa.pickDocHierarchy("Product Sales", "product sales", null, bsLookup, plLookup, null, { statementType: "balance_sheet" });
@@ -223,13 +269,21 @@ for (const row of multiYearGl) {
   }
 }
 assert.strictEqual(uniqueMatches.size, 1);
+<<<<<<< HEAD
 assert.deepStrictEqual(uniqueMatches.get("hdfc bank").levels, ["Total Assets", "Total for Current Assets", "HDFC Bank"]);
+=======
+assert.deepStrictEqual(uniqueMatches.get("hdfc bank").levels, ["Total Assets", "Current Assets", "HDFC Bank"]);
+>>>>>>> d269e83398c8b08758208e60fe8a591fac6816d8
 
 assert.strictEqual(hasAmounts(assetMatch), false);
 
 assert.deepStrictEqual(
   coa.applyBalanceSheetCoaPrefix({ accountType: "asset", matchedPath: ["Total for Assets", "Total for Current Assets", "Cash"] }),
+<<<<<<< HEAD
   ["Total Assets", "Total for Current Assets", "Cash"],
+=======
+  ["Total Assets", "Current Assets", "Cash"],
+>>>>>>> d269e83398c8b08758208e60fe8a591fac6816d8
 );
 assert.deepStrictEqual(
   coa.applyBalanceSheetCoaPrefix({ accountType: "asset", matchedPath: ["Total Assets", "Cash"] }),
@@ -237,12 +291,64 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   coa.applyBalanceSheetCoaPrefix({ accountType: "liability", matchedPath: ["Total for Liabilities and Equity", "Total for Liabilities", "Accounts Payable"] }),
+<<<<<<< HEAD
   ["Total Liabilities and Equity", "Total Equity", "Total for Liabilities", "Accounts Payable"],
+=======
+  ["Total Liabilities and Equity", "Total Liabilities", "Accounts Payable"],
+>>>>>>> d269e83398c8b08758208e60fe8a591fac6816d8
 );
 assert.deepStrictEqual(
   coa.applyBalanceSheetCoaPrefix({ accountType: "equity", matchedPath: ["Total for Liabilities and Equity", "Total for Equity", "Retained Earnings"] }),
   ["Total Liabilities and Equity", "Total Equity", "Retained Earnings"],
 );
+<<<<<<< HEAD
+=======
+assert.strictEqual(coa.cleanDynamicCoaLevelLabel("Total for Current Assets"), "Current Assets");
+assert.strictEqual(coa.cleanDynamicCoaLevelLabel("Total for Bank Accounts"), "Bank Accounts");
+assert.strictEqual(coa.cleanDynamicCoaLevelLabel("Total for Current Liabilities"), "Current Liabilities");
+assert.strictEqual(coa.cleanDynamicCoaLevelLabel("Total for Credit Cards"), "Credit Cards");
+assert.strictEqual(coa.cleanDynamicCoaLevelLabel("Total for Income"), "Income");
+assert.strictEqual(coa.cleanDynamicCoaLevelLabel("Total for Expenses"), "Expenses");
+assert.deepStrictEqual(
+  coa.applyBalanceSheetCoaPrefix({
+    accountType: "liability",
+    matchedPath: ["Total for Liabilities and Equity", "Total for Liabilities", "Total for Current Liabilities", "Total for Credit Cards"],
+    accountName: "Capital One - Credit Card",
+  }),
+  ["Total Liabilities and Equity", "Total Liabilities", "Current Liabilities", "Credit Cards", "Capital One - Credit Card"],
+);
+assert.deepStrictEqual(
+  coa.applyBalanceSheetCoaPrefix({
+    accountType: "equity",
+    matchedPath: ["Total for Liabilities and Equity", "Total for Equity", "Total for Equity", "Owner Equity"],
+  }),
+  ["Total Liabilities and Equity", "Total Equity", "Equity", "Owner Equity"],
+);
+assert.deepStrictEqual(
+  coa.ensureAccountLeaf({ hierarchyPath: ["Total Assets", "Current Assets", "", null, "Bank Accounts"], accountName: "Business Checking (7454)" }),
+  ["Total Assets", "Current Assets", "Bank Accounts", "Business Checking (7454)"],
+);
+assert.deepStrictEqual(
+  coa.ensureAccountLeaf({ hierarchyPath: ["Total Assets", "Current Assets", "Total Quality Services"], accountName: "Total Quality Services" }),
+  ["Total Assets", "Current Assets", "Total Quality Services"],
+);
+assert.deepStrictEqual(coa.fixedPrefixFor("equity"), ["Total Liabilities and Equity", "Total Equity"]);
+assert.deepStrictEqual(coa.fixedPrefixFor("liability"), ["Total Liabilities and Equity", "Total Liabilities"]);
+assert.deepStrictEqual(coa.fixedPrefixFor("asset"), ["Total Assets"]);
+assert.deepStrictEqual(coa.fixedPrefixFor("income"), ["Total Liabilities and Equity", "Total Equity", "Total Equity"]);
+assert.notStrictEqual(
+  coa.applyBalanceSheetCoaPrefix({ accountType: "liability", matchedPath: ["Total for Liabilities and Equity", "Total for Liabilities", "Accounts Payable"] })[1],
+  "Total Equity",
+);
+assert.notStrictEqual(
+  coa.applyBalanceSheetCoaPrefix({ accountType: "equity", matchedPath: ["Total for Liabilities and Equity", "Total for Equity", "Retained Earnings"] })[1],
+  "Total Liabilities",
+);
+assert.deepStrictEqual(
+  coa.buildTreeHierarchyLookup(profitLossTree, "profit_loss").get("product sales")[0].levels.slice(0, 3),
+  ["Total Liabilities and Equity", "Total Equity", "Total Equity"],
+);
+>>>>>>> d269e83398c8b08758208e60fe8a591fac6816d8
 
 const retainedEarningsBucket = coa.splitAccountsAtRetainedEarnings([
   { account_name: "Cash", split_account: "Retained Earnings", memo: "To Post the Distribution into Retained Earnings" },
@@ -280,6 +386,10 @@ assert.strictEqual(firstPnlFallbackBucket.get("cash"), "balance_sheet");
 assert.strictEqual(firstPnlFallbackBucket.get("accounts payable"), "balance_sheet");
 assert.strictEqual(firstPnlFallbackBucket.get("product sales"), "profit_loss");
 assert.strictEqual(firstPnlFallbackBucket.get("office rent"), "profit_loss");
+<<<<<<< HEAD
+=======
+assert.strictEqual(coa.findFirstProfitAndLossAccount(profitLossTree).nodeType, "ACCOUNT");
+>>>>>>> d269e83398c8b08758208e60fe8a591fac6816d8
 
 const unresolvedBucket = coa.splitAccountsAtRetainedEarnings([
   { account_name: "Cash", split_account: "Product Sales" },

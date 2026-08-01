@@ -12,33 +12,20 @@
 const { supabase } = require('../../db');
 const ExtractionServiceBase = require('./extractionService.base');
 const { parseTaxReturnWithGemini } = require('../geminiFinancialParser');
-const { extractWithPython, detectPdfType } = require('./pythonBridge');
 
 class TaxReturnExtractionService extends ExtractionServiceBase {
   constructor() {
     super('tax_return', 'tax_return_entries');
+    // v2-gemini-direct: PDFs now go straight to Gemini (the Python text/OCR
+    // primary path was removed for tax returns). Bump so any extraction cached
+    // under the old Python-first flow is discarded and re-run through Gemini.
+    this.parserVersion = 'v2-gemini-direct';
   }
 
   async extract({ fileName, fileBuffer }) {
-    // Python native extraction — text-layer first, OCR for scanned, Gemini as final fallback
-    try {
-      const pdfType = await detectPdfType(fileBuffer);
-      this.logger.log(`Tax return PDF "${fileName}" type=${pdfType}`);
-
-      const scriptName = pdfType === 'scanned' ? 'extract_pdf_ocr.py' : 'extract_pdf_text.py';
-      const result = await extractWithPython(scriptName, fileBuffer, {
-        type: 'tax_return',
-        filename: fileName,
-      });
-      if (result.rows && result.rows.length > 0) {
-        this.logger.log(`Python (${scriptName}) extracted ${result.rows.length} tax fields from "${fileName}"`);
-        return { rows: result.rows, detectedYears: result.detected_years };
-      }
-      this.logger.warn(`Python returned 0 tax fields for "${fileName}", falling back to Gemini`);
-    } catch (err) {
-      this.logger.warn(`Python tax extraction failed for "${fileName}", falling back to Gemini: ${err.message}`);
-    }
-
+    // Tax return PDFs are read DIRECTLY by Gemini — the Python text/OCR path is
+    // intentionally not used for this document type (IRS forms are field-based,
+    // not tabular, and the Gemini prompt is purpose-built for them).
     return this._extractWithGemini(fileBuffer, fileName);
   }
 

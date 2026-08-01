@@ -121,6 +121,13 @@ CREATE TABLE IF NOT EXISTS requests (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS request_assignees (
+  request_id uuid NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (request_id, user_id)
+);
+
 CREATE TABLE IF NOT EXISTS folders (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -128,7 +135,8 @@ CREATE TABLE IF NOT EXISTS folders (
   name text NOT NULL,
   color text,
   created_by uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-  created_at timestamptz NOT NULL DEFAULT now()
+  created_at timestamptz NOT NULL DEFAULT now(),
+  archived_at timestamptz
 );
 
 CREATE TABLE IF NOT EXISTS uploads (
@@ -152,6 +160,7 @@ CREATE TABLE IF NOT EXISTS documents (
   size text NOT NULL,
   ext text NOT NULL,
   status document_status NOT NULL,
+  color text,
   uploaded_by uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
   uploaded_at timestamptz NOT NULL DEFAULT now(),
   archived_at timestamptz
@@ -177,7 +186,11 @@ CREATE TABLE IF NOT EXISTS request_reminders (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   request_id uuid NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
   sent_by uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-  sent_at timestamptz NOT NULL DEFAULT now()
+  sent_at timestamptz NOT NULL DEFAULT now(),
+  event_type text NOT NULL DEFAULT 'sent' CHECK (event_type IN ('sent', 'skipped', 'overdue')),
+  delivery_channel text NOT NULL DEFAULT 'email_in_app',
+  scheduled_for timestamptz,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb
 );
 
 CREATE TABLE IF NOT EXISTS folder_access (
@@ -210,6 +223,18 @@ CREATE TABLE IF NOT EXISTS reminders (
   next_due_at timestamptz,
   status reminder_status NOT NULL DEFAULT 'active',
   created_by uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS user_notifications (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  type text NOT NULL,
+  title text NOT NULL,
+  message text NOT NULL,
+  is_read boolean NOT NULL DEFAULT false,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS activity_log (
@@ -263,6 +288,8 @@ CREATE TABLE IF NOT EXISTS reconciliation_transactions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_requests_company_id ON requests(company_id);
+CREATE INDEX IF NOT EXISTS idx_request_assignees_user ON request_assignees(user_id);
+CREATE INDEX IF NOT EXISTS idx_request_assignees_request_created ON request_assignees(request_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_user_companies_user ON user_companies(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_companies_company ON user_companies(company_id);
 CREATE INDEX IF NOT EXISTS idx_documents_folder_id ON documents(folder_id);
@@ -273,6 +300,10 @@ CREATE INDEX IF NOT EXISTS idx_folder_access_user ON folder_access(user_id);
 CREATE INDEX IF NOT EXISTS idx_folder_access_group ON folder_access(group_id);
 CREATE INDEX IF NOT EXISTS idx_activity_company ON activity_log(company_id);
 CREATE INDEX IF NOT EXISTS idx_reminders_company ON reminders(company_id);
+CREATE INDEX IF NOT EXISTS idx_request_reminders_request_event_sent ON request_reminders(request_id, event_type, sent_at DESC);
+CREATE INDEX IF NOT EXISTS idx_request_reminders_scheduled_for ON request_reminders(scheduled_for) WHERE scheduled_for IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_user_notifications_user_created ON user_notifications(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_user_notifications_unread ON user_notifications(user_id, is_read, created_at DESC);
 
 
 CREATE INDEX IF NOT EXISTS idx_bank_transactions_client_id ON bank_transactions(client_id);
