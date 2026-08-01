@@ -1,4 +1,4 @@
-const express = require("express");
+﻿const express = require("express");
 const { requireAuth } = require("../middleware/auth");
 const { canAccessCompany } = require("../services/permissionService");
 const keyReportService = require("../services/keyReports/keyReportService");
@@ -7,10 +7,10 @@ const fileReferenceService = require("../services/fileReferenceService");
 const userPreferenceService = require("../services/userPreferenceService");
 const chartOfAccountsService = require("../services/chartOfAccountsService");
 const keyReportReportService = require("../services/keyReports/keyReportReportService");
-const { generateFinancialStatements } = require("../services/keyReports/financialStatementService");
+const { generateFinancialStatements, getAvailablePeriods } = require("../services/keyReports/financialStatementService");
 const { exportKeyReportData } = require("../services/keyReports/keyReportExportService");
 const { normalizeError, isConnectionError } = require("../utils/dbErrorHandler");
-// Reconciliation extraction helpers — used to pre-warm the Bank & Tax
+// Reconciliation extraction helpers â€” used to pre-warm the Bank & Tax
 // Reconciliation caches immediately after a version is generated, so those pages
 // load instantly (cache hit) instead of running a multi-minute live extraction on
 // first visit. These are the SAME functions (and cache keys) the pages use.
@@ -237,13 +237,13 @@ router.delete("/key-reports/mappings/:mappingId", async (req, res) => {
 //
 // Generate extracts the linked bank/tax files into the entry tables, but the
 // Bank/Tax Reconciliation pages run their OWN (summary-level) Gemini extraction,
-// cached lazily on first page visit — which is why that first visit took minutes.
+// cached lazily on first page visit â€” which is why that first visit took minutes.
 // Here we run that same extraction now, using the identical functions and
 // cache-key path the pages use, so by the time Generate reports success the pages
 // are a guaranteed cache hit and load instantly.
 //
 // Fully non-fatal: every branch is settled and swallowed, so a warm-up failure
-// never fails the generate — the page simply falls back to its lazy extraction.
+// never fails the generate â€” the page simply falls back to its lazy extraction.
 async function warmReconciliationCaches(companyId, versionId) {
   if (!companyId || !versionId) return;
   try {
@@ -269,8 +269,8 @@ async function warmReconciliationCaches(companyId, versionId) {
 }
 
 // Background-warm the financial-statements RESULT cache after a generate/sync.
-// generateFinancialStatements is expensive (many GL scans); warming it now — with
-// the COA the sync just built — means the Reports page (and the Reconciliation
+// generateFinancialStatements is expensive (many GL scans); warming it now â€” with
+// the COA the sync just built â€” means the Reports page (and the Reconciliation
 // P&L fetch) hit a warm cache and load instantly instead of paying the full
 // compute on first visit. Fire-and-forget (not awaited), so it never delays the
 // generate response or risks a request timeout; skipped when the workflow halted
@@ -291,7 +291,7 @@ router.post("/key-reports/versions/:versionId/sync", async (req, res) => {
     // Run the sync pipeline AND warm the Bank/Tax Reconciliation caches
     // concurrently. Warm-up reads the raw linked files (independent of the
     // pipeline's generated tables), so it overlaps the pipeline and adds ~no
-    // wall-clock — yet the reconciliation pages are a guaranteed cache hit
+    // wall-clock â€” yet the reconciliation pages are a guaranteed cache hit
     // (instant) once this returns instead of running a multi-minute extraction on
     // first visit. Warm-up is fully non-fatal (see warmReconciliationCaches).
     const [result] = await Promise.all([
@@ -306,9 +306,9 @@ router.post("/key-reports/versions/:versionId/sync", async (req, res) => {
   }
 });
 
-// ---- Generate (semantic alias for /sync — single-click full workflow) ------
-// Calls the identical syncVersion pipeline: AI extraction → COA → Financial
-// Reports → Snapshots → Validation. Kept as a separate route so the new UI
+// ---- Generate (semantic alias for /sync â€” single-click full workflow) ------
+// Calls the identical syncVersion pipeline: AI extraction â†’ COA â†’ Financial
+// Reports â†’ Snapshots â†’ Validation. Kept as a separate route so the new UI
 // can use clean "Generate" language while the existing /sync endpoint remains
 // fully backward-compatible for any existing integrations.
 
@@ -319,7 +319,7 @@ router.post("/key-reports/versions/:versionId/generate", async (req, res) => {
     // Run the sync pipeline AND warm the Bank/Tax Reconciliation caches
     // concurrently. Warm-up reads the raw linked files (independent of the
     // pipeline's generated tables), so it overlaps the pipeline and adds ~no
-    // wall-clock — yet the reconciliation pages are a guaranteed cache hit
+    // wall-clock â€” yet the reconciliation pages are a guaranteed cache hit
     // (instant) once this returns instead of running a multi-minute extraction on
     // first visit. Warm-up is fully non-fatal (see warmReconciliationCaches).
     const [result] = await Promise.all([
@@ -366,7 +366,7 @@ router.get("/key-reports/versions/:versionId/sync-logs", async (req, res) => {
 // ---- Generate progress (live, in-memory) -----------------------------------
 // Lightweight poll target for the Generate Workflow progress bar. Returns the
 // stage the sync pipeline is currently on (derived from its log markers, from
-// "=== Sync started ===" to "=== Sync complete ==="). In-memory only — no DB
+// "=== Sync started ===" to "=== Sync complete ==="). In-memory only â€” no DB
 // table; `progress` is null when no run is tracked for this version.
 router.get("/key-reports/versions/:versionId/generate-progress", async (req, res) => {
   try {
@@ -421,30 +421,29 @@ router.get("/key-reports/versions/:versionId/chart-of-accounts/history", async (
   }
 });
 
-// Rebuild a version's COA from its entry tables (general_ledger_entries +
-// balance_sheet_entries). batchId=null → reads from Key Reports entry tables,
-// which is correct for all new-style syncs (resolvedBatchId is always null).
+// Regenerate a version's Proposed COA from its entry tables (general_ledger_entries
+// + balance_sheet_entries). Proposal-only: builds the in-memory tree and returns
+// it for review -- performs ZERO writes to chart_of_accounts. The prior
+// behavior (immediate persist) moved to POST .../chart-of-accounts/save, which
+// is the only place a reviewed COA is ever written.
 router.post("/key-reports/versions/:versionId/chart-of-accounts/regenerate", async (req, res) => {
   try {
     const version = await loadVersionWithAccess(req, res);
     if (!version) return;
-    console.log(`[KeyReports][Audit] COA regenerate versionId=${version.id} resolvedBatchId=${version.resolvedBatchId || 'null (entry-table path)'}`);
-    const summary = await chartOfAccountsService.generateChartOfAccounts(
+    console.log(`[KeyReports][Audit] COA proposal regenerate versionId=${version.id}`);
+    const proposal = await chartOfAccountsService.buildProposedCoaTree(
       version.companyId,
       version.id,
       version.resolvedBatchId || null,
     );
-    // Re-run the COA spec checks so a manual rebuild reports its own health.
-    // (Not persisted here — replaceValidationResults would wipe the other data
-    //  types' rows; persistence happens during a full Sync.)
-    let validation = null;
-    try {
-      validation = await chartOfAccountsService.validateChartOfAccounts(version.companyId, version.id);
-    } catch (vErr) {
-      console.warn(`[KeyReports][Audit] COA regenerate validation failed: ${vErr.message}`);
-    }
-    const coa = await chartOfAccountsService.getChartOfAccounts(version.id);
-    return res.json({ success: true, summary, validation: validation ? validation.summary : null, ...coa });
+    const nodes = chartOfAccountsService.serializeProposedTree(proposal.hierarchical || []);
+    res.json({
+      success: true,
+      proposedTree: { nodes },
+      matchSummary: proposal.matchSummary,
+      structuralValidation: proposal.structuralValidation,
+    });
+    return;
   } catch (error) {
     return handleError(res, error, "POST chart-of-accounts/regenerate");
   }
@@ -457,10 +456,30 @@ router.patch("/key-reports/chart-of-accounts/:accountId", async (req, res) => {
   try {
     const row = await loadAccountWithAccess(req, res);
     if (!row) return;
+    // A single-account hand-edit is only meaningful against an already-
+    // Approved COA -- before the first Save, review/edit belongs to the
+    // frontend's in-memory Proposed COA, not a persisted row (there is no
+    // persisted row to safely mutate in isolation from the rest of the
+    // proposal review).
+    const { supabase } = require("../db");
+    const { data: versionRow } = await supabase
+      .from("key_report_versions")
+      .select("coa_approved_at")
+      .eq("id", row.version_id)
+      .maybeSingle();
+    if (!versionRow?.coa_approved_at) {
+      return res.status(409).json({
+        success: false,
+        code: "COA_NOT_APPROVED",
+        error: "This version's Chart of Accounts has not been Saved/Approved yet. Review and Save the proposal before editing individual accounts.",
+      });
+    }
     const account = await chartOfAccountsService.updateAccountHierarchy(
       req.params.accountId, req.body || {}, req.user?.id || null,
     );
-    return res.json({ success: true, account });
+    res.json({ success: true, account });
+    warmFinancialStatementsCache(row.version_id, {});
+    return;
   } catch (error) {
     return handleError(res, error, "PATCH chart-of-accounts");
   }
@@ -472,29 +491,51 @@ router.post("/key-reports/chart-of-accounts/:accountId/reset", async (req, res) 
     const row = await loadAccountWithAccess(req, res);
     if (!row) return;
     const account = await chartOfAccountsService.resetAccount(req.params.accountId, req.user?.id || null);
-    return res.json({ success: true, account });
+    res.json({ success: true, account });
+    warmFinancialStatementsCache(row.version_id, {});
+    return;
   } catch (error) {
     return handleError(res, error, "POST chart-of-accounts/reset");
   }
 });
 
-// Bulk-save an edited hierarchy for a version.
+// Save/Approve the user's COMPLETE reviewed Chart of Accounts tree
+// (chartOfAccountsService.serializeProposedTree's flat wire-node shape --
+// the same shape GET .../chart-of-accounts and .../regenerate return).
+// Validates the whole tree, persists it transactionally, and -- ONLY on
+// success -- continues into Trial Balance/Reconciliation/Monthly Balance
+// Sheets/report snapshot generation. No report generation happens on
+// failure; no partial persistence is left behind (persistApprovedCoaTree's
+// compensating-rollback guard).
 router.post("/key-reports/versions/:versionId/chart-of-accounts/save", async (req, res) => {
   try {
     const version = await loadVersionWithAccess(req, res);
     if (!version) return;
-    const nodes = Array.isArray(req.body?.nodes) ? req.body.nodes : [];
-    const result = await chartOfAccountsService.saveHierarchy(version.id, nodes, req.user?.id || null);
-    if (result.rejected) {
+    const nodes = Array.isArray(req.body?.tree?.nodes) ? req.body.tree.nodes : [];
+    if (!nodes.length) {
       return res.status(422).json({
         success: false,
-        code: result.code,
-        error: result.violations?.[0] || "This change would create an invalid hierarchy.",
-        violations: result.violations,
+        code: "EMPTY_TREE",
+        error: "The submitted Chart of Accounts tree is empty -- nothing to save.",
+        violations: ["The submitted Chart of Accounts tree is empty."],
+      });
+    }
+    const approveResult = await keyReportService.approveCoa(version.id, nodes, req.user?.id || null);
+    if (!approveResult.success) {
+      const haltReason = approveResult.result?.summary?.haltReason;
+      const violations = approveResult.result?.summary?.violations
+        || [approveResult.result?.message || "This change would create an invalid hierarchy."];
+      return res.status(422).json({
+        success: false,
+        code: haltReason ? haltReason.toUpperCase() : "HIERARCHY_INVALID",
+        error: violations[0],
+        violations,
       });
     }
     const coa = await chartOfAccountsService.getChartOfAccounts(version.id);
-    return res.json({ success: true, ...result, ...coa });
+    res.json({ success: true, ...approveResult, ...coa });
+    warmFinancialStatementsCache(version.id, {});
+    return;
   } catch (error) {
     return handleError(res, error, "POST chart-of-accounts/save");
   }
@@ -507,7 +548,9 @@ router.post("/key-reports/versions/:versionId/chart-of-accounts/reset", async (r
     if (!version) return;
     const result = await chartOfAccountsService.resetVersion(version.id, req.user?.id || null);
     const coa = await chartOfAccountsService.getChartOfAccounts(version.id);
-    return res.json({ success: true, ...result, ...coa });
+    res.json({ success: true, ...result, ...coa });
+    warmFinancialStatementsCache(version.id, {});
+    return;
   } catch (error) {
     return handleError(res, error, "POST chart-of-accounts/reset-version");
   }
@@ -544,7 +587,7 @@ router.get("/key-reports/versions/:versionId/hierarchy-recommendations", async (
   }
 });
 
-// Accept a recommendation — inserts the suggested roll-up via the same
+// Accept a recommendation â€” inserts the suggested roll-up via the same
 // updateAccountHierarchy() path the manual COA editor uses. Never a direct write.
 router.post("/key-reports/hierarchy-recommendations/:recommendationId/accept", async (req, res) => {
   try {
@@ -553,13 +596,15 @@ router.post("/key-reports/hierarchy-recommendations/:recommendationId/accept", a
     const { acceptRecommendation } = require("../services/keyReports/aiHierarchyRecommendationService");
     const result = await acceptRecommendation(recommendation.id, req.user?.id || null);
     const coa = await chartOfAccountsService.getChartOfAccounts(recommendation.version_id);
-    return res.json({ success: true, ...result, ...coa });
+    res.json({ success: true, ...result, ...coa });
+    warmFinancialStatementsCache(recommendation.version_id, {});
+    return;
   } catch (error) {
     return handleError(res, error, "POST hierarchy-recommendations/accept");
   }
 });
 
-// Ignore a recommendation — marks it decided, no hierarchy change.
+// Ignore a recommendation â€” marks it decided, no hierarchy change.
 router.post("/key-reports/hierarchy-recommendations/:recommendationId/ignore", async (req, res) => {
   try {
     const recommendation = await loadRecommendationWithAccess(req, res);
@@ -617,7 +662,7 @@ router.put("/key-reports/popup-preference", async (req, res) => {
 
 function parseReportQuery(q = {}) {
   // `year` accepts a single fiscal year. A comma list (e.g. "2022,2023") is NOT a
-  // single year — collapse it to a date range so spec #12/#13 still resolve the
+  // single year â€” collapse it to a date range so spec #12/#13 still resolve the
   // full year set rather than silently using only the first value.
   const rawYear = q.year != null ? String(q.year).trim() : "";
   const isSingleYear = /^\d{4}$/.test(rawYear);
@@ -625,7 +670,7 @@ function parseReportQuery(q = {}) {
     year: isSingleYear ? parseInt(rawYear, 10) : null,
     startDate: q.startDate ? String(q.startDate) : null,
     endDate: q.endDate ? String(q.endDate) : null,
-    // "month" → monthly columns (Jan…Dec); anything else → fiscal-year columns.
+    // "month" â†’ monthly columns (Janâ€¦Dec); anything else â†’ fiscal-year columns.
     period: String(q.period || "").toLowerCase() === "month" ? "month" : "year",
     page: parseInt(String(q.page || 1), 10) || 1,
     pageSize: parseInt(String(q.pageSize || 500), 10) || 500,
@@ -680,6 +725,22 @@ router.get("/key-reports/versions/:versionId/reports/cashflow", async (req, res)
   }
 });
 
+// Snapshot-served Balance Sheet (generated_report_snapshots) — mirrors the
+// P&L/Cash Flow endpoints above. The main Reports page still reads Balance
+// Sheet via /reports/financial-statements; this exists so BS is available
+// through the same persisted-snapshot path as the other two statements.
+router.get("/key-reports/versions/:versionId/reports/balance-sheet", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const { year } = parseReportQuery(req.query);
+    const result = await keyReportReportService.getBalanceSheetReport(version.id, { year });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return handleError(res, error, "GET reports/balance-sheet");
+  }
+});
+
 router.get("/key-reports/versions/:versionId/reports/general-ledger", async (req, res) => {
   try {
     const version = await loadVersionWithAccess(req, res);
@@ -716,7 +777,7 @@ router.get("/key-reports/versions/:versionId/reports/tax-return", async (req, re
   }
 });
 
-// ── COA-mapped Financial Statements (P&L + Balance Sheet, monthly + yearly) ───
+// â”€â”€ COA-mapped Financial Statements (P&L + Balance Sheet, monthly + yearly) â”€â”€â”€
 // GET /key-reports/versions/:versionId/reports/financial-statements?year=2024&currency=USD
 router.get("/key-reports/versions/:versionId/reports/financial-statements", async (req, res) => {
   try {
@@ -734,7 +795,22 @@ router.get("/key-reports/versions/:versionId/reports/financial-statements", asyn
   }
 });
 
-// ── Quality of Earnings ──────────────────────────────────────────────────────
+// Lightweight, version-scoped period metadata for the Reports page's Monthly/
+// Yearly filter defaults — a handful of order-by-limit-1 queries, never the
+// full report payload. See financialStatementService.getAvailablePeriods.
+// GET /key-reports/versions/:versionId/available-periods
+router.get("/key-reports/versions/:versionId/available-periods", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const result = await getAvailablePeriods(version.id);
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return handleError(res, error, "GET available-periods");
+  }
+});
+
+// â”€â”€ Quality of Earnings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // GET /key-reports/versions/:versionId/reports/qoe?year=2024
 router.get("/key-reports/versions/:versionId/reports/qoe", async (req, res) => {
   try {
@@ -750,7 +826,7 @@ router.get("/key-reports/versions/:versionId/reports/qoe", async (req, res) => {
   }
 });
 
-// ── KPI Report ───────────────────────────────────────────────────────────────
+// â”€â”€ KPI Report â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // GET /key-reports/versions/:versionId/reports/kpi?year=2024
 router.get("/key-reports/versions/:versionId/reports/kpi", async (req, res) => {
   try {
@@ -766,7 +842,7 @@ router.get("/key-reports/versions/:versionId/reports/kpi", async (req, res) => {
   }
 });
 
-// ── Export Data ──────────────────────────────────────────────────────────────
+// â”€â”€ Export Data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // GET /key-reports/versions/:versionId/export
 // Exports all raw synced data for the selected version as an Excel workbook
 router.get("/key-reports/versions/:versionId/export", async (req, res) => {

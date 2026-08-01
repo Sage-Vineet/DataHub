@@ -8,45 +8,17 @@
  * and implement extract() + insertRows() to store data.
  */
 
-const crypto = require("crypto");
 const { supabase } = require("../../db");
-
-// Bump either version to invalidate all cached extractions (e.g. after changing a
-// parser or the extract() logic). The cache identity includes both.
-const DEFAULT_PARSER_VERSION = "v1";
-const DEFAULT_EXTRACTION_VERSION = "v1";
-// Skip caching extractions larger than this many rows (avoids giant JSONB blobs
-// for very large General Ledgers). Such files simply re-extract each run.
-const MAX_CACHEABLE_ROWS = 50000;
-
-function docCacheEnabled() {
-  return String(process.env.KEY_REPORT_DOC_CACHE || "on").toLowerCase() !== "off";
-}
 
 class ExtractionServiceBase {
   constructor(dataType, tableName) {
     this.dataType = dataType; // 'profit_loss', 'balance_sheet', etc.
     this.tableName = tableName; // Database table name
-    // Cache-identity versions — a subclass can override if it changes its parser
-    // or extraction algorithm so stale cache entries are not reused.
-    this.parserVersion = DEFAULT_PARSER_VERSION;
-    this.extractionVersion = DEFAULT_EXTRACTION_VERSION;
     this.logger = {
       log: (msg) => console.log(`[${this.dataType}] ${msg}`),
       warn: (msg) => console.warn(`[${this.dataType}] WARNING: ${msg}`),
       error: (msg) => console.error(`[${this.dataType}] ERROR: ${msg}`),
     };
-  }
-
-  // ── Document extraction cache ───────────────────────────────────────────────
-  // The expensive work is extract() (download already done by the caller, then
-  // parse + Gemini/Python AI). Its output is version-agnostic raw rows, so we
-  // cache it by the file's content fingerprint and reuse across re-syncs and
-  // version duplication. On a hit we skip parse+AI entirely and only run the
-  // cheap per-version validate/transform/insert.
-
-  _fingerprint(fileBuffer) {
-    return crypto.createHash("sha256").update(fileBuffer).digest("hex");
   }
 
   // Subclasses that can tell a genuinely bad extraction from a good one (e.g.
@@ -153,66 +125,6 @@ class ExtractionServiceBase {
     }
   }
 
-  async _readExtractionCache(companyId, documentId, fingerprint) {
-    if (!docCacheEnabled() || !companyId || !documentId) return null;
-    try {
-      const { data, error } = await supabase
-        .from("key_report_document_processing")
-        .select("extracted_data, row_count")
-        .eq("company_id", companyId)
-        .eq("document_id", documentId)
-        .eq("document_fingerprint", fingerprint)
-        .eq("data_type", this.dataType)
-        .eq("parser_version", this.parserVersion)
-        .eq("extraction_version", this.extractionVersion)
-        .eq("processing_status", "completed")
-        .maybeSingle();
-      if (error || !data) return null;
-      const ed = data.extracted_data;
-      if (!ed || !Array.isArray(ed.rows)) return null;
-      if (this._isExtractionSuspicious(ed.rows)) {
-        this.logger.warn(
-          `Cached extraction for document ${documentId} looks suspicious (no hierarchy on any leaf row) — ` +
-          `treating as a cache miss and re-extracting instead of trusting it.`,
-        );
-        return null;
-      }
-      return ed;
-    } catch {
-      // Table not present (migration 065 not applied) or any other error → miss.
-      return null;
-    }
-  }
-
-  async _writeExtractionCache(companyId, documentId, fingerprint, fileName, extractedData) {
-    if (!docCacheEnabled() || !companyId || !documentId) return;
-    const rows = extractedData?.rows || [];
-    if (rows.length > MAX_CACHEABLE_ROWS) return;
-    try {
-      await supabase
-        .from("key_report_document_processing")
-        .upsert(
-          {
-            company_id: companyId,
-            document_id: documentId,
-            data_type: this.dataType,
-            document_fingerprint: fingerprint,
-            parser_version: this.parserVersion,
-            extraction_version: this.extractionVersion,
-            file_name: fileName || null,
-            processing_status: "completed",
-            extracted_data: extractedData,
-            row_count: rows.length,
-            processing_completed_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "company_id,document_id,document_fingerprint,data_type,parser_version,extraction_version" },
-        );
-    } catch {
-      // Non-fatal — caching is an optimization, never a correctness dependency.
-    }
-  }
-
   /**
    * Main extraction pipeline
    * Called by keyReportSyncService for each linked document
@@ -231,19 +143,15 @@ class ExtractionServiceBase {
       // 1. Delete any existing rows for this version+document (idempotent re-sync)
       await this.deleteExistingRows(versionId, documentId);
 
-      // 2. Extract raw data from file — reuse cached extract() output when the
-      //    file content is unchanged (skips download-independent parse + AI).
-      const fingerprint = this._fingerprint(fileBuffer);
-      let extractedData = await this._readExtractionCache(companyId, documentId, fingerprint);
-      const cacheHit = Boolean(extractedData);
-      if (cacheHit) {
-        this.logger.log(`[${this.dataType}] "${fileName}": cache HIT — reusing ${extractedData.rows.length} extracted row(s) (skipped parse + AI)`);
-      } else {
-        extractedData = await this.extract({ fileName, fileBuffer });
-      }
+      // 2. Extract raw data from file — always fresh. No cache: every sync
+      //    re-parses and re-runs AI on the current file content, so a
+      //    re-uploaded/changed document is guaranteed to be reflected and a
+      //    repeat sync of the same document is guaranteed to be independent.
+      const extractedData = await this.extract({ fileName, fileBuffer });
+      const cacheHit = false;
 
       const rawCount = extractedData?.rows?.length || 0;
-      this.logger.log(`[${this.dataType}] "${fileName}": Rows detected = ${rawCount}${cacheHit ? ' (cached)' : ''}`);
+      this.logger.log(`[${this.dataType}] "${fileName}": Rows detected = ${rawCount}`);
 
       if (!extractedData || rawCount === 0) {
         this.logger.warn(`[${this.dataType}] No data extracted from "${fileName}"`);
@@ -251,12 +159,6 @@ class ExtractionServiceBase {
       }
 
       this._logHierarchyExtractionValidation(extractedData.rows, fileName);
-
-      // Persist the fresh extraction so the next re-sync / duplicated version
-      // reuses it. Only on a miss; version-agnostic by fingerprint.
-      if (!cacheHit) {
-        await this._writeExtractionCache(companyId, documentId, fingerprint, fileName, extractedData);
-      }
 
       // 3. Validate (lenient — only rejects rows that would violate NOT NULL constraints)
       const validatedRows = await this.validateRows(extractedData.rows);
@@ -474,123 +376,90 @@ class ExtractionServiceBase {
    * doesn't set it (hierarchy_level is undefined for every other data type —
    * tax return, bank statement, GL — so this never changes their behavior).
    */
+  // Shared classification core — matches a row's inspected text fields
+  // against the same structural patterns filterRowsBeforeInsertion has always
+  // used, but returns a `{ rowType, reason }` classification instead of a
+  // bare yes/no. `rowType` is one of 'heading' | 'subtotal' | 'total' |
+  // 'metadata' | null (null = no structural signal at all — a real
+  // account/transaction row). Kept as ONE shared method so every subclass
+  // (including one that persists every row, e.g. BalanceSheetExtractionService)
+  // agrees on what counts as which — no duplicated pattern list to drift.
+  _classifyStructuralRow(row) {
+    // A real posted transaction (row_type === 'TRANSACTION', the GL's own
+    // column — unrelated to balance_sheet_entries.row_type) is never a report
+    // heading/total no matter what its account_name says. CONFIRMED BUG this
+    // exemption fixes: a real client chart-of-accounts leaf can be named
+    // exactly the same as a common report section label (e.g. a GL account
+    // literally named "Fixed Assets") — without this check, the one real
+    // transaction ever posted to such an account gets misclassified as a
+    // heading, while its offsetting leg survives, leaving a permanently
+    // one-sided, undetectable gap in the ledger. Checked first — this
+    // exemption must win over every other signal below.
+    if (row && row.row_type === 'TRANSACTION') return { rowType: null, reason: null, matchedValue: null };
+
+    // Metadata banners (report-generation timestamps/basis labels) are often
+    // extracted with hierarchy_level=0 (no real indentation of their own) —
+    // check these text patterns BEFORE the hierarchy_level=0 fallback below,
+    // so a report footer like "Accrual Basis <date>" is labeled 'metadata',
+    // not lumped in with real structural 'heading' rows. Both are equally
+    // excluded from COA generation either way — this only affects the label.
+    const fieldsToInspect = [
+      'account_name', 'distribution_account', 'bank_account', 'bank_name',
+      'description', 'field_name', 'field_label',
+    ];
+    for (const field of fieldsToInspect) {
+      const val = row && row[field];
+      if (val === undefined || val === null) continue;
+      const normalizedStr = String(val).trim().toLowerCase().replace(/\s+/g, ' ');
+
+      if (normalizedStr.startsWith('accrual basis')) return { rowType: 'metadata', reason: 'Accrual Basis* pattern', matchedValue: val };
+      if (normalizedStr.startsWith('cash basis')) return { rowType: 'metadata', reason: 'Cash Basis* pattern', matchedValue: val };
+      if (normalizedStr.startsWith('report generated')) return { rowType: 'metadata', reason: 'Report Generated* pattern', matchedValue: val };
+      if (normalizedStr.startsWith('generated on')) return { rowType: 'metadata', reason: 'Generated On* pattern', matchedValue: val };
+    }
+
+    if (row && row.hierarchy_level === 0) {
+      return { rowType: 'heading', reason: 'Structural heading row (hierarchy_level=0)', matchedValue: row.account_name ?? null };
+    }
+
+    for (const field of fieldsToInspect) {
+      const val = row && row[field];
+      if (val === undefined || val === null) continue;
+      const normalizedStr = String(val).trim().toLowerCase().replace(/\s+/g, ' ');
+
+      if (normalizedStr.startsWith('total for ')) return { rowType: 'subtotal', reason: 'Total for * pattern', matchedValue: val };
+
+      const exactTotals = ['total assets', 'total liabilities', 'total equity', 'total income', 'total expenses'];
+      if (exactTotals.includes(normalizedStr)) return { rowType: 'total', reason: `Exact total pattern: "${val}"`, matchedValue: val };
+
+      const exactSectionHeaders = [
+        'assets', 'current assets', 'other current assets', 'fixed assets',
+        'liabilities', 'current liabilities', 'long-term liabilities', 'long term liabilities',
+        'equity', 'income', 'expenses',
+      ];
+      if (exactSectionHeaders.includes(normalizedStr)) return { rowType: 'heading', reason: `Exact section header pattern: "${val}"`, matchedValue: val };
+    }
+
+    return { rowType: null, reason: null, matchedValue: null };
+  }
+
+  /**
+   * Filter layer before database insertion — DROPS any row
+   * _classifyStructuralRow flags as non-account (heading/subtotal/total/
+   * metadata). This is the default for every data type EXCEPT Balance Sheet,
+   * which overrides this method (see balanceSheetExtractionService.js) to
+   * persist every row with its classification instead of dropping any.
+   */
   filterRowsBeforeInsertion(rows) {
     if (!Array.isArray(rows)) return { filteredRows: [], skippedLog: [] };
 
     const filteredRows = [];
     const skippedLog = [];
 
-    const matchesFilterPatterns = (val) => {
-      if (val === null || val === undefined) return null;
-      const str = String(val).trim();
-      const lowerStr = str.toLowerCase();
-      
-      // Normalize multiple spaces to single spaces
-      const normalizedStr = lowerStr.replace(/\s+/g, ' ');
-
-      // Headers
-      if (normalizedStr.startsWith('accrual basis')) {
-        return 'Accrual Basis* pattern';
-      }
-      if (normalizedStr.startsWith('cash basis')) {
-        return 'Cash Basis* pattern';
-      }
-      if (normalizedStr.startsWith('report generated')) {
-        return 'Report Generated* pattern';
-      }
-      if (normalizedStr.startsWith('generated on')) {
-        return 'Generated On* pattern';
-      }
-
-      // Totals
-      if (normalizedStr.startsWith('total for ')) {
-        return 'Total for * pattern';
-      }
-      
-      const exactTotals = [
-        'total assets',
-        'total liabilities',
-        'total equity',
-        'total income',
-        'total expenses'
-      ];
-      if (exactTotals.includes(normalizedStr)) {
-        return `Exact total pattern: "${str}"`;
-      }
-
-      // Section Headers
-      const exactSectionHeaders = [
-        'assets',
-        'current assets',
-        'other current assets',
-        'fixed assets',
-        'liabilities',
-        'current liabilities',
-        'long-term liabilities',
-        'long term liabilities',
-        'equity',
-        'income',
-        'expenses'
-      ];
-      if (exactSectionHeaders.includes(normalizedStr)) {
-        return `Exact section header pattern: "${str}"`;
-      }
-
-      return null;
-    };
-
-    // The fields to inspect in a row
-    const fieldsToInspect = [
-      'account_name',
-      'distribution_account',
-      'bank_account',
-      'bank_name',
-      'description',
-      'field_name',
-      'field_label'
-    ];
-
     for (const row of rows) {
-      let skipReason = null;
-      let matchedValue = null;
-
-      if (row && row.hierarchy_level === 0) {
-        skipReason = 'Structural heading row (hierarchy_level=0)';
-        matchedValue = row.account_name ?? null;
-      }
-
-      // A real posted transaction (row_type === 'TRANSACTION') is never a
-      // report heading/total, no matter what its account_name says — this is
-      // a semantic signal (set by the extractor from actual row structure),
-      // unlike the keyword patterns below (a text-collision safety net for
-      // rows with no structural signal). CONFIRMED BUG this exemption fixes:
-      // a real client chart-of-accounts leaf can be named exactly the same
-      // as a common report section label (e.g. a GL account literally named
-      // "Fixed Assets") — without this check, the one real transaction ever
-      // posted to such an account gets silently discarded here as if it were
-      // a heading, while its offsetting leg (posted to a differently-named
-      // account) survives, leaving a permanently one-sided, undetectable gap
-      // in the ledger. Only fieldsToInspect's keyword matching is skipped;
-      // the hierarchy_level check above still applies to any row type.
-      const isRealTransaction = row && row.row_type === 'TRANSACTION';
-
-      for (const field of (skipReason || isRealTransaction) ? [] : fieldsToInspect) {
-        if (row && row[field] !== undefined && row[field] !== null) {
-          const reason = matchesFilterPatterns(row[field]);
-          if (reason) {
-            skipReason = reason;
-            matchedValue = row[field];
-            break;
-          }
-        }
-      }
-
-      if (skipReason) {
-        skippedLog.push({
-          value: matchedValue,
-          reason: skipReason,
-          row
-        });
+      const { rowType, reason, matchedValue } = this._classifyStructuralRow(row);
+      if (rowType) {
+        skippedLog.push({ value: matchedValue, reason, row });
       } else {
         filteredRows.push(row);
       }

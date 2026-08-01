@@ -199,13 +199,9 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
   // (re-running the exact same file, same code, immediately after reliably
   // produced the correct nested result) — most likely a transient race (e.g.
   // this backend process restarting mid-extraction during active development/
-  // use) rather than a deterministic parsing bug. Whatever the exact trigger,
-  // a bad flat result must never be trusted and cached as if it were correct
-  // — see extraction cache's parser_version keying; a wrong result cached
-  // under the current version silently persists until manually cleared.
-  // Shared with the base class's cache-read gate (_readExtractionCache) so a
-  // bad result is caught the same way whether it was just extracted or read
-  // back from a previously-cached (and possibly stale/bad) entry.
+  // use) rather than a deterministic parsing bug. Used by the retry
+  // safeguard in _extractFromExcelWithFallback to catch a bad flat result
+  // before it's ever inserted.
   _isExtractionSuspicious(rows) {
     const leafRows = (rows || []).filter((r) => !r.is_section_header && !r.is_total);
     const rowsWithParent = leafRows.filter((r) => Array.isArray(r.parent_path) && r.parent_path.length > 0);
@@ -521,9 +517,10 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
       amount: Number(row.amount) || 0,
 
       // 0 = a structural heading row (recognized section header OR an
-      // unrecognized intermediate grouping label like "Bank Accounts") —
-      // filterRowsBeforeInsertion strips every hierarchy_level=0 row before
-      // it reaches this table; 1 = a real postable account/total line.
+      // unrecognized intermediate grouping label like "Bank Accounts");
+      // 1 = a real postable account/total line. Every row persists regardless
+      // of this value now (see filterRowsBeforeInsertion override below) —
+      // hierarchy_level remains a structural signal, not a drop criterion.
       hierarchy_level: (row.is_section_header || row.node_type === 'hierarchy_group') ? 0 : 1,
       sort_order: idx,
       is_total: Boolean(row.is_total),
@@ -538,19 +535,73 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
     }));
   }
 
+  // Overrides the base class's default (which DROPS any row classified as
+  // non-account) — every row from an uploaded Balance Sheet is persisted,
+  // tagged with its row_type (migration 085) instead. Source-document
+  // fidelity requires every row to survive; chart_of_accounts generation
+  // (collectBsAccountsFromEntries) is the one place that reads row_type to
+  // select only real posting accounts — this table itself never drops a row.
+  //
+  // filteredRows.length === rows.length is an invariant of this override
+  // (nothing is ever dropped here), so "Persisted rows" below reflects what
+  // will actually be sent to insertRows — the [balance_sheet] summary is
+  // logged directly here rather than via the base class's generic
+  // "Skipped row value" loop, which would otherwise mislabel every one of
+  // these rows as skipped even though all of them are kept.
+  filterRowsBeforeInsertion(rows) {
+    if (!Array.isArray(rows)) return { filteredRows: [], skippedLog: [] };
+    const counts = { account: 0, heading: 0, subtotal: 0, total: 0, metadata: 0, footer: 0, unknown: 0 };
+    const filteredRows = rows.map((row) => {
+      const { rowType } = this._classifyStructuralRow(row);
+      const finalType = rowType || (row.is_total ? 'total' : 'account');
+      counts[finalType] = (counts[finalType] || 0) + 1;
+      return { ...row, row_type: finalType };
+    });
+    this.logger.log(
+      `[balance_sheet]\n` +
+      `Source rows = ${rows.length}\n` +
+      `Persisted rows = ${filteredRows.length}\n` +
+      `  accounts = ${counts.account}\n` +
+      `  headings = ${counts.heading}\n` +
+      `  subtotals = ${counts.subtotal}\n` +
+      `  totals = ${counts.total}\n` +
+      `  metadata = ${counts.metadata}\n` +
+      `  footer = ${counts.footer}\n` +
+      `  unknown = ${counts.unknown}`
+    );
+    return { filteredRows, skippedLog: [] };
+  }
+
   async insertRows(rows) {
     if (!rows.length) return { success: true };
     const CHUNK = 500;
+    let rowsInserted = 0;
     for (let i = 0; i < rows.length; i += CHUNK) {
       const chunk = rows.slice(i, i + CHUNK);
       const { error } = await supabase.from('balance_sheet_entries').insert(chunk);
-      if (error) {
-        this.logger.error(`Insert chunk failed: ${error.message}`);
-        return { success: false, error: error.message };
+      if (!error) {
+        rowsInserted += chunk.length;
+        continue;
+      }
+      // A chunk-level failure (e.g. one bad row) would otherwise silently
+      // drop every OTHER row in that chunk too. Fall back to one-row-at-a-time
+      // for this chunk so a single bad row can't take good rows down with it,
+      // and so the exact failing row is identified rather than silently lost.
+      this.logger.warn(`Insert chunk failed (${error.message}) — retrying chunk row-by-row to isolate the failure`);
+      for (const row of chunk) {
+        const { error: rowError } = await supabase.from('balance_sheet_entries').insert([row]);
+        if (rowError) {
+          this.logger.error(
+            `Row failed to persist | source_row_number=${row.sort_order} | document_id=${row.source_file_id} | ` +
+            `account_name="${row.account_name}" | row_type=${row.row_type} | reason=insert_error | error="${rowError.message}"`
+          );
+        } else {
+          rowsInserted += 1;
+        }
       }
     }
-    this.logger.log(`Inserted ${rows.length} rows into balance_sheet_entries`);
-    return { success: true };
+    this.logger.log(`Inserted ${rowsInserted} of ${rows.length} rows into balance_sheet_entries`);
+    return { success: true, rowsInserted };
   }
 }
 

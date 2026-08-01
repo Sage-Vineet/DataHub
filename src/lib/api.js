@@ -1670,11 +1670,14 @@ export function resetChartOfAccount(accountId) {
   return request(`/key-reports/chart-of-accounts/${accountId}/reset`, { method: 'POST', body: {} });
 }
 
-// Bulk-save an edited hierarchy for a version.
+// Save/Approve the version's COMPLETE reviewed Chart of Accounts tree (every
+// node, not a diff) — the same flat node-list shape GET .../chart-of-accounts
+// and .../regenerate return. Validates, persists, and (only on success) runs
+// Trial Balance/Reconciliation/Monthly Balance Sheets/report snapshots.
 export function saveChartOfAccounts(versionId, nodes) {
   return request(`/key-reports/versions/${versionId}/chart-of-accounts/save`, {
     method: 'POST',
-    body: { nodes },
+    body: { tree: { nodes } },
   });
 }
 
@@ -1716,6 +1719,13 @@ export function getFinancialStatements(versionId, { year, currency } = {}) {
   if (currency) params.set("currency", currency);
   const qs = params.toString();
   return request(`/key-reports/versions/${versionId}/reports/financial-statements${qs ? `?${qs}` : ""}`);
+}
+
+// Lightweight period metadata for a version — { monthly: {min,max}, yearly: {min,max} }.
+// Used to set the Reports page's Monthly/Yearly filter defaults without fetching
+// the full financial-statements payload.
+export function getKeyReportAvailablePeriods(versionId) {
+  return request(`/key-reports/versions/${versionId}/available-periods`);
 }
 
 export function listFolderAccess(folderId) {

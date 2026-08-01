@@ -61,6 +61,13 @@ function normalizeVersion(row) {
     resolvedBatchId: row.resolved_batch_id || null,
     resolvedDatasetVersion: row.resolved_dataset_version || null,
     lastSyncedAt: row.last_synced_at || null,
+    // Migration 086 (coa_approved_at) — null means this version's Chart of
+    // Accounts is still an unpersisted proposal awaiting review; a timestamp
+    // means it was reviewed and Saved/Approved (persistApprovedCoaTree
+    // succeeded). Gates the frontend's PATCH single-account edit and "Open
+    // Reports" action. Exposed here (was previously missing from this
+    // mapper) so those gates are actually checkable client-side.
+    coaApprovedAt: row.coa_approved_at || null,
     metadata: row.metadata || {},
     createdBy: row.created_by || null,
     updatedBy: row.updated_by || null,
@@ -453,16 +460,26 @@ async function _executeSync(version, versionId, userId = null, opts = {}) {
   try {
     const validation = await validateVersion(versionId);
 
-    // Extract all linked files and persist to entry tables. Validation results
-    // are written internally by the sync service (from entry table row counts).
+    // Extract all linked files (persisted to entry tables -- extraction is
+    // allowed before COA generation) and build the in-memory Proposed COA.
+    // generateCoaProposal ALWAYS halts here (haltReason: 'coa_review_required'
+    // on structural success, or an earlier halt reason if extraction/the
+    // document gate failed) -- it never persists chart_of_accounts, never
+    // links GL/BS, never runs Trial Balance/Reconciliation/Monthly BS/report
+    // snapshots. Those only run after an explicit approveCoa call below.
     const keyReportSyncService = require("./keyReportSyncService");
-    const result = await keyReportSyncService.generateFinancialTables(version, {
+    const result = await keyReportSyncService.generateCoaProposal(version, {
       userId,
       uploadJobId: opts.uploadJobId || null,
     });
 
-    // key_report_versions: mark synced. resolved_batch_id/dataset_version are null
-    // in the new direct-extraction architecture (no Manual GL batch is created).
+    // key_report_versions: mark synced (extraction + proposal generation
+    // completed). resolved_batch_id/dataset_version are null in the new
+    // direct-extraction architecture (no Manual GL batch is created).
+    // coa_approved_at is deliberately NOT touched here -- a fresh sync always
+    // produces a fresh proposal; any PRIOR approval no longer reflects the
+    // current documents and must not be silently carried forward. Clearing it
+    // here (rather than leaving a stale approval) closes that gap.
     await supabase
       .from("key_report_versions")
       .update({
@@ -470,6 +487,7 @@ async function _executeSync(version, versionId, userId = null, opts = {}) {
         last_synced_at: new Date().toISOString(),
         resolved_batch_id: null,
         resolved_dataset_version: null,
+        coa_approved_at: null,
         updated_at: new Date().toISOString(),
         updated_by: userId,
       })
@@ -478,13 +496,14 @@ async function _executeSync(version, versionId, userId = null, opts = {}) {
     await supabase
       .from("key_report_sync_logs")
       .update({
-        sync_status: "success",
+        sync_status: result?.summary?.haltReason || "success",
         sync_completed_at: new Date().toISOString(),
         metadata: {
           warnings: validation.warnings,
           years: result?.years || [],
           extractionResults: result?.extractionResults || null,
           totalRowsInserted: result?.summary?.totalRowsInserted || 0,
+          haltReason: result?.summary?.haltReason || null,
         },
       })
       .eq("id", logId);
@@ -517,6 +536,102 @@ async function _executeSync(version, versionId, userId = null, opts = {}) {
         .eq("id", logId);
     } catch (logUpdateError) {
       console.warn("[KeyReports][Sync] Failed to persist sync error log:", logUpdateError.message);
+    }
+    throw normalizedError;
+  }
+}
+
+/**
+ * approveCoa -- the Chart-of-Accounts Save/Approve action. `approvedTreeNodes`
+ * is the frontend's complete reviewed tree (chartOfAccountsService.
+ * serializeProposedTree's flat wire-node shape). Validates and persists it
+ * (keyReportSyncService.approveAndGenerateReports); ONLY on success does it
+ * continue into linking, hierarchy finalization, Trial Balance,
+ * Reconciliation, Monthly Balance Sheets, and report snapshot generation.
+ * On validation/persistence failure, returns `success: false` with the
+ * violation messages and touches no key_report_versions/report state at all.
+ */
+async function approveCoa(versionId, approvedTreeNodes, userId = null) {
+  const version = await getVersion(versionId);
+  if (!version) throw new Error("Version not found.");
+  if (!Array.isArray(approvedTreeNodes) || !approvedTreeNodes.length) {
+    throw new Error("approvedTreeNodes must be a non-empty array.");
+  }
+
+  const { data: logRow, error: logErr } = await supabase
+    .from("key_report_sync_logs")
+    .insert({
+      version_id: versionId,
+      company_id: version.companyId,
+      sync_status: "started",
+      created_by: userId,
+    })
+    .select("*")
+    .single();
+  if (logErr) throw logErr;
+  const logId = logRow.id;
+
+  try {
+    const keyReportSyncService = require("./keyReportSyncService");
+    const result = await keyReportSyncService.approveAndGenerateReports(version, approvedTreeNodes, { userId });
+    const haltReason = result?.summary?.haltReason || null;
+
+    if (!result?.halted) {
+      // Success: COA persisted, reports generated. Reuses the exact same
+      // "synced" state generateCoaProposal's halt already set -- Approve
+      // does not introduce a second version-status value, only the new
+      // coa_approved_at marker (set inside persistApprovedCoaTree's caller,
+      // approveAndGenerateReports) distinguishes "proposal reviewed and
+      // saved" from "proposal generated, not yet reviewed."
+      await supabase
+        .from("key_report_versions")
+        .update({
+          status: "synced",
+          last_synced_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          updated_by: userId,
+        })
+        .eq("id", versionId);
+    }
+
+    await supabase
+      .from("key_report_sync_logs")
+      .update({
+        sync_status: haltReason || "success",
+        sync_completed_at: new Date().toISOString(),
+        error_message: result?.halted ? result.message : null,
+        metadata: {
+          years: result?.years || [],
+          haltReason,
+          totalRowsInserted: result?.summary?.totalRowsInserted || 0,
+        },
+      })
+      .eq("id", logId);
+
+    const validationResults = await listValidationResults(versionId);
+    return {
+      success: !result?.halted,
+      version: await getVersion(versionId),
+      validationResults,
+      result,
+    };
+  } catch (err) {
+    const normalizedError = normalizeError(err);
+    if (isConnectionError(normalizedError)) {
+      normalizedError.status = 503;
+      normalizedError.retryable = true;
+    }
+    try {
+      await supabase
+        .from("key_report_sync_logs")
+        .update({
+          sync_status: "failed",
+          sync_completed_at: new Date().toISOString(),
+          error_message: normalizedError.message || String(err),
+        })
+        .eq("id", logId);
+    } catch (logUpdateError) {
+      console.warn("[KeyReports][ApproveCoa] Failed to persist sync error log:", logUpdateError.message);
     }
     throw normalizedError;
   }
@@ -824,6 +939,7 @@ module.exports = {
   removeMapping,
   validateVersion,
   syncVersion,
+  approveCoa,
   listSyncLogs,
   listValidationResults,
   getActiveResolvedBatch,

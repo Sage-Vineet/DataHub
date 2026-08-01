@@ -35,10 +35,17 @@ async function isSnapshotStale(versionId, generatedAt) {
       .order('updated_at', { ascending: false })
       .limit(1)
       .maybeSingle();
-    if (error || !data?.updated_at) return false; // no COA rows / column missing → trust the snapshot
+    // A genuine query failure (transient DB error, timeout) must NOT be read as
+    // "proven not stale" — that would silently risk serving a stale snapshot
+    // past a COA edit on nothing more than an infrastructure hiccup. Fail toward
+    // a live recompute instead (safe: bounded extra cost, never wrong data).
+    // Only an actually-empty result (query succeeded, this version simply has
+    // no COA rows yet) is the benign case where trusting the snapshot is correct.
+    if (error) return true;
+    if (!data?.updated_at) return false;
     return new Date(data.updated_at).getTime() >= new Date(generatedAt).getTime();
   } catch {
-    return false; // never let a staleness check itself break report generation
+    return true; // staleness check itself failed — recompute live rather than risk stale data
   }
 }
 
@@ -553,10 +560,19 @@ function extractedBalancesMap(entries) {
     if (!name) continue;
     // "Net Income" on a QB Balance Sheet is a real equity line but is sometimes
     // marked is_total=true. Include it so the prior-year carry-forward gets the
-    // correct NI amount to close into Retained Earnings.
-    const isNetIncomeLine = /^net\s+income$/i.test(name);
+    // correct NI amount to close into Retained Earnings. A loss year is often
+    // literally labeled "Net Loss" instead — must match that too, or a loss
+    // year's bottom line gets silently dropped as an excluded total (matches
+    // financialStatementService.js's NI_NAME_RE for the same line).
+    const isNetIncomeLine = /^net\s+(income|loss)$/i.test(name);
     if (e.is_total && !isNetIncomeLine) continue;
     if (e.hierarchy_level === 0 && !e.is_total) continue; // pure section header
+    // row_type (migration 085): every source row is now persisted, including
+    // headings/subtotals/metadata the structural is_total/hierarchy_level
+    // checks above might miss (e.g. a "Total for X" subtotal the extraction
+    // parser didn't structurally flag as is_total). row_type is NULL for rows
+    // persisted before this migration, which never contained non-account rows.
+    if (e.row_type && e.row_type !== 'account' && !isNetIncomeLine) continue;
     const sec = e._resolvedSection;
     const type = sec === 'assets' ? 'asset' : sec === 'liabilities' ? 'liability' : sec === 'equity' ? 'equity' : 'unknown';
     map.set(name, { name, balance: safeNum(e.amount), type });
@@ -627,7 +643,7 @@ async function bsBalancesForYear(versionId, year, depth = 0) {
   if (await hasExtractedRows('balance_sheet_entries', versionId, year)) {
     const { data, error } = await supabase
       .from('balance_sheet_entries')
-      .select('account_name, account_type, section, amount, hierarchy_level, is_total, sort_order, fiscal_year, as_of_date')
+      .select('account_name, account_type, section, amount, hierarchy_level, is_total, sort_order, fiscal_year, as_of_date, row_type')
       .eq('version_id', versionId)
       .eq('fiscal_year', year)
       .or('is_generated.is.null,is_generated.eq.false')
@@ -656,7 +672,11 @@ async function bsBalancesForYear(versionId, year, depth = 0) {
     if (prior && prior.balances.size) {
       let priorNetIncome = 0;
       for (const [, v] of prior.balances) {
-        if (/^net\s+income$/i.test(v.name.trim())) {
+        // Matches "Net Loss" too (see extractedBalancesMap's isNetIncomeLine
+        // above) — a loss year whose line is literally named "Net Loss" must
+        // still close into Retained Earnings, not carry forward as its own
+        // stale equity line into the new year.
+        if (/^net\s+(income|loss)$/i.test(v.name.trim())) {
           priorNetIncome += v.balance;
         } else {
           addBalance(balances, v.name, v.balance, v.type);
@@ -1614,6 +1634,80 @@ async function getCashflowReport(versionId, {
   return result;
 }
 
+/**
+ * GET /key-reports/versions/:versionId/reports/balance-sheet
+ *
+ * Persisted alongside P&L / Cash Flow in generated_report_snapshots (same
+ * table, same version_id+report_type+scope_key shape — see migration 084).
+ * This never computes Balance Sheet independently: it reuses financialStatement
+ * Service.generateFinancialStatements's already-computed yearly/monthly BS as-is
+ * (same shape the /reports/financial-statements endpoint already returns), so
+ * there remains exactly one Balance Sheet engine and this can never drift from
+ * what the Reports page renders — it only adds a persisted, snapshot-served
+ * path for it.
+ */
+async function getBalanceSheetReport(versionId, {
+  year, forceGenerate = false, persist = false, companyId = null,
+} = {}) {
+  if (!versionId) throw new Error('versionId is required');
+
+  if (!forceGenerate) {
+    const snapshot = await generatedReportSnapshots.getSnapshot(versionId, 'balance_sheet', { year, period: 'year' });
+    if (snapshot && !(await isSnapshotStale(versionId, snapshot.generatedAt))) {
+      return { ...snapshot, source: 'generated_report_snapshots' };
+    }
+    if (snapshot) console.log(`[KeyReports][BS] versionId=${versionId} snapshot stale (COA changed since ${snapshot.generatedAt}) — recomputing live`);
+  }
+
+  console.log(`[KeyReports][BS] versionId=${versionId} year=${year || 'all'}`);
+
+  // Lazy require: financialStatementService itself requires bsBalancesForYear /
+  // aggregateGLForBSByMonth from THIS module at load time (see getCashflowReport's
+  // note above) — a top-level require here would be circular.
+  const { generateFinancialStatements } = require('./financialStatementService');
+  const fs = await generateFinancialStatements(versionId, {});
+  const allYearly = fs?.reports?.balanceSheet?.yearly || [];
+  const allMonthly = fs?.reports?.balanceSheet?.monthly || [];
+  const years = (year ? allYearly.filter((e) => Number(e.year) === Number(year)) : allYearly)
+    .map((e) => Number(e.year));
+
+  if (!years.length) {
+    console.warn(`[KeyReports][BS] versionId=${versionId} NO DATA — run Sync first`);
+    return { source: 'key_reports_entry_tables', years: [], yearly: [], monthly: [] };
+  }
+
+  const yearlyFiltered = allYearly.filter((e) => years.includes(Number(e.year)));
+  const monthlyFiltered = allMonthly.filter((e) => years.includes(Number(e.year)));
+  for (const y of years) auditReport(versionId, 'balance_sheet', y, 0, { generatedFromGL: true, engine: 'financialStatementService' });
+
+  console.log(`[KeyReports][BS] versionId=${versionId} years=[${years.join(',')}] yearly=${yearlyFiltered.length} monthly=${monthlyFiltered.length}`);
+
+  const result = {
+    source: 'key_reports_entry_tables',
+    years,
+    yearly: yearlyFiltered,
+    monthly: monthlyFiltered,
+  };
+
+  if (persist) {
+    if (!companyId) throw new Error('companyId is required when persisting generated reports');
+    const snapshots = [{ scope: { period: 'year' }, payload: result }];
+    for (const y of years) {
+      snapshots.push({
+        scope: { year: y, period: 'year' },
+        payload: {
+          source: 'key_reports_entry_tables',
+          years: [y],
+          yearly: yearlyFiltered.filter((e) => Number(e.year) === y),
+          monthly: monthlyFiltered.filter((e) => Number(e.year) === y),
+        },
+      });
+    }
+    result.persistedSnapshots = await generatedReportSnapshots.replaceSnapshots(companyId, versionId, 'balance_sheet', snapshots);
+  }
+  return result;
+}
+
 const TB_LEVEL_KEYS = Array.from({ length: 15 }, (_, i) => `level_${i + 1}`);
 
 /**
@@ -2073,6 +2167,7 @@ module.exports = {
   getBankStatementReport,
   getTaxReturnReport,
   getCashflowReport,
+  getBalanceSheetReport,
   getQoeReport,
   getKpiReport,
   // Pure builders exported for the accuracy-validation harness (test fixtures).

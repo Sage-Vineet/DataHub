@@ -27,6 +27,10 @@ const clientCoaExtractionService = require('./clientCoaExtractionService');
 // memory, compared against the GL-derived Net Income, then discarded. Never
 // written to a table (see migration 056 — client requirement).
 const profitLossExtractionService = require('./profitLossExtractionService');
+const {
+  buildBalanceSheetTreeFromData,
+  buildProfitLossTreeFromData,
+} = require('./referenceTreeBuilder');
 // Reused only for the P&L validation report's "AI classification" column
 // (Step 7b) — same recognition-only call already used by COA generation,
 // never repurposed to build hierarchy here.
@@ -357,7 +361,10 @@ async function chunkedInsertGeneric(table, rows, chunk = 500) {
   }
 }
 
-const { generateChartOfAccounts, validateChartOfAccounts, ensureCoaComplete, printCoaValidationBlock, finalizeCoaHierarchy } = require('../chartOfAccountsService');
+const {
+  validateChartOfAccounts, ensureCoaComplete, printCoaValidationBlock, finalizeCoaHierarchy,
+  buildProposedCoaTree, persistApprovedCoaTree, serializeProposedTree, validateFinalCoaTree,
+} = require('../chartOfAccountsService');
 const { replaceValidationResults } = require('./keyReportValidationService');
 const { classifyWorkflowDocuments, generateTrialBalance, generateMonthlyBalanceSheets, generateMonthlyBalanceSheetsReverse, generateReconciliation, linkGlToCoa, linkBsToCoa, coaTypeMap } = require('./keyReportAccountingService');
 const keyReportService = require('./keyReportService');
@@ -476,6 +483,36 @@ async function extractDocument(companyId, versionId, mapping, extractionService,
       error: error.message,
     };
   }
+}
+
+async function loadBalanceSheetRowsForReferenceTree(companyId, versionId, fiscalYear = null) {
+  let query = supabase
+    .from('balance_sheet_entries')
+    .select('account_name, account_number, amount, section, sub_section, is_total, hierarchy_level, parent_path, fiscal_year, source_file_id, row_type, sort_order')
+    .eq('company_id', companyId)
+    .eq('version_id', versionId)
+    .or('is_generated.is.null,is_generated.eq.false')
+    .order('source_file_id', { ascending: true })
+    .order('sort_order', { ascending: true });
+  if (fiscalYear != null) query = query.eq('fiscal_year', fiscalYear);
+  const rows = await fetchAllRows(() => query);
+  if (rows.length || fiscalYear == null) return rows;
+  return fetchAllRows(() =>
+    supabase
+      .from('balance_sheet_entries')
+      .select('account_name, account_number, amount, section, sub_section, is_total, hierarchy_level, parent_path, fiscal_year, source_file_id, row_type, sort_order')
+      .eq('company_id', companyId)
+      .eq('version_id', versionId)
+      .or('is_generated.is.null,is_generated.eq.false')
+      .order('source_file_id', { ascending: true })
+      .order('sort_order', { ascending: true }),
+  );
+}
+
+function pickReferenceFiscalYear(rows, preferredYear = null) {
+  const years = [...new Set((rows || []).map((r) => Number(r.fiscal_year)).filter(Number.isInteger))].sort((a, b) => b - a);
+  if (preferredYear != null && years.includes(Number(preferredYear))) return Number(preferredYear);
+  return years[0] || null;
 }
 
 function updateStats(stats, result) {
@@ -646,7 +683,15 @@ async function buildValidationResultsFromEntryTables(versionId, mappingsByCatego
 }
 
 async function generateFinancialTables(version, opts = {}) {
-  const { } = opts; // opts reserved for future use (e.g. userId, uploadJobId)
+  // approvedTreeNodes: undefined/null -> PROPOSE mode (build the in-memory
+  // Proposed COA, halt for user review, never persist/link/report). An
+  // array (the user's reviewed wire tree, chartOfAccountsService's
+  // serializeProposedTree shape) -> APPROVE mode (validate, persist, then
+  // continue the exact same pipeline this function always ran: link, finalize,
+  // AI hierarchy recommendations, Trial Balance, Reconciliation, Monthly BS,
+  // report snapshots). See generateCoaProposal / approveAndGenerateReports
+  // below for the two thin, purpose-named entry points routes actually call.
+  const { approvedTreeNodes = null } = opts;
   const companyId = version.companyId;
   const versionId = version.id;
 
@@ -899,6 +944,26 @@ async function generateFinancialTables(version, opts = {}) {
     logger.log('  No Profit & Loss file linked.');
   }
 
+  const referenceFiscalYear = pickReferenceFiscalYear(
+    await loadBalanceSheetRowsForReferenceTree(companyId, versionId),
+    gate?.endingBs?.fiscal_year ?? null,
+  );
+  const balanceSheetRowsForTree = await loadBalanceSheetRowsForReferenceTree(companyId, versionId, referenceFiscalYear);
+  const balanceSheetTree = buildBalanceSheetTreeFromData({
+    reportName: 'Balance Sheet',
+    rows: balanceSheetRowsForTree,
+  });
+  const profitLossTree = buildProfitLossTreeFromData({
+    reportName: 'Profit and Loss',
+    periodKeys: years.map((year) => `FY ${year}`),
+    rows: plParsedByFile.flatMap((f) => f.validRows),
+  });
+  logger.log(
+    `  Reference trees created for COA matching: ` +
+    `Balance Sheet FY${referenceFiscalYear || 'all'} ${balanceSheetTree.children.length} top-level node(s), ` +
+    `Profit & Loss ${profitLossTree.children.length} top-level node(s).`,
+  );
+
   // Step 6: Chart of Accounts. Hierarchy source priority: uploaded Chart of
   // Accounts (company-scoped, then global reference) → this version's own
   // uploaded Balance Sheet section → this version's own uploaded Profit & Loss
@@ -913,31 +978,134 @@ async function generateFinancialTables(version, opts = {}) {
   // version that never linked a COA at all).
   const hasLinkedCoaDocument = (mappingsByCategory.chart_of_accounts || []).length > 0;
   logger.log(`  Uploaded COA linked to this version: ${hasLinkedCoaDocument ? 'YES' : 'NO'}`);
+
+  const coaBuildOpts = {
+    plRows: plAccountRows,
+    hasLinkedCoaDocument,
+    balanceSheetTree,
+    profitLossTree,
+    // Threaded through so buildDocHierarchyLookups' deepest-wins tie-break
+    // can prefer the Ending Balance Sheet when it and the Opening Balance
+    // Sheet give the same account equal real depth (never re-derived here
+    // — this is the SAME gate the sync already validated against).
+    endingFiscalYear: gate?.endingBs?.fiscal_year ?? null,
+  };
+
+  // Shared halt-response builder for every early-return below (mirrors the
+  // document-gate halt above): always stores whatever validation rows are
+  // known so far, never leaves the version without a validation trail.
+  const haltWith = async (haltReason, message, extraRows = []) => {
+    const haltRows = await buildValidationResultsFromEntryTables(versionId, mappingsByCategory, years, logger);
+    haltRows.push(...extraRows);
+    await replaceValidationResults(versionId, companyId, haltRows);
+    logger.log(`  ✓ ${haltRows.length} validation rows stored (workflow halted — ${haltReason})`);
+    return {
+      success: haltReason !== 'coa_validation_failed' && haltReason !== 'coa_save_failed',
+      halted: true,
+      batchId: null,
+      datasetVersion: null,
+      years,
+      extractionResults,
+      coaSummary: null,
+      errors: extractionErrors.length > 0 ? extractionErrors : null,
+      summary: {
+        generated: false, halted: true, haltReason, years, totalRowsInserted: totalRows,
+        extractionResults, documents: gate, documentProcessing: docStats, timings, message,
+      },
+      message,
+    };
+  };
+
+  if (!approvedTreeNodes) {
+    // ── PROPOSE MODE ─────────────────────────────────────────────────────────
+    // Build the in-memory Proposed COA (document-first classification, AI
+    // fallback only where no document evidence exists) and STOP. Nothing is
+    // written to chart_of_accounts, nothing is linked, no report generation
+    // runs — the proposal is returned for the user to review and edit. Only
+    // an explicit Save/Approve (approveAndGenerateReports, below) resumes the
+    // rest of this pipeline.
+    logger.log('--- Step 6: Chart of Accounts (Proposed COA — no persistence) ---');
+    let proposal;
+    try {
+      proposal = await buildProposedCoaTree(companyId, versionId, null, coaBuildOpts);
+    } catch (proposeErr) {
+      logger.warn(`  Chart of Accounts proposal generation failed: ${proposeErr.message}`);
+      return haltWith('coa_generation_failed', `Sync halted: Chart of Accounts proposal generation failed: ${proposeErr.message}`);
+    }
+    const proposedTreeNodes = serializeProposedTree(proposal.hierarchical || []);
+    logger.log(
+      `  ✓ Proposed COA: ${proposal.matchSummary?.totalCount || 0} account(s) — ` +
+      `${proposal.matchSummary?.documentMatchedCount || 0} resolved from uploaded documents, ` +
+      `${proposal.matchSummary?.aiFallbackCount || 0} AI fallback, ` +
+      `${proposal.matchSummary?.needsMappingCount || 0} need manual mapping.`,
+    );
+    mark('chart_of_accounts_proposal');
+    const message = 'Chart of Accounts proposal generated. Review and Save/Approve before reports are generated.';
+    const haltRows = await buildValidationResultsFromEntryTables(versionId, mappingsByCategory, years, logger);
+    await replaceValidationResults(versionId, companyId, haltRows);
+    return {
+      success: true,
+      halted: true,
+      batchId: null,
+      datasetVersion: null,
+      years,
+      extractionResults,
+      coaSummary: null,
+      proposedTree: { nodes: proposedTreeNodes },
+      matchSummary: proposal.matchSummary,
+      errors: extractionErrors.length > 0 ? extractionErrors : null,
+      summary: {
+        generated: false, halted: true, haltReason: 'coa_review_required', years,
+        totalRowsInserted: totalRows, extractionResults, documents: gate, documentProcessing: docStats,
+        timings, matchSummary: proposal.matchSummary, message,
+      },
+      message,
+    };
+  }
+
+  // ── APPROVE MODE ────────────────────────────────────────────────────────
+  // Validate the user's complete reviewed tree; on failure, stop here --
+  // never persist, never generate reports. On success, persist it
+  // transactionally (persistApprovedCoaTree's compensating-rollback guard),
+  // mark this version's COA approved, and continue the rest of this
+  // pipeline (linking, finalize, AI hierarchy recommendations, Trial
+  // Balance, Reconciliation, Monthly BS, report snapshots) exactly as
+  // this function always has.
+  logger.log('--- Step 6: Chart of Accounts (validating & persisting Approved COA) ---');
+  const validation = validateFinalCoaTree(approvedTreeNodes);
+  if (!validation.valid) {
+    logger.warn(`  ✗ Submitted Chart of Accounts failed validation: ${validation.violations.join(' | ')}`);
+    return haltWith(
+      'coa_validation_failed',
+      `Chart of Accounts validation failed -- not saved, no reports generated: ${validation.violations.join(' ')}`,
+      [{
+        dataType: 'chart_of_accounts', year: null, status: 'error', severity: 'error',
+        message: `Submitted Chart of Accounts failed validation: ${validation.violations.join(' ')}`,
+        metadata: { gate: 'coa_validation_failed', code: 'COA_VALIDATION_FAILED', violations: validation.violations },
+      }],
+    );
+  }
+
   let coaSummary = null;
   try {
-    coaSummary = await generateChartOfAccounts(companyId, versionId, null, {
-      plRows: plAccountRows,
-      hasLinkedCoaDocument,
-      // Threaded through so buildDocHierarchyLookups' deepest-wins tie-break
-      // can prefer the Ending Balance Sheet when it and the Opening Balance
-      // Sheet give the same account equal real depth (never re-derived here
-      // — this is the SAME gate the sync already validated against).
-      endingFiscalYear: gate?.endingBs?.fiscal_year ?? null,
-    });
-    logger.log(`  ✓ Chart of Accounts: ${coaSummary.leafCount || 0} accounts classified (${coaSummary.inserted || 0} new, ${coaSummary.updated || 0} updated, ${coaSummary.deleted || 0} removed)`);
-    if (coaSummary.sourceCounts) {
-      const sc = coaSummary.sourceCounts;
-      logger.log(
-        `    ${sc.coaReference} matched from uploaded Chart of Accounts, ` +
-        `${sc.bsSection} matched from uploaded Balance Sheet section, ` +
-        `${sc.plSection} matched from uploaded Profit & Loss section, ` +
-        `${sc.aiCategory} AI-placed into an existing category, ` +
-        `${sc.needsMapping} needs_mapping`,
+    coaSummary = await persistApprovedCoaTree(companyId, versionId, validation.hierarchical, { hasLinkedCoaDocument });
+    if (coaSummary.rejected) {
+      logger.warn(`  ✗ Approved COA persistence rejected: ${(coaSummary.violations || []).join(' | ')}`);
+      return haltWith(
+        'coa_validation_failed',
+        `Chart of Accounts validation failed -- not saved, no reports generated: ${(coaSummary.violations || []).join(' ')}`,
+        [{
+          dataType: 'chart_of_accounts', year: null, status: 'error', severity: 'error',
+          message: `Submitted Chart of Accounts failed validation: ${(coaSummary.violations || []).join(' ')}`,
+          metadata: { gate: 'coa_validation_failed', code: coaSummary.code || 'COA_HIERARCHY_INVALID', violations: coaSummary.violations },
+        }],
       );
     }
+    await supabase.from('key_report_versions').update({ coa_approved_at: new Date().toISOString() }).eq('id', versionId);
+    logger.log(`  ✓ Chart of Accounts approved & persisted: ${coaSummary.leafCount || 0} accounts (${coaSummary.inserted || 0} new, ${coaSummary.updated || 0} updated, ${coaSummary.deleted || 0} removed)`);
   } catch (coaErr) {
-    logger.warn(`  Chart of Accounts generation failed: ${coaErr.message}`);
-    coaSummary = { error: coaErr.message, accountCount: 0 };
+    logger.warn(`  ✗ Chart of Accounts persistence failed: ${coaErr.message}`);
+    return haltWith('coa_save_failed', `Chart of Accounts could not be saved -- no reports generated: ${coaErr.message}`);
   }
   mark('chart_of_accounts');
 
@@ -989,11 +1157,91 @@ async function generateFinancialTables(version, opts = {}) {
   // ensureCoaComplete, both linkers) and before anything below reads
   // level_1..15 — including the COA Validation block, the AI Hierarchy
   // Recommendation Engine, and Trial Balance/BS/P&L/CF generation.
+  //
+  // Every downstream report (Trial Balance, Monthly BS, P&L, Cash Flow) reads
+  // chart_of_accounts as its single source of truth for structure — genuine
+  // structural corruption left in the FINAL persisted state is exactly as
+  // fatal to correctness as a Trial Balance imbalance, so it is held to the
+  // same halt-the-pipeline standard (see the Trial Balance imbalance halt
+  // below) rather than logged as a warning and silently left for every report
+  // generated afterward to serve wrong section totals from.
+  //
+  // Deliberately NOT gated on the full integrityReport.hierarchyValid: that
+  // flag also folds in levelsPass/hierarchyPathPass, which are keyed off
+  // deriveResult.driftCount — i.e. "did any row's PREVIOUSLY-persisted
+  // hierarchy_path/level_N disagree with what the parent chain says NOW".
+  // That is normal, expected, self-healing behavior on every regenerate where
+  // any account's classification changed since the last sync (confirmed live:
+  // a real sync corrected 216 drifted rows and finished with a fully
+  // consistent tree) — deriveLevelsFromPersistedTree already corrected it by
+  // construction, so treating "a correction happened" as "still broken" would
+  // halt nearly every normal sync. Same reasoning excludes databasePass
+  // (folds in orphan structural/category nodes — inert clutter nothing points
+  // to, not corruption of any real leaf's hierarchy) and cachePass
+  // (informational only). Only check what remains genuinely wrong in the
+  // FINAL state: a broken/circular parent chain, a classified leaf that lost
+  // its entire ancestor chain, or a leaf whose anchor doesn't match its
+  // statement side's required fixed prefix.
+  let coaHierarchyInvalid = null;
   try {
     const treeResult = await finalizeCoaHierarchy(companyId, versionId);
     logger.log(`  ✓ COA tree finalized: ${treeResult.rewrittenRows}/${treeResult.totalRows} row(s) had level_1..15 recomputed from parent_account_id`);
+    const ir = treeResult.integrityReport;
+    if (ir && (!ir.parentChainPass || !ir.coaGenerationPass || !ir.bsExtractionPass || !ir.plExtractionPass)) {
+      const problems = [];
+      if (!ir.parentChainPass) problems.push(`${ir.brokenParents} broken/circular parent reference(s)`);
+      if (!ir.coaGenerationPass) problems.push(`${ir.flattenedAccounts} classified account(s) with no parent chain at all`);
+      if (!ir.bsExtractionPass) problems.push('Balance Sheet fixed-anchor mismatch(es)');
+      if (!ir.plExtractionPass) problems.push('Profit & Loss fixed-anchor mismatch(es)');
+      coaHierarchyInvalid = {
+        message: `Chart of Accounts hierarchy failed integrity validation after finalization (${problems.join(', ')}).`,
+        details: ir,
+      };
+    }
   } catch (finalizeErr) {
     logger.warn(`  COA tree finalization failed: ${finalizeErr.message}`);
+    coaHierarchyInvalid = { message: `Chart of Accounts hierarchy finalization threw: ${finalizeErr.message}`, details: null };
+  }
+
+  if (coaHierarchyInvalid) {
+    logger.warn(`  ✗ Accounting workflow halted: coa_hierarchy_invalid — ${coaHierarchyInvalid.message}`);
+    const haltRows = await buildValidationResultsFromEntryTables(versionId, mappingsByCategory, years, logger);
+    haltRows.push({
+      dataType: 'chart_of_accounts',
+      year: null,
+      status: 'error',
+      severity: 'error',
+      message:
+        `${coaHierarchyInvalid.message} This usually means level_1..15/hierarchy_path no longer agree with the persisted ` +
+        `parent_account_id tree. Re-sync after resolving the underlying issue — reports must never be generated from an ` +
+        `unverified Chart of Accounts hierarchy.`,
+      metadata: { gate: 'coa_hierarchy_invalid', code: 'COA_HIERARCHY_INVALID', ...(coaHierarchyInvalid.details || {}) },
+    });
+    await replaceValidationResults(versionId, companyId, haltRows);
+    logger.log(`  ✓ ${haltRows.length} validation rows stored (workflow halted — Chart of Accounts hierarchy invalid)`);
+    return {
+      success: true,
+      halted: true,
+      batchId: null,
+      datasetVersion: null,
+      years,
+      extractionResults,
+      coaSummary,
+      errors: extractionErrors.length > 0 ? extractionErrors : null,
+      summary: {
+        generated: false,
+        halted: true,
+        haltReason: 'coa_hierarchy_invalid',
+        years,
+        totalRowsInserted: totalRows,
+        extractionResults,
+        documents: gate,
+        documentProcessing: docStats,
+        timings,
+        message: `Sync halted: Chart of Accounts hierarchy failed integrity validation. ${coaHierarchyInvalid.message} Re-sync after resolving the underlying issue.`,
+      },
+      message: `Sync halted: Chart of Accounts hierarchy failed integrity validation. ${coaHierarchyInvalid.message} Re-sync after resolving the underlying issue.`,
+    };
   }
 
   try {
@@ -1164,8 +1412,8 @@ async function generateFinancialTables(version, opts = {}) {
   // P&L and Cash Flow are generated after the authoritative monthly Balance
   // Sheets exist, then persisted as render-ready JSON. They are not accounting
   // source tables and opening a report never mutates COA or re-runs this pipeline.
-  logger.log('--- Phase 6: Materialize P&L and Cash Flow snapshots ---');
-  let generatedReportSummary = { profitLoss: 0, profitLossYears: [], cashFlow: 0 };
+  logger.log('--- Phase 6: Materialize P&L, Cash Flow, and Balance Sheet snapshots ---');
+  let generatedReportSummary = { profitLoss: 0, profitLossYears: [], cashFlow: 0, balanceSheet: 0 };
   try {
     const pl = await keyReportReportService.getProfitLossReport(versionId, {
       forceGenerate: true,
@@ -1185,6 +1433,22 @@ async function generateFinancialTables(version, opts = {}) {
   } catch (reportErr) {
     generatedReportSummary.error = reportErr.message;
     logger.warn(`  Generated report snapshot persistence failed: ${reportErr.message}`);
+  }
+  // Balance Sheet reuses the SAME generateFinancialStatements call the P&L/CF
+  // steps above already triggered (in-flight de-duped / qb_synced_reports-cached
+  // by generateFinancialStatements itself), so this adds no extra full computation
+  // — it only persists the already-computed BS into generated_report_snapshots.
+  try {
+    const bs = await keyReportReportService.getBalanceSheetReport(versionId, {
+      forceGenerate: true,
+      persist: true,
+      companyId,
+    });
+    generatedReportSummary.balanceSheet = bs.persistedSnapshots || 0;
+    logger.log(`  ✓ Generated report snapshots: Balance Sheet=${generatedReportSummary.balanceSheet}`);
+  } catch (bsSnapErr) {
+    generatedReportSummary.balanceSheetError = bsSnapErr.message;
+    logger.warn(`  Balance Sheet snapshot persistence failed: ${bsSnapErr.message}`);
   }
   mark('report_snapshots');
 
@@ -1499,4 +1763,38 @@ async function generateFinancialTables(version, opts = {}) {
   };
 }
 
-module.exports = { generateFinancialTables, accountLevelReconciliationDiff, persistProfitLossReconciliation };
+/**
+ * generateCoaProposal -- the sync/generate route's entry point. Runs
+ * extraction (Steps 1-4, persisted -- extraction is allowed and required
+ * before COA generation) through the document validation gate and the
+ * ephemeral P&L parse, then builds the in-memory Proposed COA and returns
+ * it (`result.proposedTree.nodes`) with `halted: true, summary.haltReason:
+ * 'coa_review_required'`. Never writes to chart_of_accounts, never links
+ * GL/BS, never runs Trial Balance/Reconciliation/Monthly BS/report
+ * snapshots -- see generateFinancialTables's PROPOSE MODE branch.
+ */
+async function generateCoaProposal(version, opts = {}) {
+  return generateFinancialTables(version, { ...opts, approvedTreeNodes: null });
+}
+
+/**
+ * approveAndGenerateReports -- the Chart-of-Accounts Save/Approve route's
+ * entry point. `approvedTreeNodes` is the user's complete reviewed tree, in
+ * chartOfAccountsService.serializeProposedTree's flat wire-node shape.
+ * Validates it (chartOfAccountsService.validateFinalCoaTree); on failure,
+ * returns `halted: true, summary.haltReason: 'coa_validation_failed'` with
+ * no writes at all. On success, persists it transactionally
+ * (persistApprovedCoaTree's compensating-rollback guard), marks this
+ * version's `key_report_versions.coa_approved_at`, and ONLY THEN continues
+ * into linking, hierarchy finalization, AI hierarchy recommendations, Trial
+ * Balance, Reconciliation, Monthly Balance Sheets, and report snapshot
+ * generation -- see generateFinancialTables's APPROVE MODE branch.
+ */
+async function approveAndGenerateReports(version, approvedTreeNodes, opts = {}) {
+  return generateFinancialTables(version, { ...opts, approvedTreeNodes });
+}
+
+module.exports = {
+  generateFinancialTables, accountLevelReconciliationDiff, persistProfitLossReconciliation,
+  generateCoaProposal, approveAndGenerateReports,
+};

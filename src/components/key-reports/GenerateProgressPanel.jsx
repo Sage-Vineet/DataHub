@@ -54,23 +54,26 @@ const STAGES = [
     weight: 15,
   },
   {
+    // key must keep matching the backend's own stage identifier
+    // (keyReportProgress.js's STAGE_MARKERS) — only the user-facing
+    // label/desc below are display text.
     key: "ai_processing",
-    label: "Processing AI",
-    desc: "Extracting financial data with Gemini…",
+    label: "Extracting Documents",
+    desc: "Extracting financial data from uploaded documents…",
     Icon: Brain,
     weight: 28,
   },
   {
     key: "coa",
     label: "Generating Chart of Accounts",
-    desc: "Classifying accounts and building hierarchy…",
+    desc: "Matching accounts to your documents and building hierarchy…",
     Icon: BarChart3,
     weight: 15,
   },
   {
     key: "financial_reports",
     label: "Generating Financial Reports",
-    desc: "Building P&L, Balance Sheet, Cash Flow…",
+    desc: "Building Trial Balance, P&L, Balance Sheet, Cash Flow…",
     Icon: FileText,
     weight: 14,
   },

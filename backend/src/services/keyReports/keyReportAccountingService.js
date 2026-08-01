@@ -512,6 +512,14 @@ function addRun(map, key, delta, type, name) {
 // it identifies one well-known closing/rollup account, once per version, so
 // its GL-sourced movements (if any) and its synthetic closing-entry movements
 // land under the SAME coa_id instead of splitting into two rows.
+//
+// Deliberately unanchored (no ^): account_name here is whatever the original
+// GL/BS export used, which can carry a leading account number ("3900 Retained
+// Earnings") — an anchored pattern would silently fail to find the control
+// account for any company whose export includes one. financialStatementService.js
+// and keyReportReportService.js anchor their equivalent patterns because they
+// match against already-constructed statement-row labels, not raw source names —
+// do not "unify" these into one shared anchored regex without re-verifying that.
 function findControlAccountCoaId(coaById, namePattern, accountType) {
   for (const [id, row] of coaById) {
     if (row.accountType === accountType && namePattern.test(String(row.accountName || ""))) return id;
@@ -920,11 +928,20 @@ async function generateMonthlyBalanceSheetsReverse(companyId, versionId, gate, o
   // BS, at any point in time — only ever a section header.
   const { data: everBsLeafRows } = await supabase
     .from("balance_sheet_entries")
-    .select("account_name")
+    .select("account_name, row_type")
     .eq("version_id", versionId)
     .eq("is_generated", false)
     .not("account_name", "is", null);
-  const everBsLeafNames = new Set((everBsLeafRows || []).map((r) => String(r.account_name).trim().toLowerCase()));
+  // row_type (migration 085): source rows now persist headings too (e.g.
+  // "Fixed Assets" as a section header, exactly the case this guard's own
+  // comment describes) — only a real posting-account row counts as "ever a
+  // leaf." row_type is NULL for rows persisted before that migration, which
+  // never contained non-account rows to begin with.
+  const everBsLeafNames = new Set(
+    (everBsLeafRows || [])
+      .filter((r) => !r.row_type || r.row_type === "account")
+      .map((r) => String(r.account_name).trim().toLowerCase()),
+  );
 
   const seededCoaIds = new Set(running.keys());
   const lifetimeBalances = new Map(); // coaId -> { net, type, name }

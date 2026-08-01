@@ -101,16 +101,27 @@ function writeStoredVersionId(clientId, versionId) {
 }
 
 // ── Generate state factory ────────────────────────────────────────────────────
+// Status values (see lib/keyReportGeneration.js's phase machine):
+//   "idle"                  nothing running, nothing pending
+//   "extracting"            /generate in flight
+//   "coa_review_required"   a Proposed COA came back — awaiting Save/Approve
+//   "coa_generation_failed" halted before a proposal could even be built
+//   "coa_saving"            chart-of-accounts/save in flight
+//   "reports_ready"         approved — reports were generated in that same call
+//   "error"                 the /generate request itself threw
 function createInitialGenerateState() {
   return {
-    status: "idle",        // "idle" | "generating" | "done" | "error"
+    status: "idle",
     startedAt: null,
     finishedAt: null,
     summary: null,
     warnings: [],
     validationResults: [],
+    proposedTree: null,
+    matchSummary: null,
     error: null,
-    errorStage: null,      // stage key where failure occurred
+    errorStage: null,
+    violations: null,
   };
 }
 
@@ -210,7 +221,8 @@ export default function WorkspaceKeyReports() {
 
   const generateState =
     getGenerationState(clientId, selectedVersionId) || createInitialGenerateState();
-  const generating = generateState.status === "generating";
+  const generating = generateState.status === "extracting";
+  const coaSaving = generateState.status === "coa_saving";
 
   // ── File-picker state ─────────────────────────────────────────────────────
   const [pickerCategory, setPickerCategory] = useState(null);
@@ -290,15 +302,17 @@ export default function WorkspaceKeyReports() {
     void Promise.resolve().then(() => loadDetail(selectedVersionId));
   }, [selectedVersionId, loadDetail]);
 
-  // After the version detail loads, reconcile any orphaned "generating" state
+  // After the version detail loads, reconcile any orphaned "extracting" state
   // left by a hard page reload (the in-memory request was lost). Uses the
-  // server's lastSyncedAt + persisted validation results to promote to done or
-  // reset to idle, so the user never sees a permanent spinner.
+  // server's lastSyncedAt/coaApprovedAt + persisted validation results to
+  // promote to the right terminal state, so the user never sees a permanent
+  // spinner or a stale "still extracting" view.
   useEffect(() => {
     if (!selectedVersionId || !detail?.version) return;
     reconcileGeneration(clientId, selectedVersionId, {
       lastSyncedAt: detail.version.lastSyncedAt,
       validationResults: detail.validationResults,
+      coaApprovedAt: detail.version.coaApprovedAt,
     });
   }, [clientId, selectedVersionId, detail]);
 
@@ -306,6 +320,23 @@ export default function WorkspaceKeyReports() {
   const version = detail?.version;
   const mappingsByCategory = detail?.mappingsByCategory || {};
   const hasSyncedData = Boolean(version?.lastSyncedAt) && !generating;
+  // Reports only exist once THIS version's Chart of Accounts has actually
+  // been reviewed and Saved/Approved (coa_approved_at set server-side) — a
+  // completed /generate call alone is no longer enough, since it always
+  // halts for review first. reports_ready is the same signal reflected
+  // immediately after a same-session Approve, before the version refetch
+  // lands.
+  const reportsReady = Boolean(version?.coaApprovedAt) || generateState.status === "reports_ready";
+  const needsCoaReview = generateState.status === "coa_review_required";
+  const coaFailed = generateState.status === "coa_generation_failed";
+  const isError = generateState.status === "error" || coaFailed;
+
+  // Default the COA section open whenever a review is actually pending — the
+  // user has something they need to look at, so no extra click should be
+  // required to see it (still collapsible via the toggle either way).
+  useEffect(() => {
+    if (needsCoaReview) void Promise.resolve().then(() => setShowCoa(true));
+  }, [needsCoaReview]);
 
   const linkedDocumentIds = useMemo(() => {
     if (!detail?.mappingsByCategory) return [];
@@ -324,13 +355,14 @@ export default function WorkspaceKeyReports() {
   }, [detail]);
 
   const displaySyncState = useMemo(() => {
+    const status = generating ? "processing"
+      : (reportsReady || needsCoaReview) ? "validation"
+        : isError ? "error"
+          : generateState.validationResults?.length > 0 ||
+            persistedValidationResults.length > 0 ? "validation"
+            : "idle";
     const base = {
-      status: generateState.status === "generating" ? "processing"
-        : generateState.status === "done" ? "validation"
-          : generateState.status === "error" ? "error"
-            : generateState.validationResults?.length > 0 ||
-              persistedValidationResults.length > 0 ? "validation"
-              : "idle",
+      status,
       startedAt: generateState.startedAt,
       finishedAt: generateState.finishedAt,
       summary: generateState.summary,
@@ -344,7 +376,7 @@ export default function WorkspaceKeyReports() {
           ? generateState.validationResults
           : persistedValidationResults,
     };
-  }, [generateState, persistedValidationResults]);
+  }, [generateState, persistedValidationResults, generating, reportsReady, needsCoaReview, isError]);
 
   // ── Active data source switch (best-effort, never blocks generate) ────────
   const switchToKeyReportsSource = useCallback(async () => {
@@ -477,14 +509,16 @@ export default function WorkspaceKeyReports() {
   };
 
   // ── Render states ─────────────────────────────────────────────────────────
-  const isDone = generateState.status === "done";
-  const isError = generateState.status === "error";
+  // (reportsReady / needsCoaReview / coaFailed / isError are derived above,
+  // near hasSyncedData, since reconcileGeneration and the effects below need
+  // them too.)
 
   // Show the validation dashboard if:
   //   (a) generate just completed this session, OR
   //   (b) the version has previously been synced (persisted results exist)
   const showValidationDashboard =
-    isDone ||
+    reportsReady ||
+    needsCoaReview ||
     isError ||
     persistedValidationResults.length > 0 ||
     Boolean(version?.lastSyncedAt);
@@ -516,7 +550,7 @@ export default function WorkspaceKeyReports() {
           <h1 className="text-xl font-bold text-text-primary">Key Reports</h1>
           <p className="mt-1 text-sm text-text-secondary">
             Link your financial documents and click <strong>Generate</strong> to
-            build AI-powered financial reports.
+            build your Chart of Accounts and financial reports.
           </p>
         </div>
 
@@ -525,7 +559,7 @@ export default function WorkspaceKeyReports() {
           <select
             value={selectedVersionId || ""}
             onChange={(e) => setSelectedVersionId(e.target.value)}
-            disabled={generating}
+            disabled={generating || coaSaving}
             className="rounded-xl border border-border bg-white px-3 py-2 text-sm text-text-primary disabled:opacity-50"
           >
             {versions.length === 0 && <option value="">No versions</option>}
@@ -539,7 +573,7 @@ export default function WorkspaceKeyReports() {
 
           <button
             onClick={handleCreateVersion}
-            disabled={busy || generating}
+            disabled={busy || generating || coaSaving}
             className="flex items-center gap-1.5 rounded-xl border border-border bg-white px-3 py-2 text-sm font-semibold text-text-primary hover:bg-bg-page disabled:opacity-50"
           >
             <Plus size={15} /> New
@@ -547,7 +581,7 @@ export default function WorkspaceKeyReports() {
 
           <button
             onClick={handleDuplicate}
-            disabled={busy || generating || !selectedVersionId}
+            disabled={busy || generating || coaSaving || !selectedVersionId}
             className="flex items-center gap-1.5 rounded-xl border border-border bg-white px-3 py-2 text-sm font-semibold text-text-primary hover:bg-bg-page disabled:opacity-50"
           >
             <Copy size={15} /> Duplicate
@@ -617,9 +651,14 @@ export default function WorkspaceKeyReports() {
                 2
               </span>
               <h2 className="text-base font-bold text-text-primary">Generate</h2>
-              {isDone && (
+              {reportsReady && (
                 <span className="ml-auto flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
                   <CheckCircle2 size={12} /> Reports ready
+                </span>
+              )}
+              {needsCoaReview && (
+                <span className="ml-auto flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
+                  <AlertCircle size={12} /> Chart of Accounts review needed
                 </span>
               )}
               {isError && (
@@ -634,16 +673,16 @@ export default function WorkspaceKeyReports() {
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-white px-5 py-4">
                 <div>
                   <p className="text-sm font-bold text-text-primary">
-                    {isDone
+                    {reportsReady || needsCoaReview
                       ? "Re-Generate"
                       : hasSyncedData
                         ? "Re-Generate Reports"
                         : "Generate Reports"}
                   </p>
                   <p className="mt-0.5 text-sm text-text-secondary">
-                    {isDone || hasSyncedData
-                      ? "Re-run AI Processing, COA, and all Financial Reports with the latest linked documents."
-                      : "Run AI Processing, build Chart of Accounts, and generate all Financial Reports in one step."}
+                    {reportsReady || needsCoaReview || hasSyncedData
+                      ? "Re-extract your documents and rebuild a Chart of Accounts proposal from the latest linked documents. You'll review and approve it before any reports are (re)generated."
+                      : "Extract your documents and build a Chart of Accounts proposal for you to review and approve — reports are generated only after you approve it."}
                     {linkedDocumentCount === 0 && (
                       <span className="ml-1 font-medium text-amber-600">
                         Link at least one document first.
@@ -659,16 +698,21 @@ export default function WorkspaceKeyReports() {
                   className="flex items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:opacity-40"
                 >
                   <Zap size={15} />
-                  {isDone || hasSyncedData ? "Re-Generate" : "Generate"}
+                  {reportsReady || needsCoaReview || hasSyncedData ? "Re-Generate" : "Generate"}
                 </button>
               </div>
             )}
 
             {/* ── Progress panel (during / after generation) ─────────────── */}
-            {generateState.status !== "idle" && (
+            {/* Only meaningful for the states GenerateProgressPanel understands
+                (idle/generating/done/error) — translate our richer phase
+                machine down to that vocabulary rather than modifying the
+                shared panel. The COA review section below is what actually
+                communicates the "review needed" / "reports ready" states. */}
+            {(generating || isError) && (
               <GenerateProgressPanel
                 key={generateState.startedAt || "idle"}
-                status={generateState.status}
+                status={generating ? "generating" : "error"}
                 versionId={selectedVersionId}
                 startedAt={generateState.startedAt}
                 finishedAt={generateState.finishedAt}
@@ -690,7 +734,11 @@ export default function WorkspaceKeyReports() {
             )}
 
             {/* ── Open Reports button ────────────────────────────────────── */}
-            {(isDone || hasSyncedData) && !generating && (
+            {/* Gated on reportsReady (version.coaApprovedAt set, or an
+                approve just completed this session) — NOT on hasSyncedData,
+                since a completed sync now only ever produces a proposal
+                awaiting review; reports don't exist until that's approved. */}
+            {reportsReady && !generating && (
               <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/60 px-5 py-4">
                 <div>
                   <p className="text-sm font-bold text-emerald-800">
@@ -733,10 +781,13 @@ export default function WorkspaceKeyReports() {
               </div>
             )}
 
-            {/* ── Collapsible COA editor ─────────────────────────────────── */}
+            {/* ── Collapsible COA editor / review ──────────────────────────── */}
             {/* AI Hierarchy Recommendations now render inline as per-account
-                badges inside the tree editor below, not as a separate section. */}
-            {hasSyncedData && !generating && (
+                badges inside the tree editor below, not as a separate section.
+                Shown whenever there's something to review or edit: a version
+                that has been synced at least once (hasSyncedData) OR a fresh
+                proposal is pending review right now. */}
+            {(hasSyncedData || needsCoaReview) && !generating && (
               <div className="mt-4">
                 <button
                   onClick={() => setShowCoa((v) => !v)}
@@ -745,10 +796,12 @@ export default function WorkspaceKeyReports() {
                   <div className="flex items-center gap-2">
                     <ArrowRight size={14} className="text-primary" />
                     <span className="text-sm font-semibold text-text-primary">
-                      Edit Chart of Accounts
+                      {needsCoaReview ? "Review Chart of Accounts Proposal" : "Edit Chart of Accounts"}
                     </span>
                     <span className="text-xs text-text-muted">
-                      — optional: review and adjust account classifications
+                      {needsCoaReview
+                        ? "— required: approve before reports are generated"
+                        : "— optional: review and adjust account classifications"}
                     </span>
                   </div>
                   {showCoa ? (
@@ -761,9 +814,15 @@ export default function WorkspaceKeyReports() {
                 {showCoa && (
                   <div className="mt-2">
                     <ChartOfAccountsGrid
+                      clientId={clientId}
                       versionId={selectedVersionId}
+                      version={version}
                       hasSyncedData={hasSyncedData}
                       notify={notify}
+                      proposalNodes={generateState.proposedTree?.nodes || null}
+                      proposalMatchSummary={generateState.matchSummary || null}
+                      proposalToken={generateState.startedAt || null}
+                      onApproved={() => { void loadDetail(selectedVersionId); void loadVersions(); }}
                     />
                   </div>
                 )}

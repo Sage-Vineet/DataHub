@@ -4,12 +4,13 @@ import {
   acceptHierarchyRecommendation,
   ignoreHierarchyRecommendation,
 } from "../lib/api";
+import { clearCachedFinancials } from "../lib/keyReportFinancials";
 
 // AI Hierarchy Recommendations — advisory-only suggestions generated after
 // COA generation. Extracted from the old standalone AiHierarchyRecommendationsPanel
 // so the tree editor can render them as inline per-node badges instead of a
 // separate section. Fetching/accept/ignore behavior is unchanged.
-export function useHierarchyRecommendations(versionId, notify) {
+export function useHierarchyRecommendations(clientId, versionId, notify) {
   const [recommendations, setRecommendations] = useState([]);
   const [loading, setLoading] = useState(false);
   const [decidingId, setDecidingId] = useState(null);
@@ -40,6 +41,7 @@ export function useHierarchyRecommendations(versionId, notify) {
     setDecidingId(recommendationId);
     try {
       await acceptHierarchyRecommendation(recommendationId);
+      clearCachedFinancials(clientId, versionId);
       notify?.("Recommendation accepted — Chart of Accounts updated.", "success");
       await load();
       return true;
@@ -49,7 +51,7 @@ export function useHierarchyRecommendations(versionId, notify) {
     } finally {
       setDecidingId(null);
     }
-  }, [load, notify]);
+  }, [load, notify, clientId, versionId]);
 
   const ignore = useCallback(async (recommendationId) => {
     setDecidingId(recommendationId);
