@@ -84,7 +84,7 @@ test('persistApprovedCoaTree (for contrast) DOES contain write calls -- proves t
 // validating against the wrong prefix.
 const ASSET_FIXED_PREFIX = ['Total Assets'];
 const LIABILITY_FIXED_PREFIX = ['Total Liabilities and Equity', 'Total Liabilities'];
-const EQUITY_FIXED_PREFIX = ['Total Liabilities and Equity', 'Total Equity', 'Equity'];
+const EQUITY_FIXED_PREFIX = ['Total Liabilities and Equity', 'Total Equity'];
 const PL_FIXED_PREFIX = ['Total Liabilities and Equity', 'Total Equity', 'Total Equity'];
 
 function makeAssetLeaf(overrides = {}) {
@@ -281,5 +281,134 @@ test('classificationSourceLabel: unresolved / no-match leaf -> AI_FALLBACK (an A
   assert.equal(
     coa.classificationSourceLabel({ classificationMethod: null, matchTier: null, needsMapping: true }),
     'AI_FALLBACK',
+  );
+});
+
+test('GL partition uses standalone Retained Earnings heading and includes it in P&L', () => {
+  const rows = [
+    { account_name: 'Cash' },
+    { account_name: 'Loan Payable - Bank' },
+    { account_name: 'Retained Earnings' },
+    { account_name: '66000 Payroll Expenses' },
+    { account_name: 'Office Rent' },
+  ];
+  const buckets = coa.splitAccountsAtRetainedEarnings(rows, null);
+
+  assert.equal(buckets.get('cash'), 'balance_sheet');
+  assert.equal(buckets.get('loan payable - bank'), 'balance_sheet');
+  assert.equal(buckets.get('retained earnings'), 'profit_loss');
+  assert.equal(buckets.get('66000 payroll expenses'), 'profit_loss');
+  assert.equal(buckets.get('payroll expenses'), 'profit_loss');
+  assert.equal(buckets.get('office rent'), 'profit_loss');
+});
+
+test('GL partition ignores retained earnings text outside parsed account headings', () => {
+  const rows = [
+    { account_name: 'Cash', memo: 'To Post the Distribution into Retained Earnings' },
+    { account_name: 'Loan Payable - Bank', description: 'Transfer to Retained Earnings' },
+    { account_name: 'Retained Earnings' },
+    { account_name: 'Total for Retained Earnings' },
+    { account_name: '66000 Payroll Expenses' },
+  ];
+  const buckets = coa.splitAccountsAtRetainedEarnings(rows, null);
+
+  assert.equal(buckets.get('cash'), 'balance_sheet');
+  assert.equal(buckets.get('loan payable - bank'), 'balance_sheet');
+  assert.equal(buckets.get('retained earnings'), 'profit_loss');
+  assert.equal(buckets.get('total for retained earnings'), undefined);
+  assert.equal(buckets.get('payroll expenses'), 'profit_loss');
+});
+
+test('missing Retained Earnings falls back to first postable P&L account and includes that block in P&L', () => {
+  const plTree = {
+    name: 'Profit and Loss',
+    nodeType: 'REPORT',
+    children: [{
+      name: 'Net Income',
+      nodeType: 'CALCULATED_TOTAL',
+      children: [
+        { name: 'Total for Income', nodeType: 'TOTAL', children: [{ name: 'Sales', nodeType: 'ACCOUNT', children: [] }] },
+      ],
+    }],
+  };
+  const rows = [
+    { account_name: 'Cash' },
+    { account_name: 'Accounts Payable' },
+    { account_name: '4000 Sales' },
+    { account_name: 'Advertising Expense' },
+  ];
+  const buckets = coa.splitAccountsAtRetainedEarnings(rows, plTree);
+
+  assert.equal(buckets.get('cash'), 'balance_sheet');
+  assert.equal(buckets.get('accounts payable'), 'balance_sheet');
+  assert.equal(buckets.get('4000 sales'), 'profit_loss');
+  assert.equal(buckets.get('sales'), 'profit_loss');
+  assert.equal(buckets.get('advertising expense'), 'profit_loss');
+});
+
+test('missing Retained Earnings creates no arbitrary boundary when first P&L account is absent from GL headings', () => {
+  const plTree = { name: 'Profit and Loss', nodeType: 'REPORT', children: [{ name: 'Sales', nodeType: 'ACCOUNT', children: [] }] };
+  const buckets = coa.splitAccountsAtRetainedEarnings([{ account_name: 'Cash' }, { account_name: 'Accounts Payable' }], plTree);
+  assert.equal(buckets.size, 0);
+});
+
+test('partitioned document matching searches only the selected statement tree', () => {
+  const bsTree = {
+    name: 'Balance Sheet', nodeType: 'REPORT', children: [
+      { name: 'Total for Assets', nodeType: 'TOTAL', children: [{ name: 'Interest', nodeType: 'ACCOUNT', children: [] }] },
+    ],
+  };
+  const plTree = {
+    name: 'Profit and Loss', nodeType: 'REPORT', children: [
+      { name: 'Total for Expenses', nodeType: 'TOTAL', children: [{ name: 'Office Rent', nodeType: 'ACCOUNT', children: [] }] },
+    ],
+  };
+  const bsLookup = coa.buildTreeHierarchyLookup(bsTree, 'balance_sheet');
+  const plLookup = coa.buildTreeHierarchyLookup(plTree, 'profit_loss');
+
+  assert.equal(
+    coa.pickDocHierarchy('Interest', 'interest', null, bsLookup, plLookup, null, { statementType: 'profit_loss' }),
+    null,
+  );
+  assert.equal(
+    coa.pickDocHierarchy('Office Rent', 'office rent', null, bsLookup, plLookup, null, { statementType: 'balance_sheet' }),
+    null,
+  );
+});
+
+test('partition statement type remains authoritative over equity account type and hierarchy prefix', async () => {
+  const [leaf] = await coa.buildLeafHierarchies([{
+    accountName: 'Retained Earnings',
+    accountType: 'equity',
+    statementType: 'profit_loss',
+    partitionStatementType: 'profit_loss',
+    classificationMethod: 'document_hierarchy',
+    matchLevels: ['Net Income', 'Net Operating Income', 'Expenses'],
+    confidence: 1,
+    needsReview: false,
+  }]);
+
+  assert.equal(leaf.statementType, 'profit_loss');
+  assert.deepEqual(leaf.levels.filter(Boolean).slice(0, 3), PL_FIXED_PREFIX);
+  assert.equal(leaf.levels.filter(Boolean).at(-1), 'Retained Earnings');
+  assert.equal(leaf.levels.filter(Boolean).includes('Total Liabilities'), false);
+});
+
+test('final hierarchy builder applies statement-specific prefixes and cleaned dynamic labels', () => {
+  assert.deepEqual(
+    coa.buildFinalCoaLevels({ statementType: 'balance_sheet', accountType: 'asset', matchedPath: ['Total for Assets', 'Total for Current Assets', 'Total for Bank Accounts'], accountName: 'Cash Account' }),
+    ['Total Assets', 'Current Assets', 'Bank Accounts', 'Cash Account'],
+  );
+  assert.deepEqual(
+    coa.buildFinalCoaLevels({ statementType: 'balance_sheet', accountType: 'liability', matchedPath: ['Total for Liabilities and Equity', 'Total for Liabilities', 'Total for Current Liabilities', 'Total for Credit Cards'], accountName: 'Capital One - Credit Card' }),
+    ['Total Liabilities and Equity', 'Total Liabilities', 'Current Liabilities', 'Credit Cards', 'Capital One - Credit Card'],
+  );
+  assert.deepEqual(
+    coa.buildFinalCoaLevels({ statementType: 'balance_sheet', accountType: 'equity', matchedPath: ['Total for Liabilities and Equity', 'Total for Equity'], accountName: 'Net Income' }),
+    ['Total Liabilities and Equity', 'Total Equity', 'Net Income'],
+  );
+  assert.deepEqual(
+    coa.buildFinalCoaLevels({ statementType: 'profit_loss', accountType: 'expense', matchedPath: ['Net Income', 'Net Operating Income', 'Total for Expenses'], accountName: 'Payroll Expenses' }),
+    ['Total Liabilities and Equity', 'Total Equity', 'Total Equity', 'Net Income', 'Net Operating Income', 'Expenses', 'Payroll Expenses'],
   );
 });
