@@ -983,6 +983,8 @@ async function generateFinancialTables(version, opts = {}) {
   const coaBuildOpts = {
     plRows: plAccountRows,
     hasLinkedCoaDocument,
+    balanceSheetTree,
+    profitLossTree,
     // Threaded through so buildDocHierarchyLookups' deepest-wins tie-break
     // can prefer the Ending Balance Sheet when it and the Opening Balance
     // Sheet give the same account equal real depth (never re-derived here

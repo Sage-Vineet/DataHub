@@ -430,12 +430,13 @@ const EQUITY_FIXED_PREFIX    = Object.freeze(["Total Liabilities and Equity", "T
 // Income) hardcoded six rollup subtotals that are CALCULATED lines in the
 // report, not structural parents of any posting account, and it forced every
 // document heading to be trimmed away as a duplicate of the anchor's own
-// labels. Two levels is the whole fixed part; everything below is the
+// labels. Three levels is the whole fixed part; everything below is the
 // document's.
-const PL_FIXED_PREFIX = Object.freeze(["Total Liabilities and Equity", "Total Equity"]);
-const PROFIT_AND_LOSS_COA_PREFIX = Object.freeze([...PL_FIXED_PREFIX, "Total Equity"]);
-const BS_ASSET_COA_PREFIX = ASSET_FIXED_PREFIX;
+const PL_FIXED_PREFIX = Object.freeze(["Total Liabilities and Equity", "Total Equity", "Total Equity"]);
+const PROFIT_AND_LOSS_COA_PREFIX = PL_FIXED_PREFIX;
+const BS_ASSET_COA_PREFIX = Object.freeze(["Total Assets"]);
 const BS_LIABILITY_EQUITY_COA_PREFIX = Object.freeze(["Total Liabilities and Equity", "Total Equity"]);
+
 function fixedPrefixFor(accountType) {
   if (accountType === "asset") return ASSET_FIXED_PREFIX;
   if (accountType === "liability") return LIABILITY_FIXED_PREFIX;
@@ -884,28 +885,44 @@ function buildDocHierarchyLookups(bsRows, plRows, endingFiscalYear = null, { log
 // to the same already-known parent this way.
 const DOC_FUZZY_THRESHOLD = 0.90;
 
-function fuzzyMatchDocHierarchy(accountName, hierarchyByName) {
-  const target = fuzzyNorm(accountName);
-  let best = null;
-  let bestScore = 0;
-  for (const [key, entry] of hierarchyByName) {
-    const score = strongSimilarity(target, fuzzyNorm(key));
-    if (score >= DOC_FUZZY_THRESHOLD && score > bestScore) {
-      bestScore = score;
-      best = entry;
-    }
-  }
-  return best;
+// CONFIRMED ROOT CAUSE this fixes: the previous version joined the ENTIRE
+// ancestor path (root through the leaf's own name) into one string and
+// tested "liabil" before any equity keyword. Every account on the
+// Liabilities-or-Equity side of a Balance Sheet sits somewhere under the
+// shared "Liabilities and Equity" anchor, so that joined string ALWAYS
+// contained "liabil" -- meaning every real Equity account (whose path also
+// legitimately contains "Liabilities and Equity" as its top anchor) was
+// unconditionally misclassified as a Liability, 100% of the time, regardless
+// of its own "Equity"/"Shareholder Equity"/etc. ancestor labels. Fixed by
+// classifying ONE label at a time, root to leaf (same convention
+// extract_excel.py's section_from_ancestry uses for Profit & Loss), and
+// treating a combined label that names BOTH sides at once (e.g. "Liabilities
+// and Equity") as ambiguous -- never a guess, never "liability by default" --
+// so the walk continues to the next, more specific label ("Liabilities" or
+// "Equity" alone) instead of locking in the wrong side.
+function classifyBalanceSheetLabel(label) {
+  const text = normName(label);
+  const hasAsset = text.includes("asset");
+  const hasLiability = text.includes("liabil");
+  const hasEquity = text.includes("equity") || text.includes("capital") || text.includes("owner")
+    || text.includes("member") || text.includes("stockholder") || text.includes("shareholder") || text.includes("partner");
+  if (hasLiability && hasEquity) return null; // combined header -- ambiguous, keep walking
+  if (hasAsset) return "asset";
+  if (hasLiability) return "liability";
+  if (hasEquity) return "equity";
+  return null;
 }
 
 function inferAccountTypeFromReferencePath(statementType, path) {
-  const text = (path || []).join(" ").toLowerCase();
   if (statementType === "balance_sheet") {
-    if (text.includes("asset")) return "asset";
-    if (text.includes("liabil")) return "liability";
-    if (text.includes("equity") || text.includes("capital") || text.includes("owner") || text.includes("member")) return "equity";
+    for (const label of path || []) {
+      const type = classifyBalanceSheetLabel(label);
+      if (type) return type;
+    }
+    return null;
   }
   if (statementType === "profit_loss") {
+    const text = (path || []).join(" ").toLowerCase();
     if (text.includes("expense") || text.includes("cost of goods") || text.includes("cogs")) return "expense";
     if (text.includes("income") || text.includes("revenue") || text.includes("sales")) return "income";
   }
@@ -920,10 +937,19 @@ function balanceSheetPrefixKey(label) {
   return normalized;
 }
 
+// CONFIRMED ROOT CAUSE this fixes: liability and equity used to share the
+// SAME prefix constant (BS_LIABILITY_EQUITY_COA_PREFIX, "Total Liabilities
+// and Equity" > "Total Equity") -- so even a correctly-typed Liability
+// account was anchored under "Total Equity" instead of "Total Liabilities",
+// corrupting level_1/level_2 for every Liability account regardless of the
+// classification bug above. Each type now gets its own anchor, reusing the
+// SAME fixedPrefixFor constants the primary (non-reference-tree) hierarchy
+// pipeline already uses -- one set of anchors, not two.
 function getBalanceSheetPrefix(accountType) {
   const normalizedType = String(accountType || "").trim().toLowerCase();
   if (normalizedType === "asset") return BS_ASSET_COA_PREFIX;
-  if (normalizedType === "liability" || normalizedType === "equity") return BS_LIABILITY_EQUITY_COA_PREFIX;
+  if (normalizedType === "liability") return LIABILITY_FIXED_PREFIX;
+  if (normalizedType === "equity") return EQUITY_FIXED_PREFIX;
   return [];
 }
 
@@ -956,7 +982,7 @@ function buildTreeHierarchyLookup(tree, statementType) {
         ? appendLeaf([...PROFIT_AND_LOSS_COA_PREFIX, ...nextPath.slice(0, -1)], nextPath[nextPath.length - 1])
         : statementType === "balance_sheet"
           ? applyBalanceSheetCoaPrefix({ accountType, matchedPath: nextPath })
-        : nextPath;
+          : nextPath;
       const bucket = lookup.get(key) || [];
       bucket.push({
         levels: coaPath,
@@ -987,6 +1013,20 @@ function selectDeterministicReferenceCandidate(candidates) {
     const aLevel = a.level || a.levels?.length || 0;
     return bLevel - aLevel;
   })[0];
+}
+
+function fuzzyMatchDocHierarchy(accountName, hierarchyByName) {
+  const target = fuzzyNorm(accountName);
+  let best = null;
+  let bestScore = 0;
+  for (const [key, entry] of hierarchyByName) {
+    const score = strongSimilarity(target, fuzzyNorm(key));
+    if (score >= DOC_FUZZY_THRESHOLD && score > bestScore) {
+      bestScore = score;
+      best = selectDeterministicReferenceCandidate(entry);
+    }
+  }
+  return best;
 }
 
 function findAccountInReferenceTree({ accountName, accountCode, hierarchyLookup }) {
@@ -1074,7 +1114,7 @@ function pickDocHierarchy(accountName, key, glBucketByKey, bsHierarchyByName, pl
   }
 
   // Step 3 ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â fuzzy match, tried against both statements' known accounts.
-  entry = selectDeterministicReferenceCandidate(fuzzyMatchDocHierarchy(accountName, selected));
+  entry = fuzzyMatchDocHierarchy(accountName, selected);
   if (entry) { if (stats) stats.fuzzy++; return { ...entry, matchType: "fuzzy" }; }
   return null;
 }
@@ -1429,12 +1469,28 @@ function splitAccountsAtRetainedEarnings(glRowsInOrder, profitLossTree = null) {
 function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResults = new Map(), glBucketByKey = new Map(), endingFiscalYear = null, referenceTrees = {}) {
   const leavesByName = new Map();
   const docLookups = buildDocHierarchyLookups(bsRows, plRows, endingFiscalYear);
-  const bsHierarchyByName = referenceTrees.balanceSheetTree
-    ? buildTreeHierarchyLookup(referenceTrees.balanceSheetTree, "balance_sheet")
-    : docLookups.bsHierarchyByName;
-  const plHierarchyByName = referenceTrees.profitLossTree
-    ? buildTreeHierarchyLookup(referenceTrees.profitLossTree, "profit_loss")
-    : docLookups.plHierarchyByName;
+  // CONFIRMED ROOT CAUSE (two competing hierarchy implementations): this used
+  // to prefer referenceTrees.balanceSheetTree/profitLossTree (built by
+  // referenceTreeBuilder.js from this SAME version's own already-persisted
+  // balance_sheet_entries/profit_loss rows -- see keyReportSyncService.js)
+  // over docLookups (built directly from THIS run's bsRows/plRows via
+  // buildDocHierarchyLookups) WHENEVER a reference tree was supplied at all --
+  // and keyReportSyncService.js supplies one on every sync now, so the
+  // reference-tree path was ALWAYS winning, never just a fallback. That path
+  // never sets node.accountType, so buildTreeHierarchyLookup fell back to
+  // inferAccountTypeFromReferencePath on every account -- unlike docLookups,
+  // which reads the authoritative account_type derived from each row's own
+  // extracted `section` column. docLookups is the canonical, document-driven
+  // hierarchy (real per-row parent_path, multi-document/multi-year merge with
+  // depth/frequency/recency tie-breaks -- see buildDocHierarchyLookups) and is
+  // now always preferred; the reference tree is consulted only when docLookups
+  // genuinely has nothing (e.g. no bsRows/plRows were parsed this run at all).
+  const bsHierarchyByName = docLookups.bsHierarchyByName.size
+    ? docLookups.bsHierarchyByName
+    : (referenceTrees.balanceSheetTree ? buildTreeHierarchyLookup(referenceTrees.balanceSheetTree, "balance_sheet") : docLookups.bsHierarchyByName);
+  const plHierarchyByName = docLookups.plHierarchyByName.size
+    ? docLookups.plHierarchyByName
+    : (referenceTrees.profitLossTree ? buildTreeHierarchyLookup(referenceTrees.profitLossTree, "profit_loss") : docLookups.plHierarchyByName);
 
   // A GL posting is, by definition, a real transaction ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â never a calculated
   // report/header row. If Gemini says isReportRow=true for a name that ALSO
@@ -1933,7 +1989,7 @@ function _shallowLevelsFromSectionEvidence(section, accountType) {
  *   Working COA pass, before the AI hierarchy is applied.
  * @returns {Promise<Array>} leaves augmented with { levels, hierarchyPath, baseAccount, displayName, needsMapping, matchTier, sortOrder }
  */
-async function buildLeafHierarchies(leaves, _existingByKey = new Map()) {
+async function buildLeafHierarchies(leaves, existingByKey = new Map()) {
   const resolved = leaves.map((leaf) => {
     const displayName = leaf.aiNormalizedName || leaf.accountName;
 
@@ -1982,6 +2038,36 @@ async function buildLeafHierarchies(leaves, _existingByKey = new Map()) {
         mappedNormalBalance: leaf.matchNormalBalance || null,
         sortOrder: null,
       };
+    }
+
+    // Existing Working COA — reuse a leaf's own prior resolved hierarchy from
+    // an earlier regenerate, for an account that still has no client-COA or
+    // document-hierarchy match THIS run. Stability beats re-spending an AI
+    // call and risking a different placement than last time. Gated on the
+    // account's type still matching: a genuinely reclassified account (a
+    // different statement side or type this run) must never carry forward a
+    // stale, now-wrong hierarchy from before.
+    if (leaf.accountType) {
+      const existingRow = existingByKey.get(accountKey(leaf.accountNumber, leaf.accountName));
+      const existingLevels = existingRow ? columnsToLevels(existingRow) : null;
+      if (existingRow && existingRow.account_type === leaf.accountType && existingLevels.some(Boolean)) {
+        return {
+          ...leaf,
+          levels: existingLevels,
+          hierarchyPath: existingLevels.filter(Boolean).join(" > "),
+          baseAccount: existingRow.base_account || leaf.accountName || displayName,
+          displayName,
+          needsMapping: false,
+          needsReview: Boolean(leaf.needsReview),
+          classificationMethod: existingRow.classification_method || leaf.classificationMethod,
+          matchTier: "existing_working_coa",
+          matchConfidence: existingRow.hierarchy_confidence ?? leaf.confidence ?? null,
+          systemId: existingRow.system_id || leaf.systemId || null,
+          clientAccountId: existingRow.client_account_id || leaf.clientAccountId || null,
+          mappedNormalBalance: existingRow.normal_balance || leaf.mappedNormalBalance || null,
+          sortOrder: existingRow.sort_order ?? null,
+        };
+      }
     }
 
     // AI hierarchy — leaf.aiLevels, for a GL account genuinely missing from
@@ -2040,6 +2126,33 @@ async function buildLeafHierarchies(leaves, _existingByKey = new Map()) {
   return resolved.map((r) => {
     if (!r.__pending) return r;
     const { __pending, ...leaf } = r;
+
+    // AI-failure fallback — shallowLevelsFromSectionEvidence, fires only when
+    // the AI returned nothing usable for this account this run (no API key,
+    // quota, malformed batch, or a genuinely uncertain guess) and real BS/PL
+    // section evidence exists. Cheap, deterministic, evidence-gated — better
+    // than nothing, always flagged needsReview since it's shallower than a
+    // full AI hierarchy.
+    const shallowAnchor = leaf.accountType
+      ? _shallowLevelsFromSectionEvidence(leaf.bsSection || leaf.plSection || null, leaf.accountType)
+      : null;
+    if (shallowAnchor && shallowAnchor.length) {
+      const baseAccount = leaf.accountName || leaf.displayName;
+      const path = appendLeaf(shallowAnchor, baseAccount);
+      const levels = new Array(MAX_LEVELS).fill(null);
+      path.forEach((label, li) => { if (li < MAX_LEVELS) levels[li] = label; });
+      return {
+        ...leaf,
+        levels,
+        hierarchyPath: path.join(" > "),
+        baseAccount,
+        needsMapping: false,
+        needsReview: true,
+        matchTier: "section_evidence",
+        matchConfidence: leaf.confidence ?? null,
+      };
+    }
+
     return {
       ...leaf,
       levels: new Array(MAX_LEVELS).fill(null),
@@ -2155,11 +2268,16 @@ function normalBalanceFor(accountType) {
  */
 function assignSystemIds(leaves, existingByKey) {
   const maxByPrefix = {};
-  for (const row of existingByKey.values()) {
+  const existingKeyBySystemId = new Map();
+  for (const [existingKey, row] of existingByKey.entries()) {
     const m = /^([A-Z]+)-(\d+)$/.exec(row.system_id || "");
     if (!m) continue;
     maxByPrefix[m[1]] = Math.max(maxByPrefix[m[1]] || 0, Number(m[2]));
+    if (!existingKeyBySystemId.has(row.system_id)) {
+      existingKeyBySystemId.set(row.system_id, existingKey);
+    }
   }
+  const usedSystemIds = new Set();
   const ordered = leaves.slice().sort((a, b) => {
     const ta = TYPE_ORDER[a.accountType] || 99;
     const tb = TYPE_ORDER[b.accountType] || 99;
@@ -2174,14 +2292,35 @@ function assignSystemIds(leaves, existingByKey) {
     const existing = existingByKey.get(key);
     const existingPrefix = /^([A-Z]+)-\d+$/.exec(existing?.system_id || "")?.[1];
     // Keep the existing id ONLY if its prefix still matches the current section.
-    if (existing?.system_id && existingPrefix === prefix) {
+    if (existing?.system_id && existingPrefix === prefix && !usedSystemIds.has(existing.system_id)) {
       byKey.set(key, existing.system_id);
+      usedSystemIds.add(existing.system_id);
+      continue;
+    }
+    const proposedSystemId = leaf.systemId || leaf.system_id || null;
+    const proposedMatch = /^([A-Z]+)-(\d+)$/.exec(proposedSystemId || "");
+    const proposedExistingKey = existingKeyBySystemId.get(proposedSystemId);
+    if (
+      proposedMatch &&
+      proposedMatch[1] === prefix &&
+      !usedSystemIds.has(proposedSystemId) &&
+      (!proposedExistingKey || proposedExistingKey === key)
+    ) {
+      maxByPrefix[prefix] = Math.max(maxByPrefix[prefix] || 0, Number(proposedMatch[2]));
+      byKey.set(key, proposedSystemId);
+      usedSystemIds.add(proposedSystemId);
       continue;
     }
     // New account, or reclassified into a different section ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ issue a correct-prefix id.
-    const n = (maxByPrefix[prefix] || 0) + 1;
+    let n = (maxByPrefix[prefix] || 0) + 1;
+    let candidate = `${prefix}-${String(n).padStart(3, "0")}`;
+    while (usedSystemIds.has(candidate)) {
+      n += 1;
+      candidate = `${prefix}-${String(n).padStart(3, "0")}`;
+    }
     maxByPrefix[prefix] = n;
-    byKey.set(key, `${prefix}-${String(n).padStart(3, "0")}`);
+    byKey.set(key, candidate);
+    usedSystemIds.add(candidate);
   }
   return byKey;
 }
@@ -2412,9 +2551,10 @@ function walkNodeAncestry(nodesByKey, startKey) {
  * only parentKey: null roots -- everything else nests dynamically beneath
  * them from the leaf's own document/AI-resolved levels array.
  */
-function serializeProposedTree(hierarchical) {
+function serializeProposedTree(hierarchical, existingByKey = new Map()) {
   const categoryNodes = new Map(); // normPathKey -> node
   const nodes = [];
+  const systemIdByKey = assignSystemIds(hierarchical || [], existingByKey || new Map());
   const ensureCategoryChain = (leaf) => {
     const path = (leaf.levels || []).filter(Boolean);
     if (path.length <= 1) return null;
@@ -2433,8 +2573,7 @@ function serializeProposedTree(hierarchical) {
           accountType: leaf.accountType,
           statementType: leaf.statementType,
           level: prefixArr.length,
-          systemId: null,
-          system_id: null,
+          hierarchyPath: prefixArr.join(" > "),
         };
         categoryNodes.set(key, node);
         nodes.push(node);
@@ -2445,9 +2584,12 @@ function serializeProposedTree(hierarchical) {
   };
 
   for (const leaf of hierarchical) {
+    const path = (leaf.levels || []).filter(Boolean);
+    const key = accountKey(leaf.accountNumber, leaf.accountName);
+    const systemId = leaf.systemId || systemIdByKey.get(key) || null;
     const parentKey = ensureCategoryChain(leaf);
     nodes.push({
-      key: accountKey(leaf.accountNumber, leaf.accountName),
+      key,
       parentKey,
       parent_id: parentKey,
       nodeType: "ACCOUNT",
@@ -2461,15 +2603,14 @@ function serializeProposedTree(hierarchical) {
       classificationMethod: leaf.classificationMethod || null,
       matchTier: leaf.matchTier || null,
       confidence: leaf.confidence ?? null,
-      level: Number.isFinite(Number(leaf.level))
-        ? Number(leaf.level)
-        : (Array.isArray(leaf.levels) ? leaf.levels.filter(Boolean).length : 0),
-      systemId: leaf.systemId || leaf.system_id || null,
-      system_id: leaf.systemId || leaf.system_id || null,
+      systemId,
       needsReview: Boolean(leaf.needsReview),
       needsMapping: Boolean(leaf.needsMapping),
       sources: Array.from(leaf.sources || []),
       fiscalYears: Array.from(leaf.fiscalYears || []),
+      levels: leaf.levels || new Array(MAX_LEVELS).fill(null),
+      level: path.length || null,
+      parentSystemId: null,
       clientAccountId: leaf.clientAccountId || null,
       mappedNormalBalance: leaf.mappedNormalBalance || null,
       sortOrder: leaf.sortOrder ?? null,
@@ -2525,6 +2666,7 @@ function deserializeApprovedTree(nodes) {
       classificationMethod: userEdited ? "manual_review" : (n.classificationMethod || null),
       matchTier: userEdited ? null : (n.matchTier || null),
       confidence: userEdited ? 1 : (n.confidence ?? null),
+      systemId: n.systemId || null,
       needsReview: userEdited ? false : Boolean(n.needsReview),
       needsMapping: userEdited ? false : Boolean(n.needsMapping),
       sources: new Set(n.sources && n.sources.length ? n.sources : ["manual_review"]),
@@ -3441,12 +3583,18 @@ async function buildProposedCoaTree(companyId, versionId, batchId, opts = {}) {
     plConflictingPathsCount, plResolvedByDepthCount, plResolvedByFrequencyCount,
     plResolvedByRecencyCount, plMergedNodesCount,
   } = buildDocHierarchyLookups(bsRows, plRows, endingFiscalYear, { logValidation: true });
-  const referenceBsHierarchyByName = opts.balanceSheetTree
-    ? buildTreeHierarchyLookup(opts.balanceSheetTree, "balance_sheet")
-    : bsHierarchyByName;
-  const referencePlHierarchyByName = opts.profitLossTree
-    ? buildTreeHierarchyLookup(opts.profitLossTree, "profit_loss")
-    : plHierarchyByName;
+  // Same precedence fix as buildCoaModel: the canonical, this-run bsRows/
+  // plRows-derived lookup (bsHierarchyByName/plHierarchyByName, just built
+  // above) wins whenever it actually has entries. The reference tree (built
+  // from this version's own already-persisted rows via referenceTreeBuilder.js
+  // -- see keyReportSyncService.js) is a fallback for when this run genuinely
+  // parsed no BS/P&L rows at all, never a silent override of a working result.
+  const referenceBsHierarchyByName = bsHierarchyByName.size
+    ? bsHierarchyByName
+    : (opts.balanceSheetTree ? buildTreeHierarchyLookup(opts.balanceSheetTree, "balance_sheet") : bsHierarchyByName);
+  const referencePlHierarchyByName = plHierarchyByName.size
+    ? plHierarchyByName
+    : (opts.profitLossTree ? buildTreeHierarchyLookup(opts.profitLossTree, "profit_loss") : plHierarchyByName);
   const docHierarchyStats = createDocHierarchyStats();
   const needsAi = unmatchedByCoa.filter((a) => {
     const evidenceAccountType = bsSectionToType(a.bsSection) || plSectionToType(a.plSection);
@@ -3517,15 +3665,12 @@ async function buildProposedCoaTree(companyId, versionId, batchId, opts = {}) {
     if (!existingByKey.has(key)) existingByKey.set(key, row);
   }
 
-  const hierarchicalBase = await buildLeafHierarchies(leaves, existingByKey);
-  const proposedSystemIds = assignSystemIds(hierarchicalBase, existingByKey);
-  const hierarchical = hierarchicalBase.map((leaf) => {
+  const hierarchical = await buildLeafHierarchies(leaves, existingByKey);
+  const proposedSystemIdByKey = assignSystemIds(hierarchical, existingByKey);
+  for (const leaf of hierarchical) {
     const key = accountKey(leaf.accountNumber, leaf.accountName);
-    const systemId = proposedSystemIds.get(key) || leaf.systemId || null;
-    const level = Array.isArray(leaf.levels) ? leaf.levels.filter(Boolean).length : 0;
-    if (leaf.level === level && leaf.systemId === systemId && leaf.system_id === systemId) return leaf;
-    return { ...leaf, level, systemId, system_id: systemId };
-  });
+    leaf.systemId = proposedSystemIdByKey.get(key) || leaf.systemId || null;
+  }
   const sourceCounts = summarizeSourceCounts(hierarchical);
   const unmappedCount = sourceCounts.needsMapping;
   if (unmappedCount) {
