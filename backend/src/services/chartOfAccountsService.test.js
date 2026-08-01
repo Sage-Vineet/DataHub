@@ -84,7 +84,7 @@ test('persistApprovedCoaTree (for contrast) DOES contain write calls -- proves t
 // validating against the wrong prefix.
 const ASSET_FIXED_PREFIX = ['Total Assets'];
 const LIABILITY_FIXED_PREFIX = ['Total Liabilities and Equity', 'Total Liabilities'];
-const EQUITY_FIXED_PREFIX = ['Total Liabilities and Equity', 'Total Equity', 'Equity'];
+const EQUITY_FIXED_PREFIX = ['Total Liabilities and Equity', 'Total Equity'];
 const PL_FIXED_PREFIX = ['Total Liabilities and Equity', 'Total Equity', 'Total Equity'];
 
 function makeAssetLeaf(overrides = {}) {
