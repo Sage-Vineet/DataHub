@@ -705,19 +705,13 @@ router.get("/manual-report-uploads/qms-bank-data", async (req, res) => {
 
     // Bank statement is resolved from the SELECTED Key Reports version (single
     // source of truth, active when none selected); P&L financials remain QMS-scoped.
-<<<<<<< HEAD
-    const [{ body: bankBody }, plFinancials, activityReview] = await Promise.all([
+    const [{ body: bankBody }, plFinancials, activityReview, balanceSheetBankAccounts] = await Promise.all([
       runBankExtraction(clientId, "quickbooks_manual_upload", "Manual Upload Source", datasetVersion, keyReportVersionId),
       extractPlFinancials(clientId, "quickbooks_manual_upload").catch(() => null),
       keyReportVersionId
         ? getMonthlyActivityReview(keyReportVersionId).catch(() => null)
         : Promise.resolve(null),
-=======
-    const [{ body: bankBody }, plFinancials, balanceSheetBankAccounts] = await Promise.all([
-      runBankExtraction(clientId, "quickbooks_manual_upload", "Manual Upload Source", datasetVersion, keyReportVersionId),
-      extractPlFinancials(clientId, "quickbooks_manual_upload").catch(() => null),
       bsBankAccountsPromise,
->>>>>>> 0c6cdcf466db65a94503636f1cbb3d2927275da3
     ]);
 
     return res.json({
