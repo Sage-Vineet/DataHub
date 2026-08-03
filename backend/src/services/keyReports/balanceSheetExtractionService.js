@@ -131,6 +131,29 @@ function inferSubSection(accountName) {
   return null;
 }
 
+// CONFIRMED ROOT CAUSE: `section` was derived from `currentSection`, a flat
+// variable set only when a recognized header line was seen, and never
+// rescoped when the ancestor stack popped back past that header — an Equity
+// account nested directly under a combined "Liabilities and Equity" umbrella
+// (with no further explicit "Equity" sub-header between it and the umbrella)
+// silently kept the stale "Liabilities" section left over from an earlier
+// sibling branch (e.g. "Liabilities" > "Accounts Payable"). Every row already
+// carries its own real ancestor chain (`parent_path`, built from the
+// document's own indentation) — walking that chain from the NEAREST ancestor
+// toward the root (the REVERSE of profitLossExtractionService.js's
+// sectionFromAncestry root-first order, since P&L has no umbrella-then-
+// branch ambiguity to resolve) and taking the first label that resolves via
+// inferSection is self-contained per row, and correctly prefers a specific
+// "Equity"/"Liabilities" sub-header over the ambiguous umbrella "Liabilities
+// and Equity" heading that may sit above it in the same path.
+function sectionFromAncestry(parentPath) {
+  for (let i = (parentPath || []).length - 1; i >= 0; i--) {
+    const key = inferSection(parentPath[i]);
+    if (key) return key;
+  }
+  return null;
+}
+
 class BalanceSheetExtractionService extends ExtractionServiceBase {
   constructor() {
     super('balance_sheet', 'balance_sheet_entries');
@@ -181,7 +204,19 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
     // ancestors. Bump so every previously-cached parse — which may carry a
     // phantom leaf-as-parent entry in parent_path — is re-extracted with the
     // fix applied.
-    this.parserVersion = 'v8';
+    // v9: CONFIRMED ROOT CAUSE — `section` was read from `currentSection`, a
+    // flat variable never rescoped when the ancestor stack popped back past a
+    // header (e.g. "Liabilities"), so an Equity account with no explicit
+    // "Equity" sub-header of its own (sitting directly under "Liabilities and
+    // Equity" after a sibling "Liabilities" branch) inherited the stale
+    // "liabilities" section and was misclassified as a Liability. Fixed:
+    // `section` is now derived per-row from its own real ancestor chain
+    // (sectionFromAncestry over parent_path, nearest-ancestor-first), mirrors
+    // profitLossExtractionService.js's v5 fix for the same bug class on the
+    // P&L side. Bump so every previously-cached Balance Sheet — which carries
+    // the OLD, possibly-wrong section — is re-extracted rather than serving a
+    // stale misclassification forever.
+    this.parserVersion = 'v9';
   }
 
   async extract({ fileName, fileBuffer }) {
@@ -428,7 +463,7 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
         // section header before it ever reaches balance_sheet_entries.
         rows.push({
           account_name: rawName,
-          section: currentSection ? inferSection(currentSection) : null,
+          section: sectionFromAncestry(parentPath) || (currentSection ? inferSection(currentSection) : null),
           sub_section: currentSection ? inferSubSection(currentSection) : null,
           parent_path: parentPath,
           amount: 0,
@@ -449,10 +484,11 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
       rows.push({
         account_name: accountName,
         account_number: null,
-        // Section comes from the last section-HEADER line actually seen above
-        // this row in the document — never guessed from this row's own account
-        // name when no header has appeared yet (see inferSection's doc comment).
-        section: currentSection ? inferSection(currentSection) : null,
+        // Section comes from this row's own real ancestor chain (parentPath),
+        // walked nearest-to-root via sectionFromAncestry — never guessed from
+        // this row's own account name, and never from the stale currentSection
+        // variable alone (see sectionFromAncestry's doc comment for why).
+        section: sectionFromAncestry(parentPath) || (currentSection ? inferSection(currentSection) : null),
         sub_section: currentSection ? inferSubSection(currentSection) : null,
         // The row's real ancestor chain (e.g. ["Assets", "Current Assets",
         // "Bank Accounts"]) read from indentation — independent of, and often
@@ -605,4 +641,10 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
   }
 }
 
-module.exports = new BalanceSheetExtractionService();
+const balanceSheetExtractionService = new BalanceSheetExtractionService();
+// Exposed for regression testing only (backend/scripts/validateBsSectionAncestry.js)
+// — pure, stateless functions, safe to call directly without running a full
+// extraction. Does not change the service's own behavior or public contract.
+balanceSheetExtractionService.inferSection = inferSection;
+balanceSheetExtractionService.sectionFromAncestry = sectionFromAncestry;
+module.exports = balanceSheetExtractionService;
