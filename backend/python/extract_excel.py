@@ -34,7 +34,7 @@ import json as _json
 from common import (
     lc, cell_str, parse_amount, parse_date,
     extract_year_from_text, extract_years_from_title_rows, extract_year_cols_from_header,
-    infer_section, is_total_row,
+    is_total_row,
     header_score_pl, header_score_gl, header_score_bs,
     find_best_header_row, find_col,
     ACCOUNT_ALIASES, AMOUNT_ALIASES, DATE_ALIASES, REF_ALIASES,
@@ -349,6 +349,78 @@ def _cell_indent(v):
     return len(m.group(0).replace('\t', '    ')) if m else 0
 
 
+# Balance Sheet section-header vocabulary — mirrors
+# balanceSheetExtractionService.js's inferSection exactly (whole-word-set
+# match, never a substring test on the whole string). common.infer_section is
+# intentionally NOT reused for this: it is a plain substring matcher shared
+# with the PDF text/OCR fallback paths (which have no indentation/parent_path
+# signal to derive a section from and are out of scope here), and substring
+# matching on this closed vocabulary would misfire the same way JS's old
+# inferSection did on "Capital One Credit Card" (matched "capital").
+_BS_HEADER_WORDS = {
+    'total', 'current', 'fixed', 'long', 'term', 'other', 'and',
+    'asset', 'assets', 'liability', 'liabilities',
+}
+_BS_EQUITY_WORDS = {
+    'equity', 'capital', 'owner', 'owners', 'member', 'members',
+    'stockholder', 'stockholders', 'partner', 'partners',
+}
+_BS_HEADER_WORDS |= _BS_EQUITY_WORDS
+
+
+def infer_bs_header_section(account_name):
+    n = lc(account_name).replace("'", '').strip()
+    if not n:
+        return None
+    words = [w for w in re.sub(r'[^a-z\s]', ' ', n).split() if w]
+    if not words or not all(w in _BS_HEADER_WORDS for w in words):
+        return None
+
+    has_asset = any(w in ('asset', 'assets') for w in words)
+    has_liability = any(w in ('liability', 'liabilities') for w in words)
+    has_equity = any(w in _BS_EQUITY_WORDS for w in words)
+
+    if has_asset:
+        return 'assets'
+    if has_liability and has_equity:
+        # Combined "Liabilities and Equity" style header — resolve by which
+        # marker word appears first (mirrors JS inferSection's tie-break).
+        liab_idx = n.find('liabilit')
+        equity_positions = [n.find(w) for w in _BS_EQUITY_WORDS if n.find(w) != -1]
+        equity_idx = min(equity_positions) if equity_positions else -1
+        if equity_idx == -1:
+            return 'liabilities'
+        return 'equity' if equity_idx < liab_idx else 'liabilities'
+    if has_liability:
+        return 'liabilities'
+    if has_equity:
+        return 'equity'
+    return None
+
+
+# CONFIRMED ROOT CAUSE: `section` was derived from `current_section`, a flat
+# variable set only when a recognized header line was seen, and never
+# rescoped when the ancestor stack popped back past that header — an Equity
+# account nested directly under a combined "Liabilities and Equity" umbrella
+# (with no further explicit "Equity" sub-header between it and the umbrella)
+# silently kept the stale "Liabilities" section left over from an earlier
+# sibling branch (e.g. "Liabilities" > "Accounts Payable"). Every row already
+# carries its own real ancestor chain (`parent_path`, built from the
+# document's own indentation) — walking that chain from the NEAREST ancestor
+# toward the root (the REVERSE of section_from_ancestry's root-first order
+# for P&L, which has no umbrella-then-branch ambiguity to resolve) and taking
+# the first label that resolves via infer_bs_header_section is self-contained
+# per row, and correctly prefers a specific "Equity"/"Liabilities" sub-header
+# over the ambiguous umbrella "Liabilities and Equity" heading that may sit
+# above it in the same path.
+def bs_section_from_ancestry(parent_path):
+    for label in reversed(parent_path or []):
+        key = infer_bs_header_section(label)
+        if key:
+            return key
+    return None
+
+
 def extract_balance_sheet(wb):
     rows, align_indents = get_rows_with_indent(wb, r'balance\s*sheet|bs\b')
     if len(rows) < 2:
@@ -420,7 +492,7 @@ def extract_balance_sheet(wb):
             ancestor_stack.pop()
         parent_path = [label for _, label in ancestor_stack]
 
-        section_match = infer_section(raw_name)
+        section_match = infer_bs_header_section(raw_name)
 
         # Walk right-to-left for amount
         amount = None
@@ -462,7 +534,7 @@ def extract_balance_sheet(wb):
             result.append({
                 'account_name':    raw_name,
                 'account_number':  None,
-                'section':         infer_section(current_section) if current_section else None,
+                'section':         bs_section_from_ancestry(parent_path) or (infer_bs_header_section(current_section) if current_section else None),
                 'parent_path':     parent_path,
                 'amount':          0,
                 'as_of_date':      as_of_date,
@@ -479,7 +551,7 @@ def extract_balance_sheet(wb):
         result.append({
             'account_name':     account_name,
             'account_number':   None,
-            'section':          infer_section(current_section) if current_section else infer_section(account_name),
+            'section':          bs_section_from_ancestry(parent_path) or (infer_bs_header_section(current_section) if current_section else infer_bs_header_section(account_name)),
             'parent_path':      parent_path,
             'amount':           amount,
             'as_of_date':       as_of_date,
