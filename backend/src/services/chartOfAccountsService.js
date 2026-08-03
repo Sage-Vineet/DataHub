@@ -1145,7 +1145,29 @@ function buildTreeHierarchyLookup(tree, statementType) {
     const nextPath = node.nodeType === "REPORT" ? path : [...path, node.name].filter(Boolean);
     if (node.nodeType === "ACCOUNT" && node.name) {
       const key = normName(node.name);
-      const accountType = node.accountType || inferAccountTypeFromReferencePath(statementType, nextPath);
+      // Section evidence, richest first:
+      //   1. the node's own real ANCESTOR PATH in the document tree (the
+      //      deepest, most specific evidence -- unchanged behaviour, so any
+      //      account that is properly nested resolves exactly as before);
+      //   2. an accountType explicitly set on the node by whoever built the
+      //      tree, if any;
+      //   3. the row's OWN document-derived `section` value, carried onto the
+      //      node verbatim by referenceTreeBuilder as `sourceSection`.
+      //
+      // (3) is what rescues an account the document gave NO ancestry for: it
+      // lands directly on the report root, so (1) sees only [ownName] and
+      // correctly refuses to infer a section from an account name. Before this
+      // fallback existed those accounts got accountType=null -> no anchor
+      // prefix -> stranded in "NEEDS MAPPING", despite the extractor having
+      // already recorded their section on the row. Still 100% document-derived
+      // (the extractor reads `section` from the document's own structure) and
+      // still mapped through the ONE existing section vocabulary -- no keyword
+      // rules, no per-client special cases.
+      const accountType = inferAccountTypeFromReferencePath(statementType, nextPath)
+        || node.accountType
+        || (statementType === "profit_loss"
+          ? plSectionToType(node.sourceSection)
+          : bsSectionToType(node.sourceSection));
       const coaPath = statementType === "profit_loss"
         ? ensureAccountLeaf({
           hierarchyPath: [...PROFIT_AND_LOSS_COA_PREFIX, ...cleanDynamicCoaParentPath(nextPath.slice(0, -1))],
@@ -1276,15 +1298,29 @@ function pickDocHierarchy(accountName, key, glBucketByKey, bsHierarchyByName, pl
     return null;
   }
 
-  // Step 2 -- exact match in the OTHER statement (only reachable when the
-  // preferred tree came from the weak bucket hint, never from confident
-  // evidence -- see comment above).
-  const other = preferred === bsHierarchyByName ? plHierarchyByName : bsHierarchyByName;
-  const otherStatementType = preferred === bsHierarchyByName ? "profit_loss" : "balance_sheet";
-  if (other) {
-    const entry = selectDeterministicReferenceCandidate(other.get(key));
+  // Step 2 -- exact match in whichever statement(s) Step 1 did not already
+  // cover (only reachable when the preferred tree came from the weak bucket
+  // hint, or from no hint at all -- never from confident evidence, see above).
+  //
+  // CONFIRMED ROOT CAUSE (fixed here): this used to be a single `other`
+  // derived as `preferred === bs ? pl : bs`. When there was NO hint at all,
+  // `preferred` is null, so `null === bs` is false and `other` silently
+  // became the BALANCE SHEET tree -- meaning a completely unhinted account
+  // (the common case for a GL-only account with no section evidence, which
+  // is exactly what ensureCoaComplete resolves) was matched against the BS
+  // tree ONLY and the P&L tree was never consulted at all, in either the
+  // exact or the combined-fuzzy step. Fixed by trying every not-yet-searched
+  // tree explicitly.
+  const remaining = preferred
+    ? [preferred === bsHierarchyByName
+      ? { lookup: plHierarchyByName, st: "profit_loss" }
+      : { lookup: bsHierarchyByName, st: "balance_sheet" }]
+    : [{ lookup: bsHierarchyByName, st: "balance_sheet" }, { lookup: plHierarchyByName, st: "profit_loss" }];
+  for (const { lookup, st } of remaining) {
+    if (!lookup) continue;
+    const entry = selectDeterministicReferenceCandidate(lookup.get(key));
     if (entry) {
-      if (stats) stats[otherStatementType === "profit_loss" ? "profitLoss" : "balanceSheet"]++;
+      if (stats) stats[st === "profit_loss" ? "profitLoss" : "balanceSheet"]++;
       return { ...entry, matchType: entry.matchType || "exact" };
     }
   }
@@ -1294,7 +1330,10 @@ function pickDocHierarchy(accountName, key, glBucketByKey, bsHierarchyByName, pl
   // fuzzyMatchDocHierarchy's own internal best-score comparison decides
   // across the combined set, so a fuzzy hit in the non-preferred tree can
   // still win over a weaker one in the preferred tree.
-  const combined = new Map([...(preferred || []), ...(other || [])]);
+  const combined = new Map([
+    ...(preferred || []),
+    ...remaining.flatMap(({ lookup }) => (lookup ? [...lookup] : [])),
+  ]);
   const entry = fuzzyMatchDocHierarchy(accountName, combined);
   if (entry) { if (stats) stats.fuzzy++; return { ...entry, matchType: "fuzzy" }; }
   return null;
@@ -5531,16 +5570,32 @@ async function ensureAccountExistsInCoa(versionId, companyId, accountName, accou
 //   (never re-parsed here, never persisted) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â needed so a GL-only account
 //   discovered at this later phase still gets Priority-2 document-hierarchy
 //   resolution before falling back to AI.
+// @param {object} [referenceTrees] - { balanceSheetTree, profitLossTree }, the
+//   SAME document-derived reference trees keyReportSyncService already built
+//   (referenceTreeBuilder.js) and passed to buildProposedCoaTree. CONFIRMED
+//   ROOT CAUSE this closes: this function is a real chart_of_accounts WRITER
+//   (Phase 2c, after the approved COA is persisted), but it used to resolve
+//   document hierarchy through buildDocHierarchyLookups' OWN, separate
+//   populateHierarchyTree trees -- a genuinely different algorithm from the
+//   one the Proposed COA the user just reviewed and approved was built with
+//   (buildTreeHierarchyLookup over the reference trees). Two hierarchy
+//   algorithms writing the same table meant an account added at this phase
+//   could be classified/placed differently than the identical account would
+//   have been during the proposal, and THIS phase's answer is what persists.
+//   Threading the same trees through makes ONE canonical hierarchy source for
+//   both writers. Optional/back-compatible: when omitted, the pre-existing
+//   buildDocHierarchyLookups fallback still applies (used by direct callers
+//   and tests that have no reference trees to supply).
 // Same guarantee as generateChartOfAccounts' wrapper above -- see its comment.
-async function ensureCoaComplete(companyId, versionId, plRows = [], hasLinkedCoaDocument = undefined, endingFiscalYear = null) {
+async function ensureCoaComplete(companyId, versionId, plRows = [], hasLinkedCoaDocument = undefined, endingFiscalYear = null, referenceTrees = {}) {
   try {
-    return await _ensureCoaCompleteImpl(companyId, versionId, plRows, hasLinkedCoaDocument, endingFiscalYear);
+    return await _ensureCoaCompleteImpl(companyId, versionId, plRows, hasLinkedCoaDocument, endingFiscalYear, referenceTrees);
   } finally {
     await invalidateClassificationCache(companyId);
   }
 }
 
-async function _ensureCoaCompleteImpl(companyId, versionId, plRows = [], hasLinkedCoaDocument = undefined, endingFiscalYear = null) {
+async function _ensureCoaCompleteImpl(companyId, versionId, plRows = [], hasLinkedCoaDocument = undefined, endingFiscalYear = null, referenceTrees = {}) {
   if (!companyId || !versionId) return { added: 0, skipped: 0 };
 
   await invalidateClassificationCache(companyId);
@@ -5619,8 +5674,24 @@ async function _ensureCoaCompleteImpl(companyId, versionId, plRows = [], hasLink
     collectGlAccountsFromEntries(companyId, versionId).catch(() => []),
     collectBsAccountsFromEntries(companyId, versionId).catch(() => []),
   ]);
-  const { bsHierarchyByName, plHierarchyByName, plTree } = buildDocHierarchyLookups(bsRows, plRows, endingFiscalYear);
-  const glBucketByKey = splitAccountsAtRetainedEarningsByYear(glRowsInOrder, plTree);
+  // ONE canonical hierarchy source, identical to buildCoaModel's own selection
+  // (see referenceTrees' doc comment on ensureCoaComplete above): the
+  // document-derived reference trees win whenever supplied; buildDocHierarchyLookups'
+  // own trees remain only as the no-reference-tree fallback. Both writers of
+  // chart_of_accounts must resolve hierarchy through the same algorithm, or an
+  // account added at this phase gets a different path than the Proposed COA the
+  // user approved would have given it.
+  const docLookups = buildDocHierarchyLookups(bsRows, plRows, endingFiscalYear);
+  const bsHierarchyByName = referenceTrees.balanceSheetTree
+    ? buildTreeHierarchyLookup(referenceTrees.balanceSheetTree, "balance_sheet")
+    : docLookups.bsHierarchyByName;
+  const plHierarchyByName = referenceTrees.profitLossTree
+    ? buildTreeHierarchyLookup(referenceTrees.profitLossTree, "profit_loss")
+    : docLookups.plHierarchyByName;
+  const glBucketByKey = splitAccountsAtRetainedEarningsByYear(
+    glRowsInOrder,
+    referenceTrees.profitLossTree || docLookups.plTree,
+  );
   const needsAi = unmatchedByCoa.filter(
     (a) => !pickDocHierarchy(a.accountName, a.key, glBucketByKey, bsHierarchyByName, plHierarchyByName),
   );

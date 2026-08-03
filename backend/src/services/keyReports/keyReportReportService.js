@@ -49,6 +49,50 @@ async function isSnapshotStale(versionId, generatedAt) {
   }
 }
 
+// Newest created_at across a version's rows in a derived accounting table.
+// trial_balance_entries and bs_reconciliation_entries are both fully
+// delete-and-rewrite per generation, so the max created_at is exactly "when
+// this table was last generated for this version".
+async function latestGeneratedAt(table, versionId) {
+  try {
+    const { data, error } = await supabase
+      .from(table)
+      .select('created_at')
+      .eq('version_id', versionId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) return null;
+    return data?.created_at || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether a derived accounting table's rows predate the current Chart of
+ * Accounts, i.e. the report being served no longer reflects the COA.
+ *
+ * CONFIRMED GAP this closes: generated_report_snapshots (P&L / Cash Flow /
+ * Balance Sheet) are guarded by isSnapshotStale, so a COA edit correctly
+ * forces a recompute. trial_balance_entries and bs_reconciliation_entries had
+ * NO such guard and are only ever rewritten by a full sync/approve -- so after
+ * a single-account reclassification via PATCH /chart-of-accounts/:id (which
+ * bumps chart_of_accounts.updated_at but regenerates neither table), the
+ * Trial Balance and Reconciliation pages kept serving the pre-edit grouping
+ * and variances indefinitely, with no indication they were out of date.
+ *
+ * These two tables cannot be safely recomputed from a read path (they are
+ * write-heavy delete-and-rewrite engines owned by the sync pipeline), so the
+ * report reports its own staleness instead of silently lying: callers get
+ * `coaStale: true` and can prompt a re-run. Never throws.
+ */
+async function isDerivedTableStale(table, versionId) {
+  const generatedAt = await latestGeneratedAt(table, versionId);
+  if (!generatedAt) return false; // nothing generated yet -> "empty", not "stale"
+  return isSnapshotStale(versionId, generatedAt);
+}
+
 // Standardized audit log required by the Key Reports report contract (spec #14).
 // Emitted ONCE PER FISCAL YEAR so it is provable, per year, which table the data
 // came from and whether the year was generated from GL or rendered directly from
@@ -551,9 +595,12 @@ function addBalance(map, name, delta, type) {
   if (type && (entry.type === 'unknown' || !entry.type)) entry.type = type;
 }
 
-/** Map of leaf-account closing balances taken directly from extracted BS entries. */
-function extractedBalancesMap(entries) {
-  const propagated = propagateMissingSection(entries);
+/** Map of leaf-account closing balances taken directly from extracted BS entries.
+ *  `coaById` (loadCoaByIdMap) lets each row's section come from its own
+ *  persisted chart_of_accounts link rather than a re-derived guess -- see
+ *  propagateMissingSection. */
+function extractedBalancesMap(entries, coaById = null) {
+  const propagated = propagateMissingSection(entries, coaById);
   const map = new Map();
   for (const e of propagated) {
     const name = (e.account_name || '').trim();
@@ -641,19 +688,25 @@ async function bsBalancesForYear(versionId, year, depth = 0) {
   if (generated) return generated;
 
   if (await hasExtractedRows('balance_sheet_entries', versionId, year)) {
-    const { data, error } = await supabase
-      .from('balance_sheet_entries')
-      .select('account_name, account_type, section, amount, hierarchy_level, is_total, sort_order, fiscal_year, as_of_date, row_type')
-      .eq('version_id', versionId)
-      .eq('fiscal_year', year)
-      .or('is_generated.is.null,is_generated.eq.false')
-      .order('sort_order', { ascending: true, nullsFirst: false })
-      .order('id', { ascending: true });
+    // coa_id (migration 078, populated by linkBsToCoa) is selected so each
+    // row's Asset/Liability/Equity section can come from its own approved
+    // chart_of_accounts row instead of being re-derived here.
+    const [{ data, error }, coaById] = await Promise.all([
+      supabase
+        .from('balance_sheet_entries')
+        .select('account_name, account_type, section, amount, hierarchy_level, is_total, sort_order, fiscal_year, as_of_date, row_type, coa_id')
+        .eq('version_id', versionId)
+        .eq('fiscal_year', year)
+        .or('is_generated.is.null,is_generated.eq.false')
+        .order('sort_order', { ascending: true, nullsFirst: false })
+        .order('id', { ascending: true }),
+      loadCoaByIdMap(versionId).catch(() => null),
+    ]);
     if (error) throw error;
     const entries = data || [];
     const asOf = entries.reduce((acc, e) => (e.as_of_date && (!acc || e.as_of_date > acc) ? e.as_of_date : acc), null);
     return {
-      balances: extractedBalancesMap(entries),
+      balances: extractedBalancesMap(entries, coaById),
       rowsRead: entries.length,
       generatedFromGL: false,
       asOfDate: asOf || `${year}-12-31`,
@@ -1159,12 +1212,45 @@ async function getProfitLossReport(versionId, {
 const BS_SECTION_ORDER = ['assets', 'liabilities', 'equity'];
 const BS_SECTION_LABELS = { assets: 'Assets', liabilities: 'Liabilities', equity: 'Equity' };
 
+// Maps an authoritative chart_of_accounts.account_type onto this module's BS
+// section vocabulary. Exact-match only -- account_type is a controlled
+// enum written by the COA pipeline (asset|liability|equity|income|cogs|
+// expense), never free text, so there is nothing to guess at here.
+const COA_TYPE_TO_BS_SECTION = Object.freeze({
+  asset: 'assets',
+  liability: 'liabilities',
+  equity: 'equity',
+});
+
+function bsSectionFromCoaType(accountType) {
+  return COA_TYPE_TO_BS_SECTION[String(accountType || '').trim().toLowerCase()] || null;
+}
+
+// Structural section value written by the EXTRACTOR itself
+// (balance_sheet_entries.section / .account_type -- see
+// balanceSheetExtractionService's sectionFromAncestry, which derives it from
+// the row's own document ancestor chain). Exact-match against that closed
+// vocabulary only.
+//
+// CONFIRMED ROOT CAUSE (fixed here): this function used to be a substring
+// test applied to BOTH the section value AND, as a fallback, the account's
+// own NAME:
+//     if (n.includes('asset'))  return 'assets';
+//     if (n.includes('liab'))   return 'liabilities';
+//     if (n.includes('equity') || n.includes('capital') || ...) return 'equity';
+// Applied to a name, that is exactly the keyword-classification pattern the
+// COA pipeline forbids, and it silently re-classified real accounts in the
+// live report path -- e.g. any account whose name merely CONTAINS "capital"
+// ("Capital One Credit Card", a liability) became equity, and it ran
+// independently of chart_of_accounts, so a report could contradict the
+// user-approved COA. It also carried the last-seen section forward
+// positionally, so one bad row poisoned every row beneath it.
 function normalizeBSSection(raw) {
   if (!raw) return null;
-  const n = String(raw).toLowerCase().replace(/\s+/g, '');
-  if (n.includes('asset')) return 'assets';
-  if (n.includes('liab')) return 'liabilities';
-  if (n.includes('equity') || n.includes('capital') || n.includes('owner') || n.includes('member')) return 'equity';
+  const n = String(raw).toLowerCase().trim().replace(/\s+/g, '');
+  if (n === 'assets' || n === 'asset') return 'assets';
+  if (n === 'liabilities' || n === 'liability') return 'liabilities';
+  if (n === 'equity') return 'equity';
   return null;
 }
 
@@ -1177,22 +1263,46 @@ function normalizeBSSection(raw) {
  *
  * For multi-year requests each row carries an `amounts` map.
  *
- * Section-propagation pass: entries whose section/account_type is null
- * (e.g. from older Python extraction that lacked context tracking) inherit
- * the section of the preceding entry that DID have a section. This ensures
- * leaf entries like "Business Checking (7454)" are never silently dropped.
+ * Section resolution, in strict priority order:
+ *
+ *   1. The row's OWN persisted chart_of_accounts link (balance_sheet_entries
+ *      .coa_id -> chart_of_accounts.account_type). This is the authoritative,
+ *      user-approved classification -- the same value every other report
+ *      reads -- so a report can never contradict the approved COA.
+ *   2. The row's own structural `section`/`account_type` value, written by the
+ *      extractor from the document's own ancestor chain (exact-match only).
+ *   3. Positional carry-forward from the nearest preceding row that resolved
+ *      via (1) or (2) -- the pre-existing behaviour, kept ONLY for rows with
+ *      no COA link and no structural section of their own (e.g. legacy rows
+ *      extracted before section tracking existed, or a version whose
+ *      linkBsToCoa pass has not run yet).
+ *
+ * The account's NAME is never consulted. See normalizeBSSection's comment for
+ * the confirmed misclassification that removing the name-based fallback fixes.
+ *
+ * @param {Array}  entries    balance_sheet_entries rows (may carry coa_id)
+ * @param {Map}    [coaById]  loadCoaByIdMap's result -- id -> { accountType }
  */
-function propagateMissingSection(entries) {
+function propagateMissingSection(entries, coaById = null) {
   let lastSection = null;
-  return entries.map((e) => {
-    const raw = e.account_type || e.section || '';
-    const resolved = normalizeBSSection(raw) || normalizeBSSection(e.account_name);
+  let unresolvedByCoa = 0;
+  const out = entries.map((e) => {
+    const fromCoa = coaById && e.coa_id ? bsSectionFromCoaType(coaById.get(e.coa_id)?.accountType) : null;
+    const resolved = fromCoa || normalizeBSSection(e.account_type || e.section || '');
     if (resolved) {
       lastSection = resolved;
-      return { ...e, _resolvedSection: resolved };
+      return { ...e, _resolvedSection: resolved, _sectionSource: fromCoa ? 'coa' : 'extraction' };
     }
-    return { ...e, _resolvedSection: lastSection };
+    if (coaById && !e.coa_id) unresolvedByCoa += 1;
+    return { ...e, _resolvedSection: lastSection, _sectionSource: 'carry_forward' };
   });
+  if (unresolvedByCoa > 0) {
+    console.warn(
+      `[KeyReports][BS] ${unresolvedByCoa} balance_sheet_entries row(s) had no coa_id and no structural section -- ` +
+      `section fell back to positional carry-forward. Re-run linkBsToCoa (Save/Approve) to resolve these authoritatively.`,
+    );
+  }
+  return out;
 }
 
 function buildBSHierarchicalRows(entriesByYear, years) {
@@ -1814,7 +1924,13 @@ async function getTrialBalanceReport(versionId, { year } = {}) {
   );
   totals.balanced = Math.abs(totals.totalDebits - totals.totalCredits) < 0.5;
 
-  return { source: 'trial_balance_entries', rows, years, totals };
+  return {
+    source: 'trial_balance_entries',
+    rows,
+    years,
+    totals,
+    coaStale: await isDerivedTableStale('trial_balance_entries', versionId),
+  };
 }
 
 /**
@@ -1850,22 +1966,51 @@ async function getReconciliationReport(versionId, { year } = {}) {
     needsReview: r.needs_review,
   }));
 
+  // CONFIRMED ROOT CAUSE (fixed here): this reducer compared lowercase legacy
+  // status values ('match'/'difference'/'missing_in_generated'/
+  // 'missing_in_uploaded'), but migration 076 renamed the vocabulary and the
+  // writer (keyReportAccountingService.generateReconciliation) emits
+  // 'MATCHED'/'DIFFERENCE'/'MISSING_FROM_GL'/'MISSING_FROM_BS'/'EXCLUDED'.
+  // No branch ever matched, so EVERY counter stayed 0 and
+  // summary.reconciled evaluated to `true` for any non-empty result set --
+  // reporting a clean reconciliation even when every single account differed.
+  // Normalized comparison so both the current and legacy vocabularies count.
+  const normStatus = (s) => String(s || '').trim().toUpperCase();
   const summary = rows.reduce(
     (s, r) => {
-      if (r.status === 'match') s.matched += 1;
-      else if (r.status === 'difference') s.differences += 1;
-      else if (r.status === 'missing_in_generated') s.missingInGenerated += 1;
-      else if (r.status === 'missing_in_uploaded') s.missingInUploaded += 1;
+      switch (normStatus(r.status)) {
+        case 'MATCHED': case 'MATCH': s.matched += 1; break;
+        case 'DIFFERENCE': s.differences += 1; break;
+        case 'MISSING_FROM_GL': case 'MISSING_IN_GENERATED': s.missingInGenerated += 1; break;
+        case 'MISSING_FROM_BS': case 'MISSING_IN_UPLOADED': s.missingInUploaded += 1; break;
+        case 'EXCLUDED': s.excluded += 1; break;
+        default: s.unknownStatus += 1; break;
+      }
       s.totalVariance += Math.abs(r.variance);
       return s;
     },
-    { matched: 0, differences: 0, missingInGenerated: 0, missingInUploaded: 0, totalVariance: 0 },
+    { matched: 0, differences: 0, missingInGenerated: 0, missingInUploaded: 0, excluded: 0, unknownStatus: 0, totalVariance: 0 },
   );
   summary.totalVariance = Math.round(summary.totalVariance * 100) / 100;
-  summary.reconciled = rows.length > 0 && summary.differences === 0 && summary.missingInGenerated === 0 && summary.missingInUploaded === 0;
+  // An unrecognized status must never be counted as reconciled -- that is the
+  // exact failure mode above. EXCLUDED rows (uploaded subtotal/header lines,
+  // deliberately not compared) do not block reconciliation.
+  summary.reconciled = rows.length > 0
+    && summary.differences === 0
+    && summary.missingInGenerated === 0
+    && summary.missingInUploaded === 0
+    && summary.unknownStatus === 0;
   summary.hasData = rows.length > 0;
+  if (summary.unknownStatus > 0) {
+    console.warn(`[KeyReports][Reconciliation] ${summary.unknownStatus} row(s) had an unrecognized status value — reported as NOT reconciled.`);
+  }
 
-  return { source: 'bs_reconciliation_entries', rows, summary };
+  return {
+    source: 'bs_reconciliation_entries',
+    rows,
+    summary,
+    coaStale: await isDerivedTableStale('bs_reconciliation_entries', versionId),
+  };
 }
 
 // ─── QoE (Quality of Earnings) ───────────────────────────────────────────────
@@ -2174,6 +2319,12 @@ module.exports = {
   buildPLHierarchicalRows,
   buildBSHierarchicalRows,
   mergeCfByYear,
+  // Pure section-resolution helpers, exported for regression testing only
+  // (validateReportLayerCoaDerivation.js) — see propagateMissingSection.
+  propagateMissingSection,
+  extractedBalancesMap,
+  normalizeBSSection,
+  bsSectionFromCoaType,
   // GL carry-forward generator (BS(year)=BS(year-1)+GL(year)) — reused by the
   // COA-driven financialStatementService as a fallback for years with no
   // uploaded balance sheet.

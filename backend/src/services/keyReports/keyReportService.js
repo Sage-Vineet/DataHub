@@ -699,9 +699,20 @@ async function resolveVersionFor(companyId, { datasetVersion, versionId } = {}) 
     const byId = await getVersion(versionId);
     // Guard against cross-company access — the version must belong to this company.
     if (byId && byId.companyId === companyId) return byId;
-    console.log(
-      `[KeyReports] versionId ${versionId} not found for company ${companyId}; falling back to dataset version / active.`,
+    // CONFIRMED ROOT CAUSE (fixed here): this used to fall through to the
+    // dataset-version / ACTIVE-version branches below, so an EXPLICITLY
+    // requested versionId that failed to resolve (deleted, belongs to another
+    // company, typo'd) silently served a DIFFERENT version's documents and
+    // reports with a 200 and only a console.log. That is cross-version data
+    // leakage from the caller's point of view: they asked for version X and
+    // got version Y with no signal. An explicit request must never be
+    // silently substituted — return null and let the caller 404/409 instead.
+    // The dataset-version and active-version fallbacks below remain intact
+    // for callers that supply NO versionId at all (single-version setups).
+    console.warn(
+      `[KeyReports] versionId ${versionId} did not resolve for company ${companyId} — refusing to substitute a different version.`,
     );
+    return null;
   }
   if (datasetVersion != null && datasetVersion !== "") {
     const pinned = await getVersionByDatasetVersion(companyId, datasetVersion);

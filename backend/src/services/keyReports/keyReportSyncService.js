@@ -948,7 +948,38 @@ async function generateFinancialTables(version, opts = {}) {
     await loadBalanceSheetRowsForReferenceTree(companyId, versionId),
     gate?.endingBs?.fiscal_year ?? null,
   );
-  const balanceSheetRowsForTree = await loadBalanceSheetRowsForReferenceTree(companyId, versionId, referenceFiscalYear);
+  // CONFIRMED ROOT CAUSE (fixed here): this used to load ONLY
+  // referenceFiscalYear's rows, so the Balance Sheet reference tree contained
+  // exactly one year of the uploaded Balance Sheet. Any account that appears
+  // only in an EARLIER year's uploaded BS was therefore invisible to
+  // pickDocHierarchy and fell through to the AI fallback -- even though the
+  // document evidence for it existed and was already extracted. Confirmed
+  // live: accounts present only in FY2023's uploaded BS (closed/"(deleted)"
+  // accounts, and section headers like "Fixed Assets") were AI-classified
+  // while accounts that also appear in the FY2026 reference year resolved via
+  // Document match. That breaks the guarantee that an account present in ANY
+  // uploaded BS/P&L is always classified from the document, never by AI.
+  //
+  // Fixed: build the tree from EVERY year's uploaded rows, ordered so the
+  // reference year is processed FIRST. buildBalanceSheetTreeFromData places
+  // each distinct account once (first placement wins), so:
+  //   - the reference/ending year's hierarchy still wins wherever it has the
+  //     account (identical behaviour to before for those accounts), and
+  //   - older years only ever ADD accounts the reference year does not have.
+  // The ordering is explicit and deterministic (reference year, then newest
+  // to oldest), so the result never depends on upload or row order.
+  // P&L already worked this way -- it passes every parsed file's rows below.
+  const allBalanceSheetRows = await loadBalanceSheetRowsForReferenceTree(companyId, versionId);
+  const balanceSheetRowsForTree = [...allBalanceSheetRows].sort((a, b) => {
+    const ay = Number(a.fiscal_year), by = Number(b.fiscal_year);
+    const aRef = ay === Number(referenceFiscalYear) ? 0 : 1;
+    const bRef = by === Number(referenceFiscalYear) ? 0 : 1;
+    if (aRef !== bRef) return aRef - bRef;            // reference year first
+    if (ay !== by) return by - ay;                    // then newest to oldest
+    // Within a year keep the document's own row order so parent_path ancestry
+    // is built in the same sequence the extractor produced it.
+    return (a.sort_order ?? 0) - (b.sort_order ?? 0);
+  });
   const balanceSheetTree = buildBalanceSheetTreeFromData({
     reportName: 'Balance Sheet',
     rows: balanceSheetRowsForTree,
@@ -1128,7 +1159,14 @@ async function generateFinancialTables(version, opts = {}) {
   // resolve every GL account via in-memory lookup without any DB writes.
   logger.log('--- Phase 2c: Complete COA from unlinked GL accounts ---');
   try {
-    const completionResult = await ensureCoaComplete(companyId, versionId, plAccountRows, hasLinkedCoaDocument, gate?.endingBs?.fiscal_year ?? null);
+    // The SAME document-derived reference trees the Proposed COA the user just
+    // approved was built from (see coaBuildOpts above) -- so this phase, which
+    // is a real chart_of_accounts writer, resolves hierarchy through the ONE
+    // canonical algorithm instead of buildDocHierarchyLookups' separate trees.
+    const completionResult = await ensureCoaComplete(
+      companyId, versionId, plAccountRows, hasLinkedCoaDocument, gate?.endingBs?.fiscal_year ?? null,
+      { balanceSheetTree, profitLossTree },
+    );
     logger.log(`  ✓ COA completion: ${completionResult.added} account(s) added, ${completionResult.skipped} already present`);
     if (completionResult.added > 0) {
       // Re-run GL→COA linking so newly added accounts get their coa_id

@@ -353,6 +353,14 @@ test('missing Retained Earnings creates no arbitrary boundary when first P&L acc
 });
 
 test('multi-file GL upload computes the Retained Earnings boundary independently per source file', () => {
+  // Uses splitAccountsAtRetainedEarningsByYear (the production orchestration
+  // layer both real call sites use), not the bare single-pass
+  // splitAccountsAtRetainedEarnings -- the bare function is one boundary-
+  // finding pass over whatever rows it's handed; per-file (and per-year)
+  // partitioning is this wrapper's job, via a composite (year, source file)
+  // grouping key. No transaction_date is given here on purpose, to prove
+  // source_file_id alone -- always set by extraction, regardless of whether
+  // a row's date parses -- is enough to separate the two files' boundaries.
   const rows = [
     // File "2021" — no Balance Sheet account beyond Cash.
     { account_name: 'Cash', source_file_id: 'file-2021' },
@@ -368,7 +376,7 @@ test('multi-file GL upload computes the Retained Earnings boundary independently
     { account_name: 'Retained Earnings', source_file_id: 'file-2022' },
     { account_name: 'Payroll Expenses', source_file_id: 'file-2022' },
   ];
-  const buckets = coa.splitAccountsAtRetainedEarnings(rows, null);
+  const buckets = coa.splitAccountsAtRetainedEarningsByYear(rows, null);
 
   assert.equal(buckets.get('cash'), 'balance_sheet');
   assert.equal(buckets.get('new bank account'), 'balance_sheet');

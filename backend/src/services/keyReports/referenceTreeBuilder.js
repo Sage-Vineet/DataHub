@@ -79,6 +79,14 @@ function buildBalanceSheetTreeFromData({ reportName, rows }) {
   const existing = unwrapTree(rows);
   if (existing) return existing;
   const root = { name: reportName || "Balance Sheet", nodeType: "REPORT", children: [] };
+  // The same account legitimately recurs across fiscal years and across
+  // multiple uploaded Balance Sheets. It must become exactly ONE tree node, so
+  // the first placement wins and later occurrences are skipped. Callers order
+  // rows so the authoritative (reference/ending) year is processed first --
+  // see keyReportSyncService's balanceSheetRowsForTree. Without this, feeding
+  // several years' rows would push duplicate leaves for one account, leaving
+  // its hierarchy ambiguous.
+  const placedAccounts = new Set();
   for (const row of rows || []) {
     const name = rowName(row);
     if (!name) continue;
@@ -95,12 +103,35 @@ function buildBalanceSheetTreeFromData({ reportName, rows }) {
       totalNode.value = amount;
       continue;
     }
+    // One tree node per distinct account, first placement wins (see
+    // placedAccounts above). Identity is the normalized account name -- the
+    // same key pickDocHierarchy/normName use to look accounts up, so a name
+    // that would resolve to one COA leaf resolves to one tree node here too.
+    const accountKey = normName(name);
+    if (placedAccounts.has(accountKey)) continue;
+    placedAccounts.add(accountKey);
     const parent = ensureTotalPath(root, row.parent_path || []);
     parent.children.push({
       name,
       nodeType: "ACCOUNT",
       value: amount,
       children: [],
+      // The row's OWN document-derived section, carried verbatim onto the node
+      // (raw string -- the consumer maps it with the single existing
+      // vocabulary mapper, so there is no duplicated section taxonomy here).
+      //
+      // CONFIRMED ROOT CAUSE this fixes: when a Balance Sheet row has no
+      // parent_path (the extractor captured no ancestry for it -- e.g. a
+      // document whose accounts carry no readable indentation under their
+      // section header), the account is attached directly to the REPORT root,
+      // so its ancestor path is just [ownName]. Ancestor-based classification
+      // then correctly refuses to guess a section from the account's own name
+      // and returns null -- leaving accountType null, no anchor prefix, and
+      // the account stranded in "NEEDS MAPPING" even though its section was
+      // sitting on the row all along. Confirmed live: 8 accounts across both
+      // assets and liabilities, every one with section already correctly set
+      // and parent_path NULL.
+      sourceSection: row.section ?? row.account_type ?? null,
     });
   }
   return root;
@@ -156,7 +187,19 @@ function buildProfitLossTreeFromData({ reportName, periodKeys, rows }) {
       continue;
     }
     const path = normalizedPath(row.parent_path || []);
-    const sectionPath = path.length ? [path[0]] : [row?.section && relationship === "SUBTRACT" ? "Expenses" : "Income"];
+    // CONFIRMED ROOT CAUSE (fixed here): this used to be `[path[0]]` -- only
+    // the OUTERMOST ancestor -- so the P&L reference tree was flattened to
+    // exactly ONE level below its section root, silently discarding every
+    // intermediate document group. A real document reading
+    // "Expenses > Payroll > Salaries" produced a tree of
+    // "Expenses > Salaries", losing "Payroll" entirely, and that loss then
+    // propagated into hierarchy_path and level_1..15 for every P&L account
+    // nested more than one level deep. The Balance Sheet builder above
+    // already uses the row's FULL parent_path (ensureTotalPath(root,
+    // row.parent_path)); the P&L side must too -- the document's own
+    // ancestry is the source of truth for depth, not a fixed one-level
+    // assumption.
+    const sectionPath = path.length ? path : [row?.section && relationship === "SUBTRACT" ? "Expenses" : "Income"];
     const parentRoot = relationship === "SUBTRACT" && section !== "other_expense"
       ? netOperatingIncome
       : sectionRoot(row);
@@ -168,6 +211,10 @@ function buildProfitLossTreeFromData({ reportName, periodKeys, rows }) {
       values: valuesForRow(row, periodKeys),
       relationship: "ADD",
       children: [],
+      // Same as the Balance Sheet builder above -- the row's own
+      // document-derived section, carried verbatim as fallback evidence for
+      // when ancestor-based classification cannot resolve a section.
+      sourceSection: row?.section ?? null,
     });
   }
   return root;

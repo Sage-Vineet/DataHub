@@ -205,8 +205,30 @@ const fuzzyInsideSelected = coa.pickDocHierarchy("HDFC Ban", "hdfc ban", null, b
 assert.strictEqual(fuzzyInsideSelected.nodeName, "HDFC Bank");
 assert.strictEqual(fuzzyInsideSelected.matchType, "fuzzy");
 
+// EXPECTATION DELIBERATELY CHANGED (was: assert.strictEqual(unknown, null)).
+// An account with NO statement hint of any kind -- no context.statementType,
+// no context.accountType, no glBucket entry -- used to resolve to null here,
+// which meant it was handed to the AI fallback even when the uploaded
+// document unambiguously contained it. That contradicts the standing rule
+// that AI is a LAST resort, used only when the account cannot be resolved
+// from document evidence at all. pickDocHierarchy now searches every
+// not-yet-searched tree (BS first, then P&L, deterministically) before
+// giving up, so a real document match wins over an AI guess. The
+// cross-contamination guard is unaffected and still asserted above
+// (noCrossFallback): when the caller DOES supply confident statementType
+// evidence, the search stays hard-gated to that one statement.
 const unknown = coa.pickDocHierarchy("Product Sales", "product sales", null, bsLookup, plLookup, null, {});
-assert.strictEqual(unknown, null);
+assert.strictEqual(unknown.nodeName, "Product Sales");
+assert.strictEqual(unknown.accountType, "income");
+assert.strictEqual(unknown.statementType, "profit_loss");
+
+// A name present in NEITHER tree still correctly resolves to null (so the
+// change above widened the search, it did not make the function match
+// anything unconditionally).
+assert.strictEqual(
+  coa.pickDocHierarchy("Totally Absent Account", "totally absent account", null, bsLookup, plLookup, null, {}),
+  null,
+);
 
 const multiYearGl = [
   { accountName: "HDFC Bank", fiscalYear: 2022 },

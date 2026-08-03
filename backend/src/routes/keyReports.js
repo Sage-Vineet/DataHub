@@ -61,6 +61,75 @@ async function loadVersionWithAccess(req, res) {
   return version;
 }
 
+// Server-side report gate. Every financial report must be derived from a
+// Chart of Accounts the user has explicitly reviewed and Saved/Approved
+// (key_report_versions.coa_approved_at, migration 086 -- the single approval
+// signal, cleared again on every fresh sync).
+//
+// CONFIRMED GAP this closes: this gate previously existed ONLY on the
+// PATCH /chart-of-accounts/:accountId route and in the frontend ("Open
+// Reports" is hidden until coaApprovedAt is set). Every report GET was
+// reachable directly -- and because those handlers lazily RECOMPUTE when a
+// snapshot is missing or stale, hitting one before approval would generate a
+// full report set from an unapproved Chart of Accounts and, for
+// /financial-statements, write it into the result cache. Any caller that
+// wasn't the UI (a bookmarked URL, a refresh mid-review, an integration)
+// bypassed the guarantee that reports only ever reflect an approved COA.
+//
+// Deliberately responds 200 with an EMPTY, `missingData`-shaped payload rather
+// than a 4xx. This is the shape the Reports page already handles for exactly
+// this situation (financialStatementService returns the same
+// `{ reports:{...empty}, validation, missingData }` when a version's COA has no
+// leaf accounts), and WorkspaceReports' `isKrCoaNotApproved` is derived from a
+// SUCCESSFUL response carrying `missingData` -- so it renders the existing
+// "approve the Chart of Accounts first" guidance. Returning a 409 here would
+// make that fetch throw, replacing the helpful empty state with a generic
+// error banner: a UI regression. `coaNotApproved` + `code` are included for
+// non-UI/API consumers that want an explicit machine-readable signal.
+//
+// Returns true when the caller may proceed; otherwise it has already responded
+// and the handler must return immediately.
+const COA_NOT_APPROVED_MESSAGE =
+  "This version's Chart of Accounts has not been Saved/Approved yet. Review and approve the " +
+  "proposed Chart of Accounts to generate reports.";
+
+async function requireApprovedCoa(res, version) {
+  const { supabase } = require("../db");
+  let approvedAt = null;
+  let readFailed = false;
+  try {
+    const { data: row, error } = await supabase
+      .from("key_report_versions")
+      .select("coa_approved_at")
+      .eq("id", version.id)
+      .maybeSingle();
+    if (error) readFailed = true;
+    else approvedAt = row?.coa_approved_at || null;
+  } catch {
+    readFailed = true;
+  }
+  // Fail closed: if approval state can't be read, do not serve a report.
+  if (approvedAt && !readFailed) return true;
+  const message = readFailed
+    ? "Could not verify whether this version's Chart of Accounts has been approved; no report was generated."
+    : COA_NOT_APPROVED_MESSAGE;
+  res.json({
+    success: true,
+    coaNotApproved: true,
+    code: "COA_NOT_APPROVED",
+    rows: [],
+    years: [],
+    reports: {
+      profitAndLoss: { monthly: [], yearly: [] },
+      balanceSheet: { monthly: [], yearly: [] },
+      cashFlow: { monthly: [], yearly: [] },
+    },
+    validation: [message],
+    missingData: [message],
+  });
+  return false;
+}
+
 function handleError(res, error, label) {
   const normalizedError = normalizeError(error);
   const status =
@@ -275,8 +344,43 @@ async function warmReconciliationCaches(companyId, versionId) {
 // compute on first visit. Fire-and-forget (not awaited), so it never delays the
 // generate response or risks a request timeout; skipped when the workflow halted
 // (no COA was generated). Fully non-fatal.
-function warmFinancialStatementsCache(versionId, result) {
-  if (!versionId || result?.halted) return;
+// CONFIRMED ROOT CAUSE (fixed here): the halt guard used to read
+// `result?.halted`, but keyReportService.syncVersion resolves to
+// `{ success, version, warnings, validationResults, result }` -- the halt flag
+// lives one level deeper, at `result.result.halted`. `result?.halted` was
+// therefore ALWAYS undefined and the guard never fired, so every PROPOSE-mode
+// sync (which halts at 'coa_review_required' with no COA persisted, having
+// just cleared coa_approved_at and deleted the generated balance_sheet_entries)
+// still kicked off a full generateFinancialStatements run and wrote its result
+// cache -- computing and caching a complete statement set from an unapproved,
+// stale COA. That is exactly the "no reports before Save" guarantee this
+// function was written to respect.
+//
+// Now: accept the flag at either depth, and additionally refuse to warm any
+// version whose Chart of Accounts is not currently approved -- the same signal
+// the report routes gate on -- so a warm can never be the thing that
+// resurrects reports for an unapproved version.
+function isHaltedSyncResult(result) {
+  return Boolean(result?.halted || result?.result?.halted);
+}
+
+async function warmFinancialStatementsCache(versionId, result) {
+  if (!versionId || isHaltedSyncResult(result)) return;
+  try {
+    const { supabase } = require("../db");
+    const { data: row } = await supabase
+      .from("key_report_versions")
+      .select("coa_approved_at")
+      .eq("id", versionId)
+      .maybeSingle();
+    if (!row?.coa_approved_at) {
+      console.log(`[KeyReports] Skipped financial-statements cache warm for version ${versionId} — Chart of Accounts not approved yet.`);
+      return;
+    }
+  } catch (e) {
+    console.warn(`[KeyReports] Could not verify COA approval before cache warm (skipping): ${e?.message || e}`);
+    return;
+  }
   generateFinancialStatements(versionId, { currency: "USD" })
     .then(() => console.log(`[KeyReports] Financial-statements cache warmed for version ${versionId}.`))
     .catch((e) => console.warn(`[KeyReports] Financial-statements cache warm failed (non-fatal): ${e?.message || e}`));
@@ -681,6 +785,7 @@ router.get("/key-reports/versions/:versionId/reports/profit-loss", async (req, r
   try {
     const version = await loadVersionWithAccess(req, res);
     if (!version) return;
+    if (!(await requireApprovedCoa(res, version))) return;
     const { year, startDate, endDate, period } = parseReportQuery(req.query);
     const result = await keyReportReportService.getProfitLossReport(version.id, { year, startDate, endDate, period });
     return res.json({ success: true, ...result });
@@ -693,6 +798,7 @@ router.get("/key-reports/versions/:versionId/reports/trial-balance", async (req,
   try {
     const version = await loadVersionWithAccess(req, res);
     if (!version) return;
+    if (!(await requireApprovedCoa(res, version))) return;
     const { year } = parseReportQuery(req.query);
     const result = await keyReportReportService.getTrialBalanceReport(version.id, { year });
     return res.json({ success: true, ...result });
@@ -705,6 +811,7 @@ router.get("/key-reports/versions/:versionId/reports/reconciliation", async (req
   try {
     const version = await loadVersionWithAccess(req, res);
     if (!version) return;
+    if (!(await requireApprovedCoa(res, version))) return;
     const { year } = parseReportQuery(req.query);
     const result = await keyReportReportService.getReconciliationReport(version.id, { year });
     return res.json({ success: true, ...result });
@@ -717,6 +824,7 @@ router.get("/key-reports/versions/:versionId/reports/cashflow", async (req, res)
   try {
     const version = await loadVersionWithAccess(req, res);
     if (!version) return;
+    if (!(await requireApprovedCoa(res, version))) return;
     const { year, startDate, endDate } = parseReportQuery(req.query);
     const result = await keyReportReportService.getCashflowReport(version.id, { year, startDate, endDate });
     return res.json({ success: true, ...result });
@@ -733,6 +841,7 @@ router.get("/key-reports/versions/:versionId/reports/balance-sheet", async (req,
   try {
     const version = await loadVersionWithAccess(req, res);
     if (!version) return;
+    if (!(await requireApprovedCoa(res, version))) return;
     const { year } = parseReportQuery(req.query);
     const result = await keyReportReportService.getBalanceSheetReport(version.id, { year });
     return res.json({ success: true, ...result });
@@ -783,6 +892,7 @@ router.get("/key-reports/versions/:versionId/reports/financial-statements", asyn
   try {
     const version = await loadVersionWithAccess(req, res);
     if (!version) return;
+    if (!(await requireApprovedCoa(res, version))) return;
     const { year, currency, companyName } = req.query;
     const result = await generateFinancialStatements(version.id, {
       year: year ? parseInt(String(year), 10) : undefined,
@@ -816,6 +926,7 @@ router.get("/key-reports/versions/:versionId/reports/qoe", async (req, res) => {
   try {
     const version = await loadVersionWithAccess(req, res);
     if (!version) return;
+    if (!(await requireApprovedCoa(res, version))) return;
     const { year } = req.query;
     const result = await keyReportReportService.getQoeReport(version.id, {
       year: year ? parseInt(String(year), 10) : undefined,
@@ -832,6 +943,7 @@ router.get("/key-reports/versions/:versionId/reports/kpi", async (req, res) => {
   try {
     const version = await loadVersionWithAccess(req, res);
     if (!version) return;
+    if (!(await requireApprovedCoa(res, version))) return;
     const { year } = req.query;
     const result = await keyReportReportService.getKpiReport(version.id, {
       year: year ? parseInt(String(year), 10) : undefined,
