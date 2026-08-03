@@ -1626,10 +1626,15 @@ function resolveSplitAccountCoaId(splitName, byName, norm) {
 
 async function linkGlToCoa(companyId, versionId) {
   // Fetch all COA leaf nodes for this version.
+  // Ordered deterministically: if two COA rows ever end up sharing a normalized
+  // name (e.g. legacy data from before the addLeaf name-only dedup fix), which
+  // one "wins" this lookup must be stable across syncs rather than whatever
+  // order the DB happened to return.
   const { data: coaRows, error: coaErr } = await supabase
     .from("chart_of_accounts")
     .select("id, account_name, base_account, adjusted_name, metadata")
-    .eq("version_id", versionId);
+    .eq("version_id", versionId)
+    .order("id", { ascending: true });
 
   if (coaErr) {
     console.warn(`[linkGlToCoa] COA fetch error: ${coaErr.message}`);
@@ -1745,10 +1750,12 @@ async function linkGlToCoa(companyId, versionId) {
 // creation time since they're already keyed by coa_id internally — this
 // function only needs to backfill rows that came from extraction.
 async function linkBsToCoa(companyId, versionId) {
+  // Ordered deterministically — see the matching comment in linkGlToCoa above.
   const { data: coaRows, error: coaErr } = await supabase
     .from("chart_of_accounts")
     .select("id, account_name, base_account, adjusted_name, metadata")
-    .eq("version_id", versionId);
+    .eq("version_id", versionId)
+    .order("id", { ascending: true });
 
   if (coaErr) {
     console.warn(`[linkBsToCoa] COA fetch error: ${coaErr.message}`);

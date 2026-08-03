@@ -188,7 +188,7 @@ async function collectGlAccountsFromEntries(companyId, versionId) {
   // transaction_date is selected instead; callers derive the year from it.
   return fetchAllRows(() =>
     supabase.from("general_ledger_entries")
-      .select("account_name, split_account, account_section, transaction_date, account_number")
+      .select("account_name, split_account, account_section, transaction_date, account_number, source_file_id")
       .eq("company_id", companyId).eq("version_id", versionId)
       .order("id", { ascending: true }),
   );
@@ -1407,10 +1407,13 @@ function normalizedGlHeadingName(name) {
   return normName(String(name || "").replace(/^\s*\d+(?:[-\s:]+)+/, ""));
 }
 
-function splitAccountsAtRetainedEarnings(glRowsInOrder, profitLossTree = null) {
+// Single-file version of the split: the "Balance Sheet accounts come before
+// Retained Earnings, P&L accounts come after" convention is only true WITHIN
+// one GL export. `rows` here must already be scoped to a single source file.
+function splitAccountsAtRetainedEarningsForOneFile(rows, profitLossTree, fileLabel) {
   const uniqueOrdered = [];
   const seen = new Set();
-  for (const r of glRowsInOrder || []) {
+  for (const r of rows || []) {
     const name = String(r.account_name || "").trim();
     if (!name) continue;
     const headingKey = normalizedGlHeadingName(name);
@@ -1428,19 +1431,19 @@ function splitAccountsAtRetainedEarnings(glRowsInOrder, profitLossTree = null) {
       if (boundaryIdx !== -1) {
         boundaryMethod = "FIRST_PNL_REFERENCE_ACCOUNT";
         console.debug(
-          `[GL CLASSIFICATION] Boundary method: ${boundaryMethod}; First P&L account: ${firstPlAccount.name}; ` +
+          `[GL CLASSIFICATION] File: ${fileLabel}; Boundary method: ${boundaryMethod}; First P&L account: ${firstPlAccount.name}; ` +
           `Matched GL heading: ${uniqueOrdered[boundaryIdx]}; Boundary index: ${boundaryIdx}; Included in: PROFIT_AND_LOSS`,
         );
       }
     }
   }
   if (boundaryIdx === -1) {
-    console.warn('[ChartOfAccounts] No reliable GL Balance Sheet/P&L boundary found; existing unresolved flow will continue.');
+    console.warn(`[ChartOfAccounts] File: ${fileLabel}; No reliable GL Balance Sheet/P&L boundary found; existing unresolved flow will continue.`);
     return new Map();
   }
   if (boundaryMethod === "RETAINED_EARNINGS_ACCOUNT_HEADING") {
     console.debug(
-      `[GL CLASSIFICATION] Boundary method: ${boundaryMethod}; Boundary account: ${uniqueOrdered[boundaryIdx]}; ` +
+      `[GL CLASSIFICATION] File: ${fileLabel}; Boundary method: ${boundaryMethod}; Boundary account: ${uniqueOrdered[boundaryIdx]}; ` +
       `Boundary index: ${boundaryIdx}; Included in: PROFIT_AND_LOSS`,
     );
   }
@@ -1451,6 +1454,36 @@ function splitAccountsAtRetainedEarnings(glRowsInOrder, profitLossTree = null) {
     bucketByKey.set(normName(n), bucket);
     bucketByKey.set(normalizedGlHeadingName(n), bucket);
   });
+  return bucketByKey;
+}
+
+// A multi-year Key Reports upload links SEVERAL general ledger files (one per
+// fiscal year) to the SAME version — collectGlAccountsFromEntries returns
+// every linked file's rows combined, ordered only by DB insertion id (which,
+// because extraction runs concurrently per file, isn't even guaranteed to
+// follow fiscal-year order). The "Balance Sheet before Retained Earnings,
+// P&L after" convention only holds within a single GL export: computing ONE
+// global first-seen order + boundary across every file combined meant an
+// account unique to (or first appearing in) whichever file's rows landed
+// second would be appended past the OTHER file's Retained Earnings position
+// and misclassified. Partitioning by source_file_id first and computing each
+// file's own boundary independently fixes this; per-file results are then
+// unioned (first file to resolve a given account wins).
+function splitAccountsAtRetainedEarnings(glRowsInOrder, profitLossTree = null) {
+  const rowsByFile = new Map();
+  for (const r of glRowsInOrder || []) {
+    const fileKey = r.source_file_id ?? "__no_source_file__";
+    if (!rowsByFile.has(fileKey)) rowsByFile.set(fileKey, []);
+    rowsByFile.get(fileKey).push(r);
+  }
+
+  const bucketByKey = new Map();
+  for (const [fileKey, rows] of rowsByFile) {
+    const fileBucket = splitAccountsAtRetainedEarningsForOneFile(rows, profitLossTree, fileKey);
+    for (const [key, bucket] of fileBucket) {
+      if (!bucketByKey.has(key)) bucketByKey.set(key, bucket);
+    }
+  }
   return bucketByKey;
 }
 
@@ -1594,7 +1627,13 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
     const coaMatch = matchResults.get(key);
     if (coaMatch?.matched && !partitionStatementType) {
       const bucket = leavesByName.get(key) || [];
-      const target = bucket.find((l) => (number && l.accountNumber) ? l.accountNumber === number : true);
+      // Identity is the normalized name alone (key), matching
+      // collectUniqueAccountNames — the same real account can carry a
+      // different (or missing) account_number in each fiscal year's GL
+      // export, so requiring the numbers to also match here used to fork a
+      // second, duplicate leaf for one real account across multi-year
+      // uploads instead of merging into the leaf already in this bucket.
+      const target = bucket[0] || null;
       if (target) {
         mergeInto(target, source, fiscalYear, number, bsSection, plSection, bsSubSection, partitionStatementType);
         return;
@@ -1641,7 +1680,8 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
     });
     if (docHierarchy) {
       const bucket = leavesByName.get(key) || [];
-      const target = bucket.find((l) => (number && l.accountNumber) ? l.accountNumber === number : true);
+      // Same name-only identity rule as the client-COA-match branch above.
+      const target = bucket[0] || null;
       if (target) {
         mergeInto(target, source, fiscalYear, number, bsSection, plSection, bsSubSection, partitionStatementType);
         return;
@@ -1760,10 +1800,8 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
                              "gemini";
 
     const bucket = leavesByName.get(key) || [];
-    const target = bucket.find((l) => {
-      if (number && l.accountNumber) return l.accountNumber === number;
-      return true;
-    });
+    // Same name-only identity rule as the two branches above.
+    const target = bucket[0] || null;
     if (target) {
       mergeInto(target, source, fiscalYear, number, bsSection, plSection, bsSubSection);
       return;
