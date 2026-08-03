@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import Header from "../../../components/Header";
 import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
 import {
+  AlertCircle,
   ChevronDown,
   Download,
   FileSpreadsheet,
@@ -415,6 +416,14 @@ export default function WorkspaceReports() {
     useState(storedState?.appliedAccountingMethod || "Accrual");
   const [isLoading, setIsLoading] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  // Set from a Key Reports /reports/financial-statements response's
+  // missingData/validation array — populated whenever the backend has no
+  // reports to serve yet (most commonly: the version's Chart of Accounts is
+  // still a PROPOSED COA and hasn't been approved via "Approve & Generate
+  // Reports" on the Key Reports page, so chart_of_accounts has zero rows for
+  // this version). Drives isKrCoaNotApproved below so the page shows a clear
+  // message instead of silently rendering a full grid of "-" placeholders.
+  const [krMissingData, setKrMissingData] = useState([]);
   const [company, setCompany] = useState(null);
   // Key Reports is a selectable 5th data source, NOT an automatic override.
   // It drives this page ONLY when the active data source is "key_reports"
@@ -1399,6 +1408,15 @@ export default function WorkspaceReports() {
           versionId: kr.selectedVersionId,
           data: response,
         };
+        // Backend returns this whenever it has nothing to serve yet — most
+        // commonly the version's Chart of Accounts is still a PROPOSED COA
+        // (never approved/persisted, so chart_of_accounts has zero rows for
+        // it). See isKrCoaNotApproved below.
+        setKrMissingData(
+          Array.isArray(response?.missingData) ? response.missingData
+            : Array.isArray(response?.validation) ? response.validation
+              : [],
+        );
 
         const isYearMode = reportPeriod === "Year";
         // Month mode honours the Date From / Date To pickers (stored in
@@ -1441,6 +1459,9 @@ export default function WorkspaceReports() {
           "[KeyReports][Report] financial-statements fetch failed:",
           error,
         );
+        // A transient fetch failure is a different situation from "COA not
+        // approved yet" — don't show that message over a network error.
+        setKrMissingData([]);
         setReportsData((previous) => ({
           ...previous,
           [selectedTab]: createInitialReportsData()[selectedTab],
@@ -1458,6 +1479,7 @@ export default function WorkspaceReports() {
     // and paints an empty report. Gate on krSelected too so this also covers the
     // brief window before the active source resolves and krActive settles.
     if (krSelected || selectedSourceMode === "key_reports") {
+      setKrMissingData([]);
       setReportsData((prev) => ({
         ...prev,
         [selectedTab]: createInitialReportsData()[selectedTab],
@@ -1467,6 +1489,7 @@ export default function WorkspaceReports() {
       return;
     }
 
+    setKrMissingData([]);
     setIsLoading(true);
 
     try {
@@ -1835,6 +1858,14 @@ export default function WorkspaceReports() {
 
 
   const currentReport = reportsData[selectedTab];
+
+  // Key Reports version resolved fine and the request succeeded, but the
+  // backend had nothing to serve — almost always because the version's
+  // Chart of Accounts is still a PROPOSED COA (never approved, so
+  // chart_of_accounts has no rows yet). Without this, the page silently
+  // renders a full grid of "-" placeholders with no explanation.
+  const isKrCoaNotApproved =
+    selectedSourceMode === "key_reports" && !isLoading && krMissingData.length > 0;
 
   // Detect empty state for manual GL: report was fetched but returned no data
   // for the selected date range. Show a clear message instead of a blank report.
@@ -2586,6 +2617,20 @@ export default function WorkspaceReports() {
                 <div className="mb-6 h-12 w-12 animate-spin rounded-full border-4 border-border border-t-primary" />
                 <p className="animate-pulse text-[14px] font-medium text-text-muted">
                   Fetching latest financial records from {selectedSourceLabel}...
+                </p>
+              </div>
+            ) : isKrCoaNotApproved ? (
+              <div className="flex flex-1 flex-col items-center justify-center py-24 text-center">
+                <div className="mb-4 h-12 w-12 rounded-full border-2 border-amber-300 flex items-center justify-center">
+                  <AlertCircle size={22} className="text-amber-600" />
+                </div>
+                <p className="text-[15px] font-semibold text-text-primary mb-1">
+                  Reports haven't been generated for this version yet.
+                </p>
+                <p className="max-w-md text-[13px] text-text-muted">
+                  Go to <span className="font-medium text-text-primary">Key Reports</span>, review the proposed
+                  Chart of Accounts, and click <span className="font-medium text-text-primary">Approve & Generate Reports</span> to
+                  persist it — this page will populate once that's done.
                 </p>
               </div>
             ) : isManualGlEmptyState ? (

@@ -188,7 +188,7 @@ async function collectGlAccountsFromEntries(companyId, versionId) {
   // transaction_date is selected instead; callers derive the year from it.
   return fetchAllRows(() =>
     supabase.from("general_ledger_entries")
-      .select("account_name, split_account, account_section, transaction_date, account_number")
+      .select("account_name, split_account, account_section, transaction_date, account_number, source_file_id")
       .eq("company_id", companyId).eq("version_id", versionId)
       .order("id", { ascending: true }),
   );
@@ -810,6 +810,63 @@ function validateHierarchyTree(tree, label) {
   return { maxDepth, avgDepth, leafCount, gapCount: issues.length, issues, leafUsedAsParentCount };
 }
 
+// Prints an in-memory document tree as a box-drawn tree (├──/└──/│) -- for
+// debugging only, no effect on classification/hierarchy. Handles BOTH tree
+// shapes this codebase builds, since they are NOT the same representation:
+//   1. bsTree/plTree from buildDocHierarchyLookups (chartOfAccountsService's
+//      own populateHierarchyTree) -- {nodesById: Map, ...}, used ONLY as a
+//      fallback when no reference tree (below) is supplied.
+//   2. balanceSheetTree/profitLossTree from referenceTreeBuilder.js's
+//      buildBalanceSheetTreeFromData/buildProfitLossTreeFromData --
+//      {name, nodeType, children}, plain nested object, no nodesById at all.
+// CONFIRMED: keyReportSyncService.js ALWAYS builds and passes tree shape #2
+// into buildProposedCoaTree's opts, and buildCoaModel/pickDocHierarchy
+// prefer it whenever present -- so shape #2 is what ACTUALLY drives
+// classification/hierarchy in production; shape #1 is effectively unused
+// dead weight whenever a reference tree exists. Print BOTH when debugging a
+// live classification question, and trust shape #2's output as the real
+// answer.
+function printDocumentHierarchyTree(tree, label) {
+  if (!tree) {
+    console.log(`[DOCUMENT TREE] ${label}: (empty -- no rows built this tree)`);
+    return;
+  }
+  // Shape #2: referenceTreeBuilder.js's plain nested-object tree.
+  if (tree.children && !tree.nodesById) {
+    const countNodes = (node) => 1 + (node.children || []).reduce((sum, c) => sum + countNodes(c), 0);
+    if (!tree.children.length) {
+      console.log(`[DOCUMENT TREE] ${label}: (empty -- no rows built this tree)`);
+      return;
+    }
+    console.log(`[DOCUMENT TREE] ${label} (${countNodes(tree)} nodes, reference tree -- THIS is what production classification actually uses)`);
+    const printRefNode = (node, prefix, isLast) => {
+      const marker = node.nodeType === "ACCOUNT" ? ` (leaf${node.accountType ? `, ${node.accountType}` : ""})` : ` [${node.nodeType}]`;
+      console.log(`${prefix}${isLast ? "└── " : "├── "}${node.name}${marker}`);
+      const childPrefix = prefix + (isLast ? "    " : "│   ");
+      const children = node.children || [];
+      children.forEach((child, i) => printRefNode(child, childPrefix, i === children.length - 1));
+    };
+    const rootChildren = tree.children;
+    rootChildren.forEach((child, i) => printRefNode(child, "", i === rootChildren.length - 1));
+    return;
+  }
+  // Shape #1: chartOfAccountsService's own nodesById/nodesByPath tree.
+  if (!tree.nodesById || !tree.nodesById.size) {
+    console.log(`[DOCUMENT TREE] ${label}: (empty -- no rows built this tree)`);
+    return;
+  }
+  console.log(`[DOCUMENT TREE] ${label} (${tree.nodesById.size} nodes, fallback tree -- only used when no reference tree is supplied)`);
+  const roots = Array.from(tree.nodesById.values()).filter((n) => !n.parentId);
+  const printNode = (node, prefix, isLast) => {
+    const marker = node.isLeaf ? ` (leaf${node.accountType ? `, ${node.accountType}` : ""})` : "";
+    console.log(`${prefix}${isLast ? "└── " : "├── "}${node.name}${marker}`);
+    const childPrefix = prefix + (isLast ? "    " : "│   ");
+    const children = node.children || [];
+    children.forEach((child, i) => printNode(child, childPrefix, i === children.length - 1));
+  };
+  roots.forEach((root, i) => printNode(root, "", i === roots.length - 1));
+}
+
 /**
  * Priority-2 lookup tables: normName(accountName) -> { levels, accountType,
  * statementType, sourceFiscalYear }, one from this version's own uploaded
@@ -918,18 +975,67 @@ function buildDocHierarchyLookups(bsRows, plRows, endingFiscalYear = null, { log
 // to the same already-known parent this way.
 const DOC_FUZZY_THRESHOLD = 0.90;
 
+// Closed header vocabulary for classifying a single BALANCE SHEET ancestor
+// LABEL (e.g. "Liabilities", "Current Liabilities", "Shareholder Equity") --
+// never the leaf account's own name, and never a substring test on the
+// whole path text. Mirrors balanceSheetExtractionService.js's inferSection
+// exactly (a whole-word-set match on one label at a time is immune to a
+// label merely CONTAINING a marker word, e.g. "Capital One Credit Card").
+const BS_ANCESTOR_HEADER_WORDS = new Set([
+  "total", "current", "fixed", "long", "term", "other", "and",
+  "asset", "assets", "liability", "liabilities",
+]);
+const BS_ANCESTOR_EQUITY_WORDS = new Set([
+  "equity", "capital", "owner", "owners", "member", "members",
+  "stockholder", "stockholders", "partner", "partners",
+]);
+for (const w of BS_ANCESTOR_EQUITY_WORDS) BS_ANCESTOR_HEADER_WORDS.add(w);
+
+function classifyBsAncestorLabel(label) {
+  const n = String(label || "")
+    .toLowerCase().replace(/^total for\s+/, "").replace(/^total\s+/, "").replace(/'/g, "").trim();
+  if (!n) return null;
+  const words = n.replace(/[^a-z\s]/g, " ").split(/\s+/).filter(Boolean);
+  if (!words.length || !words.every((w) => BS_ANCESTOR_HEADER_WORDS.has(w))) return null;
+  const hasAsset = words.some((w) => w === "asset" || w === "assets");
+  const hasLiability = words.some((w) => w === "liability" || w === "liabilities");
+  const hasEquity = words.some((w) => BS_ANCESTOR_EQUITY_WORDS.has(w));
+  if (hasAsset) return "asset";
+  // "Liabilities and Equity" itself -- a parent/root statement heading, not
+  // a branch. Its children must be distinguished by a MORE SPECIFIC
+  // ancestor; this label alone must never decide the classification.
+  if (hasLiability && hasEquity) return null;
+  if (hasLiability) return "liability";
+  if (hasEquity) return "equity";
+  return null;
+}
+
 function inferAccountTypeFromReferencePath(statementType, path) {
-  const text = (path || []).join(" ").toLowerCase();
   if (statementType === "balance_sheet") {
-    const keys = (path || []).map(balanceSheetPrefixKey);
-    if (keys.includes("total assets")) return "asset";
-    if (keys.includes("total liabilities")) return "liability";
-    if (keys.includes("total equity")) return "equity";
-    if (text.includes("asset")) return "asset";
-    if (text.includes("equity") || text.includes("capital") || text.includes("owner") || text.includes("member")) return "equity";
-    if (text.includes("liabil")) return "liability";
+    // CONFIRMED ROOT CAUSE (fixed here): the old implementation joined the
+    // ENTIRE path into one text blob and checked substrings in a fixed
+    // order (asset, then equity, then liability) -- so ANY account whose
+    // resolved path only ever reached the ambiguous "Liabilities and
+    // Equity" umbrella (e.g. a bare liability with no "Liabilities"
+    // sub-header of its own) was classified as equity every single time,
+    // since that umbrella phrase always contains the substring "equity",
+    // checked before "liabil". Fixed: walk the path from the NEAREST
+    // ancestor toward the root, classifying one label at a time, and take
+    // the first label that resolves on its own (a more specific "Equity"/
+    // "Liabilities" sub-header always wins over the ambiguous umbrella
+    // above it, matching sectionFromAncestry's proven fix for the same bug
+    // class in the extraction layer). If no ancestor resolves (a leaf
+    // sitting bare under the umbrella with zero distinguishing branch
+    // anywhere in its path), this correctly returns null -- unresolved,
+    // never guessed -- rather than defaulting to either type.
+    for (let i = (path || []).length - 1; i >= 0; i--) {
+      const type = classifyBsAncestorLabel(path[i]);
+      if (type) return type;
+    }
+    return null;
   }
   if (statementType === "profit_loss") {
+    const text = (path || []).join(" ").toLowerCase();
     if (text.includes("expense") || text.includes("cost of goods") || text.includes("cogs")) return "expense";
     if (text.includes("income") || text.includes("revenue") || text.includes("sales")) return "income";
   }
@@ -1455,7 +1561,29 @@ function normalizedGlHeadingName(name) {
   return normName(String(name || "").replace(/^\s*\d+(?:[-\s:]+)+/, ""));
 }
 
-function splitAccountsAtRetainedEarnings(glRowsInOrder, profitLossTree = null) {
+// MERGE CONFLICT RESOLUTION NOTE: a teammate's change (commit d6c1abb)
+// independently fixed the same underlying "multi-year GL misclassification"
+// problem by renaming this function to splitAccountsAtRetainedEarningsForOneFile
+// and adding a NEW splitAccountsAtRetainedEarnings dispatcher that partitions
+// by source_file_id instead of fiscal year, reasoning that
+// collectGlAccountsFromEntries's rows are only ordered by DB insertion id,
+// which isn't guaranteed to follow fiscal-year order across concurrently
+// extracted files. That's a real concern, but source_file_id partitioning
+// alone does NOT satisfy the explicitly required "one GL file spanning
+// multiple fiscal years" scenario: source_file_id is constant across an
+// entire file, so a single multi-year file would still get ONE boundary
+// pass across every year combined -- reproducing the exact original bug
+// for that scenario. The year-based fix below (splitAccountsAtRetainedEarningsByYear)
+// already resolves the teammate's own concern too: it groups by each row's
+// own transaction_date-derived year via glRowYear, never by insertion order
+// or source file, so row-ordering/concurrency across files was never a
+// dependency here. Resolution: kept the year-based architecture (already
+// covered by validateGlYearAwareClassification.js's 29 tests), restored
+// this function's original name, and folded in the teammate's one genuinely
+// useful idea -- labeling the debug logs with which partition a boundary
+// decision came from -- via an optional `year` parameter instead of a
+// second, competing partitioning implementation.
+function splitAccountsAtRetainedEarnings(glRowsInOrder, profitLossTree = null, groupLabel = null) {
   const uniqueOrdered = [];
   const seen = new Set();
   for (const r of glRowsInOrder || []) {
@@ -1465,6 +1593,7 @@ function splitAccountsAtRetainedEarnings(glRowsInOrder, profitLossTree = null) {
     if (!headingKey || headingKey.startsWith("total for ") || headingKey === "beginning balance") continue;
     if (!seen.has(headingKey)) { seen.add(headingKey); uniqueOrdered.push(name); }
   }
+  const groupPrefix = groupLabel != null ? `Group: ${groupLabel}; ` : "";
 
   let boundaryIdx = uniqueOrdered.findIndex((n) => normalizedGlHeadingName(n) === "retained earnings");
   let boundaryMethod = "RETAINED_EARNINGS_ACCOUNT_HEADING";
@@ -1476,19 +1605,19 @@ function splitAccountsAtRetainedEarnings(glRowsInOrder, profitLossTree = null) {
       if (boundaryIdx !== -1) {
         boundaryMethod = "FIRST_PNL_REFERENCE_ACCOUNT";
         console.debug(
-          `[GL CLASSIFICATION] Boundary method: ${boundaryMethod}; First P&L account: ${firstPlAccount.name}; ` +
+          `[GL CLASSIFICATION] ${groupPrefix}Boundary method: ${boundaryMethod}; First P&L account: ${firstPlAccount.name}; ` +
           `Matched GL heading: ${uniqueOrdered[boundaryIdx]}; Boundary index: ${boundaryIdx}; Included in: PROFIT_AND_LOSS`,
         );
       }
     }
   }
   if (boundaryIdx === -1) {
-    console.warn('[ChartOfAccounts] No reliable GL Balance Sheet/P&L boundary found; existing unresolved flow will continue.');
+    console.warn(`[ChartOfAccounts] ${groupPrefix}No reliable GL Balance Sheet/P&L boundary found; existing unresolved flow will continue.`);
     return new Map();
   }
   if (boundaryMethod === "RETAINED_EARNINGS_ACCOUNT_HEADING") {
     console.debug(
-      `[GL CLASSIFICATION] Boundary method: ${boundaryMethod}; Boundary account: ${uniqueOrdered[boundaryIdx]}; ` +
+      `[GL CLASSIFICATION] ${groupPrefix}Boundary method: ${boundaryMethod}; Boundary account: ${uniqueOrdered[boundaryIdx]}; ` +
       `Boundary index: ${boundaryIdx}; Included in: PROFIT_AND_LOSS`,
     );
   }
@@ -1601,32 +1730,51 @@ function mergeYearlyGlBuckets(perYearBuckets) {
  * @returns {Map<string, 'balance_sheet'|'profit_loss'>} same contract as splitAccountsAtRetainedEarnings
  */
 function splitAccountsAtRetainedEarningsByYear(glRowsInOrder, profitLossTree = null) {
-  const rowsByYear = new Map();
+  // Composite (fiscal year, source file) grouping. Year (glRowYear, derived
+  // from each row's own transaction_date) is the primary signal -- it's what
+  // makes ONE multi-year GL file behave identically to several single-year
+  // files (Scenario A vs Scenario B). source_file_id is folded in as a
+  // second, finer-grained signal: it's always set by extraction regardless
+  // of whether a row's date happens to parse, so it still correctly
+  // separates two uploaded files' boundaries even when year can't be
+  // derived for some rows (a real case a teammate's fix independently
+  // caught -- see the merge-conflict note above splitAccountsAtRetainedEarnings).
+  // The composite key is strictly finer-grained than either alone, so it can
+  // only split MORE precisely, never incorrectly merge two genuinely
+  // different documents' boundaries together.
+  const rowsByGroup = new Map(); // groupKey -> { year, file, rows }
   for (const r of glRowsInOrder || []) {
     const year = glRowYear(r);
-    const yearKey = year == null ? "unknown" : year;
-    if (!rowsByYear.has(yearKey)) rowsByYear.set(yearKey, []);
-    rowsByYear.get(yearKey).push(r);
+    const file = r.source_file_id ?? null;
+    const groupKey = `${year == null ? "y?" : year}::${file == null ? "f?" : file}`;
+    let group = rowsByGroup.get(groupKey);
+    if (!group) { group = { year, file, rows: [] }; rowsByGroup.set(groupKey, group); }
+    group.rows.push(r);
   }
 
-  const perYearBuckets = new Map();
-  const sortedYearKeys = Array.from(rowsByYear.keys()).sort((a, b) => {
-    if (a === "unknown") return 1;
-    if (b === "unknown") return -1;
-    return a - b;
+  const perGroupBuckets = new Map();
+  const sortedGroupKeys = Array.from(rowsByGroup.keys()).sort((a, b) => {
+    const ga = rowsByGroup.get(a);
+    const gb = rowsByGroup.get(b);
+    if (ga.year == null && gb.year != null) return 1;
+    if (gb.year == null && ga.year != null) return -1;
+    if (ga.year !== gb.year) return (ga.year ?? 0) - (gb.year ?? 0);
+    return String(ga.file ?? "").localeCompare(String(gb.file ?? ""));
   });
-  for (const year of sortedYearKeys) {
-    const bucketByKey = splitAccountsAtRetainedEarnings(rowsByYear.get(year), profitLossTree);
-    perYearBuckets.set(year, bucketByKey);
+  for (const groupKey of sortedGroupKeys) {
+    const { year, file, rows } = rowsByGroup.get(groupKey);
+    const label = year != null && file != null ? `${year} (file ${file})` : year != null ? String(year) : file != null ? `file ${file}` : null;
+    const bucketByKey = splitAccountsAtRetainedEarnings(rows, profitLossTree, label);
+    perGroupBuckets.set(groupKey, bucketByKey);
     console.debug(
-      `[GL_YEAR_ANALYSIS] year=${year} retainedEarningsFound=${bucketByKey.size > 0} ` +
+      `[GL_YEAR_ANALYSIS] group=${label ?? "unknown"} retainedEarningsFound=${bucketByKey.size > 0} ` +
       `bsCandidates=${countBucketEntries(bucketByKey, "balance_sheet")} pnlCandidates=${countBucketEntries(bucketByKey, "profit_loss")}`,
     );
   }
 
-  const { mergedBucketByKey, conflictCount, uniqueKeysAcrossYears } = mergeYearlyGlBuckets(perYearBuckets);
+  const { mergedBucketByKey, conflictCount, uniqueKeysAcrossYears } = mergeYearlyGlBuckets(perGroupBuckets);
   console.log(
-    `[GL_ACCOUNT_MERGE] yearsProcessed=${sortedYearKeys.length} uniqueAccountsBeforeDedup=${uniqueKeysAcrossYears} ` +
+    `[GL_ACCOUNT_MERGE] groupsProcessed=${sortedGroupKeys.length} uniqueAccountsBeforeDedup=${uniqueKeysAcrossYears} ` +
     `uniqueAccountsAfterDedup=${mergedBucketByKey.size} conflicts=${conflictCount}`,
   );
   return mergedBucketByKey;
@@ -1741,16 +1889,29 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
     if (partitionStatementType) return; // authoritative classification stays untouched
     const aiConfident = leaf.confidence != null && leaf.confidence >= AI_OVERRIDE_CONFIDENCE_FLOOR && leaf.accountType;
     if (aiConfident) return; // keep the confident AI classification ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â section evidence only fills gaps
+    // CONFIRMED ROOT CAUSE (same bug class as the leaf-creation fix below,
+    // reachable here on a LATER merge instead of at creation): if this
+    // section evidence is about to change leaf.accountType away from
+    // whatever it was, any existing leaf.aiLevels were reasoned out by the
+    // AI under the OLD (now-wrong) type assumption and must not survive --
+    // otherwise the leaf ends up with a NEW, correct accountType but a
+    // STALE, inconsistent AI category path (e.g. "Fixed Assets" surviving
+    // under a newly-corrected "liability" classification).
+    const clearStaleAiLevelsIfRetyping = (newType) => {
+      if (newType !== leaf.accountType && leaf.aiLevels && leaf.aiLevels.length) {
+        leaf.aiLevels = [];
+        leaf.needsReview = true;
+      }
+    };
     if (bsSection) {
       const normSec = String(bsSection).toLowerCase().trim();
-      if (normSec.includes("asset")) {
-        leaf.accountType = "asset";
-        leaf.statementType = "balance_sheet";
-      } else if (normSec.includes("liab")) {
-        leaf.accountType = "liability";
-        leaf.statementType = "balance_sheet";
-      } else if (normSec.includes("equity") || normSec.includes("capital") || normSec.includes("owner") || normSec.includes("member")) {
-        leaf.accountType = "equity";
+      let newType = null;
+      if (normSec.includes("asset")) newType = "asset";
+      else if (normSec.includes("liab")) newType = "liability";
+      else if (normSec.includes("equity") || normSec.includes("capital") || normSec.includes("owner") || normSec.includes("member")) newType = "equity";
+      if (newType) {
+        clearStaleAiLevelsIfRetyping(newType);
+        leaf.accountType = newType;
         leaf.statementType = "balance_sheet";
       }
     } else if (plSection && !leaf.bsSection) {
@@ -1758,6 +1919,7 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
       // Sheet account can never legitimately be re-typed from a P&L hint.
       const plType = typeFromPlSection(plSection);
       if (plType) {
+        clearStaleAiLevelsIfRetyping(plType);
         leaf.accountType = plType;
         leaf.statementType = "profit_loss";
       }
@@ -1796,7 +1958,13 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
     // heuristic hint.
     if (coaMatch?.matched) {
       const bucket = leavesByName.get(key) || [];
-      const target = bucket.find((l) => (number && l.accountNumber) ? l.accountNumber === number : true);
+      // Identity is the normalized name alone (key), matching
+      // collectUniqueAccountNames — the same real account can carry a
+      // different (or missing) account_number in each fiscal year's GL
+      // export, so requiring the numbers to also match here used to fork a
+      // second, duplicate leaf for one real account across multi-year
+      // uploads instead of merging into the leaf already in this bucket.
+      const target = bucket[0] || null;
       if (target) {
         mergeInto(target, source, fiscalYear, number, bsSection, plSection, bsSubSection, partitionStatementType);
         return;
@@ -1854,7 +2022,8 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
     });
     if (docHierarchy) {
       const bucket = leavesByName.get(key) || [];
-      const target = bucket.find((l) => (number && l.accountNumber) ? l.accountNumber === number : true);
+      // Same name-only identity rule as the client-COA-match branch above.
+      const target = bucket[0] || null;
       if (target) {
         mergeInto(target, source, fiscalYear, number, bsSection, plSection, bsSubSection, partitionStatementType);
         return;
@@ -1942,6 +2111,10 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
     // has an unknown type ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â never guessed (was `|| "expense"`). It surfaces as
     // needsReview/needsMapping until a human classifies it.
     let accountType = isReportRowOverride ? null : (aiResult?.accountType || null);
+    // The AI's OWN type guess, captured before any structural override below
+    // can change `accountType` -- used to detect when the override actually
+    // disagrees with what the AI itself concluded (see aiLevels below).
+    const aiOwnAccountType = accountType;
     const aiConfident = !isReportRowOverride && aiResult && Number(aiResult.confidence) >= AI_OVERRIDE_CONFIDENCE_FLOOR && accountType;
     // Set only when sectionHeaderNameToType (below) is what resolved accountType ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â
     // used purely to give buildLeafHierarchies' shallowLevelsFromSectionEvidence
@@ -1984,11 +2157,19 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
           confidence !== null ? `ai_${confidence.toFixed(2)}` :
             "gemini";
 
+    // CONFIRMED ROOT CAUSE (fixed below at aiLevels): the structural override
+    // above can change accountType AWAY from the AI's own aiOwnAccountType
+    // guess. The AI's category path was reasoned out under its OWN, now
+    // superseded assumption about the account's type -- concatenating it
+    // onto the NEW, correct anchor produced exactly the reported bug (a
+    // liability-classified account with an AI-invented "Fixed Assets"
+    // category). See aiLevels below.
+    const accountTypeOverriddenByStructuralEvidence =
+      Boolean(accountType) && Boolean(aiOwnAccountType) && accountType !== aiOwnAccountType;
+
     const bucket = leavesByName.get(key) || [];
-    const target = bucket.find((l) => {
-      if (number && l.accountNumber) return l.accountNumber === number;
-      return true;
-    });
+    // Same name-only identity rule as the two branches above.
+    const target = bucket[0] || null;
     if (target) {
       mergeInto(target, source, fiscalYear, number, bsSection, plSection, bsSubSection);
       return;
@@ -2004,7 +2185,7 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
       classificationMethod,
       aiNormalizedName,
       confidence,
-      needsReview,
+      needsReview: needsReview || accountTypeOverriddenByStructuralEvidence,
       // Full parent hierarchy (excludes the account's own name) + reasoning,
       // straight from the same classifyAccountsWithAI call above ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the AI's
       // CPA-style reasoning is the PRIMARY source of hierarchy placement (see
@@ -2012,7 +2193,10 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
       // (this "account" is really a report row that happens to have GL
       // activity ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â never given an AI-reasoned hierarchy) or when the AI
       // returned no result at all.
-      aiLevels: isReportRowOverride ? [] : (aiResult?.levels || []),
+      // Cleared when the structural override invalidated the AI's own type
+      // assumption (accountTypeOverriddenByStructuralEvidence) -- see the
+      // comment above this leaf's construction.
+      aiLevels: isReportRowOverride || accountTypeOverriddenByStructuralEvidence ? [] : (aiResult?.levels || []),
       aiReasoning: isReportRowOverride ? null : (aiResult?.reasoning || null),
       sources: new Set([source]),
       fiscalYears: new Set(fiscalYear ? [Number(fiscalYear)] : []),
@@ -3780,6 +3964,10 @@ async function buildProposedCoaTree(companyId, versionId, batchId, opts = {}) {
     plConflictingPathsCount, plResolvedByDepthCount, plResolvedByFrequencyCount,
     plResolvedByRecencyCount, plMergedNodesCount,
   } = buildDocHierarchyLookups(bsRows, plRows, endingFiscalYear, { logValidation: true });
+  printDocumentHierarchyTree(bsDocTree, "Balance Sheet");
+  printDocumentHierarchyTree(plDocTree, "Profit & Loss");
+  printDocumentHierarchyTree(opts.balanceSheetTree, "Balance Sheet (reference)");
+  printDocumentHierarchyTree(opts.profitLossTree, "Profit & Loss (reference)");
   const referenceBsHierarchyByName = opts.balanceSheetTree
     ? buildTreeHierarchyLookup(opts.balanceSheetTree, "balance_sheet")
     : bsHierarchyByName;
@@ -3787,7 +3975,7 @@ async function buildProposedCoaTree(companyId, versionId, batchId, opts = {}) {
     ? buildTreeHierarchyLookup(opts.profitLossTree, "profit_loss")
     : plHierarchyByName;
   const glBucketByKey = splitAccountsAtRetainedEarningsByYear(glRows, opts.profitLossTree || plDocTree);
-  console.log("Unique accounts list after bifarcation " + glBucketByKey);
+  console.log(`Unique accounts list after bifarcation (${glBucketByKey.size} keys) ` + JSON.stringify(Object.fromEntries(glBucketByKey)));
   const docHierarchyStats = createDocHierarchyStats();
   const needsAi = unmatchedByCoa.filter((a) => {
     const evidenceAccountType = bsSectionToType(a.bsSection) || plSectionToType(a.plSection);
@@ -5836,6 +6024,7 @@ module.exports = {
   loadKnownCategoryPaths,
   buildDocHierarchyLookups,
   validateHierarchyTree,
+  printDocumentHierarchyTree,
   buildTreeHierarchyLookup,
   selectReferenceTree,
   applyBalanceSheetCoaPrefix,
@@ -5851,6 +6040,7 @@ module.exports = {
   pickDocHierarchy,
   splitAccountsAtRetainedEarnings,
   splitAccountsAtRetainedEarningsByYear,
+  mergeYearlyGlBuckets,
   findFirstProfitAndLossAccount,
   cleanDynamicCoaLevelLabel,
   ensureAccountLeaf,
