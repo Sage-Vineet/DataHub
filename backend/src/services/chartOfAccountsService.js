@@ -421,9 +421,9 @@ function normalizeHierarchyLabel(label) {
 // Matches the pre-existing unified-hierarchy convention this codebase already
 // expects for P&L accounts (see validateHierarchyConsistency's EXPECTED
 // table), extended to a full fixed anchor per statement side.
-const ASSET_FIXED_PREFIX     = Object.freeze(["Total Assets"]);
+const ASSET_FIXED_PREFIX = Object.freeze(["Total Assets"]);
 const LIABILITY_FIXED_PREFIX = Object.freeze(["Total Liabilities and Equity", "Total Liabilities"]);
-const EQUITY_FIXED_PREFIX    = Object.freeze(["Total Liabilities and Equity", "Total Equity"]);
+const EQUITY_FIXED_PREFIX = Object.freeze(["Total Liabilities and Equity", "Total Equity"]);
 
 // Profit & Loss ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ONE shared anchor for BOTH sides of the income statement.
 // Revenue and expense/COGS accounts are SIBLINGS directly under "Net Income";
@@ -1125,23 +1125,71 @@ function createDocHierarchyStats() {
  *   no effect on resolution itself.
  */
 function pickDocHierarchy(accountName, key, glBucketByKey, bsHierarchyByName, plHierarchyByName, stats, context = {}) {
+  // A CALLER-SUPPLIED context.statementType is CONFIDENT evidence -- it
+  // comes from the account's own real bsSection/plSection (the row's actual
+  // document section field, set at extraction time from real structure).
+  // When present, this remains a hard, single-tree gate exactly as before --
+  // checking the other tree here would risk exactly the cross-contamination
+  // Critical Requirement #3 forbids (a P&L "Sales" account fuzzy-matching
+  // some coincidentally-named Balance Sheet node).
+  //
+  // When context.statementType is ABSENT, the only remaining signal is
+  // `bucket` -- glBucketByKey's GL Retained-Earnings-boundary HINT, a
+  // heuristic over GL row order, never a real document read. CONFIRMED ROOT
+  // CAUSE (fixed here): this weak hint used to be treated identically to a
+  // confident statementType -- a single-tree hard gate -- so a real,
+  // document-matched account (e.g. a Balance Sheet liability) could be
+  // skipped entirely just because the GL-ordering heuristic guessed
+  // "profit_loss" for it, sending it to AI (or leaving it unresolved)
+  // instead of using its exact document position. Fixed: when the ONLY
+  // signal is the weak bucket hint, it is a preference for which tree to
+  // try FIRST -- never a reason to skip the other one.
+  const hasConfidentStatementType = Boolean(context.statementType);
   const bucket = glBucketByKey && glBucketByKey.get(key);
   const statementType = normalizeReferenceStatementType(context.statementType || bucket, context.accountType);
-  const selected = selectReferenceTree({
+  const preferred = selectReferenceTree({
     statementType,
     balanceSheetLookup: bsHierarchyByName,
     profitLossLookup: plHierarchyByName,
   });
-  if (!selected) return null;
 
-  let entry = selectDeterministicReferenceCandidate(selected.get(key));
-  if (entry) {
-    if (stats) stats[statementType === "profit_loss" ? "profitLoss" : "balanceSheet"]++;
-    return { ...entry, matchType: entry.matchType || "exact" };
+  // Step 1 -- exact match in the preferred (hinted) statement.
+  if (preferred) {
+    const entry = selectDeterministicReferenceCandidate(preferred.get(key));
+    if (entry) {
+      if (stats) stats[statementType === "profit_loss" ? "profitLoss" : "balanceSheet"]++;
+      return { ...entry, matchType: entry.matchType || "exact" };
+    }
+  }
+
+  if (hasConfidentStatementType) {
+    // Confident evidence already picked the correct statement -- only a
+    // fuzzy match WITHIN that same statement may still resolve this account.
+    const entry = fuzzyMatchDocHierarchy(accountName, preferred);
+    if (entry) { if (stats) stats.fuzzy++; return { ...entry, matchType: "fuzzy" }; }
+    return null;
+  }
+
+  // Step 2 -- exact match in the OTHER statement (only reachable when the
+  // preferred tree came from the weak bucket hint, never from confident
+  // evidence -- see comment above).
+  const other = preferred === bsHierarchyByName ? plHierarchyByName : bsHierarchyByName;
+  const otherStatementType = preferred === bsHierarchyByName ? "profit_loss" : "balance_sheet";
+  if (other) {
+    const entry = selectDeterministicReferenceCandidate(other.get(key));
+    if (entry) {
+      if (stats) stats[otherStatementType === "profit_loss" ? "profitLoss" : "balanceSheet"]++;
+      return { ...entry, matchType: entry.matchType || "exact" };
+    }
   }
 
   // Step 3 ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â fuzzy match, tried against both statements' known accounts.
-  entry = fuzzyMatchDocHierarchy(accountName, selected);
+  // Fuzzy match against BOTH statements' known accounts combined --
+  // fuzzyMatchDocHierarchy's own internal best-score comparison decides
+  // across the combined set, so a fuzzy hit in the non-preferred tree can
+  // still win over a weaker one in the preferred tree.
+  const combined = new Map([...(preferred || []), ...(other || [])]);
+  const entry = fuzzyMatchDocHierarchy(accountName, combined);
   if (entry) { if (stats) stats.fuzzy++; return { ...entry, matchType: "fuzzy" }; }
   return null;
 }
@@ -1231,7 +1279,7 @@ function logBalanceSheetHierarchyValidation(hierarchical, bsRows, bsTree, resolu
         chosen: realLevels.join(" > ") || "(none)",
         reason: leaf.needsMapping ? "needs_mapping ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â no match found in any source"
           : leaf.needsReview ? "needs_review ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â low-confidence AI classification"
-          : "unresolved",
+            : "unresolved",
       });
     }
   }
@@ -1454,6 +1502,136 @@ function splitAccountsAtRetainedEarnings(glRowsInOrder, profitLossTree = null) {
   return bucketByKey;
 }
 
+// Approximate per-bucket count for debug logging only (a coded account, e.g.
+// "1000 - Cash", occupies two keys in bucketByKey -- normName and
+// normalizedGlHeadingName -- so this may over-count by up to 2x for such
+// accounts; never used for classification, only for the
+// [GL_YEAR_ANALYSIS] trace line).
+function countBucketEntries(bucketByKey, bucket) {
+  let n = 0;
+  for (const v of bucketByKey.values()) if (v === bucket) n += 1;
+  return n;
+}
+
+/**
+ * Merges one Balance-Sheet/Profit-and-Loss bucket Map PER FISCAL YEAR
+ * (each produced independently by splitAccountsAtRetainedEarnings against
+ * only that year's own GL rows) into a single Map, the same shape
+ * splitAccountsAtRetainedEarnings itself returns.
+ *
+ * An account that every year agrees on keeps that bucket. An account whose
+ * yearly boundary position DISAGREES across years (e.g. classified
+ * balance_sheet in FY2024 but profit_loss in every other year) is a genuine
+ * conflict: per this function's explicit contract, it is NEVER resolved by
+ * picking the first, latest, or majority year's guess. Since
+ * splitAccountsAtRetainedEarnings's whole output is already documented as
+ * "a bucketing HINT ... never a hard gate" (pickDocHierarchy always tries
+ * both statement trees when there's no hint), the correct resolution for a
+ * genuine conflict is to omit that account from the merged map entirely --
+ * leaving pickDocHierarchy to try both the uploaded Balance Sheet and
+ * Profit & Loss document trees on equal footing (the existing
+ * document-driven matching logic decides), falling through to the existing
+ * AI fallback only if neither document has it either. The conflict itself
+ * is always logged so it's never silently swallowed.
+ */
+function mergeYearlyGlBuckets(perYearBuckets) {
+  const bucketsByKeyAcrossYears = new Map(); // key -> Map<bucket, Set<year>>
+  for (const [year, bucketByKey] of perYearBuckets) {
+    for (const [key, bucket] of bucketByKey) {
+      let byBucket = bucketsByKeyAcrossYears.get(key);
+      if (!byBucket) { byBucket = new Map(); bucketsByKeyAcrossYears.set(key, byBucket); }
+      let years = byBucket.get(bucket);
+      if (!years) { years = new Set(); byBucket.set(bucket, years); }
+      years.add(year);
+    }
+  }
+
+  const mergedBucketByKey = new Map();
+  let conflictCount = 0;
+  for (const [key, byBucket] of bucketsByKeyAcrossYears) {
+    if (byBucket.size === 1) {
+      const [[bucket, years]] = byBucket;
+      mergedBucketByKey.set(key, bucket);
+      if (years.size > 1) {
+        console.debug(`[GL_ACCOUNT_DEDUP] account="${key}" years=[${Array.from(years).sort().join(",")}] finalClassification="${bucket === "balance_sheet" ? "bs" : "pnl"}"`);
+      }
+      continue;
+    }
+    conflictCount += 1;
+    const evidence = Array.from(byBucket.entries())
+      .map(([bucket, years]) => `${bucket}=[${Array.from(years).sort().join(",")}]`)
+      .join(" ");
+    console.warn(
+      `[GL_ACCOUNT_CONFLICT] account="${key}" ${evidence} -- conflicting year classifications, ` +
+      `no single-year hint applied; resolved via document-driven BS/P&L matching, falling back to AI only if neither document matches.`,
+    );
+  }
+  return { mergedBucketByKey, conflictCount, uniqueKeysAcrossYears: bucketsByKeyAcrossYears.size };
+}
+
+/**
+ * Per-fiscal-year orchestration around splitAccountsAtRetainedEarnings.
+ * splitAccountsAtRetainedEarnings ITSELF IS UNCHANGED -- it already operates
+ * correctly on whatever row array it's handed. The problem this wrapper
+ * fixes lives entirely one level up: both of its call sites used to hand it
+ * the ENTIRE multi-year GL at once, so a real General Ledger spanning
+ * several fiscal years (each with its own "Retained Earnings" heading) would
+ * only ever find the FIRST year's occurrence (Array.prototype.findIndex),
+ * silently misbucketing every later year's real Balance Sheet accounts as
+ * Profit & Loss.
+ *
+ * The fix: group GL rows by fiscal year (glRowYear -- the same per-row
+ * transaction_date-derived year buildCoaModel's own GL loop already uses,
+ * since general_ledger_entries has had no fiscal_year column since migration
+ * 069), run the EXISTING, unmodified splitAccountsAtRetainedEarnings once
+ * per year against ONLY that year's rows, then merge the per-year results
+ * into one Map with the exact same shape the unwrapped function already
+ * returned -- so both call sites need no further changes beyond calling
+ * this instead.
+ *
+ * This also makes the two supported input scenarios equivalent by
+ * construction: one multi-year GL file and several single-year GL files
+ * both extract into the same flat row shape, where every row independently
+ * carries its own transaction_date (extraction never depends on which file
+ * a row came from) -- grouping happens on that per-row year, never on
+ * source file, so both scenarios group into identical per-year buckets.
+ *
+ * @param {Array} glRowsInOrder - collectGlAccountsFromEntries's result (id-ordered)
+ * @param {object|null} profitLossTree - same fallback tree splitAccountsAtRetainedEarnings accepts
+ * @returns {Map<string, 'balance_sheet'|'profit_loss'>} same contract as splitAccountsAtRetainedEarnings
+ */
+function splitAccountsAtRetainedEarningsByYear(glRowsInOrder, profitLossTree = null) {
+  const rowsByYear = new Map();
+  for (const r of glRowsInOrder || []) {
+    const year = glRowYear(r);
+    const yearKey = year == null ? "unknown" : year;
+    if (!rowsByYear.has(yearKey)) rowsByYear.set(yearKey, []);
+    rowsByYear.get(yearKey).push(r);
+  }
+
+  const perYearBuckets = new Map();
+  const sortedYearKeys = Array.from(rowsByYear.keys()).sort((a, b) => {
+    if (a === "unknown") return 1;
+    if (b === "unknown") return -1;
+    return a - b;
+  });
+  for (const year of sortedYearKeys) {
+    const bucketByKey = splitAccountsAtRetainedEarnings(rowsByYear.get(year), profitLossTree);
+    perYearBuckets.set(year, bucketByKey);
+    console.debug(
+      `[GL_YEAR_ANALYSIS] year=${year} retainedEarningsFound=${bucketByKey.size > 0} ` +
+      `bsCandidates=${countBucketEntries(bucketByKey, "balance_sheet")} pnlCandidates=${countBucketEntries(bucketByKey, "profit_loss")}`,
+    );
+  }
+
+  const { mergedBucketByKey, conflictCount, uniqueKeysAcrossYears } = mergeYearlyGlBuckets(perYearBuckets);
+  console.log(
+    `[GL_ACCOUNT_MERGE] yearsProcessed=${sortedYearKeys.length} uniqueAccountsBeforeDedup=${uniqueKeysAcrossYears} ` +
+    `uniqueAccountsAfterDedup=${mergedBucketByKey.size} conflicts=${conflictCount}`,
+  );
+  return mergedBucketByKey;
+}
+
 // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ COA leaf model ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
 
 /**
@@ -1540,12 +1718,27 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
     if (bsSection && !leaf.bsSection) leaf.bsSection = bsSection;
     if (plSection && !leaf.plSection) leaf.plSection = plSection;
     if (bsSubSection && !leaf.bsSubSection) leaf.bsSubSection = bsSubSection;
-    if (partitionStatementType) {
+    // CONFIRMED ROOT CAUSE (fixed here): this used to overwrite
+    // leaf.statementType with partitionStatementType (the GL Retained-
+    // Earnings-boundary HINT) unconditionally, whenever a LATER occurrence
+    // of an already-classified account came in from the GL (which happens
+    // for almost every real account, since a client-COA-matched or
+    // document-matched account still posts real GL transactions too). A
+    // leaf already resolved via an AUTHORITATIVE source -- the uploaded
+    // Chart of Accounts (Priority 1) or the account's own real position in
+    // the uploaded Balance Sheet/P&L (Priority 2) -- must never be re-typed
+    // by this lower-priority heuristic; only a leaf with no authoritative
+    // classification yet (unclassified / AI-only) may still take the hint
+    // as a last-resort signal, which is this branch's original intent.
+    const hasAuthoritativeClassification =
+      leaf.classificationSource === "client_coa" || leaf.classificationSource === "document_hierarchy";
+    if (partitionStatementType && !hasAuthoritativeClassification) {
       leaf.partitionStatementType = partitionStatementType;
       leaf.statementType = partitionStatementType;
       leaf.plSection = partitionStatementType === "profit_loss" ? (leaf.plSection || plSection || null) : null;
       return;
     }
+    if (partitionStatementType) return; // authoritative classification stays untouched
     const aiConfident = leaf.confidence != null && leaf.confidence >= AI_OVERRIDE_CONFIDENCE_FLOOR && leaf.accountType;
     if (aiConfident) return; // keep the confident AI classification ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â section evidence only fills gaps
     if (bsSection) {
@@ -1592,7 +1785,16 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
     // match copied the uploaded hierarchy but left whatever needsReview flag
     // an unrelated, never-run AI classification would have set, unchanged).
     const coaMatch = matchResults.get(key);
-    if (coaMatch?.matched && !partitionStatementType) {
+    // CONFIRMED ROOT CAUSE (fixed here): this used to require
+    // `&& !partitionStatementType`, which meant a GL-sourced row (the only
+    // source that ever computes partitionStatementType -- see above) with a
+    // confirmed match against the UPLOADED CHART OF ACCOUNTS -- the highest
+    // priority signal in this whole pipeline -- was skipped entirely
+    // whenever the GL Retained-Earnings-boundary heuristic produced any
+    // bucket for it at all (which is almost always, for any real account
+    // name). Priority 1 must never be gated behind a lower-priority
+    // heuristic hint.
+    if (coaMatch?.matched) {
       const bucket = leavesByName.get(key) || [];
       const target = bucket.find((l) => (number && l.accountNumber) ? l.accountNumber === number : true);
       if (target) {
@@ -1635,8 +1837,19 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
     // indentation (parent_path), dynamic depth, never guessed, never sent to
     // AI. Only an account neither the uploaded COA nor the uploaded
     // statements can resolve reaches AI (Priority 3, below).
+    // CONFIRMED ROOT CAUSE (fixed here): context.statementType must carry
+    // ONLY confident evidence (this row's own real bsSection/plSection) --
+    // never partitionStatementType (the weak GL Retained-Earnings-boundary
+    // heuristic). pickDocHierarchy treats a caller-supplied statementType as
+    // a hard single-tree gate (correctly, to prevent P&L/BS cross-
+    // contamination -- Critical Requirement #3); folding the weak GL hint
+    // into it here would make pickDocHierarchy treat that weak guess as if
+    // it were confident, silently skipping a real match in the other
+    // statement. pickDocHierarchy already reads glBucketByKey itself and
+    // applies the hint as a soft preference only when no confident
+    // statementType is supplied.
     const docHierarchy = pickDocHierarchy(name, key, glBucketByKey, bsHierarchyByName, plHierarchyByName, null, {
-      statementType: partitionStatementType || (bsSection ? "balance_sheet" : plSection ? "profit_loss" : null),
+      statementType: bsSection ? "balance_sheet" : plSection ? "profit_loss" : null,
       accountType: bsSectionToType(bsSection) || plSectionToType(plSection),
     });
     if (docHierarchy) {
@@ -1651,7 +1864,19 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
         accountNumber: number,
         accountType: docHierarchy.accountType,
         partitionStatementType: partitionStatementType || null,
-        statementType: partitionStatementType || docHierarchy.statementType || (docHierarchy.accountType ? statementTypeFor(docHierarchy.accountType) : null),
+        // CONFIRMED ROOT CAUSE (fixed here): partitionStatementType (the GL
+        // Retained-Earnings-boundary HINT) used to be OR'd first, so it won
+        // over docHierarchy.statementType -- the REAL statement this account
+        // was just matched against, one line above. A real Balance Sheet
+        // match could therefore end up with statementType="profit_loss",
+        // which getFinalCoaPrefix/buildFinalCoaLevels use to pick the anchor
+        // (e.g. PL_FIXED_PREFIX) -- corrupting the hierarchy anchor even
+        // though accountType and matchLevels (both above/below) stayed
+        // correctly document-derived. The document match's own statementType
+        // must always win; the heuristic hint is kept only as a last-resort
+        // filler for the (practically unreachable) case where docHierarchy
+        // itself has neither a statementType nor a derivable accountType.
+        statementType: docHierarchy.statementType || (docHierarchy.accountType ? statementTypeFor(docHierarchy.accountType) : null) || partitionStatementType,
         classificationSource: "document_hierarchy",
         classificationMethod: "document_hierarchy",
         aiNormalizedName: null,
@@ -1745,19 +1970,19 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
         if (accountType) structuralSectionEvidence = name;
       }
     }
-    const aiNormalizedName   = aiResult?.normalizedName  || null;
-    const confidence         = aiResult?.confidence      ?? null;
-    const needsReview        = isReportRowOverride || !aiResult || (confidence !== null && confidence < AI_NEEDS_REVIEW_THRESHOLD);
+    const aiNormalizedName = aiResult?.normalizedName || null;
+    const confidence = aiResult?.confidence ?? null;
+    const needsReview = isReportRowOverride || !aiResult || (confidence !== null && confidence < AI_NEEDS_REVIEW_THRESHOLD);
     const classificationMethod =
-      isReportRowOverride  ? "AI_REPORT_ROW_OVERRIDE" :
-      !aiResult            ? "unclassified"         :
-      needsReview          ? "ai_low_confidence"    :
-                             "gemini";
-    const resolvedSource     =
-      isReportRowOverride  ? "AI_REPORT_ROW_OVERRIDE" : // Root Cause 1 spec: classification_source literal
-      !aiResult            ? "no_ai_result"         :
-      confidence !== null  ? `ai_${confidence.toFixed(2)}` :
-                             "gemini";
+      isReportRowOverride ? "AI_REPORT_ROW_OVERRIDE" :
+        !aiResult ? "unclassified" :
+          needsReview ? "ai_low_confidence" :
+            "gemini";
+    const resolvedSource =
+      isReportRowOverride ? "AI_REPORT_ROW_OVERRIDE" : // Root Cause 1 spec: classification_source literal
+        !aiResult ? "no_ai_result" :
+          confidence !== null ? `ai_${confidence.toFixed(2)}` :
+            "gemini";
 
     const bucket = leavesByName.get(key) || [];
     const target = bucket.find((l) => {
@@ -3561,7 +3786,8 @@ async function buildProposedCoaTree(companyId, versionId, batchId, opts = {}) {
   const referencePlHierarchyByName = opts.profitLossTree
     ? buildTreeHierarchyLookup(opts.profitLossTree, "profit_loss")
     : plHierarchyByName;
-  const glBucketByKey = splitAccountsAtRetainedEarnings(glRows, opts.profitLossTree || plDocTree);
+  const glBucketByKey = splitAccountsAtRetainedEarningsByYear(glRows, opts.profitLossTree || plDocTree);
+  console.log("Unique accounts list after bifarcation " + glBucketByKey);
   const docHierarchyStats = createDocHierarchyStats();
   const needsAi = unmatchedByCoa.filter((a) => {
     const evidenceAccountType = bsSectionToType(a.bsSection) || plSectionToType(a.plSection);
@@ -3571,6 +3797,11 @@ async function buildProposedCoaTree(companyId, versionId, batchId, opts = {}) {
     });
   });
   const docHierarchyResolvedCount = unmatchedByCoa.length - needsAi.length;
+  console.log("[docHierarchyResolvedCount] " + docHierarchyResolvedCount);
+  console.log("[unmatchedByCoa] " + unmatchedByCoa);
+  console.log("[needsAi] " + needsAi);
+  console.log("[mapper.entryCount] " + mapper.entryCount);
+  console.log("[mapper] " + mapper);
   if (mapper.entryCount || docHierarchyResolvedCount) {
     console.log(
       `[ChartOfAccounts] ${uniqueAccounts.length} unique account(s) -> ${uniqueAccounts.length - unmatchedByCoa.length} matched directly against the uploaded Chart of Accounts, ` +
@@ -3705,11 +3936,11 @@ async function buildProposedCoaTree(companyId, versionId, batchId, opts = {}) {
       `Uploaded COA: ${hasLinkedCoaDocument ? "YES" : "NO"}\n\n` +
       (hasLinkedCoaDocument
         ? "Hierarchy Source:\nUploaded Chart of Accounts\n\n" +
-          "Balance Sheet used only for validation\n" +
-          "Profit & Loss used only for validation\n\n" +
-          "Hierarchy rebuilt: NO\n\n"
+        "Balance Sheet used only for validation\n" +
+        "Profit & Loss used only for validation\n\n" +
+        "Hierarchy rebuilt: NO\n\n"
         : "Generating hierarchy from uploaded documents...\n\n" +
-          `Sources:\n${sourcesUsed.join("\n")}\n\n`) +
+        `Sources:\n${sourcesUsed.join("\n")}\n\n`) +
       "Other company COA used: NO\n" +
       "Historical COA used: NO\n" +
       `AI Used: ${aiMappedCount} account(s)\n\n` +
@@ -3881,14 +4112,14 @@ async function persistApprovedCoaTree(companyId, versionId, hierarchical, opts =
     if (seenKeys.has(key)) continue;
     seenKeys.add(key);
 
-    const aiLevels   = leaf.levels;
+    const aiLevels = leaf.levels;
     const aiSnapshot = hierarchySnapshot(aiLevels, leaf.accountType, leaf.statementType, leaf.baseAccount);
     const accountIdName = leaf.accountNumber ? `${leaf.accountNumber} ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ${leaf.accountName}` : leaf.accountName;
     // Prefer the matched account's normal balance; for an unmapped account with
     // a known type (e.g. bsSection-derived) fall back to the deterministic
     // typeÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢balance fact ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â never guessed when the type itself is unknown.
     const normalBal = leaf.mappedNormalBalance || (leaf.accountType ? normalBalanceFor(leaf.accountType) : null);
-    const baseMeta  = {
+    const baseMeta = {
       is_group: false,
       sources: Array.from(leaf.sources),
       fiscal_years: Array.from(leaf.fiscalYears).sort((a, b) => a - b),
@@ -3923,8 +4154,8 @@ async function persistApprovedCoaTree(companyId, versionId, hierarchical, opts =
       }),
     };
     sortCounter += 1;
-    const existing        = existingByKey.get(key);
-    const systemId        = systemIdByKey.get(key) || null;
+    const existing = existingByKey.get(key);
+    const systemId = systemIdByKey.get(key) || null;
     // Fresh-match source for THIS run; overridden below to "manual_review" for
     // a user-modified account.
     const freshMatchSource = leaf.needsMapping ? "manual_review" : matchSourceFromTier(leaf.matchTier);
@@ -4315,9 +4546,9 @@ function serializePersistedTree(rows) {
     classificationSource: r.isGroup
       ? null
       : (r.metadata?.user_modified ? "USER_EDITED" : classificationSourceLabel({
-          matchTier: r.metadata?.match_tier,
-          classificationMethod: r.classificationMethod,
-        })),
+        matchTier: r.metadata?.match_tier,
+        classificationMethod: r.classificationMethod,
+      })),
     classificationMethod: r.classificationMethod || null,
     // System ID (INC-001/EXP-001/BS-001) is only ever assigned at persist
     // time (assignSystemIds, called from persistApprovedCoaTree) -- a
@@ -4399,9 +4630,9 @@ async function updateAccountHierarchy(accountId, patch = {}, userId = null, opts
     const ancestorPathArr = nonNull.slice(0, -1);
     update.parent_account_id = ancestorPathArr.length
       ? await resolveOrCreateCategoryChain(
-          row.version_id, row.company_id, ancestorPathArr,
-          update.account_type || row.account_type, update.statement_type || row.statement_type,
-        )
+        row.version_id, row.company_id, ancestorPathArr,
+        update.account_type || row.account_type, update.statement_type || row.statement_type,
+      )
       : null;
   }
 
@@ -4569,11 +4800,11 @@ async function validateChartOfAccounts(companyId, versionId) {
     .eq("version_id", versionId);
   if (error) throw error;
 
-  const all    = coaData || [];
+  const all = coaData || [];
   const allIds = new Set(all.map((r) => r.id));
   const leaves = all.filter((r) => !r.metadata?.is_group);
 
-  const nullType    = leaves.filter((r) => !r.account_type).map((r) => r.account_name);
+  const nullType = leaves.filter((r) => !r.account_type).map((r) => r.account_name);
   // Software-metadata rows that slipped through (should be extremely rare with AI filtering).
   const invalidRows = leaves.filter((r) => isMetadataRow(r.account_name)).map((r) => r.account_name);
   // Accounts the AI flagged for human review (low confidence or no AI result).
@@ -4585,11 +4816,11 @@ async function validateChartOfAccounts(companyId, versionId) {
   // an account with missing hierarchy that ISN'T flagged needs_mapping (which
   // would mean something bypassed the mapping step entirely).
   const needsMappingList = leaves.filter((r) => r.metadata?.needs_mapping).map((r) => r.account_name);
-  const noLevel     = leaves.filter((r) => !r.level_1 && !r.metadata?.needs_mapping).map((r) => r.account_name);
-  const noBase      = leaves.filter((r) => !r.base_account).map((r) => r.account_name);
-  const noSystemId  = leaves.filter((r) => !r.system_id).map((r) => r.account_name);
-  const noPath      = leaves.filter((r) => !r.hierarchy_path && !r.metadata?.needs_mapping).map((r) => r.account_name);
-  const badParent   = leaves
+  const noLevel = leaves.filter((r) => !r.level_1 && !r.metadata?.needs_mapping).map((r) => r.account_name);
+  const noBase = leaves.filter((r) => !r.base_account).map((r) => r.account_name);
+  const noSystemId = leaves.filter((r) => !r.system_id).map((r) => r.account_name);
+  const noPath = leaves.filter((r) => !r.hierarchy_path && !r.metadata?.needs_mapping).map((r) => r.account_name);
+  const badParent = leaves
     .filter((r) => r.parent_account_id && !allIds.has(r.parent_account_id))
     .map((r) => r.account_name);
 
@@ -4624,15 +4855,15 @@ async function validateChartOfAccounts(companyId, versionId) {
   let worst = "success";
 
   const errorChecks = [
-    [nullType,      (a) => `${a.length} account(s) missing a category: ${sample(a)}`],
-    [invalidRows,   (a) => `${a.length} metadata row(s) found in the Chart of Accounts (should not appear): ${sample(a)}`],
+    [nullType, (a) => `${a.length} account(s) missing a category: ${sample(a)}`],
+    [invalidRows, (a) => `${a.length} metadata row(s) found in the Chart of Accounts (should not appear): ${sample(a)}`],
     [multiCategory, (a) => `${a.length} account(s) classified into more than one category: ${sample(a)}`],
     // Genuinely anomalous only now ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â needs_mapping accounts (expected, no
     // hierarchy on purpose) are excluded from noLevel/noPath above. If this
     // still fires, an account has missing hierarchy WITHOUT being flagged for
     // review, meaning something bypassed coaMappingService entirely.
-    [noLevel,       (a) => `${a.length} account(s) missing a hierarchy (no Level 1) despite not being flagged needs_mapping ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â investigate, this should not happen: ${sample(a)}`],
-    [badParent,     (a) => `${a.length} account(s) have a parent_account_id that does not resolve to a row in this version: ${sample(a)}`],
+    [noLevel, (a) => `${a.length} account(s) missing a hierarchy (no Level 1) despite not being flagged needs_mapping ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â investigate, this should not happen: ${sample(a)}`],
+    [badParent, (a) => `${a.length} account(s) have a parent_account_id that does not resolve to a row in this version: ${sample(a)}`],
   ];
   for (const [arr, msg] of errorChecks) {
     if (arr.length) {
@@ -4646,10 +4877,10 @@ async function validateChartOfAccounts(companyId, versionId) {
     // not a data-integrity problem. Worded to read as a review queue, not a defect.
     [needsMappingList, (a) => `${a.length} account(s) pending manual review ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â no match found in the existing Chart of Accounts. Map them in Review & Adjust; future imports with the same account name will reuse the mapping automatically: ${sample(a)}`],
     [needsReviewList, (a) => `${a.length} account(s) flagged for manual review (low AI confidence): ${sample(a)}`],
-    [duplicates,      (a) => `${a.length} duplicate account name(s): ${sample(a)}`],
-    [noBase,          (a) => `${a.length} account(s) missing a base account: ${sample(a)}`],
-    [noSystemId,      (a) => `${a.length} account(s) missing a System ID: ${sample(a)}`],
-    [noPath,          (a) => `${a.length} account(s) missing a hierarchy path despite not being flagged needs_mapping ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â investigate: ${sample(a)}`],
+    [duplicates, (a) => `${a.length} duplicate account name(s): ${sample(a)}`],
+    [noBase, (a) => `${a.length} account(s) missing a base account: ${sample(a)}`],
+    [noSystemId, (a) => `${a.length} account(s) missing a System ID: ${sample(a)}`],
+    [noPath, (a) => `${a.length} account(s) missing a hierarchy path despite not being flagged needs_mapping ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â investigate: ${sample(a)}`],
   ];
   for (const [arr, msg] of warnChecks) {
     if (arr.length) {
@@ -5160,7 +5391,7 @@ async function _ensureCoaCompleteImpl(companyId, versionId, plRows = [], hasLink
   const existingSet = new Set();
   for (const row of (existingRows || [])) {
     if (row.account_name) existingSet.add(normName(row.account_name));
-    if (row.base_account)  existingSet.add(normName(row.base_account));
+    if (row.base_account) existingSet.add(normName(row.base_account));
     if (row.adjusted_name) existingSet.add(normName(row.adjusted_name));
   }
 
@@ -5201,7 +5432,7 @@ async function _ensureCoaCompleteImpl(companyId, versionId, plRows = [], hasLink
     collectBsAccountsFromEntries(companyId, versionId).catch(() => []),
   ]);
   const { bsHierarchyByName, plHierarchyByName, plTree } = buildDocHierarchyLookups(bsRows, plRows, endingFiscalYear);
-  const glBucketByKey = splitAccountsAtRetainedEarnings(glRowsInOrder, plTree);
+  const glBucketByKey = splitAccountsAtRetainedEarningsByYear(glRowsInOrder, plTree);
   const needsAi = unmatchedByCoa.filter(
     (a) => !pickDocHierarchy(a.accountName, a.key, glBucketByKey, bsHierarchyByName, plHierarchyByName),
   );
@@ -5230,7 +5461,7 @@ async function _ensureCoaCompleteImpl(companyId, versionId, plRows = [], hasLink
   const classifiedLeaves = missingRaw
     .filter((rawName) => !aiResults.get(normName(rawName))?.isReportRow) // exclude AI-detected report rows
     .map((rawName) => {
-      const key   = normName(rawName);
+      const key = normName(rawName);
       const match = matchResults.get(key);
 
       if (match?.matched) {
@@ -5268,14 +5499,14 @@ async function _ensureCoaCompleteImpl(companyId, versionId, plRows = [], hasLink
       // No fallback default: an account with no AI result has an unknown
       // type ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â never guessed. It stays needsMapping/needsReview until a
       // human classifies it (see chartOfAccountsService.updateAccountHierarchy).
-      const type        = aiResult?.accountType || null;
-      const confidence  = aiResult?.confidence ?? null;
+      const type = aiResult?.accountType || null;
+      const confidence = aiResult?.confidence ?? null;
       const needsReview = !aiResult || (confidence !== null && confidence < AI_NEEDS_REVIEW_THRESHOLD);
       const displayName = aiResult?.normalizedName || rawName;
       const classificationMethod = !aiResult ? "unclassified" : needsReview ? "ai_low_confidence" : "gemini";
       // statementTypeFor/normalBalanceFor are deterministic accounting facts of a
       // KNOWN type ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â never invoked to invent a type; null when type is null.
-      const stmtType  = type ? statementTypeFor(type) : null;
+      const stmtType = type ? statementTypeFor(type) : null;
       const normalBal = type ? normalBalanceFor(type) : null;
       const aiLevels = aiResult?.levels || [];
       // No AI hierarchy fallback here. Accounts without a document-derived path stay needsMapping.
@@ -5326,24 +5557,24 @@ async function _ensureCoaCompleteImpl(companyId, versionId, plRows = [], hasLink
 
   // 7. Build insert payload.
   const insertRows = classifiedLeaves.map((leaf) => {
-    const prefix          = systemIdPrefix(leaf.type);
-    const systemId        = `${prefix}-${String(prefixCounters[prefix]++).padStart(3, "0")}`;
-    const snapshot        = hierarchySnapshot(leaf.finalLevels, leaf.type, leaf.stmtType, leaf.rawName);
+    const prefix = systemIdPrefix(leaf.type);
+    const systemId = `${prefix}-${String(prefixCounters[prefix]++).padStart(3, "0")}`;
+    const snapshot = hierarchySnapshot(leaf.finalLevels, leaf.type, leaf.stmtType, leaf.rawName);
     const parentAccountId = catIdByPath.get(leafCategoryKey(leaf.finalLevels)) || null;
     return {
-      version_id:            versionId,
-      company_id:            companyId,
-      system_id:             systemId,
-      account_number:        null,
-      account_name:          leaf.rawName,
-      account_id_name:       leaf.rawName,
-      parent_account_id:     parentAccountId,
-      account_type:          leaf.type,
-      statement_type:        leaf.stmtType,
-      normal_balance:        leaf.normalBal,
-      is_active:             true,
-      sort_order:            leaf.sortOrder ?? sortCounter++,
-      client_account_id:     leaf.clientAccountId || null,
+      version_id: versionId,
+      company_id: companyId,
+      system_id: systemId,
+      account_number: null,
+      account_name: leaf.rawName,
+      account_id_name: leaf.rawName,
+      parent_account_id: parentAccountId,
+      account_type: leaf.type,
+      statement_type: leaf.stmtType,
+      normal_balance: leaf.normalBal,
+      is_active: true,
+      sort_order: leaf.sortOrder ?? sortCounter++,
+      client_account_id: leaf.clientAccountId || null,
       cf_category: classifyCfCategory({
         accountType: leaf.type,
         name: leaf.rawName,
@@ -5357,14 +5588,14 @@ async function _ensureCoaCompleteImpl(companyId, versionId, plRows = [], hasLink
       // after this function returns, which fills level_1..15/hierarchy_path
       // from the persisted parent_account_id chain -- the only place in the
       // codebase that ever writes those columns.
-      base_account:          leaf.rawName,
+      base_account: leaf.rawName,
       classification_method: leaf.classificationMethod,
-      match_source:          leaf.needsMapping ? "manual_review" : matchSourceFromTier(leaf.matchTier),
-      hierarchy_confidence:  hierarchyConfidenceFromTier(leaf.matchTier, leaf.matchConfidence),
-      original_name:         leaf.displayName,
-      original_hierarchy:    snapshot,
-      adjusted_name:         leaf.displayName,
-      adjusted_hierarchy:    snapshot,
+      match_source: leaf.needsMapping ? "manual_review" : matchSourceFromTier(leaf.matchTier),
+      hierarchy_confidence: hierarchyConfidenceFromTier(leaf.matchTier, leaf.matchConfidence),
+      original_name: leaf.displayName,
+      original_hierarchy: snapshot,
+      adjusted_name: leaf.displayName,
+      adjusted_hierarchy: snapshot,
       metadata: {
         is_group: false, sources: ["completion"], fiscal_years: [],
         user_modified: false, ai_confidence: leaf.confidence, needs_review: leaf.needsReview,
@@ -5619,6 +5850,7 @@ module.exports = {
   printHierarchyIntegrityReport,
   pickDocHierarchy,
   splitAccountsAtRetainedEarnings,
+  splitAccountsAtRetainedEarningsByYear,
   findFirstProfitAndLossAccount,
   cleanDynamicCoaLevelLabel,
   ensureAccountLeaf,
