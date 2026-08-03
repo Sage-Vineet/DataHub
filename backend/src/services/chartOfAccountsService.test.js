@@ -352,6 +352,48 @@ test('missing Retained Earnings creates no arbitrary boundary when first P&L acc
   assert.equal(buckets.size, 0);
 });
 
+test('multi-file GL upload computes the Retained Earnings boundary independently per source file', () => {
+  const rows = [
+    // File "2021" — no Balance Sheet account beyond Cash.
+    { account_name: 'Cash', source_file_id: 'file-2021' },
+    { account_name: 'Retained Earnings', source_file_id: 'file-2021' },
+    { account_name: 'Payroll Expenses', source_file_id: 'file-2021' },
+    // File "2022" — introduces a NEW Balance Sheet account (e.g. a bank
+    // account opened in 2022) that never appeared in the 2021 file. Within
+    // file 2022's own layout it still sits above that file's own Retained
+    // Earnings line, so it must classify as balance_sheet even though it is
+    // only first seen via the second file's rows.
+    { account_name: 'Cash', source_file_id: 'file-2022' },
+    { account_name: 'New Bank Account', source_file_id: 'file-2022' },
+    { account_name: 'Retained Earnings', source_file_id: 'file-2022' },
+    { account_name: 'Payroll Expenses', source_file_id: 'file-2022' },
+  ];
+  const buckets = coa.splitAccountsAtRetainedEarnings(rows, null);
+
+  assert.equal(buckets.get('cash'), 'balance_sheet');
+  assert.equal(buckets.get('new bank account'), 'balance_sheet');
+  assert.equal(buckets.get('retained earnings'), 'profit_loss');
+  assert.equal(buckets.get('payroll expenses'), 'profit_loss');
+});
+
+test('same account across two fiscal years\' GL files merges into ONE leaf even when its account_number differs between years', () => {
+  // Common in practice: a QuickBooks/Xero export can assign a different (or
+  // no) internal account number to the identical real account from one
+  // fiscal year's export to the next.
+  const glRows = [
+    { account_name: 'Bank Earnings', account_number: '1010', transaction_date: '2021-06-15', source_file_id: 'file-2021' },
+    { account_name: 'Bank Earnings', account_number: '1015', transaction_date: '2022-07-20', source_file_id: 'file-2022' },
+  ];
+  const { leaves } = coa.buildCoaModel(glRows, [], [], new Map(), new Map(), new Map());
+  const bankEarningsLeaves = leaves.filter((l) => l.accountName === 'Bank Earnings');
+
+  assert.equal(bankEarningsLeaves.length, 1);
+  const [leaf] = bankEarningsLeaves;
+  // Keeps the first-seen account number rather than forking a second leaf.
+  assert.equal(leaf.accountNumber, '1010');
+  assert.deepEqual([...leaf.fiscalYears].sort(), [2021, 2022]);
+});
+
 test('partitioned document matching searches only the selected statement tree', () => {
   const bsTree = {
     name: 'Balance Sheet', nodeType: 'REPORT', children: [
