@@ -1223,8 +1223,8 @@
         26.88
       ],
       "geometry": "rect",
-      "text": "RECONCILIATION DETAIL",
-      "textPreview": "RECONCILIATION DETAIL",
+      "text": "BANK RECONCILIATION OVERVIEW",
+      "textPreview": "BANK RECONCILIATION OVERVIEW",
       "resolvedFontSize": 24,
       "resolvedTextStyle": {
         "anchor": 2,
@@ -1246,20 +1246,20 @@
         "lines": [
           {
             "index": 1,
-            "text": "RECONCILIATION DETAIL"
+            "text": "BANK RECONCILIATION OVERVIEW"
           }
         ]
       },
       "paragraphs": [
         {
           "index": 1,
-          "text": "RECONCILIATION DETAIL",
+          "text": "BANK RECONCILIATION OVERVIEW",
           "marginLeft": 0,
           "indent": 0,
           "runs": [
             {
               "index": 1,
-              "text": "RECONCILIATION DETAIL",
+              "text": "BANK RECONCILIATION OVERVIEW",
               "fontSize": 11.33,
               "typeface": "Calibri",
               "color": "#476E2C",
@@ -1279,13 +1279,13 @@
       "bbox": [
         33.6,
         336,
-        720,
+        1212.48,
         264
       ],
-      "text": "Item | Amount | Direction | Status\nBook (GL) Cash Balance | $[X]M | -- | Confirmed\nDeposits in Transit | $[X]k | Add | Cleared [Date]\nOutstanding Cheques | ($[X]k) | Deduct | Cleared [Date]\nBank Charges Not in Books | ($[X]k) | Deduct | Adjusted\nInterest Not Yet Recorded | $[X]k | Add | Adjusted\nOther Reconciling Items | $[X]k | Add / Deduct | [Status]\nBank Statement Balance | $[X]M | -- | Confirmed",
-      "textPreview": "Item | Amount | Direction | Status | Book (GL) Cash Balance | $[X]M | -- | Confirmed | Deposits in Transit | $[X]k | Add | Cleared [Date]...",
+      "text": "Bank Account | FY22 | FY23 | FY24 | FY25 | FY26 | Latest Variance | Status\nOperating Account | $412k | $438k | $451k | $467k | $480k | $0k | Reconciled\nPayroll Account | $52k | $48k | $55k | $61k | $58k | ($12k) | Review Required\nCash Management Account | $96k | $101k | $110k | $118k | $124k | $3k | Reconciled",
+      "textPreview": "Bank Account | FY22 | FY23 | FY24 | FY25 | FY26 | Latest Variance | Status | Operating Account | $412k | $438k | $451k | $467k | $480k | $0k | Reconciled...",
       "rows": 8,
-      "cols": 4,
+      "cols": 8,
       "cells": [
         {
           "index": 1,
@@ -1294,16 +1294,16 @@
           "bbox": [
             33.6,
             336,
-            240,
+            232,
             33
           ],
-          "text": "Item",
-          "textPreview": "Item",
+          "text": "Bank Account",
+          "textPreview": "Bank Account",
           "fillColor": "#476E2C",
           "paragraphs": [
             {
               "index": 1,
-              "text": "Item",
+              "text": "Bank Account",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -1312,7 +1312,7 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "Item",
+                  "text": "Bank Account",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
                   "color": "#FFFFFF",
@@ -1327,18 +1327,18 @@
           "row": 1,
           "column": 2,
           "bbox": [
-            273.6,
+            265.6,
             336,
-            124.8,
+            100,
             33
           ],
-          "text": "Amount",
-          "textPreview": "Amount",
+          "text": "FY1",
+          "textPreview": "FY1",
           "fillColor": "#476E2C",
           "paragraphs": [
             {
               "index": 1,
-              "text": "Amount",
+              "text": "FY1",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -1347,7 +1347,7 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "Amount",
+                  "text": "FY1",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
                   "color": "#FFFFFF",
@@ -1362,18 +1362,18 @@
           "row": 1,
           "column": 3,
           "bbox": [
-            398.4,
+            365.6,
             336,
-            144,
+            100,
             33
           ],
-          "text": "Direction",
-          "textPreview": "Direction",
+          "text": "FY2",
+          "textPreview": "FY2",
           "fillColor": "#476E2C",
           "paragraphs": [
             {
               "index": 1,
-              "text": "Direction",
+              "text": "FY2",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -1382,7 +1382,7 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "Direction",
+                  "text": "FY2",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
                   "color": "#FFFFFF",
@@ -1397,9 +1397,149 @@
           "row": 1,
           "column": 4,
           "bbox": [
-            542.4,
+            465.6,
             336,
-            211.2,
+            100,
+            33
+          ],
+          "text": "FY3",
+          "textPreview": "FY3",
+          "fillColor": "#476E2C",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "FY3",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "FY3",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#FFFFFF",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 5,
+          "row": 1,
+          "column": 5,
+          "bbox": [
+            565.6,
+            336,
+            100,
+            33
+          ],
+          "text": "FY4",
+          "textPreview": "FY4",
+          "fillColor": "#476E2C",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "FY4",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "FY4",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#FFFFFF",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 6,
+          "row": 1,
+          "column": 6,
+          "bbox": [
+            665.6,
+            336,
+            100,
+            33
+          ],
+          "text": "FY5",
+          "textPreview": "FY5",
+          "fillColor": "#476E2C",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "FY5",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "FY5",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#FFFFFF",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 7,
+          "row": 1,
+          "column": 7,
+          "bbox": [
+            765.6,
+            336,
+            240,
+            33
+          ],
+          "text": "Latest Variance",
+          "textPreview": "Latest Variance",
+          "fillColor": "#476E2C",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "Latest Variance",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "Latest Variance",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#FFFFFF",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 8,
+          "row": 1,
+          "column": 8,
+          "bbox": [
+            1005.6,
+            336,
+            240.48,
             33
           ],
           "text": "Status",
@@ -1428,158 +1568,22 @@
           ]
         },
         {
-          "index": 5,
-          "row": 2,
-          "column": 1,
-          "bbox": [
-            33.6,
-            369,
-            240,
-            33
-          ],
-          "text": "Book (GL) Cash Balance",
-          "textPreview": "Book (GL) Cash Balance",
-          "fillColor": "#FFFFFF",
-          "paragraphs": [
-            {
-              "index": 1,
-              "text": "Book (GL) Cash Balance",
-              "marginLeft": 0,
-              "indent": 0,
-              "resolvedTextStyle": {
-                "alignment": "center"
-              },
-              "runs": [
-                {
-                  "index": 1,
-                  "text": "Book (GL) Cash Balance",
-                  "fontSize": 12.67,
-                  "typeface": "Calibri",
-                  "color": "#6D6E71"
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "index": 6,
-          "row": 2,
-          "column": 2,
-          "bbox": [
-            273.6,
-            369,
-            124.8,
-            33
-          ],
-          "text": "$[X]M",
-          "textPreview": "$[X]M",
-          "fillColor": "#FFFFFF",
-          "paragraphs": [
-            {
-              "index": 1,
-              "text": "$[X]M",
-              "marginLeft": 0,
-              "indent": 0,
-              "resolvedTextStyle": {
-                "alignment": "center"
-              },
-              "runs": [
-                {
-                  "index": 1,
-                  "text": "$[X]M",
-                  "fontSize": 12.67,
-                  "typeface": "Calibri",
-                  "color": "#6D6E71"
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "index": 7,
-          "row": 2,
-          "column": 3,
-          "bbox": [
-            398.4,
-            369,
-            144,
-            33
-          ],
-          "text": "--",
-          "textPreview": "--",
-          "fillColor": "#FFFFFF",
-          "paragraphs": [
-            {
-              "index": 1,
-              "text": "--",
-              "marginLeft": 0,
-              "indent": 0,
-              "resolvedTextStyle": {
-                "alignment": "center"
-              },
-              "runs": [
-                {
-                  "index": 1,
-                  "text": "--",
-                  "fontSize": 12.67,
-                  "typeface": "Calibri",
-                  "color": "#6D6E71"
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "index": 8,
-          "row": 2,
-          "column": 4,
-          "bbox": [
-            542.4,
-            369,
-            211.2,
-            33
-          ],
-          "text": "Confirmed",
-          "textPreview": "Confirmed",
-          "fillColor": "#FFFFFF",
-          "paragraphs": [
-            {
-              "index": 1,
-              "text": "Confirmed",
-              "marginLeft": 0,
-              "indent": 0,
-              "resolvedTextStyle": {
-                "alignment": "center"
-              },
-              "runs": [
-                {
-                  "index": 1,
-                  "text": "Confirmed",
-                  "fontSize": 12.67,
-                  "typeface": "Calibri",
-                  "color": "#6D6E71"
-                }
-              ]
-            }
-          ]
-        },
-        {
           "index": 9,
-          "row": 3,
+          "row": 2,
           "column": 1,
           "bbox": [
             33.6,
-            402,
-            240,
+            369,
+            232,
             33
           ],
-          "text": "Deposits in Transit",
-          "textPreview": "Deposits in Transit",
+          "text": "Operating Account",
+          "textPreview": "Operating Account",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "Deposits in Transit",
+              "text": "Operating Account",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -1588,10 +1592,11 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "Deposits in Transit",
+                  "text": "Operating Account",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#6D6E71"
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
@@ -1599,21 +1604,21 @@
         },
         {
           "index": 10,
-          "row": 3,
+          "row": 2,
           "column": 2,
           "bbox": [
-            273.6,
-            402,
-            124.8,
+            265.6,
+            369,
+            100,
             33
           ],
-          "text": "$[X]k",
-          "textPreview": "$[X]k",
+          "text": "$412k",
+          "textPreview": "$412k",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "$[X]k",
+              "text": "$412k",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -1622,10 +1627,11 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "$[X]k",
+                  "text": "$412k",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#6D6E71"
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
@@ -1633,21 +1639,21 @@
         },
         {
           "index": 11,
-          "row": 3,
+          "row": 2,
           "column": 3,
           "bbox": [
-            398.4,
-            402,
-            144,
+            365.6,
+            369,
+            100,
             33
           ],
-          "text": "Add",
-          "textPreview": "Add",
+          "text": "$438k",
+          "textPreview": "$438k",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "Add",
+              "text": "$438k",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -1656,10 +1662,11 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "Add",
+                  "text": "$438k",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#6D6E71"
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
@@ -1667,21 +1674,21 @@
         },
         {
           "index": 12,
-          "row": 3,
+          "row": 2,
           "column": 4,
           "bbox": [
-            542.4,
-            402,
-            211.2,
+            465.6,
+            369,
+            100,
             33
           ],
-          "text": "Cleared [Date]",
-          "textPreview": "Cleared [Date]",
+          "text": "$451k",
+          "textPreview": "$451k",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "Cleared [Date]",
+              "text": "$451k",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -1690,10 +1697,11 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "Cleared [Date]",
+                  "text": "$451k",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#6D6E71"
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
@@ -1701,21 +1709,21 @@
         },
         {
           "index": 13,
-          "row": 4,
-          "column": 1,
+          "row": 2,
+          "column": 5,
           "bbox": [
-            33.6,
-            435,
-            240,
+            565.6,
+            369,
+            100,
             33
           ],
-          "text": "Outstanding Cheques",
-          "textPreview": "Outstanding Cheques",
+          "text": "$467k",
+          "textPreview": "$467k",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "Outstanding Cheques",
+              "text": "$467k",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -1724,10 +1732,11 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "Outstanding Cheques",
+                  "text": "$467k",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#6D6E71"
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
@@ -1735,21 +1744,21 @@
         },
         {
           "index": 14,
-          "row": 4,
-          "column": 2,
+          "row": 2,
+          "column": 6,
           "bbox": [
-            273.6,
-            435,
-            124.8,
+            665.6,
+            369,
+            100,
             33
           ],
-          "text": "($[X]k)",
-          "textPreview": "($[X]k)",
+          "text": "$480k",
+          "textPreview": "$480k",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "($[X]k)",
+              "text": "$480k",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -1758,10 +1767,11 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "($[X]k)",
+                  "text": "$480k",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#6D6E71"
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
@@ -1769,21 +1779,21 @@
         },
         {
           "index": 15,
-          "row": 4,
-          "column": 3,
+          "row": 2,
+          "column": 7,
           "bbox": [
-            398.4,
-            435,
-            144,
+            765.6,
+            369,
+            240,
             33
           ],
-          "text": "Deduct",
-          "textPreview": "Deduct",
+          "text": "$0k",
+          "textPreview": "$0k",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "Deduct",
+              "text": "$0k",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -1792,10 +1802,11 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "Deduct",
+                  "text": "$0k",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#6D6E71"
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
@@ -1803,21 +1814,21 @@
         },
         {
           "index": 16,
-          "row": 4,
-          "column": 4,
+          "row": 2,
+          "column": 8,
           "bbox": [
-            542.4,
-            435,
-            211.2,
+            1005.6,
+            369,
+            240.48,
             33
           ],
-          "text": "Cleared [Date]",
-          "textPreview": "Cleared [Date]",
+          "text": "Reconciled",
+          "textPreview": "Reconciled",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "Cleared [Date]",
+              "text": "Reconciled",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -1826,10 +1837,11 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "Cleared [Date]",
+                  "text": "Reconciled",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#6D6E71"
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
@@ -1837,21 +1849,21 @@
         },
         {
           "index": 17,
-          "row": 5,
+          "row": 3,
           "column": 1,
           "bbox": [
             33.6,
-            468,
-            240,
+            402,
+            232,
             33
           ],
-          "text": "Bank Charges Not in Books",
-          "textPreview": "Bank Charges Not in Books",
+          "text": "Payroll Account",
+          "textPreview": "Payroll Account",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "Bank Charges Not in Books",
+              "text": "Payroll Account",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -1860,10 +1872,11 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "Bank Charges Not in Books",
+                  "text": "Payroll Account",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#6D6E71"
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
@@ -1871,21 +1884,21 @@
         },
         {
           "index": 18,
-          "row": 5,
+          "row": 3,
           "column": 2,
           "bbox": [
-            273.6,
-            468,
-            124.8,
+            265.6,
+            402,
+            100,
             33
           ],
-          "text": "($[X]k)",
-          "textPreview": "($[X]k)",
+          "text": "$52k",
+          "textPreview": "$52k",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "($[X]k)",
+              "text": "$52k",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -1894,10 +1907,11 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "($[X]k)",
+                  "text": "$52k",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#6D6E71"
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
@@ -1905,21 +1919,21 @@
         },
         {
           "index": 19,
-          "row": 5,
+          "row": 3,
           "column": 3,
           "bbox": [
-            398.4,
-            468,
-            144,
+            365.6,
+            402,
+            100,
             33
           ],
-          "text": "Deduct",
-          "textPreview": "Deduct",
+          "text": "$48k",
+          "textPreview": "$48k",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "Deduct",
+              "text": "$48k",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -1928,10 +1942,11 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "Deduct",
+                  "text": "$48k",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#6D6E71"
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
@@ -1939,21 +1954,21 @@
         },
         {
           "index": 20,
-          "row": 5,
+          "row": 3,
           "column": 4,
           "bbox": [
-            542.4,
-            468,
-            211.2,
+            465.6,
+            402,
+            100,
             33
           ],
-          "text": "Adjusted",
-          "textPreview": "Adjusted",
+          "text": "$55k",
+          "textPreview": "$55k",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "Adjusted",
+              "text": "$55k",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -1962,10 +1977,11 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "Adjusted",
+                  "text": "$55k",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#6D6E71"
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
@@ -1973,21 +1989,21 @@
         },
         {
           "index": 21,
-          "row": 6,
-          "column": 1,
+          "row": 3,
+          "column": 5,
           "bbox": [
-            33.6,
-            501,
-            240,
+            565.6,
+            402,
+            100,
             33
           ],
-          "text": "Interest Not Yet Recorded",
-          "textPreview": "Interest Not Yet Recorded",
+          "text": "$61k",
+          "textPreview": "$61k",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "Interest Not Yet Recorded",
+              "text": "$61k",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -1996,10 +2012,11 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "Interest Not Yet Recorded",
+                  "text": "$61k",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#6D6E71"
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
@@ -2007,21 +2024,21 @@
         },
         {
           "index": 22,
-          "row": 6,
-          "column": 2,
+          "row": 3,
+          "column": 6,
           "bbox": [
-            273.6,
-            501,
-            124.8,
+            665.6,
+            402,
+            100,
             33
           ],
-          "text": "$[X]k",
-          "textPreview": "$[X]k",
+          "text": "$58k",
+          "textPreview": "$58k",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "$[X]k",
+              "text": "$58k",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -2030,10 +2047,11 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "$[X]k",
+                  "text": "$58k",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#6D6E71"
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
@@ -2041,21 +2059,21 @@
         },
         {
           "index": 23,
-          "row": 6,
-          "column": 3,
+          "row": 3,
+          "column": 7,
           "bbox": [
-            398.4,
-            501,
-            144,
+            765.6,
+            402,
+            240,
             33
           ],
-          "text": "Add",
-          "textPreview": "Add",
+          "text": "($12k)",
+          "textPreview": "($12k)",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "Add",
+              "text": "($12k)",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -2064,10 +2082,11 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "Add",
+                  "text": "($12k)",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#6D6E71"
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
@@ -2075,21 +2094,21 @@
         },
         {
           "index": 24,
-          "row": 6,
-          "column": 4,
+          "row": 3,
+          "column": 8,
           "bbox": [
-            542.4,
-            501,
-            211.2,
+            1005.6,
+            402,
+            240.48,
             33
           ],
-          "text": "Adjusted",
-          "textPreview": "Adjusted",
+          "text": "Review Required",
+          "textPreview": "Review Required",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "Adjusted",
+              "text": "Review Required",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -2098,10 +2117,11 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "Adjusted",
+                  "text": "Review Required",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#6D6E71"
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
@@ -2109,21 +2129,21 @@
         },
         {
           "index": 25,
-          "row": 7,
+          "row": 4,
           "column": 1,
           "bbox": [
             33.6,
-            534,
-            240,
+            435,
+            232,
             33
           ],
-          "text": "Other Reconciling Items",
-          "textPreview": "Other Reconciling Items",
+          "text": "Cash Management Account",
+          "textPreview": "Cash Management Account",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "Other Reconciling Items",
+              "text": "Cash Management Account",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -2132,10 +2152,11 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "Other Reconciling Items",
+                  "text": "Cash Management Account",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#6D6E71"
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
@@ -2143,21 +2164,21 @@
         },
         {
           "index": 26,
-          "row": 7,
+          "row": 4,
           "column": 2,
           "bbox": [
-            273.6,
-            534,
-            124.8,
+            265.6,
+            435,
+            100,
             33
           ],
-          "text": "$[X]k",
-          "textPreview": "$[X]k",
+          "text": "$96k",
+          "textPreview": "$96k",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "$[X]k",
+              "text": "$96k",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -2166,10 +2187,11 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "$[X]k",
+                  "text": "$96k",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#6D6E71"
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
@@ -2177,21 +2199,21 @@
         },
         {
           "index": 27,
-          "row": 7,
+          "row": 4,
           "column": 3,
           "bbox": [
-            398.4,
-            534,
-            144,
+            365.6,
+            435,
+            100,
             33
           ],
-          "text": "Add / Deduct",
-          "textPreview": "Add / Deduct",
+          "text": "$101k",
+          "textPreview": "$101k",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "Add / Deduct",
+              "text": "$101k",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -2200,10 +2222,11 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "Add / Deduct",
+                  "text": "$101k",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#6D6E71"
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
@@ -2211,21 +2234,21 @@
         },
         {
           "index": 28,
-          "row": 7,
+          "row": 4,
           "column": 4,
           "bbox": [
-            542.4,
-            534,
-            211.2,
+            465.6,
+            435,
+            100,
             33
           ],
-          "text": "[Status]",
-          "textPreview": "[Status]",
+          "text": "$110k",
+          "textPreview": "$110k",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "[Status]",
+              "text": "$110k",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -2234,10 +2257,11 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "[Status]",
+                  "text": "$110k",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#6D6E71"
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
@@ -2245,21 +2269,21 @@
         },
         {
           "index": 29,
-          "row": 8,
-          "column": 1,
+          "row": 4,
+          "column": 5,
           "bbox": [
-            33.6,
-            567,
-            240,
+            565.6,
+            435,
+            100,
             33
           ],
-          "text": "Bank Statement Balance",
-          "textPreview": "Bank Statement Balance",
+          "text": "$118k",
+          "textPreview": "$118k",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "Bank Statement Balance",
+              "text": "$118k",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -2268,11 +2292,11 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "Bank Statement Balance",
+                  "text": "$118k",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#476E2C",
-                  "bold": true
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
@@ -2280,21 +2304,21 @@
         },
         {
           "index": 30,
-          "row": 8,
-          "column": 2,
+          "row": 4,
+          "column": 6,
           "bbox": [
-            273.6,
-            567,
-            124.8,
+            665.6,
+            435,
+            100,
             33
           ],
-          "text": "$[X]M",
-          "textPreview": "$[X]M",
+          "text": "$124k",
+          "textPreview": "$124k",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "$[X]M",
+              "text": "$124k",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -2303,11 +2327,11 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "$[X]M",
+                  "text": "$124k",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#476E2C",
-                  "bold": true
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
@@ -2315,21 +2339,21 @@
         },
         {
           "index": 31,
-          "row": 8,
-          "column": 3,
+          "row": 4,
+          "column": 7,
           "bbox": [
-            398.4,
-            567,
-            144,
+            765.6,
+            435,
+            240,
             33
           ],
-          "text": "--",
-          "textPreview": "--",
+          "text": "$3k",
+          "textPreview": "$3k",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "--",
+              "text": "$3k",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -2338,10 +2362,11 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "--",
+                  "text": "$3k",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#6D6E71"
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
@@ -2349,21 +2374,21 @@
         },
         {
           "index": 32,
-          "row": 8,
-          "column": 4,
+          "row": 4,
+          "column": 8,
           "bbox": [
-            542.4,
-            567,
-            211.2,
+            1005.6,
+            435,
+            240.48,
             33
           ],
-          "text": "Confirmed",
-          "textPreview": "Confirmed",
+          "text": "Reconciled",
+          "textPreview": "Reconciled",
           "fillColor": "#FFFFFF",
           "paragraphs": [
             {
               "index": 1,
-              "text": "Confirmed",
+              "text": "Reconciled",
               "marginLeft": 0,
               "indent": 0,
               "resolvedTextStyle": {
@@ -2372,189 +2397,1133 @@
               "runs": [
                 {
                   "index": 1,
-                  "text": "Confirmed",
+                  "text": "Reconciled",
                   "fontSize": 12.67,
                   "typeface": "Calibri",
-                  "color": "#476E2C",
-                  "bold": true
+                  "color": "#6D6E71",
+                  "bold": false
                 }
               ]
             }
           ]
-        }
-      ]
-    },
-    {
-      "order": 29,
-      "kind": "shape",
-      "scope": "slide",
-      "aid": "sh/psfil0rq",
-      "id": "30",
-      "name": "Shape 27",
-      "bbox": [
-        782.4,
-        299.52,
-        465.6,
-        300.48
-      ],
-      "geometry": "rect",
-      "fillColor": "#EFEFF1",
-      "lineColor": "#EFEFF1",
-      "lineWidth": 1.33
-    },
-    {
-      "order": 30,
-      "kind": "shape",
-      "scope": "slide",
-      "aid": "sh/w7mp0bi9",
-      "id": "31",
-      "name": "Text 28",
-      "bbox": [
-        796.8,
-        309.12,
-        436.8,
-        24.96
-      ],
-      "geometry": "rect",
-      "text": "COMMENTARY",
-      "textPreview": "COMMENTARY",
-      "resolvedFontSize": 24,
-      "resolvedTextStyle": {
-        "anchor": 2,
-        "fontSize": 24,
-        "typeface": "Calibri",
-        "color": "tx1",
-        "alignment": "left",
-        "verticalAlignment": "middle",
-        "wrap": "square",
-        "insets": {
-          "top": 0,
-          "right": 0,
-          "bottom": 0,
-          "left": 0
-        }
-      },
-      "textLayout": {
-        "lineCount": 1,
-        "lines": [
-          {
-            "index": 1,
-            "text": "COMMENTARY"
-          }
-        ]
-      },
-      "paragraphs": [
+        },
         {
-          "index": 1,
-          "text": "COMMENTARY",
-          "marginLeft": 0,
-          "indent": 0,
-          "runs": [
+          "index": 33,
+          "row": 5,
+          "column": 1,
+          "bbox": [
+            33.6,
+            468,
+            232,
+            33
+          ],
+          "text": "Money Market Account",
+          "textPreview": "Money Market Account",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
             {
               "index": 1,
-              "text": "COMMENTARY",
-              "fontSize": 11.33,
-              "typeface": "Calibri",
-              "color": "#476E2C",
-              "bold": true
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "order": 31,
-      "kind": "shape",
-      "scope": "slide",
-      "aid": "sh/7mp0bi9s",
-      "id": "32",
-      "name": "Text 29",
-      "bbox": [
-        796.8,
-        340.8,
-        436.8,
-        244.8
-      ],
-      "geometry": "rect",
-      "text": "[Commentary on reconciliation quality: frequency, preparer, reviewer, any unresolved items. Note restricted cash, pledged deposits, or accounts excluded.]\n\n[Confirm whether reconciliations are reviewed by an independent party (CFO / external accountant) and whether any prior-period differences were identified.]",
-      "textPreview": "[Commentary on reconciliation quality: frequency, preparer, reviewer, any unresolved items. Note restricted cash, pledged deposits, or ac...",
-      "resolvedFontSize": 24,
-      "resolvedTextStyle": {
-        "anchor": 2,
-        "fontSize": 24,
-        "typeface": "Calibri",
-        "color": "tx1",
-        "alignment": "left",
-        "verticalAlignment": "middle",
-        "wrap": "square",
-        "insets": {
-          "top": 0,
-          "right": 0,
-          "bottom": 0,
-          "left": 0
-        }
-      },
-      "textLayout": {
-        "lineCount": 7,
-        "lines": [
-          {
-            "index": 1,
-            "text": "[Commentary on reconciliation quality: frequency, preparer, reviewer, any"
-          },
-          {
-            "index": 2,
-            "text": "unresolved items. Note restricted cash, pledged deposits, or accounts"
-          },
-          {
-            "index": 3,
-            "text": "excluded.]"
-          },
-          {
-            "index": 4,
-            "text": ""
-          },
-          {
-            "index": 5,
-            "text": "[Confirm whether reconciliations are reviewed by an independent party (CFO"
-          },
-          {
-            "index": 6,
-            "text": "/ external accountant) and whether any prior-period differences were"
-          },
-          {
-            "index": 7,
-            "text": "identified.]"
-          }
-        ]
-      },
-      "paragraphs": [
-        {
-          "index": 1,
-          "text": "[Commentary on reconciliation quality: frequency, preparer, reviewer, any unresolved items. Note restricted cash, pledged deposits, or accounts excluded.]",
-          "marginLeft": 0,
-          "indent": 0,
-          "runs": [
-            {
-              "index": 1,
-              "text": "[Commentary on reconciliation quality: frequency, preparer, reviewer, any unresolved items. Note restricted cash, pledged deposits, or accounts excluded.]",
-              "fontSize": 12.67,
-              "typeface": "Calibri",
-              "color": "#6D6E71"
+              "text": "Money Market Account",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "Money Market Account",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
             }
           ]
         },
         {
-          "index": 3,
-          "text": "[Confirm whether reconciliations are reviewed by an independent party (CFO / external accountant) and whether any prior-period differences were identified.]",
-          "marginLeft": 0,
-          "indent": 0,
-          "runs": [
+          "index": 34,
+          "row": 5,
+          "column": 2,
+          "bbox": [
+            265.6,
+            468,
+            100,
+            33
+          ],
+          "text": "$210k",
+          "textPreview": "$210k",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
             {
               "index": 1,
-              "text": "[Confirm whether reconciliations are reviewed by an independent party (CFO / external accountant) and whether any prior-period differences were identified.]",
-              "fontSize": 12.67,
-              "typeface": "Calibri",
-              "color": "#6D6E71"
+              "text": "$210k",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$210k",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 35,
+          "row": 5,
+          "column": 3,
+          "bbox": [
+            365.6,
+            468,
+            100,
+            33
+          ],
+          "text": "$225k",
+          "textPreview": "$225k",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$225k",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$225k",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 36,
+          "row": 5,
+          "column": 4,
+          "bbox": [
+            465.6,
+            468,
+            100,
+            33
+          ],
+          "text": "-",
+          "textPreview": "-",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "-",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "-",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 37,
+          "row": 5,
+          "column": 5,
+          "bbox": [
+            565.6,
+            468,
+            100,
+            33
+          ],
+          "text": "-",
+          "textPreview": "-",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "-",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "-",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 38,
+          "row": 5,
+          "column": 6,
+          "bbox": [
+            665.6,
+            468,
+            100,
+            33
+          ],
+          "text": "-",
+          "textPreview": "-",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "-",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "-",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 39,
+          "row": 5,
+          "column": 7,
+          "bbox": [
+            765.6,
+            468,
+            240,
+            33
+          ],
+          "text": "$0k",
+          "textPreview": "$0k",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$0k",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$0k",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 40,
+          "row": 5,
+          "column": 8,
+          "bbox": [
+            1005.6,
+            468,
+            240.48,
+            33
+          ],
+          "text": "Reconciled",
+          "textPreview": "Reconciled",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "Reconciled",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "Reconciled",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 41,
+          "row": 6,
+          "column": 1,
+          "bbox": [
+            33.6,
+            501,
+            232,
+            33
+          ],
+          "text": "Escrow Account",
+          "textPreview": "Escrow Account",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "Escrow Account",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "Escrow Account",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 42,
+          "row": 6,
+          "column": 2,
+          "bbox": [
+            265.6,
+            501,
+            100,
+            33
+          ],
+          "text": "$18k",
+          "textPreview": "$18k",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$18k",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$18k",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 43,
+          "row": 6,
+          "column": 3,
+          "bbox": [
+            365.6,
+            501,
+            100,
+            33
+          ],
+          "text": "$21k",
+          "textPreview": "$21k",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$21k",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$21k",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 44,
+          "row": 6,
+          "column": 4,
+          "bbox": [
+            465.6,
+            501,
+            100,
+            33
+          ],
+          "text": "$19k",
+          "textPreview": "$19k",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$19k",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$19k",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 45,
+          "row": 6,
+          "column": 5,
+          "bbox": [
+            565.6,
+            501,
+            100,
+            33
+          ],
+          "text": "$23k",
+          "textPreview": "$23k",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$23k",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$23k",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 46,
+          "row": 6,
+          "column": 6,
+          "bbox": [
+            665.6,
+            501,
+            100,
+            33
+          ],
+          "text": "$25k",
+          "textPreview": "$25k",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$25k",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$25k",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 47,
+          "row": 6,
+          "column": 7,
+          "bbox": [
+            765.6,
+            501,
+            240,
+            33
+          ],
+          "text": "($45k)",
+          "textPreview": "($45k)",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "($45k)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "($45k)",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 48,
+          "row": 6,
+          "column": 8,
+          "bbox": [
+            1005.6,
+            501,
+            240.48,
+            33
+          ],
+          "text": "Review Required",
+          "textPreview": "Review Required",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "Review Required",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "Review Required",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 49,
+          "row": 7,
+          "column": 1,
+          "bbox": [
+            33.6,
+            534,
+            232,
+            33
+          ],
+          "text": "Other Accounts (2)",
+          "textPreview": "Other Accounts (2)",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "Other Accounts (2)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "Other Accounts (2)",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 50,
+          "row": 7,
+          "column": 2,
+          "bbox": [
+            265.6,
+            534,
+            100,
+            33
+          ],
+          "text": "$34k",
+          "textPreview": "$34k",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$34k",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$34k",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 51,
+          "row": 7,
+          "column": 3,
+          "bbox": [
+            365.6,
+            534,
+            100,
+            33
+          ],
+          "text": "$36k",
+          "textPreview": "$36k",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$36k",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$36k",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 52,
+          "row": 7,
+          "column": 4,
+          "bbox": [
+            465.6,
+            534,
+            100,
+            33
+          ],
+          "text": "$39k",
+          "textPreview": "$39k",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$39k",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$39k",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 53,
+          "row": 7,
+          "column": 5,
+          "bbox": [
+            565.6,
+            534,
+            100,
+            33
+          ],
+          "text": "$41k",
+          "textPreview": "$41k",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$41k",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$41k",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 54,
+          "row": 7,
+          "column": 6,
+          "bbox": [
+            665.6,
+            534,
+            100,
+            33
+          ],
+          "text": "$43k",
+          "textPreview": "$43k",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$43k",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$43k",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 55,
+          "row": 7,
+          "column": 7,
+          "bbox": [
+            765.6,
+            534,
+            240,
+            33
+          ],
+          "text": "$1k",
+          "textPreview": "$1k",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$1k",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$1k",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 56,
+          "row": 7,
+          "column": 8,
+          "bbox": [
+            1005.6,
+            534,
+            240.48,
+            33
+          ],
+          "text": "Reconciled",
+          "textPreview": "Reconciled",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "Reconciled",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "Reconciled",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 57,
+          "row": 8,
+          "column": 1,
+          "bbox": [
+            33.6,
+            567,
+            232,
+            33
+          ],
+          "text": "Total Cash Balance",
+          "textPreview": "Total Cash Balance",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "Total Cash Balance",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "Total Cash Balance",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 58,
+          "row": 8,
+          "column": 2,
+          "bbox": [
+            265.6,
+            567,
+            100,
+            33
+          ],
+          "text": "$822k",
+          "textPreview": "$822k",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$822k",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$822k",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 59,
+          "row": 8,
+          "column": 3,
+          "bbox": [
+            365.6,
+            567,
+            100,
+            33
+          ],
+          "text": "$869k",
+          "textPreview": "$869k",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$869k",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$869k",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 60,
+          "row": 8,
+          "column": 4,
+          "bbox": [
+            465.6,
+            567,
+            100,
+            33
+          ],
+          "text": "$674k",
+          "textPreview": "$674k",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$674k",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$674k",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 61,
+          "row": 8,
+          "column": 5,
+          "bbox": [
+            565.6,
+            567,
+            100,
+            33
+          ],
+          "text": "$710k",
+          "textPreview": "$710k",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$710k",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$710k",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 62,
+          "row": 8,
+          "column": 6,
+          "bbox": [
+            665.6,
+            567,
+            100,
+            33
+          ],
+          "text": "$730k",
+          "textPreview": "$730k",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$730k",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$730k",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 63,
+          "row": 8,
+          "column": 7,
+          "bbox": [
+            765.6,
+            567,
+            240,
+            33
+          ],
+          "text": "($8k)",
+          "textPreview": "($8k)",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "($8k)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "($8k)",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 64,
+          "row": 8,
+          "column": 8,
+          "bbox": [
+            1005.6,
+            567,
+            240.48,
+            33
+          ],
+          "text": "Review Required",
+          "textPreview": "Review Required",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "Review Required",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "Review Required",
+                  "fontSize": 12.67,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": false
+                }
+              ]
             }
           ]
         }

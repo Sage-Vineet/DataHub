@@ -2540,39 +2540,39 @@ export function extractTemplateFields(slideNumber, layout) {
       return [
         ...pptTextField,
         ...getTemplateTokens(element.text)
-        .filter((tokenInfo) => !tokenValue(tokenInfo.token, GLOBAL_DETAIL_SENTINELS, element.text))
-        .map((tokenInfo) => {
-          const override = getFieldLabelOverride(slideNumber, element, tokenInfo);
-          const mirror = getMirroredFieldOverride(slideNumber, element, tokenInfo);
-          const mirrorElement = mirror
-            ? elements.find((candidate) => candidate.order === mirror.sourceOrder)
-            : null;
-          const mirrorToken = mirrorElement
-            ? getTemplateTokens(mirrorElement.text)[mirror.sourceTokenIndex]
-            : null;
-          return {
-            ...baseField,
-            id: makeTokenFieldId(slideNumber, element, tokenInfo),
-            text: tokenInfo.raw,
-            token: tokenInfo.token,
-            tokenKey: tokenInfo.key,
-            tokenIndex: tokenInfo.index,
-            occurrence: tokenInfo.occurrence,
-            label: override?.label || getFieldLabel(tokenInfo.raw),
-            prompt: override?.prompt || override?.label,
-            fieldKind: "text",
-            inputType: override?.inputType,
-            options: override?.options,
-            displayTemplate: override?.displayTemplate,
-            displayFormat: override?.displayFormat,
-            replaceFullText: override?.replaceFullText,
-            valueFieldId: mirrorElement && mirrorToken
-              ? makeTokenFieldId(mirror.sourceSlide, mirrorElement, mirrorToken)
-              : undefined,
-            hidden: Boolean(mirror?.hidden ?? mirror),
-            maxLength: override?.maxLength || getTokenMaxLength(tokenInfo.token),
-          };
-        }),
+          .filter((tokenInfo) => !tokenValue(tokenInfo.token, GLOBAL_DETAIL_SENTINELS, element.text))
+          .map((tokenInfo) => {
+            const override = getFieldLabelOverride(slideNumber, element, tokenInfo);
+            const mirror = getMirroredFieldOverride(slideNumber, element, tokenInfo);
+            const mirrorElement = mirror
+              ? elements.find((candidate) => candidate.order === mirror.sourceOrder)
+              : null;
+            const mirrorToken = mirrorElement
+              ? getTemplateTokens(mirrorElement.text)[mirror.sourceTokenIndex]
+              : null;
+            return {
+              ...baseField,
+              id: makeTokenFieldId(slideNumber, element, tokenInfo),
+              text: tokenInfo.raw,
+              token: tokenInfo.token,
+              tokenKey: tokenInfo.key,
+              tokenIndex: tokenInfo.index,
+              occurrence: tokenInfo.occurrence,
+              label: override?.label || getFieldLabel(tokenInfo.raw),
+              prompt: override?.prompt || override?.label,
+              fieldKind: "text",
+              inputType: override?.inputType,
+              options: override?.options,
+              displayTemplate: override?.displayTemplate,
+              displayFormat: override?.displayFormat,
+              replaceFullText: override?.replaceFullText,
+              valueFieldId: mirrorElement && mirrorToken
+                ? makeTokenFieldId(mirror.sourceSlide, mirrorElement, mirrorToken)
+                : undefined,
+              hidden: Boolean(mirror?.hidden ?? mirror),
+              maxLength: override?.maxLength || getTokenMaxLength(tokenInfo.token),
+            };
+          }),
       ];
     });
 }
@@ -3900,19 +3900,23 @@ function getSlide29ElementContent(element, fieldValues = {}) {
   const order = Number(element?.order || 0);
   if (order !== 28 || element?.kind !== "table") return null;
 
-  const override = fieldValues?.[getElementAutofillKey("element_override", 29, 28)];
-  if (!normalizeText(override)) return null;
-  const matrix = parseTableText(override, Number(element.rows || 0), Number(element.cols || 0));
+  const tableOverride = fieldValues?.[getElementAutofillKey("element_override", 29, 28)];
+  if (!normalizeText(tableOverride)) return null;
+  const matrix = parseTableText(tableOverride, Number(element.rows || 0), Number(element.cols || 0));
   const visibleTableRows = matrix
     .map((row, index) => row.some((cell) => normalizeText(cell)) ? index + 1 : null)
     .filter(Boolean);
+  const totalColumns = Number(element.cols || 0);
+  const visibleTableColumns = Array.from({ length: totalColumns }, (_, index) => index + 1)
+    .filter((column) => visibleTableRows.some((row) => normalizeText(matrix[row - 1]?.[column - 1])));
 
   return {
     kind: "table",
     tableMatrix: matrix,
     visibleTableRows: visibleTableRows.length ? visibleTableRows : undefined,
-    visibleTableColumns: Array.from({ length: Number(element.cols || 0) }, (_, index) => index + 1),
+    visibleTableColumns: visibleTableColumns.length ? visibleTableColumns : undefined,
     compactTableRows: true,
+    compactTableColumns: true,
     suppressTemplateFallback: true,
   };
 }
@@ -4159,6 +4163,7 @@ function getSlide29BankRows(bankReconciliation = {}) {
         ? Number(bank.variance)
         : (isFiniteSlide29Number(bank.bookBalance) ? Number(bank.bankBalance || 0) - Number(bank.bookBalance) : null),
       status: bank.status || "",
+      byYear: bank.byYear || null,
     }));
   }
 
@@ -4171,7 +4176,29 @@ function getSlide29BankRows(bankReconciliation = {}) {
       ? Number(account.variance)
       : (isFiniteSlide29Number(account.bookBalance) ? Number(account.bankBalance || 0) - Number(account.bookBalance) : null),
     status: account.status || "",
+    byYear: null,
   }));
+}
+
+function getSlide29AccountRows(bankReconciliation = {}) {
+  return (bankReconciliation.accounts || []).map((account) => {
+    const bankName = String(account.bankName || "").trim();
+    const accountName = String(account.name || "").trim();
+    const label = accountName && bankName && !accountName.toLowerCase().includes(bankName.toLowerCase())
+      ? `${bankName} ${accountName}`
+      : (accountName || bankName || "Bank account");
+    return {
+      name: label,
+      accountCount: 1,
+      bankBalance: Number(account.bankBalance || 0),
+      bookBalance: isFiniteSlide29Number(account.bookBalance) ? Number(account.bookBalance) : null,
+      variance: isFiniteSlide29Number(account.variance)
+        ? Number(account.variance)
+        : (isFiniteSlide29Number(account.bookBalance) ? Number(account.bankBalance || 0) - Number(account.bookBalance) : null),
+      status: account.status || "",
+      byYear: account.byYear || null,
+    };
+  });
 }
 
 function truncateSlide29CellText(value, maxLength = 32) {
@@ -4188,6 +4215,21 @@ function aggregateSlide29BankRows(rows = [], name = "Other banks") {
   const variance = rowsWithVariance.length
     ? rowsWithVariance.reduce((sum, row) => sum + Number(row.variance || 0), 0)
     : (bookBalance !== null ? rows.reduce((sum, row) => sum + Number(row.bankBalance || 0), 0) - bookBalance : null);
+  const years = Array.from(new Set(rows.flatMap((row) => Object.keys(row.byYear || {}))));
+  const byYear = years.length
+    ? Object.fromEntries(years.map((year) => {
+      const entries = rows.map((row) => row.byYear?.[year]).filter(Boolean);
+      return [year, {
+        status: entries.some((entry) => getSlide29VarianceStatus(entry.variance, entry.status) === "Review")
+          ? "Review"
+          : (entries.length ? "Reconciled" : ""),
+        variance: entries.some((entry) => isFiniteSlide29Number(entry.variance))
+          ? entries.reduce((sum, entry) => sum + Number(entry.variance || 0), 0)
+          : null,
+        bankBalance: entries.length ? entries.reduce((sum, entry) => sum + Number(entry.bankBalance || 0), 0) : null,
+      }];
+    }))
+    : null;
   return {
     name,
     accountCount: rows.reduce((sum, row) => sum + Number(row.accountCount || 1), 0),
@@ -4195,73 +4237,68 @@ function aggregateSlide29BankRows(rows = [], name = "Other banks") {
     bookBalance,
     variance,
     status: rows.some((row) => getSlide29VarianceStatus(row.variance, row.status) === "Review") ? "Review" : "Reconciled",
+    byYear,
   };
 }
 
-function buildSlide29BankReconciliationTable(bankReconciliation = {}, totals = {}) {
-  const allBanks = getSlide29BankRows(bankReconciliation)
+function formatSlide29FiscalYearLabel(year) {
+  const text = String(year || "").trim();
+  return text.length >= 2 ? `FY${text.slice(-2)}` : text;
+}
+
+function buildSlide29BankReconciliationOverviewTable(bankReconciliation = {}, totals = {}) {
+  const years = Array.isArray(bankReconciliation.historyYears) ? bankReconciliation.historyYears.slice(-5) : [];
+  const hasHistory = years.length > 0;
+  const singleYearLabel = String(bankReconciliation.date || "").slice(0, 4) || "Current";
+  const yearLabels = hasHistory ? years.map(formatSlide29FiscalYearLabel) : [singleYearLabel];
+  const yearCellAmount = (entry) => (entry && isFiniteSlide29Number(entry.bankBalance) ? formatSlide29Money(entry.bankBalance, "k") : "-");
+
+  const allAccounts = getSlide29AccountRows(bankReconciliation)
     .sort((a, b) =>
       Math.abs(Number(b.variance || 0)) - Math.abs(Number(a.variance || 0)) ||
       Number(b.bankBalance || 0) - Number(a.bankBalance || 0) ||
       String(a.name || "").localeCompare(String(b.name || "")));
-  const maxBankRows = 6;
-  const visibleBanks = allBanks.length > maxBankRows
+
+  const maxAccountRows = 6;
+  const visibleAccounts = allAccounts.length > maxAccountRows
     ? [
-      ...allBanks.slice(0, maxBankRows - 1),
-      aggregateSlide29BankRows(allBanks.slice(maxBankRows - 1), `Other banks (${allBanks.length - maxBankRows + 1})`),
+      ...allAccounts.slice(0, maxAccountRows - 1),
+      aggregateSlide29BankRows(allAccounts.slice(maxAccountRows - 1), `Other accounts (${allAccounts.length - maxAccountRows + 1})`),
     ]
-    : allBanks;
+    : allAccounts;
+
+  const rows = visibleAccounts.map((account) => {
+    const label = truncateSlide29CellText(account.name, 28);
+    const status = getSlide29VarianceStatus(account.variance, account.status);
+    const yearCells = hasHistory
+      ? years.map((year) => yearCellAmount(account.byYear?.[year]))
+      : [isFiniteSlide29Number(account.bankBalance) ? formatSlide29Money(account.bankBalance, "k") : "-"];
+    return [
+      label,
+      ...yearCells,
+      isFiniteSlide29Number(account.variance) ? formatSlide29Money(account.variance, "k") : "-",
+      status === "Review" ? "Review Required" : "Reconciled",
+    ];
+  });
+
   const totalVariance = isFiniteSlide29Number(totals.variance)
     ? Number(totals.variance)
     : (isFiniteSlide29Number(totals.bookBalance) ? Number(totals.bankBalance || 0) - Number(totals.bookBalance) : null);
-
-  const rows = visibleBanks.map((bank) => {
-    const label = `${truncateSlide29CellText(bank.name)}${Number(bank.accountCount || 0) > 1 ? ` (${bank.accountCount} accts)` : ""}`;
-    const status = getSlide29VarianceStatus(bank.variance, bank.status);
-    const difference = isFiniteSlide29Number(bank.variance)
-      ? `${formatSlide29Money(bank.variance, "k")} ${status}`
-      : "Book match pending";
-    return [
-      label,
-      formatSlide29Money(bank.bookBalance, "M"),
-      formatSlide29Money(bank.bankBalance, "M"),
-      difference,
-    ].join(" | ");
-  });
-
+  const totalStatus = getSlide29VarianceStatus(totalVariance);
+  const totalsByYear = aggregateSlide29BankRows(allAccounts, "Total").byYear || {};
   rows.push([
     "Total cash balance",
-    formatSlide29Money(totals.bookBalance, "M"),
-    formatSlide29Money(totals.bankBalance, "M"),
-    isFiniteSlide29Number(totalVariance)
-      ? `${formatSlide29Money(totalVariance, "k")} ${getSlide29VarianceStatus(totalVariance)}`
-      : "Book match pending",
-  ].join(" | "));
+    ...(hasHistory
+      ? years.map((year) => yearCellAmount(totalsByYear[year]))
+      : [isFiniteSlide29Number(totals.bankBalance) ? formatSlide29Money(totals.bankBalance, "k") : "-"]),
+    isFiniteSlide29Number(totalVariance) ? formatSlide29Money(totalVariance, "k") : "-",
+    totalStatus === "Review" ? "Review Required" : "Reconciled",
+  ]);
 
   return [
-    "Bank / account | Book / GL | Bank stmt. | Difference / status",
-    ...rows.slice(0, 7),
+    ["Bank Account", ...yearLabels, "Latest Variance", "Status"].join(" | "),
+    ...rows.map((row) => row.join(" | ")),
   ].join("\n");
-}
-
-function buildSlide29BankReconciliationCommentary({ bankReconciliation = {}, reconciliationDate = "", variance = null, bankCount = 0 }) {
-  const bankRows = getSlide29BankRows(bankReconciliation);
-  const accountCount = bankRows.reduce((sum, row) => sum + Number(row.accountCount || 1), 0);
-  const unmatchedCount = bankRows.filter((row) => !isFiniteSlide29Number(row.bookBalance)).length;
-  const reviewBanks = bankRows
-    .filter((row) => getSlide29VarianceStatus(row.variance, row.status) === "Review")
-    .map((row) => truncateSlide29CellText(row.name, 28))
-    .slice(0, 3);
-
-  if (isFiniteSlide29Number(variance) && Math.abs(Number(variance)) <= 0.01 && unmatchedCount === 0) {
-    return `Bank statement cash reconciles to book/GL cash as of ${reconciliationDate} across ${bankCount} bank(s) and ${accountCount} account(s).`;
-  }
-
-  const varianceText = isFiniteSlide29Number(variance)
-    ? `Net reconciling difference is ${formatSlide29Money(Math.abs(Number(variance)), "k")} as of ${reconciliationDate}.`
-    : `Book/GL matching is pending for ${unmatchedCount} bank(s) as of ${reconciliationDate}.`;
-  const reviewText = reviewBanks.length ? ` Review focus: ${reviewBanks.join(", ")}.` : "";
-  return `${varianceText}${reviewText} Confirm support before circulation.`;
 }
 
 function formatAutoFillPercent(value, digits = CIM_FINANCIAL_MAX_DECIMALS) {
@@ -4984,6 +5021,11 @@ export function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
     const sourceBankLabel = bankCount > 1
       ? `${bankCount} banks reviewed`
       : (bankReconciliation.bankName || bankRows[0]?.name || "Bank statement");
+    const slide29TableContent = buildSlide29BankReconciliationOverviewTable(bankReconciliation, {
+      bookBalance,
+      bankBalance,
+      variance,
+    });
     add(29, 6, 0, reconciliationDate);
     add(29, 9, 0, formatAutoFillMillions(bookBalance) || "0");
     add(29, 14, 0, formatAutoFillMillions(bankBalance) || "0");
@@ -4992,17 +5034,7 @@ export function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
     add(29, 19, 0, formatAutoFillThousands(Math.abs(variance)) || "0");
     add(29, 21, 0, String(bankReconciliation.itemCount || 0));
     addElementOverride(29, 24, bankReconciliation.frequency || "Monthly");
-    addElementOverride(29, 28, buildSlide29BankReconciliationTable(bankReconciliation, {
-      bookBalance,
-      bankBalance,
-      variance,
-    }));
-    addElementOverride(29, 31, buildSlide29BankReconciliationCommentary({
-      bankReconciliation,
-      reconciliationDate,
-      variance,
-      bankCount,
-    }));
+    addElementOverride(29, 28, slide29TableContent);
     addElementOverride(29, 32, `Source: ${financialSource}; Quality of Earnings - Bank Reconciliation; ${bankCount || 0} bank(s), ${accountCount || 0} account(s); as of ${reconciliationDate}.`);
   }
 
@@ -5721,8 +5753,8 @@ export function SlideCanvas({
             <button
               key={`${slideNumber}-${element.order}-${element.id}`}
               type="button"
-            onClick={() => onFieldFocus(getFieldValueKey(field) || field.id)}
-            className={`absolute overflow-hidden rounded-[2px] border border-dashed outline-none transition ${[field.id, getFieldValueKey(field)].includes(activeFieldId)
+              onClick={() => onFieldFocus(getFieldValueKey(field) || field.id)}
+              className={`absolute overflow-hidden rounded-[2px] border border-dashed outline-none transition ${[field.id, getFieldValueKey(field)].includes(activeFieldId)
                 ? "border-[#8BC53D] ring-2 ring-[#8BC53D]/30"
                 : "border-[#8BC53D]/60 hover:border-[#8BC53D]"
                 }`}
@@ -10192,10 +10224,10 @@ export default function WorkspaceCimPrep() {
   const activeBuilderPageState = normalizedBuilderState.pagesByKey[activeBuilderSlideKey] || {};
   const activeBuilderPage = activeBuilderPageIndex === 0
     ? buildCimBuilderPage(
-        activeBuilderBaseElements,
-        activeBuilderPageState,
-        getCimBuilderTemplateBackground(styledLayouts[activeSlide]),
-      )
+      activeBuilderBaseElements,
+      activeBuilderPageState,
+      getCimBuilderTemplateBackground(styledLayouts[activeSlide]),
+    )
     : sanitizeCimBuilderPage(activeBuilderExtraPages[activeBuilderPageIndex - 1] || createBlankBuilderPage());
   const activeBuilderPageTabs = [
     { index: 0, label: activeBuilderPageState.deleted ? "Removed" : "Template" },

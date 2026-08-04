@@ -1756,16 +1756,15 @@ export function buildCimFinancialValidation({
   };
 }
 
-function normalizeBankReconciliationSnapshot(payload = {}, endDate = "") {
-  const data = payload?.found && payload?.data ? payload.data : payload;
-  const endMonth = String(endDate || "").slice(0, 7);
+function normalizeRowStatus(status, variance) {
+  if (/review|open|variance|unreconciled|needs/i.test(String(status || ""))) return "Review";
+  if (variance !== null && Math.abs(variance) > 0.01) return "Review";
+  return "Reconciled";
+}
+
+function extractBankReconciliationAccountRows(data, endMonth, endDate) {
   const accountRows = [];
   const balanceSheetAccounts = normalizeBalanceSheetBankAccounts(data);
-  const normalizeRowStatus = (status, variance) => {
-    if (/review|open|variance|unreconciled|needs/i.test(String(status || ""))) return "Review";
-    if (variance !== null && Math.abs(variance) > 0.01) return "Review";
-    return "Reconciled";
-  };
 
   if (Array.isArray(data?.accounts)) {
     data.accounts.forEach((account) => {
@@ -1833,7 +1832,11 @@ function normalizeBankReconciliationSnapshot(payload = {}, endDate = "") {
     });
   });
 
-  const latestMonth = accountRows.map((row) => row.month).filter(Boolean).sort().pop() || endMonth;
+  return accountRows;
+}
+
+function summarizeBankReconciliationRows(accountRows = [], endDate = "", data = {}) {
+  const latestMonth = accountRows.map((row) => row.month).filter(Boolean).sort().pop() || "";
   const latestRows = accountRows;
   const bankBalance = latestRows.reduce((sum, row) => sum + row.bankBalance, 0);
   const rowsWithBookBalance = latestRows.filter((row) => row.bookBalance !== null);
@@ -1913,6 +1916,121 @@ function normalizeBankReconciliationSnapshot(payload = {}, endDate = "") {
     banks: bankSummaries,
     bankCount: bankSummaries.length,
     balanceSheetMatchCount: rowsWithBookBalance.length,
+  };
+}
+
+function normalizeBankReconciliationSnapshot(payload = {}, endDate = "") {
+  const endMonth = String(endDate || "").slice(0, 7);
+  const yearsPayload = payload && typeof payload === "object" && payload.years && typeof payload.years === "object"
+    ? payload.years
+    : null;
+
+  if (!yearsPayload) {
+    const data = payload?.found && payload?.data ? payload.data : payload;
+    const accountRows = extractBankReconciliationAccountRows(data, endMonth, endDate);
+    return { ...summarizeBankReconciliationRows(accountRows, endDate, data), historyYears: [] };
+  }
+
+  const historyYears = Object.keys(yearsPayload)
+    .map(Number)
+    .filter((year) => Number.isFinite(year) && year > 0)
+    .sort((a, b) => a - b)
+    .slice(-5);
+
+  const summaryByYear = {};
+  historyYears.forEach((year) => {
+    const yearPayload = yearsPayload[year] ?? yearsPayload[String(year)];
+    const yearData = yearPayload?.found && yearPayload?.data ? yearPayload.data : yearPayload;
+    const accountRows = extractBankReconciliationAccountRows(yearData, endMonth, endDate);
+    summaryByYear[year] = summarizeBankReconciliationRows(accountRows, endDate, yearData);
+  });
+
+  const yearsWithData = historyYears.filter((year) => summaryByYear[year]?.hasData);
+  const latestYear = yearsWithData[yearsWithData.length - 1] ?? historyYears[historyYears.length - 1];
+  const latestSummary = summaryByYear[latestYear] || summarizeBankReconciliationRows([], endDate, {});
+
+  const bankHistoryByKey = new Map();
+  historyYears.forEach((year) => {
+    (summaryByYear[year]?.banks || []).forEach((bank) => {
+      const key = String(bank.bankName || "Bank").trim().toLowerCase();
+      const existing = bankHistoryByKey.get(key) || { bankName: bank.bankName, byYear: {} };
+      existing.byYear[year] = {
+        status: bank.status,
+        variance: bank.variance,
+        bankBalance: bank.bankBalance,
+        bookBalance: bank.bookBalance,
+        accountCount: bank.accountCount,
+      };
+      existing.bankName = bank.bankName || existing.bankName;
+      bankHistoryByKey.set(key, existing);
+    });
+  });
+
+  const banksWithHistory = (latestSummary.banks || []).map((bank) => ({
+    ...bank,
+    byYear: bankHistoryByKey.get(String(bank.bankName || "Bank").trim().toLowerCase())?.byYear || {},
+  }));
+  bankHistoryByKey.forEach((entry, key) => {
+    if (banksWithHistory.some((bank) => String(bank.bankName || "Bank").trim().toLowerCase() === key)) return;
+    const mostRecentYear = [...historyYears].reverse().find((year) => entry.byYear[year]);
+    const mostRecentEntry = mostRecentYear ? entry.byYear[mostRecentYear] : {};
+    banksWithHistory.push({
+      bankName: entry.bankName,
+      accountCount: mostRecentEntry.accountCount || 0,
+      bankBalance: mostRecentEntry.bankBalance || 0,
+      bookBalance: mostRecentEntry.bookBalance ?? null,
+      variance: mostRecentEntry.variance ?? null,
+      status: mostRecentEntry.status || "Reconciled",
+      hasBookBalance: mostRecentEntry.bookBalance != null,
+      hasVariance: mostRecentEntry.variance != null,
+      accounts: [],
+      byYear: entry.byYear,
+    });
+  });
+
+  const accountKeyOf = (row) => `${String(row.bankName || "Bank").trim().toLowerCase()}::${String(row.name || "").trim().toLowerCase()}`;
+  const accountHistoryByKey = new Map();
+  historyYears.forEach((year) => {
+    (summaryByYear[year]?.accounts || []).forEach((account) => {
+      const key = accountKeyOf(account);
+      const existing = accountHistoryByKey.get(key) || { name: account.name, bankName: account.bankName, byYear: {} };
+      existing.byYear[year] = {
+        status: account.status,
+        variance: account.variance,
+        bankBalance: account.bankBalance,
+        bookBalance: account.bookBalance,
+      };
+      existing.name = account.name || existing.name;
+      existing.bankName = account.bankName || existing.bankName;
+      accountHistoryByKey.set(key, existing);
+    });
+  });
+
+  const accountsWithHistory = (latestSummary.accounts || []).map((account) => ({
+    ...account,
+    byYear: accountHistoryByKey.get(accountKeyOf(account))?.byYear || {},
+  }));
+  accountHistoryByKey.forEach((entry, key) => {
+    if (accountsWithHistory.some((account) => accountKeyOf(account) === key)) return;
+    const mostRecentYear = [...historyYears].reverse().find((year) => entry.byYear[year]);
+    const mostRecentEntry = mostRecentYear ? entry.byYear[mostRecentYear] : {};
+    accountsWithHistory.push({
+      name: entry.name,
+      bankName: entry.bankName,
+      bankBalance: mostRecentEntry.bankBalance || 0,
+      bookBalance: mostRecentEntry.bookBalance ?? null,
+      variance: mostRecentEntry.variance ?? null,
+      status: mostRecentEntry.status || "Reconciled",
+      byYear: entry.byYear,
+    });
+  });
+
+  return {
+    ...latestSummary,
+    historyYears,
+    banks: banksWithHistory,
+    bankCount: banksWithHistory.length,
+    accounts: accountsWithHistory,
   };
 }
 
@@ -2314,14 +2432,31 @@ export async function loadCimFinancialAutofillSnapshot({
   const sortedAscending = sortYearsDescending(selectedYears).reverse();
   const latestYear = selectedFiscalYear || sortedAscending[sortedAscending.length - 1] || new Date().getFullYear();
   const sourceLedger = await sourceLedgerPromise;
+  const bankReconciliationHistorySupported = ![
+    REPORT_SOURCE_KEYS.QUICKBOOKS,
+    REPORT_SOURCE_KEYS.MANUAL_UPLOAD,
+    REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL,
+  ].includes(normalizedSource);
   const [bankPayload, taxPayload, taxProfitLossPayload] = await Promise.all([
-    getCimBankReconciliationRequest({
-      clientId,
-      sourceKey: normalizedSource,
-      datasetVersion,
-      keyReportVersionId: selectedReportVersionId,
-      fiscalYear: selectedFiscalYear,
-    }).catch(() => null),
+    bankReconciliationHistorySupported
+      ? Promise.all(sortedAscending.map((year) => getCimBankReconciliationRequest({
+        clientId,
+        sourceKey: normalizedSource,
+        datasetVersion,
+        keyReportVersionId: selectedReportVersionId,
+        fiscalYear: year,
+      }).catch(() => null))).then((responses) => ({
+        years: Object.fromEntries(sortedAscending
+          .map((year, index) => [year, responses[index]])
+          .filter(([, response]) => response)),
+      }))
+      : getCimBankReconciliationRequest({
+        clientId,
+        sourceKey: normalizedSource,
+        datasetVersion,
+        keyReportVersionId: selectedReportVersionId,
+        fiscalYear: selectedFiscalYear,
+      }).catch(() => null),
     normalizedSource === REPORT_SOURCE_KEYS.QUICKBOOKS
       ? Promise.all(sortedAscending.map((year) => getCimTaxReconciliationRequest({
         clientId,
