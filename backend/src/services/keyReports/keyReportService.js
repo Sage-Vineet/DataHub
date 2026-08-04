@@ -147,9 +147,9 @@ async function nextVersionNumber(companyId) {
   return (data?.version_number || 0) + 1;
 }
 
-// Create a new version. If copyFromVersionId is supplied (or a prior version
-// exists), its file mappings are copied as a starting point — the user can edit
-// before syncing. The new version is NOT auto-activated (must be synced first).
+// Create a new version. It starts with no file mappings unless an explicit
+// copyFromVersionId is supplied (used by duplicateVersion to clone another
+// version's mappings). The new version is NOT auto-activated (must be synced first).
 async function createVersion(companyId, { versionName, copyFromVersionId } = {}, userId = null) {
   if (!companyId) throw new Error("companyId is required.");
   const versionNumber = await nextVersionNumber(companyId);
@@ -170,14 +170,8 @@ async function createVersion(companyId, { versionName, copyFromVersionId } = {},
   if (error) throw error;
   const version = normalizeVersion(data);
 
-  // Seed mappings from a prior version (explicit, or the most recent other one).
-  let sourceVersionId = copyFromVersionId || null;
-  if (!sourceVersionId) {
-    const others = (await listVersions(companyId)).filter((v) => v.id !== version.id);
-    if (others.length) sourceVersionId = others[0].id; // newest-first
-  }
-  if (sourceVersionId) {
-    const priorMappings = await listMappings(sourceVersionId);
+  if (copyFromVersionId) {
+    const priorMappings = await listMappings(copyFromVersionId);
     for (const m of priorMappings) {
       await addMapping(
         version.id,

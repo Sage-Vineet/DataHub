@@ -116,7 +116,7 @@ const STAGE_INDEX_BY_KEY = Object.fromEntries(STAGES.map((s, i) => [s.key, i]));
 // Animation / polling cadence.
 const CREEP_PER_SEC = 5; // gentle within-stage fill so a long stage isn't frozen
 const TICK_MS = 250;
-const POLL_MS = 1200; // how often we ask the backend which stage it's really on
+const POLL_MS = 10000; // how often we ask the backend which stage it's really on — the sync hasn't logged a stage marker yet any sooner
 const STALL_AT = 98; // cap until the generation request actually resolves
 
 // Target fill for a stage index: the END of that stage's weighted band, capped
@@ -241,11 +241,16 @@ export default function GenerateProgressPanel({
         /* transient poll failure — keep last known progress */
       }
     };
-    poll(); // fire immediately, then on an interval
-    const id = setInterval(poll, POLL_MS);
+    // Wait a full cycle before the first poll too, then repeat on the same interval.
+    let intervalId;
+    const delayId = setTimeout(() => {
+      poll();
+      intervalId = setInterval(poll, POLL_MS);
+    }, POLL_MS);
     return () => {
       cancelled = true;
-      clearInterval(id);
+      clearTimeout(delayId);
+      clearInterval(intervalId);
     };
   }, [status, versionId]);
 
