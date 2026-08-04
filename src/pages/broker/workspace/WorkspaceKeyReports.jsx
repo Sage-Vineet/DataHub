@@ -402,9 +402,10 @@ export default function WorkspaceKeyReports() {
   const handleCreateVersion = async () => {
     setBusy(true);
     try {
-      await createKeyReportVersion(clientId, {});
+      const res = await createKeyReportVersion(clientId, {});
       await loadVersions();
-      notify("New version created (mappings copied from the latest version).", "success");
+      if (res?.version?.id) setSelectedVersionId(res.version.id);
+      notify("New version created.", "success");
     } catch (e) {
       notify(e.message || "Failed to create version.", "error");
     } finally {
