@@ -6,7 +6,9 @@
       "Bash(node -e ' *)",
       "Bash(node -c src/services/keyReports/accountNameMatching.js)",
       "Bash(node \"/c/Users/Swapnil/AppData/Local/Temp/claude/d--Company-DataHub-2-DataHub/c4501242-cb45-4774-bacf-e88dbb16cf7d/scratchpad/test_net_non_operating.js\")",
-      "Bash(node \"/c/Users/Swapnil/AppData/Local/Temp/claude/d--Company-DataHub-2-DataHub/c4501242-cb45-4774-bacf-e88dbb16cf7d/scratchpad/test_numeric_code_gate.js\")"
+      "Bash(node \"/c/Users/Swapnil/AppData/Local/Temp/claude/d--Company-DataHub-2-DataHub/c4501242-cb45-4774-bacf-e88dbb16cf7d/scratchpad/test_numeric_code_gate.js\")",
+      "Bash(grep -rln 'from\\(\"reminders\"\\)\\\\|from\\(`reminders' /Users/shivrajechaudhari/Development/Projects/DataHub/backend/src)",
+      "Bash(awk -F: '$1>10500')"
     ]
   }
 }
