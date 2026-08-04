@@ -421,9 +421,19 @@ function normalizeHierarchyLabel(label) {
 // Matches the pre-existing unified-hierarchy convention this codebase already
 // expects for P&L accounts (see validateHierarchyConsistency's EXPECTED
 // table), extended to a full fixed anchor per statement side.
-const ASSET_FIXED_PREFIX = Object.freeze(["Total Assets"]);
+// Per the Balance Sheet level specification there are exactly THREE fixed
+// Balance Sheet anchors, and everything after them is document-derived:
+//   asset     -> L1 "Total Assets",                L2 "Total Assets"
+//   liability -> L1 "Total Liabilities and Equity", L2 "Total Liabilities"
+//   equity    -> L1 "Total Liabilities and Equity", L2 "Total Equity",
+//                L3 "Total Equity",                 L4 "Equity"
+// applyBalanceSheetCoaPrefix consumes any leading document labels that already
+// restate the anchor, so the anchor is never duplicated by the document's own
+// equivalent heading (e.g. a document heading "Equity" under "Liabilities and
+// Equity" is absorbed by the anchor rather than repeated after it).
+const ASSET_FIXED_PREFIX = Object.freeze(["Total Assets", "Total Assets"]);
 const LIABILITY_FIXED_PREFIX = Object.freeze(["Total Liabilities and Equity", "Total Liabilities"]);
-const EQUITY_FIXED_PREFIX = Object.freeze(["Total Liabilities and Equity", "Total Equity"]);
+const EQUITY_FIXED_PREFIX = Object.freeze(["Total Liabilities and Equity", "Total Equity", "Total Equity", "Equity"]);
 
 // Profit & Loss ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ONE shared anchor for BOTH sides of the income statement.
 // Revenue and expense/COGS accounts are SIBLINGS directly under "Net Income";
@@ -439,9 +449,11 @@ const EQUITY_FIXED_PREFIX = Object.freeze(["Total Liabilities and Equity", "Tota
 // document's.
 const PL_FIXED_PREFIX = Object.freeze(["Total Liabilities and Equity", "Total Equity", "Total Equity"]);
 const PROFIT_AND_LOSS_COA_PREFIX = PL_FIXED_PREFIX;
-const BS_ASSET_COA_PREFIX = Object.freeze(["Total Assets"]);
-const BS_LIABILITY_COA_PREFIX = Object.freeze(["Total Liabilities and Equity", "Total Liabilities"]);
-const BS_EQUITY_COA_PREFIX = Object.freeze(["Total Liabilities and Equity", "Total Equity"]);
+// Same three anchors as ASSET/LIABILITY/EQUITY_FIXED_PREFIX above -- aliased so
+// getBalanceSheetPrefix and fixedPrefixFor can never drift apart.
+const BS_ASSET_COA_PREFIX = ASSET_FIXED_PREFIX;
+const BS_LIABILITY_COA_PREFIX = LIABILITY_FIXED_PREFIX;
+const BS_EQUITY_COA_PREFIX = EQUITY_FIXED_PREFIX;
 
 function fixedPrefixFor(accountType) {
   if (accountType === "asset") return ASSET_FIXED_PREFIX;
@@ -1047,6 +1059,19 @@ function balanceSheetPrefixKey(label) {
   if (normalized === "total assets") return "total assets";
   if (normalized === "total liabilities and equity") return "total liabilities and equity";
   if (normalized === "total equity") return "total equity";
+  // A document heading states the section WITHOUT the "Total" wording
+  // ("Assets", "Liabilities and Equity", "Equity", ...) far more often than
+  // with it. Those are the same structural concept as the corresponding
+  // anchor label, so they must compare equal -- otherwise the anchor is
+  // prepended AND the document's own equivalent heading is re-appended after
+  // it ("Total Assets > Total Assets > Assets > Current Assets"), the exact
+  // duplication the level specification forbids. This is the SAME closed
+  // vocabulary isRedundantTopLevelHeading already recognises for the same
+  // purpose -- no new labels, no keyword matching, no per-client rules.
+  if (normalized === "assets" || normalized === "asset") return "total assets";
+  if (normalized === "liabilities and equity") return "total liabilities and equity";
+  if (normalized === "liabilities" || normalized === "liability") return "total liabilities";
+  if (normalized === "equity") return "total equity";
   return normalized;
 }
 
@@ -1106,19 +1131,72 @@ function isEquivalentPrefixLabel(a, b) {
 function stripAnyKnownCoaPrefix(path) {
   let out = (Array.isArray(path) ? path : [])
     .filter((value) => typeof value === "string" && value.trim().length > 0);
-  const knownPrefixes = [PL_FIXED_PREFIX, LIABILITY_FIXED_PREFIX, EQUITY_FIXED_PREFIX, ASSET_FIXED_PREFIX];
+  // LONGEST anchor first. CONFIRMED ROOT CAUSE (fixed here): these were tried
+  // in declaration order, and the 3-label P&L anchor
+  // ("Total Liabilities and Equity > Total Equity > Total Equity") is a proper
+  // PREFIX of the 4-label equity anchor (which appends "Equity"). An equity
+  // path therefore had only its first 3 labels stripped, leaving the anchor's
+  // own 4th label "Equity" behind to be re-appended as if it were a
+  // document-derived parent -- producing a duplicated "Equity > Equity", the
+  // exact prefix/document duplication the level specification forbids.
+  // Matching the most specific (longest) anchor first removes the ambiguity
+  // structurally, with no per-anchor special-casing.
+  //
+  // SECOND CONFIRMED ROOT CAUSE (also fixed here): an anchor may deliberately
+  // REPEAT a label (the asset anchor is "Total Assets" twice; the equity and
+  // P&L anchors repeat "Total Equity"). A real document never repeats its own
+  // heading, so requiring the whole literal anchor to match meant nothing was
+  // stripped at all -- and the document's own equivalent heading ("Assets")
+  // was then re-appended after the anchor, yielding
+  // "Total Assets > Total Assets > Assets > Current Assets > ...". The anchor's
+  // repetition is a presentation convention, not something the document must
+  // mirror, so matching collapses consecutive duplicate anchor labels and
+  // consumes leading document labels GREEDILY (as many as sequentially match),
+  // instead of demanding a full-length positional match.
+  const collapse = (prefix) => prefix.filter(
+    (label, i) => i === 0 || !isEquivalentPrefixLabel(prefix[i - 1], label),
+  );
+  // BOTH forms of every anchor are candidates -- the LITERAL anchor and its
+  // duplicate-collapsed form -- because both shapes legitimately occur:
+  //   * populateHierarchyTree builds paths by prepending fixedPrefixFor
+  //     VERBATIM, so those paths DO contain the anchor's repeated label
+  //     (e.g. "Total Equity > Total Equity"); only the literal form consumes
+  //     them fully.
+  //   * referenceTreeBuilder builds paths from the DOCUMENT's own headings,
+  //     which never repeat themselves; only the collapsed form matches those.
+  // Trying only one form under-consumes the other shape and leaves an anchor
+  // label behind to be re-appended as a phantom document level.
+  const knownPrefixes = [PL_FIXED_PREFIX, LIABILITY_FIXED_PREFIX, EQUITY_FIXED_PREFIX, ASSET_FIXED_PREFIX]
+    .flatMap((prefix) => {
+      const collapsed = collapse(prefix);
+      return collapsed.length === prefix.length ? [prefix] : [prefix, collapsed];
+    });
+  // Take the anchor that consumes the MOST leading labels, not the first that
+  // consumes any. The Balance Sheet anchors deliberately SHARE their first
+  // label ("Total Liabilities and Equity" heads both the liability and equity
+  // anchors), so a first-match-wins scan could consume just that shared label
+  // via the wrong anchor and then be unable to align the rest -- leaving the
+  // document's own "Liabilities" heading to be re-appended after the anchor
+  // that already expresses it. Longest-consumption is unambiguous and needs no
+  // per-anchor ordering.
   let stripped = true;
   while (stripped) {
     stripped = false;
+    let best = 0;
     for (const prefix of knownPrefixes) {
-      if (
-        out.length >= prefix.length &&
-        prefix.every((label, index) => isEquivalentPrefixLabel(out[index], label))
+      let consumed = 0;
+      while (
+        consumed < prefix.length &&
+        consumed < out.length &&
+        isEquivalentPrefixLabel(out[consumed], prefix[consumed])
       ) {
-        out = out.slice(prefix.length);
-        stripped = true;
-        break;
+        consumed += 1;
       }
+      if (consumed > best) best = consumed;
+    }
+    if (best > 0) {
+      out = out.slice(best);
+      stripped = true;
     }
   }
   return out;
@@ -1191,6 +1269,63 @@ function buildTreeHierarchyLookup(tree, statementType) {
         matchScore: 1,
       });
       lookup.set(key, bucket);
+    } else if (node.name && node.nodeType && node.nodeType !== "REPORT") {
+      // STRUCTURAL node (a section header / "Total for X" rollup), registered
+      // as a LOWER-PRIORITY match target -- selectDeterministicReferenceCandidate
+      // always prefers a real ACCOUNT candidate over one of these.
+      //
+      // CONFIRMED CASE this resolves: a client's General Ledger posts real
+      // transactions to an account whose name exists in the uploaded Balance
+      // Sheet only as a section HEADER (confirmed live: "Fixed Assets" -- one
+      // real GL row, and row_type='heading' in the Balance Sheet). With only
+      // ACCOUNT nodes registered, that account had no document match at all and
+      // fell through to the AI fallback, even though the document states
+      // exactly where it sits. Matching the structural node instead keeps the
+      // classification AND the full ancestry document-derived. Registered under
+      // both its own name and its total-prefix-stripped name, since
+      // ensureTotalPath stores these as "Total for <name>".
+      const structuralType = inferAccountTypeFromReferencePath(statementType, nextPath)
+        || node.accountType
+        || (statementType === "profit_loss"
+          ? plSectionToType(node.sourceSection)
+          : bsSectionToType(node.sourceSection));
+      // The structural node's own label is stored as "Total for <name>"
+      // (ensureTotalPath's convention). Normalize the LEAF label so the
+      // resulting COA path reads as the section itself ("Fixed Assets"), not
+      // "Total for Fixed Assets"; ancestor labels are already normalized by
+      // cleanDynamicCoaParentPath / applyBalanceSheetCoaPrefix.
+      const structuralMatchedPath = [
+        ...nextPath.slice(0, -1),
+        normalizeHierarchyLabel(nextPath[nextPath.length - 1]),
+      ];
+      const structuralPath = statementType === "profit_loss"
+        ? ensureAccountLeaf({
+          hierarchyPath: [...PROFIT_AND_LOSS_COA_PREFIX, ...cleanDynamicCoaParentPath(structuralMatchedPath.slice(0, -1))],
+          accountName: structuralMatchedPath[structuralMatchedPath.length - 1],
+        })
+        : statementType === "balance_sheet"
+          ? applyBalanceSheetCoaPrefix({ accountType: structuralType, matchedPath: structuralMatchedPath })
+          : structuralMatchedPath;
+      const entry = {
+        levels: structuralPath,
+        treePath: nextPath,
+        accountType: structuralType,
+        statementType,
+        sourceFiscalYear: null,
+        sourceFileId: null,
+        nodeName: node.name,
+        nodeType: node.nodeType,
+        isStructural: true,
+        parent: structuralPath.length > 1 ? structuralPath[structuralPath.length - 2] : null,
+        level: structuralPath.length,
+        matchScore: 1,
+      };
+      for (const alias of new Set([normName(node.name), normName(normalizeHierarchyLabel(node.name))])) {
+        if (!alias) continue;
+        const bucket = lookup.get(alias) || [];
+        bucket.push(entry);
+        lookup.set(alias, bucket);
+      }
     }
     for (const child of node.children || []) visit(child, nextPath);
   };
@@ -1202,6 +1337,13 @@ function selectDeterministicReferenceCandidate(candidates) {
   if (!Array.isArray(candidates)) return candidates || null;
   if (!candidates.length) return null;
   return candidates.slice().sort((a, b) => {
+    // A real posting-account node ALWAYS outranks a structural (section
+    // header / total rollup) node of the same name -- the structural entry
+    // exists only so a GL account whose name appears in the document solely as
+    // a header still resolves from the document instead of falling to AI.
+    const aStruct = a.isStructural ? 1 : 0;
+    const bStruct = b.isStructural ? 1 : 0;
+    if (aStruct !== bStruct) return aStruct - bStruct;
     const bLevel = b.level || b.levels?.length || 0;
     const aLevel = a.level || a.levels?.length || 0;
     return bLevel - aLevel;
@@ -1702,15 +1844,23 @@ function countBucketEntries(bucketByKey, bucket) {
  * AI fallback only if neither document has it either. The conflict itself
  * is always logged so it's never silently swallowed.
  */
-function mergeYearlyGlBuckets(perYearBuckets) {
+function mergeYearlyGlBuckets(perYearBuckets, fiscalYearForGroup = null) {
+  // Groups are keyed internally by a composite (year, source file) id so two
+  // documents covering the SAME year keep independent boundaries. For the
+  // audit log, report the human fiscal YEAR instead -- the composite key is an
+  // implementation detail and makes the evidence unreadable.
+  const yearOf = (groupKey) => {
+    const y = fiscalYearForGroup ? fiscalYearForGroup.get(groupKey) : null;
+    return y == null ? String(groupKey) : String(y);
+  };
   const bucketsByKeyAcrossYears = new Map(); // key -> Map<bucket, Set<year>>
-  for (const [year, bucketByKey] of perYearBuckets) {
+  for (const [groupKey, bucketByKey] of perYearBuckets) {
     for (const [key, bucket] of bucketByKey) {
       let byBucket = bucketsByKeyAcrossYears.get(key);
       if (!byBucket) { byBucket = new Map(); bucketsByKeyAcrossYears.set(key, byBucket); }
       let years = byBucket.get(bucket);
       if (!years) { years = new Set(); byBucket.set(bucket, years); }
-      years.add(year);
+      years.add(yearOf(groupKey));
     }
   }
 
@@ -1792,6 +1942,9 @@ function splitAccountsAtRetainedEarningsByYear(glRowsInOrder, profitLossTree = n
   }
 
   const perGroupBuckets = new Map();
+  // groupKey -> fiscal year, so the merge audit log can report real years
+  // rather than the internal composite (year, file) group id.
+  const fiscalYearForGroup = new Map();
   const sortedGroupKeys = Array.from(rowsByGroup.keys()).sort((a, b) => {
     const ga = rowsByGroup.get(a);
     const gb = rowsByGroup.get(b);
@@ -1805,13 +1958,14 @@ function splitAccountsAtRetainedEarningsByYear(glRowsInOrder, profitLossTree = n
     const label = year != null && file != null ? `${year} (file ${file})` : year != null ? String(year) : file != null ? `file ${file}` : null;
     const bucketByKey = splitAccountsAtRetainedEarnings(rows, profitLossTree, label);
     perGroupBuckets.set(groupKey, bucketByKey);
+    fiscalYearForGroup.set(groupKey, year);
     console.debug(
       `[GL_YEAR_ANALYSIS] group=${label ?? "unknown"} retainedEarningsFound=${bucketByKey.size > 0} ` +
       `bsCandidates=${countBucketEntries(bucketByKey, "balance_sheet")} pnlCandidates=${countBucketEntries(bucketByKey, "profit_loss")}`,
     );
   }
 
-  const { mergedBucketByKey, conflictCount, uniqueKeysAcrossYears } = mergeYearlyGlBuckets(perGroupBuckets);
+  const { mergedBucketByKey, conflictCount, uniqueKeysAcrossYears } = mergeYearlyGlBuckets(perGroupBuckets, fiscalYearForGroup);
   console.log(
     `[GL_ACCOUNT_MERGE] groupsProcessed=${sortedGroupKeys.length} uniqueAccountsBeforeDedup=${uniqueKeysAcrossYears} ` +
     `uniqueAccountsAfterDedup=${mergedBucketByKey.size} conflicts=${conflictCount}`,
@@ -2645,8 +2799,36 @@ function padLevelsToMaxLength(levels) {
   return out;
 }
 
+/**
+ * Pads a level array out to MAX_LEVELS by REPEATING the deepest real value
+ * (the leaf) across every unused trailing slot, so level_1..level_15 are never
+ * NULL for an account that reached its leaf.
+ *
+ * Per the Balance Sheet level specification: "Once the leaf account is reached,
+ * repeat the leaf account's own name for every remaining level through
+ * level_15. Never leave level_1 through level_15 NULL/empty."
+ *
+ * NOTE this deliberately reverses the previous NULL-padding convention. The
+ * two places that measure an account's REAL depth already anticipate this and
+ * strip trailing repeats before counting (see computeHierarchyIntegrityReport
+ * and sampleHierarchyVerification's stripPadding) -- only TRAILING repeats of
+ * the final value are padding; an intentional duplicate earlier in the path
+ * (e.g. the asset anchor's own repeated "Total Assets" at levels 1-2, or the
+ * P&L anchor's repeated "Total Equity") is real structure and is never
+ * collapsed. hierarchy_path is always built from the UNPADDED path, so it
+ * still reflects the account's real ancestry.
+ */
+function padLevelsWithLeafPropagation(levels) {
+  const real = (levels || []).slice(0, MAX_LEVELS).filter((v) => v != null && String(v).trim() !== "");
+  if (!real.length) return new Array(MAX_LEVELS).fill(null);
+  const leaf = real[real.length - 1];
+  const out = real.slice();
+  while (out.length < MAX_LEVELS) out.push(leaf);
+  return out;
+}
+
 function levelsToColumns(levels) {
-  const padded = padLevelsToMaxLength(levels);
+  const padded = padLevelsWithLeafPropagation(levels);
   const out = {};
   for (let i = 0; i < MAX_LEVELS; i += 1) out[`level_${i + 1}`] = padded[i] || null;
   return out;
@@ -6112,6 +6294,9 @@ module.exports = {
   splitAccountsAtRetainedEarnings,
   splitAccountsAtRetainedEarningsByYear,
   mergeYearlyGlBuckets,
+  // Exported for the Balance Sheet level-specification regression tests.
+  levelsToColumns,
+  padLevelsWithLeafPropagation,
   findFirstProfitAndLossAccount,
   cleanDynamicCoaLevelLabel,
   ensureAccountLeaf,

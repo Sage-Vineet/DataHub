@@ -143,6 +143,35 @@ export function moveNode(nodes, key, newParentKey) {
   return (nodes || []).map((n) => (n.key === key ? { ...n, parentKey: newParentKey, userEdited: true } : n));
 }
 
+/**
+ * Move an ACCOUNT under a new parent AND adopt that destination's
+ * classification — pure, returns a NEW array.
+ *
+ * Why the classification must travel with the move: the server's
+ * validateHierarchyConsistency requires every leaf's derived level chain to
+ * begin with the fixed anchor for its OWN accountType (Total Assets… for an
+ * asset, Total Liabilities and Equity > Total Liabilities… for a liability,
+ * and so on). Re-parenting an asset under a liability branch while leaving
+ * accountType="asset" therefore passes client-side validateTree (which
+ * deliberately does not model the anchors) and is then rejected with a 422 on
+ * Save. Carrying the destination's accountType/statementType keeps the account
+ * and its anchor consistent, which is exactly what makes a cross-section move
+ * (Asset -> Liability, Liability -> Equity, …) legal rather than a broken tree.
+ *
+ * accountType/statementType are taken from the DESTINATION, never inferred
+ * from the account's name or number — the destination branch is the evidence.
+ * Pass them as null/undefined to move within a section without re-typing.
+ */
+export function moveAccountToParent(nodes, key, newParentKey, { accountType, statementType } = {}) {
+  return (nodes || []).map((n) => {
+    if (n.key !== key) return n;
+    const next = { ...n, parentKey: newParentKey, userEdited: true };
+    if (accountType) next.accountType = accountType;
+    if (statementType) next.statementType = statementType;
+    return next;
+  });
+}
+
 /** Full display path for an ACCOUNT node — ancestor CATEGORY labels followed
  * by the account's own (adjusted) name, padded to MAX_HIERARCHY_LEVELS with
  * "" — the same shape the old flat-`levels`-array grid rendered per-row

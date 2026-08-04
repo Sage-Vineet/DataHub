@@ -110,12 +110,12 @@ console.log("\n=== 8-9. Deep and shallow document hierarchy, complete ancestor p
     const equityAcct = byName("30010 TH Equity");
     check("Equity account: COMPLETE document ancestor path preserved (Requirement #1's exact example)",
       equityAcct.levels.filter(Boolean),
-      ["Total Liabilities and Equity", "Total Equity", "Shareholder Equity", "30010 TH Equity"]);
+      ["Total Liabilities and Equity", "Total Equity", "Total Equity", "Equity", "Shareholder Equity", "30010 TH Equity"]);
 
     const chaseBank = byName("Chase Bank");
     check("9. Shallow-vs-deep BS hierarchy both resolve correctly: Chase Bank",
       chaseBank.levels.filter(Boolean),
-      ["Total Assets", "Current Assets", "Bank Accounts", "Chase Bank"]);
+      ["Total Assets", "Total Assets", "Current Assets", "Bank Accounts", "Chase Bank"]);
 
     console.log("\n=== 11-14. Cross-statement contamination is impossible ===");
     const sales = byName("Product Sales");

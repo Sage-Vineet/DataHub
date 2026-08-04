@@ -976,8 +976,13 @@ async function generateFinancialTables(version, opts = {}) {
     const bRef = by === Number(referenceFiscalYear) ? 0 : 1;
     if (aRef !== bRef) return aRef - bRef;            // reference year first
     if (ay !== by) return by - ay;                    // then newest to oldest
-    // Within a year keep the document's own row order so parent_path ancestry
-    // is built in the same sequence the extractor produced it.
+    // Keep every document's rows CONTIGUOUS and in their original order.
+    // buildBalanceSheetTreeFromData reconstructs ancestry for un-indented
+    // documents from header/"Total for X" bracketing, which is only meaningful
+    // within a single report read in sequence -- interleaving two documents'
+    // rows would cross their scopes.
+    const af = String(a.source_file_id ?? ""), bf = String(b.source_file_id ?? "");
+    if (af !== bf) return af.localeCompare(bf);
     return (a.sort_order ?? 0) - (b.sort_order ?? 0);
   });
   const balanceSheetTree = buildBalanceSheetTreeFromData({

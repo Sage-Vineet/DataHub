@@ -105,7 +105,7 @@ console.log("\n=== 1-3. Document trees reproduce the source hierarchy (not flatt
   // Assets" must both survive, not collapse to "Assets > Chase Bank".
   check("1. BS deep ancestry preserved (Current Assets AND Bank Accounts both survive)",
     bsLookup.get("chase bank")?.[0]?.levels,
-    ["Total Assets", "Current Assets", "Bank Accounts", "Chase Bank"]);
+    ["Total Assets", "Total Assets", "Current Assets", "Bank Accounts", "Chase Bank"]);
   check("2. P&L deep ancestry preserved (Expenses > Payroll > Salaries, not Expenses > Salaries)",
     (plLookup.get("salaries")?.[0]?.levels || []).slice(-3),
     ["Expenses", "Payroll", "Salaries"]);
@@ -203,7 +203,7 @@ console.log("\n=== 14-16. Multiple documents / multiple years dedupe to ONE acco
 
   check("14. Same account across 3 years/documents resolves to ONE consistent path",
     lookup.get("chase bank")?.[0]?.levels,
-    ["Total Assets", "Current Assets", "Bank Accounts", "Chase Bank"]);
+    ["Total Assets", "Total Assets", "Current Assets", "Bank Accounts", "Chase Bank"]);
   checkTrue("15. No year-suffixed duplicate accounts were created",
     ![...lookup.keys()].some((k) => /20\d\d/.test(k)));
 

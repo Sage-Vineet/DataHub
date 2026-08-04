@@ -81,7 +81,7 @@ console.log("\n=== 1-2. Asset / Liability with full explicit document branches =
   ]);
   check("1. Asset account: Chase Bank -> asset", lookup.get("chase bank")?.[0]?.accountType, "asset");
   check("1b. Asset hierarchy is the complete document path", lookup.get("chase bank")?.[0]?.levels,
-    ["Total Assets", "Current Assets", "Bank Accounts", "Chase Bank"]);
+    ["Total Assets", "Total Assets", "Current Assets", "Bank Accounts", "Chase Bank"]);
   check("2. Liability account: Chase Ink Credit Card -> liability, NOT equity (the reported bug)",
     lookup.get("chase ink credit card")?.[0]?.accountType, "liability");
   check("2b. Liability hierarchy is the complete document path (Credit Cards preserved, no Total Equity)",
@@ -99,7 +99,7 @@ console.log("\n=== 3. Equity — Critical Requirement #2's exact example (30010 
   ]);
   check("3. 30010 TH Equity -> equity, NOT liability", lookup.get("30010 th equity")?.[0]?.accountType, "equity");
   check("3b. Complete ancestor path preserved", lookup.get("30010 th equity")?.[0]?.levels,
-    ["Total Liabilities and Equity", "Total Equity", "Shareholder Equity", "30010 TH Equity"]);
+    ["Total Liabilities and Equity", "Total Equity", "Total Equity", "Equity", "Shareholder Equity", "30010 TH Equity"]);
 }
 
 console.log("\n=== 4-6. Multiple Asset / Liability / Equity branches ===");
@@ -219,7 +219,7 @@ console.log("\n=== Rows with NO document ancestry fall back to their own section
     check(`No-ancestry liability resolves from its own section: ${n}`, lookup.get(n)?.[0]?.accountType, "liability");
   }
   check("No-ancestry asset gets the asset anchor and NO invented intermediate group",
-    lookup.get("business money market")?.[0]?.levels, ["Total Assets", "Business Money Market"]);
+    lookup.get("business money market")?.[0]?.levels, ["Total Assets", "Total Assets", "Business Money Market"]);
   check("No-ancestry liability gets the liability anchor (never the Equity branch)",
     lookup.get("chase ink credit card")?.[0]?.levels,
     ["Total Liabilities and Equity", "Total Liabilities", "Chase Ink Credit Card"]);
@@ -261,11 +261,100 @@ console.log("\n=== Accounts present ONLY in a non-reference fiscal year still re
   // Precedence + de-duplication.
   check("Reference year keeps precedence for an account present in BOTH years",
     lookup.get("additional paid in capital")?.[0]?.levels,
-    ["Total Liabilities and Equity", "Total Equity", "Additional Paid In Capital"]);
+    ["Total Liabilities and Equity", "Total Equity", "Total Equity", "Equity", "Additional Paid In Capital"]);
   check("An account present in two years yields exactly ONE tree candidate (no duplicate leaves)",
     lookup.get("additional paid in capital")?.length, 1);
   check("'Fixed Assets' (a header-named real account) resolves as asset, not NEEDS MAPPING",
     lookup.get("fixed assets")?.[0]?.accountType, "asset");
+}
+
+console.log("\n=== Un-indented document: ancestry reconstructed from header/'Total for X' bracketing ===");
+{
+  // The EXACT real-world shape (verified against a live version): a
+  // QuickBooks-style Balance Sheet with ZERO indentation -- parent_path empty
+  // on every single row -- where nesting is conveyed by a header row OPENING a
+  // section and a matching "Total for <same name>" row CLOSING it.
+  // Confirmed live: 0 of 103 uploaded rows had a parent_path, yet the document
+  // carried 28 headers and 28 exactly-matching total rows. Previously every
+  // account attached to the report root, collapsing the whole hierarchy to
+  // "Total Assets > <account>".
+  let so = 0;
+  const F = "doc-1";
+  const h = (n) => ({ account_name: n, row_type: "heading", parent_path: null, hierarchy_level: 0, is_total: false, amount: 0, fiscal_year: 2026, sort_order: so++, source_file_id: F });
+  const a = (n, section) => ({ account_name: n, row_type: "account", parent_path: null, hierarchy_level: 1, is_total: false, amount: 1, section, fiscal_year: 2026, sort_order: so++, source_file_id: F });
+  const t = (n) => ({ account_name: `Total for ${n}`, row_type: "subtotal", parent_path: null, hierarchy_level: 1, is_total: true, amount: 1, fiscal_year: 2026, sort_order: so++, source_file_id: F });
+
+  const lookup = classify([
+    h("Assets"),
+    h("Current Assets"),
+    h("Bank Accounts"), a("Ent. Bank & Trust Chk (3856)", "assets"), t("Bank Accounts"),
+    h("Accounts Receivable"), a("Accounts Receivable", "assets"), t("Accounts Receivable"),
+    h("Other Current Assets"), a("Rent Deposit", "assets"), t("Other Current Assets"),
+    t("Current Assets"),
+    h("Fixed Assets"), a("Vehicles", "assets"), t("Fixed Assets"),
+    t("Assets"),
+    h("Liabilities and Equity"),
+    h("Liabilities"),
+    h("Current Liabilities"),
+    h("Credit Cards"), a("Capital One CC 1532", "liabilities"), t("Credit Cards"),
+    t("Current Liabilities"),
+    h("Long-term Liabilities"), a("Kubota BX23 ($534.01)", "liabilities"), t("Long-term Liabilities"),
+    t("Liabilities"),
+    h("Equity"),
+    a("Additional Paid In Capital", "equity"),
+    // A posting account that is ALSO a parent carrying its own balance (it has
+    // its own matching total further down) -- QuickBooks emits these as normal
+    // account rows, so the opener must be detected from the total, not the type.
+    a("Member 2 Equity - Blake", "equity"),
+    a("Capital Contributions", "equity"),
+    t("Member 2 Equity - Blake"),
+    a("Retained Earnings", "equity"),
+    t("Equity"),
+    t("Liabilities and Equity"),
+  ]);
+
+  const path = (k) => (lookup.get(k) ? undefined : undefined) || (() => {
+    const c = lookup.get(k) || [];
+    // Mirror production selection: a real ACCOUNT node outranks a structural one.
+    const sorted = c.slice().sort((x, y) => (x.isStructural ? 1 : 0) - (y.isStructural ? 1 : 0) || (y.level || 0) - (x.level || 0));
+    return sorted[0];
+  })();
+
+  check("Deep asset keeps EVERY intermediate node (the reported bug)",
+    path("ent. bank & trust chk (3856)")?.levels,
+    ["Total Assets", "Total Assets", "Current Assets", "Bank Accounts", "Ent. Bank & Trust Chk (3856)"]);
+  check("Asset under a different Current Assets subsection",
+    path("rent deposit")?.levels, ["Total Assets", "Total Assets", "Current Assets", "Other Current Assets", "Rent Deposit"]);
+  check("Asset in a shallower branch keeps ITS own depth (no forced padding)",
+    path("vehicles")?.levels, ["Total Assets", "Total Assets", "Fixed Assets", "Vehicles"]);
+  check("Header and account sharing one name does not duplicate a level",
+    path("accounts receivable")?.levels, ["Total Assets", "Total Assets", "Current Assets", "Accounts Receivable"]);
+  check("Liability keeps Current Liabilities > Credit Cards (the reported bug)",
+    path("capital one cc 1532")?.levels,
+    ["Total Liabilities and Equity", "Total Liabilities", "Current Liabilities", "Credit Cards", "Capital One CC 1532"]);
+  check("Long-term liability branch preserved",
+    path("kubota bx23 ($534.01)")?.levels,
+    ["Total Liabilities and Equity", "Total Liabilities", "Long-term Liabilities", "Kubota BX23 ($534.01)"]);
+  check("Equity account under the shared umbrella resolves to the Equity branch",
+    path("additional paid in capital")?.levels,
+    ["Total Liabilities and Equity", "Total Equity", "Total Equity", "Equity", "Additional Paid In Capital"]);
+  check("A posting account that is also a parent nests its children correctly",
+    path("capital contributions")?.levels,
+    ["Total Liabilities and Equity", "Total Equity", "Total Equity", "Equity", "Member 2 Equity - Blake", "Capital Contributions"]);
+
+  check("Classification comes from the branch: asset", path("ent. bank & trust chk (3856)")?.accountType, "asset");
+  check("Classification comes from the branch: liability (NOT equity, despite the shared umbrella)",
+    path("capital one cc 1532")?.accountType, "liability");
+  check("Classification comes from the branch: equity (NOT liability)",
+    path("additional paid in capital")?.accountType, "equity");
+
+  // A GL account whose name exists in the document ONLY as a section header.
+  const fa = path("fixed assets");
+  check("A GL account matching only a section HEADER still resolves from the document (was AI-classified)",
+    fa?.accountType, "asset");
+  check("...with the header's own document path, total-prefix stripped",
+    fa?.levels, ["Total Assets", "Total Assets", "Fixed Assets"]);
+  checkTrue("...and is flagged structural so a real posting account always outranks it", fa?.isStructural);
 }
 
 console.log("\n=== Ancestor path still outranks the row's own section (no regression) ===");

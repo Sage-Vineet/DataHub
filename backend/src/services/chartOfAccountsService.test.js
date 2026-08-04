@@ -82,9 +82,13 @@ test('persistApprovedCoaTree (for contrast) DOES contain write calls -- proves t
 // LIABILITY_FIXED_PREFIX / EQUITY_FIXED_PREFIX / PL_FIXED_PREFIX), reproduced here so a
 // drift in either file is caught by a failing test rather than silently
 // validating against the wrong prefix.
-const ASSET_FIXED_PREFIX = ['Total Assets'];
+// Per the Balance Sheet level specification the asset anchor is "Total Assets"
+// at BOTH level_1 and level_2; document-derived levels start at level_3.
+const ASSET_FIXED_PREFIX = ['Total Assets', 'Total Assets'];
 const LIABILITY_FIXED_PREFIX = ['Total Liabilities and Equity', 'Total Liabilities'];
-const EQUITY_FIXED_PREFIX = ['Total Liabilities and Equity', 'Total Equity'];
+// Equity's anchor is 4 levels per the Balance Sheet level specification:
+// L1 "Total Liabilities and Equity", L2/L3 "Total Equity", L4 "Equity".
+const EQUITY_FIXED_PREFIX = ['Total Liabilities and Equity', 'Total Equity', 'Total Equity', 'Equity'];
 const PL_FIXED_PREFIX = ['Total Liabilities and Equity', 'Total Equity', 'Total Equity'];
 
 function makeAssetLeaf(overrides = {}) {
@@ -447,7 +451,7 @@ test('partition statement type remains authoritative over equity account type an
 test('final hierarchy builder applies statement-specific prefixes and cleaned dynamic labels', () => {
   assert.deepEqual(
     coa.buildFinalCoaLevels({ statementType: 'balance_sheet', accountType: 'asset', matchedPath: ['Total for Assets', 'Total for Current Assets', 'Total for Bank Accounts'], accountName: 'Cash Account' }),
-    ['Total Assets', 'Current Assets', 'Bank Accounts', 'Cash Account'],
+    ['Total Assets', 'Total Assets', 'Current Assets', 'Bank Accounts', 'Cash Account'],
   );
   assert.deepEqual(
     coa.buildFinalCoaLevels({ statementType: 'balance_sheet', accountType: 'liability', matchedPath: ['Total for Liabilities and Equity', 'Total for Liabilities', 'Total for Current Liabilities', 'Total for Credit Cards'], accountName: 'Capital One - Credit Card' }),
@@ -455,7 +459,7 @@ test('final hierarchy builder applies statement-specific prefixes and cleaned dy
   );
   assert.deepEqual(
     coa.buildFinalCoaLevels({ statementType: 'balance_sheet', accountType: 'equity', matchedPath: ['Total for Liabilities and Equity', 'Total for Equity'], accountName: 'Net Income' }),
-    ['Total Liabilities and Equity', 'Total Equity', 'Net Income'],
+    ['Total Liabilities and Equity', 'Total Equity', 'Total Equity', 'Equity', 'Net Income'],
   );
   assert.deepEqual(
     coa.buildFinalCoaLevels({ statementType: 'profit_loss', accountType: 'expense', matchedPath: ['Net Income', 'Net Operating Income', 'Total for Expenses'], accountName: 'Payroll Expenses' }),

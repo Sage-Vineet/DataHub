@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import * as XLSX from "xlsx";
 import {
   RefreshCw, Loader2, Table2, Check, X, Pencil, RotateCcw, Search, Undo2, Redo2, Download,
-  FolderInput, GitMerge, Sparkles, Save, AlertTriangle,
+  FolderInput, GitMerge, Sparkles, Save, AlertTriangle, GripVertical,
 } from "lucide-react";
 import {
   getChartOfAccounts, regenerateChartOfAccounts, resetChartOfAccount, resetChartOfAccounts,
@@ -11,6 +11,7 @@ import { approveCoa } from "../../lib/keyReportGeneration";
 import {
   buildIndexes, getLevelsArray, getHierarchyPathLabel, listCategoryNodes,
   applyAccountEdit, mergeCategory, validateTree, summarizeClassification,
+  moveAccountToParent,
   CLASSIFICATION_SOURCE_LABELS, MAX_HIERARCHY_LEVELS, displayName,
 } from "../../lib/coaTree";
 import { clearCachedFinancials } from "../../lib/keyReportFinancials";
@@ -131,6 +132,13 @@ export default function ChartOfAccountsGrid({
   const [mappingCategoryPath, setMappingCategoryPath] = useState("");
   const [mappingBaseName, setMappingBaseName] = useState("");
   const [mergeEditor, setMergeEditor] = useState(null); // { categoryKey, categoryPathArr, value }
+
+  // Drag-and-drop reclassification. Native HTML5 DnD (the pattern already used
+  // by FileExplorer) — no new dependency. `dragKey` is the account being
+  // dragged; `dropKey` is the row currently hovered, used only for the drop
+  // affordance.
+  const [dragKey, setDragKey] = useState(null);
+  const [dropKey, setDropKey] = useState(null);
 
   const loadedNodesRef = useRef([]);
   // Read via a ref so the load effect can depend on a stable `proposalToken`
@@ -369,6 +377,73 @@ export default function ChartOfAccountsGrid({
       statementType: row.statementType,
     }));
     cancelEdit();
+  };
+
+  // ── Drag-and-drop reclassification ───────────────────────────────────────
+  //
+  // Model: drag an ACCOUNT row and drop it ON ANOTHER ACCOUNT ROW. The dragged
+  // account moves into the drop target's own parent category and adopts the
+  // target's classification -- i.e. "put this account where that one is".
+  //
+  // Why drop-onto-a-row rather than drop-between-rows: the grid renders no
+  // CATEGORY rows (only accountType-derived sub-group headers, which are not
+  // tree nodes), so an account row is the only thing on screen that actually
+  // identifies a real destination in the tree. It also makes every move the
+  // user asked for expressible -- Asset <-> Liability <-> Equity, P&L <-> BS,
+  // and between nested categories within one section -- because the target row
+  // supplies both the parent and the classification.
+  //
+  // Both must travel together: the server's validateHierarchyConsistency
+  // requires a leaf's level chain to start with the fixed anchor for its OWN
+  // accountType, so re-parenting alone across sections would be rejected on
+  // Save (422). See moveAccountToParent's comment in coaTree.js.
+  //
+  // Nothing is recomputed here: levels and hierarchyPath are derived from the
+  // parentKey graph on every render, and the backend re-derives them from the
+  // same graph on Save. Routing through `commit` gives undo/redo, the dirty
+  // badge, live validation and the Save button state for free.
+  const canReorder = mode === "proposal";
+
+  const onRowDragStart = (row) => (e) => {
+    if (!canReorder) return;
+    cancelEdit();
+    setDragKey(row.key);
+    e.dataTransfer.effectAllowed = "move";
+    // Some browsers require data to be set for a drag to start at all.
+    try { e.dataTransfer.setData("text/plain", row.key); } catch { /* non-fatal */ }
+  };
+
+  const clearDrag = () => { setDragKey(null); setDropKey(null); };
+
+  const isValidDropTarget = (row) => Boolean(
+    canReorder && dragKey && row.key !== dragKey && row.nodeType === "ACCOUNT",
+  );
+
+  const onRowDragOver = (row) => (e) => {
+    if (!isValidDropTarget(row)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (dropKey !== row.key) setDropKey(row.key);
+  };
+
+  const onRowDrop = (row) => (e) => {
+    if (!isValidDropTarget(row)) return;
+    e.preventDefault();
+    const movedKey = dragKey;
+    const moved = accountRows.find((r) => r.key === movedKey);
+    clearDrag();
+    if (!moved) return;
+    // A drop onto a sibling already under the same parent is a no-op -- don't
+    // dirty the tree or burn an undo step for it.
+    const sameParent = (moved.parentKey || null) === (row.parentKey || null);
+    const sameType = moved.accountType === row.accountType;
+    if (sameParent && sameType) return;
+    commit(moveAccountToParent(nodes, movedKey, row.parentKey || null, {
+      accountType: row.accountType,
+      statementType: row.statementType,
+    }));
+    const dest = row.hierarchyPath || row.name;
+    notify?.(`Moved "${moved.name}" to ${dest}. Review and Save to apply.`, "success");
   };
 
   // ── Merge this account's category into another existing (or new) category ──
@@ -635,6 +710,12 @@ export default function ChartOfAccountsGrid({
             generated. Review the hierarchy below, make any adjustments, then click
             <strong> {saveLabel}</strong> to persist it and generate Trial Balance / Reconciliation /
             Balance Sheet / P&amp;L / Cash Flow.
+            <br />
+            <span className="text-amber-700">
+              To reclassify an account, <strong>drag its row onto any other account row</strong> — it moves
+              into that account&apos;s category and takes its classification, so you can move accounts between
+              Assets / Liabilities / Equity / Income / Expenses or between nested categories. Undo is available.
+            </span>
           </p>
         </div>
       )}
@@ -743,9 +824,29 @@ export default function ChartOfAccountsGrid({
                 return (
                   <Fragment key={row.key}>
                   <tr
-                    className={`border-b border-border/40 bg-white transition-colors hover:bg-gray-50 ${row.userEdited ? "bg-primary/5" : ""}`}
+                    draggable={canReorder && editingKey !== row.key}
+                    onDragStart={onRowDragStart(row)}
+                    onDragEnd={clearDrag}
+                    onDragOver={onRowDragOver(row)}
+                    onDragLeave={() => { if (dropKey === row.key) setDropKey(null); }}
+                    onDrop={onRowDrop(row)}
+                    className={`border-b border-border/40 bg-white transition-colors hover:bg-gray-50 ${
+                      row.userEdited ? "bg-primary/5" : ""
+                    } ${canReorder ? "cursor-grab" : ""} ${
+                      dragKey === row.key ? "opacity-40" : ""
+                    } ${
+                      dropKey === row.key && dragKey !== row.key
+                        ? "outline outline-2 -outline-offset-2 outline-[#8BC53D] bg-[#8BC53D]/10"
+                        : ""
+                    }`}
                   >
                     <td className="whitespace-nowrap px-3 py-1.5 font-mono text-xs font-semibold text-text-muted border-r border-border/30">
+                      {canReorder && (
+                        <GripVertical
+                          className="mr-1 inline h-3 w-3 align-[-2px] text-text-muted/50"
+                          aria-hidden="true"
+                        />
+                      )}
                       {row.systemId || "—"}
                     </td>
 

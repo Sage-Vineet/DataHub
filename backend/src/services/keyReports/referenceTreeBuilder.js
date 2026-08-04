@@ -87,20 +87,79 @@ function buildBalanceSheetTreeFromData({ reportName, rows }) {
   // several years' rows would push duplicate leaves for one account, leaving
   // its hierarchy ambiguous.
   const placedAccounts = new Set();
+
+  // ── Ancestry reconstruction for documents with no indentation ─────────────
+  // CONFIRMED ROOT CAUSE (fixed here): ancestry used to come ONLY from
+  // row.parent_path. A very common Balance Sheet layout (QuickBooks and
+  // similar) conveys nesting NOT by indentation but by bracketing: a header
+  // row OPENS a section and a matching "Total for <same name>" row CLOSES it,
+  // with the children in between. Such a document extracts with parent_path
+  // empty on every row, so every account attached directly to the report root
+  // and the ENTIRE intermediate hierarchy was lost -- e.g. a real
+  //   Assets > Current Assets > Bank Accounts > Ent. Bank & Trust Chk (3856)
+  // collapsed to  Total Assets > Ent. Bank & Trust Chk (3856).
+  // Confirmed live: 0 of 103 uploaded rows had a parent_path, yet the document
+  // had 28 header rows and 28 exactly-matching "Total for ..." rows.
+  //
+  // Reconstruction is purely structural and document-driven: a row opens a
+  // scope iff the document ALSO contains a total row closing that same name.
+  // No keywords, no account-name rules, no assumed depth -- it works for any
+  // company and any nesting depth. parent_path remains the PRIMARY signal, so
+  // properly-indented documents are unaffected.
+  const closesAScope = new Set();
+  for (const r of rows || []) {
+    if (isTotal(r)) closesAScope.add(normName(stripTotalPrefix(rowName(r))));
+  }
+  // Scope stack, reset whenever the row sequence moves to a different source
+  // document / fiscal year (bracketing is only meaningful within one report).
+  let scopeStack = [];
+  let scopeKey = null;
+  const top = () => (scopeStack.length ? normName(scopeStack[scopeStack.length - 1]) : null);
+
   for (const row of rows || []) {
     const name = rowName(row);
     if (!name) continue;
     const amount = rowAmount(row);
+
+    const rowScopeKey = `${row.source_file_id ?? ""}::${row.fiscal_year ?? ""}`;
+    if (rowScopeKey !== scopeKey) { scopeKey = rowScopeKey; scopeStack = []; }
+
+    const hasOwnParentPath = Array.isArray(row.parent_path) && row.parent_path.length > 0;
+    // Ancestry: the row's own parent_path when the extractor captured one,
+    // otherwise the currently-open bracketing scopes.
+    const ancestry = hasOwnParentPath ? row.parent_path : [...scopeStack];
+    // A row opens a scope iff a matching total closes it later, and it is not
+    // already the open scope (guards the common case where a header and a real
+    // posting account share the same name, e.g. header "Accounts Receivable"
+    // immediately followed by account "Accounts Receivable").
+    const opensScope = closesAScope.has(normName(name)) && top() !== normName(name);
+
     if (isHeading(row) && !isTotal(row)) {
-      ensureTotalPath(root, [...(row.parent_path || []), name]);
+      ensureTotalPath(root, [...ancestry, name]);
+      if (!hasOwnParentPath && opensScope) scopeStack.push(name);
       continue;
     }
     if (isTotal(row)) {
       const sectionName = stripTotalPrefix(name);
-      const totalPath = row.parent_path?.length ? [...row.parent_path, sectionName] : [sectionName];
+      // A total row IS its section's container node. When it closes the
+      // currently-open scope, `ancestry` already ends with that scope, so
+      // appending the name again would nest a redundant duplicate total under
+      // the node it is supposed to be.
+      const closesOpenScope = !hasOwnParentPath && top() === normName(sectionName);
+      const totalPath = hasOwnParentPath
+        ? [...row.parent_path, sectionName]
+        : (closesOpenScope ? [...ancestry] : [...ancestry, sectionName]);
       const totalNode = ensureTotalPath(root, totalPath);
       totalNode.name = totalName(sectionName);
       totalNode.value = amount;
+      if (!hasOwnParentPath) {
+        // Close the scope this total belongs to: pop until (and including) it.
+        const target = normName(sectionName);
+        while (scopeStack.length) {
+          const popped = normName(scopeStack.pop());
+          if (popped === target) break;
+        }
+      }
       continue;
     }
     // One tree node per distinct account, first placement wins (see
@@ -108,9 +167,15 @@ function buildBalanceSheetTreeFromData({ reportName, rows }) {
     // same key pickDocHierarchy/normName use to look accounts up, so a name
     // that would resolve to one COA leaf resolves to one tree node here too.
     const accountKey = normName(name);
+    // A posting account can itself be a parent that carries its own balance
+    // (QuickBooks emits it as a normal account row followed later by its own
+    // "Total for <name>"). Open its scope so the rows nested under it inherit
+    // it as an ancestor -- done regardless of the dedup skip below, otherwise a
+    // repeated parent name would silently drop its children a level.
+    if (!hasOwnParentPath && opensScope) scopeStack.push(name);
     if (placedAccounts.has(accountKey)) continue;
     placedAccounts.add(accountKey);
-    const parent = ensureTotalPath(root, row.parent_path || []);
+    const parent = ensureTotalPath(root, ancestry);
     parent.children.push({
       name,
       nodeType: "ACCOUNT",
