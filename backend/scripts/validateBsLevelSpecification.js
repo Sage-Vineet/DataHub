@@ -38,8 +38,15 @@ console.log("\n=== 1-3. The three fixed anchors ===");
   check("2. Liability anchor", coa.fixedPrefixFor("liability"), ["Total Liabilities and Equity", "Total Liabilities"]);
   check("3. Equity anchor", coa.fixedPrefixFor("equity"),
     ["Total Liabilities and Equity", "Total Equity", "Total Equity", "Equity"]);
-  checkTrue("3b. P&L anchor is UNCHANGED (out of scope for this spec)",
-    JSON.stringify(coa.fixedPrefixFor("income")) === JSON.stringify(["Total Liabilities and Equity", "Total Equity", "Total Equity"]));
+  // The P&L anchor carries the accounting-equation roll-up on L1..L7 and the
+  // side it rolls into on L8, per the client's reference chart of accounts.
+  // The P&L anchor is ONLY the accounting-equation bridge. The statement roll-up
+  // is read from the uploaded document's own subtotal rows, never frozen here.
+  const PL_BRIDGE = ["Total Liabilities and Equity", "Total Equity", "Total Equity"];
+  checkTrue("3b. P&L anchor is the equation bridge only (roll-up comes from the document)",
+    JSON.stringify(coa.fixedPrefixFor("income")) === JSON.stringify(PL_BRIDGE)
+    && JSON.stringify(coa.fixedPrefixFor("expense")) === JSON.stringify(PL_BRIDGE)
+    && JSON.stringify(coa.fixedPrefixFor("cogs")) === JSON.stringify(PL_BRIDGE));
 }
 
 console.log("\n=== 4. Spec example 1 -- asset, verbatim ===");

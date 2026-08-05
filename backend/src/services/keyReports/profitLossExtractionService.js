@@ -392,7 +392,11 @@ class ProfitLossExtractionService extends ExtractionServiceBase {
       const isTotal = /^total\b/i.test(accountName) || /\btotal$/i.test(accountName) || /\bnet income\b/i.test(accountName);
       // A computed statement-level subtotal (as opposed to a "Total for X"
       // group rollup) — the document's own literal label, never guessed.
-      const isSubtotal = /^(gross profit|net operating income|net other income|operating income|net income|net loss)$/i.test(accountName);
+      // Computed statement lines, by the document's own literal label. Extending
+      // this list keeps a roll-up row from being mistaken for a posting account
+      // (which would give it a COA leaf and a system id). Statement-line
+      // vocabulary only -- never an account name.
+      const isSubtotal = /^(gross profit|gross margin|net operating income|operating income|net other income|pretax income|pre-tax income|income before taxes|profit before tax(?:es)?|net income|net loss|profit for the year)$/i.test(accountName);
 
       // A bare section-header row has a label but no amount in ANY column and
       // isn't itself a total line — e.g. "Income", "Cost of Goods Sold".
