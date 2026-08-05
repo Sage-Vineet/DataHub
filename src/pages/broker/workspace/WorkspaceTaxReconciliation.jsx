@@ -42,14 +42,20 @@ const STORAGE_PREFIX = "workspace-tax-reconciliation-v5";
 
 // ── Session-storage helpers ────────────────────────────────────────────────
 
-function getStorageKey(clientId) {
-  return `${STORAGE_PREFIX}:${clientId || "default"}`;
+// Slot key for the cached tax matrix, isolated by (company, connection mode,
+// version). The matrix numbers are entirely source-dependent, so a company-only key
+// let one mode's figures restore under another mode — and because the stored payload
+// carried no source there was no way to detect it. Adding both dimensions to the KEY
+// (rather than tagging the payload) means every mode restores its OWN matrix
+// instantly instead of being purged, and no mode can ever read another's.
+function getStorageKey(clientId, source, version) {
+  return `${STORAGE_PREFIX}:${clientId || "default"}:${source || "default"}:${version || "default"}`;
 }
 
-function getStoredState(clientId) {
+function getStoredState(clientId, source, version) {
   if (typeof window === "undefined") return null;
   try {
-    const raw = window.sessionStorage.getItem(getStorageKey(clientId));
+    const raw = window.sessionStorage.getItem(getStorageKey(clientId, source, version));
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === "object" ? parsed : null;
@@ -327,6 +333,11 @@ export default function WorkspaceTaxReconciliation() {
   // A Key Reports Version is never the QuickBooks-Manual flow.
   const isQBManual = !kr.krActive && activeSourceMode === 'quickbooks_manual';
 
+  // Version dimension of the cache slot key. kr is masked outside Key Reports mode,
+  // so this is the selected Version in KR mode and "default" for the 4 connection
+  // modes — mirroring reconDataVersion on the Bank Reconciliation page.
+  const taxSlotVersion = kr.krActive ? String(kr.selectedVersionId || "default") : "default";
+
   // Layout selector (RENDER ONLY — data loading still keys off isManualMode /
   // isManualGL). The page has two control headers: the clean "manual" header
   // (Version selector + Sync, as in the Key Reports design) and the QuickBooks
@@ -408,9 +419,20 @@ export default function WorkspaceTaxReconciliation() {
 
   // ── Restore on clientId change ────────────────────────────────────────
 
+  // Restore this slot, or CLEAR when the slot is empty. Clearing is essential: the
+  // effect re-runs on a connection-mode / Version change, and simply returning early
+  // would leave the previous mode's matrix on screen (and its non-empty matrixData
+  // would then suppress the auto-load effect below, so it never self-corrected).
   useEffect(() => {
-    const next = getStoredState(clientId);
-    if (!next) return;
+    const next = getStoredState(clientId, activeSource, taxSlotVersion);
+    if (!next) {
+      setMatrixData({});
+      setError("");
+      setWarnings([]);
+      setIsQBDisconnected(false);
+      setSyncStatus({ status: "idle", message: "" });
+      return;
+    }
     setStartYear(next.startYear ?? String(currentYear - 2));
     setEndYear(next.endYear ?? String(currentYear));
     setAccountingMethod(next.accountingMethod ?? "Cash");
@@ -422,7 +444,7 @@ export default function WorkspaceTaxReconciliation() {
       status: Object.keys(next.matrixData ?? {}).length > 0 ? "success" : "idle",
       message: Object.keys(next.matrixData ?? {}).length > 0 ? "Restored saved data." : "",
     });
-  }, [clientId, currentYear]);
+  }, [clientId, currentYear, activeSource, taxSlotVersion]);
 
   // ── Manual GL version loading ─────────────────────────────────────────
 
@@ -437,11 +459,11 @@ export default function WorkspaceTaxReconciliation() {
     if (typeof window === "undefined") return;
     try {
       window.sessionStorage.setItem(
-        getStorageKey(clientId),
+        getStorageKey(clientId, activeSource, taxSlotVersion),
         JSON.stringify({ startYear, endYear, accountingMethod, matrixData, error, warnings }),
       );
     } catch { /* ignore */ }
-  }, [clientId, startYear, endYear, accountingMethod, matrixData, error, warnings]);
+  }, [clientId, startYear, endYear, accountingMethod, matrixData, error, warnings, activeSource, taxSlotVersion]);
 
   // ── Loader ────────────────────────────────────────────────────────────
 
@@ -907,14 +929,26 @@ export default function WorkspaceTaxReconciliation() {
   // re-fires once the version becomes available (without it, the effect ran
   // once with a null version and never again, leaving an empty screen even
   // though an active version with data existed).
+  // Tracks the slot this effect has already auto-loaded, so switching connection mode
+  // / Version triggers exactly one fetch for the new slot. Without it the effect
+  // could not depend on matrixData: the restore effect above clears matrixData in the
+  // same flush, and the cleared value only lands on the NEXT render — at which point
+  // the old deps were unchanged and the effect never re-ran, leaving a blank matrix
+  // that never loaded. The ref also makes depending on matrixData loop-safe when a
+  // load legitimately returns no rows.
+  const autoLoadedSlotRef = useRef(null);
   useEffect(() => {
     if (!activeSource) return;
     if (isManualGL && !selectedVersion) return;
+    const slot = `${activeSource}:${taxSlotVersion}`;
+    if (autoLoadedSlotRef.current === slot) return;
+    // Restored from this slot's cache — show it, don't refetch.
     if (Object.keys(matrixData).length > 0) return;
+    autoLoadedSlotRef.current = slot;
     // Removed strict krTaxGate.status !== "ok" check to allow P&L-only loading
     void loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSource, isManualGL, selectedVersion]);
+  }, [activeSource, isManualGL, selectedVersion, taxSlotVersion, matrixData]);
 
   // Re-generate when the selected version changes so Tax Reconciliation always
   // reflects the chosen version's transactions with no cross-version leakage.
@@ -925,13 +959,16 @@ export default function WorkspaceTaxReconciliation() {
     prevTaxVersionRef.current = selectedVersion;
     if (!selectedVersion) return;
     // Removed strict krTaxGate.status !== "ok" check to allow P&L-only re-loading on version change
-    try { window.sessionStorage.removeItem(getStorageKey(clientId)); } catch { /* ignore */ }
+    try { window.sessionStorage.removeItem(getStorageKey(clientId, activeSource, taxSlotVersion)); } catch { /* ignore */ }
     setMatrixData({});
     setError("");
     setWarnings([]);
     setSyncStatus({ status: "idle", message: "" });
     void loadData(true);
-  }, [isManualGL, selectedVersion, clientId, loadData]);
+    // activeSource / taxSlotVersion identify the slot being purged. The
+    // prevTaxVersionRef guard above means this body only runs when selectedVersion
+    // actually changed, so listing them cannot cause a spurious purge.
+  }, [isManualGL, selectedVersion, clientId, loadData, activeSource, taxSlotVersion]);
 
   // ── Overrides: load from DB whenever clientId changes ────────────────
 
@@ -1454,7 +1491,7 @@ export default function WorkspaceTaxReconciliation() {
             <button
               type="button"
               onClick={() => {
-                try { window.sessionStorage.removeItem(getStorageKey(clientId)); } catch { /* ignore */ }
+                try { window.sessionStorage.removeItem(getStorageKey(clientId, activeSource, taxSlotVersion)); } catch { /* ignore */ }
                 setMatrixData({});
                 void loadData();
               }}
@@ -1535,7 +1572,7 @@ export default function WorkspaceTaxReconciliation() {
               <button
                 type="button"
                 onClick={() => {
-                  try { window.sessionStorage.removeItem(getStorageKey(clientId)); } catch { /* ignore */ }
+                  try { window.sessionStorage.removeItem(getStorageKey(clientId, activeSource, taxSlotVersion)); } catch { /* ignore */ }
                   setMatrixData({});
                   void loadData();
                 }}

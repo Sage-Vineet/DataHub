@@ -29,6 +29,23 @@ const STATEMENT_TYPES = {
   TAX_RETURN: "tax_return",
 };
 
+// The report_types the Manual Upload sync itself produces, and therefore the ONLY
+// ones it may clear before re-syncing.
+//
+// The "manual_report_upload" source partition is shared: Key Reports result caches
+// (kr_financial_statements_v1, kr_pl_financials_v2, kr_activity_review_v2), bank
+// reconciliation caches (bank_reconciliation_kr_v3, bs_bank_balances_cache_v2), the
+// Tax Reconciliation cache (tax_return_kr_v7) and — critically —
+// tax_reconciliation_overrides, which holds values the USER typed by hand, all live
+// under the same `source`. Deleting the whole partition destroyed all of it on every
+// "Sync All", so the clear-down is restricted to this allow-list. Anything not
+// listed here is owned by another subsystem and must survive a re-sync; new cache
+// types are therefore safe by default.
+const MANUAL_UPLOAD_SYNC_OWNED_REPORT_TYPES = [
+  ...Object.values(STATEMENT_TYPES),
+  "pl_for_tax",
+];
+
 // ─── QMS Sync Progress Store ────────────────────────────────────────────────
 // In-memory store for live sync progress. Keyed by companyId.
 // Cleared when sync completes or errors.
@@ -2995,13 +3012,16 @@ async function syncManualUploadSource(companyId) {
     percentage: 0,
   });
 
-  // Clear all existing manual upload records for this company so removed/renamed
-  // files don't leave stale rows behind after re-sync.
+  // Clear this company's previously-synced Manual Upload STATEMENTS so
+  // removed/renamed files don't leave stale rows behind after re-sync. Scoped to the
+  // report_types this sync owns — see MANUAL_UPLOAD_SYNC_OWNED_REPORT_TYPES for why
+  // deleting the whole `source` partition is destructive.
   const { error: deleteError } = await supabase
     .from("qb_synced_reports")
     .delete()
     .eq("company_id", companyId)
-    .eq("source", MANUAL_REPORT_UPLOAD_SOURCE);
+    .eq("source", MANUAL_REPORT_UPLOAD_SOURCE)
+    .in("report_type", MANUAL_UPLOAD_SYNC_OWNED_REPORT_TYPES);
 
   if (deleteError) {
     throw new Error(`Failed to clear existing records before sync: ${deleteError.message}`);

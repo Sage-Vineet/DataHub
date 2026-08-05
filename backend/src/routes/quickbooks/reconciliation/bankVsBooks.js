@@ -17,6 +17,12 @@ const XLSX = require("xlsx");
 
 const MANUAL_REPORT_UPLOAD_SOURCE = "manual_report_upload";
 const QMS_REPORT_UPLOAD_SOURCE = "quickbooks_manual_upload";
+// Matches manualGlService.js's MANUAL_GL_SOURCE — the qb_synced_reports partition
+// Manual GL already writes, so pointing Manual GL requests here reads its OWN rows.
+const MANUAL_GL_SOURCE = "manual_gl";
+// Key Reports had no partition of its own and wrote as "manual_report_upload",
+// putting it inside the blast radius of Manual Upload's "Sync All" clear-down.
+const KEY_REPORTS_CACHE_SOURCE = "key_reports";
 const BANK_RECONCILIATION_TYPE = "bank_reconciliation";
 // Version-aware cache for Key Reports-resolved bank statement extraction. Kept
 // separate from BANK_RECONCILIATION_TYPE (written by Sync All) so the existing
@@ -29,7 +35,13 @@ const BANK_RECONCILIATION_TYPE = "bank_reconciliation";
 // reconciliation reports are rejected. Bumped so frozen v2 extractions re-run.
 const BANK_RECON_KR_CACHE_TYPE = "bank_reconciliation_kr_v3";
 
-// Maps frontend REPORT_SOURCE_KEYS values → backend cache source + DataRoom folder root
+// Maps frontend REPORT_SOURCE_KEYS values → backend cache source + DataRoom folder
+// root. EVERY connection mode needs its own entry: these two values decide which
+// qb_synced_reports partition is read/written and which DataRoom folder is scanned,
+// so a mode missing from this map silently borrows another mode's cache and
+// documents. manual_gl_upload and key_reports previously fell through to
+// DEFAULT_SOURCE_CONFIG and shared the Manual Upload partition — they now each get
+// their own, keeping the five flows separate.
 const SOURCE_CONFIG = {
   manual_upload_excel_pdf: {
     cacheSource: MANUAL_REPORT_UPLOAD_SOURCE,
@@ -39,8 +51,37 @@ const SOURCE_CONFIG = {
     cacheSource: QMS_REPORT_UPLOAD_SOURCE,
     folderRootName: "Quickbooks Manual Source",
   },
+  manual_gl_upload: {
+    cacheSource: MANUAL_GL_SOURCE,
+    folderRootName: "Manual GL Source",
+  },
+  // Key Reports resolves its documents from the SELECTED version rather than a
+  // folder (see getBankReconciliationDocuments), so folderRootName is only a
+  // fallback/log label here. The distinct cacheSource is the important part: it
+  // keeps Key Reports' cached extractions out of the Manual Upload partition, which
+  // the Manual Upload "Sync All" clears.
+  key_reports: {
+    cacheSource: KEY_REPORTS_CACHE_SOURCE,
+    folderRootName: "Manual Upload Source",
+  },
 };
 const DEFAULT_SOURCE_CONFIG = SOURCE_CONFIG.manual_upload_excel_pdf;
+
+// Resolve a request's ?source into its partition. An ABSENT source keeps the
+// historical Manual Upload default (existing callers rely on it), but an
+// unrecognised one is rejected rather than silently served another mode's data.
+function resolveSourceConfig(sourceKey) {
+  if (!sourceKey) return DEFAULT_SOURCE_CONFIG;
+  const config = SOURCE_CONFIG[sourceKey];
+  if (!config) {
+    const err = new Error(
+      `Unknown data source "${sourceKey}". Expected one of: ${Object.keys(SOURCE_CONFIG).join(", ")}.`,
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+  return config;
+}
 const BS_BANK_BALANCES_CACHE_TYPE = "bs_bank_balances_cache_v2";
 const BS_BANK_SECTION_RE = /bank|checking|savings|cash/i;
 const UUID_RE_BS = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
@@ -793,7 +834,7 @@ router.get("/extract-bank-pdf-records", extractClientId, async (req, res) => {
     const fiscalYear = String(req.query.fiscalYear || "").trim() || null;
     const datasetVersion = String(req.query.datasetVersion || "").trim() || null;
     const keyReportVersionId = String(req.query.keyReportVersionId || "").trim() || null;
-    const { cacheSource, folderRootName } = SOURCE_CONFIG[sourceKey] || DEFAULT_SOURCE_CONFIG;
+    const { cacheSource, folderRootName } = resolveSourceConfig(sourceKey);
     console.log(`[BankPDF] source="${sourceKey}" → cacheSource="${cacheSource}", folder="${folderRootName}", keyReportVersionId=${keyReportVersionId}, datasetVersion=${datasetVersion}, fiscalYear=${fiscalYear}`);
     // keyReportVersionId / datasetVersion scope document resolution to the SELECTED Key Reports version.
     // runBankExtraction already collapses case-variant duplicate banks (e.g.
@@ -804,7 +845,9 @@ router.get("/extract-bank-pdf-records", extractClientId, async (req, res) => {
     return res.status(statusCode).json(scoped);
   } catch (error) {
     console.error("[BankPDF] Extraction error:", error);
-    return res.status(500).json({ success: false, error: error.message || "Failed to extract bank PDF records." });
+    // resolveSourceConfig throws a 400 for an unrecognised ?source rather than
+    // silently serving another connection mode's partition.
+    return res.status(error.statusCode || 500).json({ success: false, error: error.message || "Failed to extract bank PDF records." });
   }
 });
 
@@ -849,14 +892,16 @@ router.get("/manual-report-uploads/bs-bank-balances", extractClientId, async (re
     const fiscalYear = String(req.query.fiscalYear || "").trim() || null;
     const datasetVersion = String(req.query.datasetVersion || "").trim() || null;
     const keyReportVersionId = String(req.query.keyReportVersionId || "").trim() || null;
-    const { cacheSource, folderRootName } = SOURCE_CONFIG[sourceKey] || DEFAULT_SOURCE_CONFIG;
+    const { cacheSource, folderRootName } = resolveSourceConfig(sourceKey);
     console.log(`[BsBankBalances] source="${sourceKey}" → cacheSource="${cacheSource}", folder="${folderRootName}", keyReportVersionId=${keyReportVersionId}, datasetVersion=${datasetVersion}, fiscalYear=${fiscalYear}`);
     // keyReportVersionId / datasetVersion scope Balance Sheet resolution to the SELECTED Key Reports version.
     const { statusCode, body } = await runBsBankBalancesExtraction(req.clientId, cacheSource, folderRootName, fiscalYear, datasetVersion, keyReportVersionId);
     return res.status(statusCode).json(body);
   } catch (err) {
     console.error("[BsBankBalances] Error:", err);
-    return res.status(500).json({ success: false, error: err.message || "Failed to fetch balance sheet bank balances." });
+    // resolveSourceConfig throws a 400 for an unrecognised ?source rather than
+    // silently serving another connection mode's partition.
+    return res.status(err.statusCode || 500).json({ success: false, error: err.message || "Failed to fetch balance sheet bank balances." });
   }
 });
 

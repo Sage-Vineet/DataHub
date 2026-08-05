@@ -685,10 +685,14 @@ router.get("/manual-report-uploads/qms-bank-data", async (req, res) => {
     const datasetVersion = String(req.query.datasetVersion || "").trim() || null;
     const keyReportVersionId = String(req.query.keyReportVersionId || "").trim() || null;
 
+    // folderRootName is load-bearing here: runBsBankBalancesExtraction falls back to
+    // scanning this DataRoom folder's Reports → Balance Sheet whenever the Key Report
+    // version has no linked Balance Sheet. It said "Manual Upload Source", so QMS mode
+    // extracted its bank balances out of the Manual Upload company's documents.
     const bsBankAccountsPromise = runBsBankBalancesExtraction(
       clientId,
       "quickbooks_manual_upload",
-      "Manual Upload Source",
+      "Quickbooks Manual Source",
       null,
       datasetVersion,
       keyReportVersionId,
@@ -706,7 +710,7 @@ router.get("/manual-report-uploads/qms-bank-data", async (req, res) => {
     // Bank statement is resolved from the SELECTED Key Reports version (single
     // source of truth, active when none selected); P&L financials remain QMS-scoped.
     const [{ body: bankBody }, plFinancials, balanceSheetBankAccounts, activityReview] = await Promise.all([
-      runBankExtraction(clientId, "quickbooks_manual_upload", "Manual Upload Source", datasetVersion, keyReportVersionId),
+      runBankExtraction(clientId, "quickbooks_manual_upload", "Quickbooks Manual Source", datasetVersion, keyReportVersionId),
       extractPlFinancials(clientId, "quickbooks_manual_upload").catch(() => null),
       bsBankAccountsPromise,
       keyReportVersionId
