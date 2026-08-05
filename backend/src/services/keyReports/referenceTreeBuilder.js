@@ -118,7 +118,25 @@ function resolveDocumentAncestry(rows) {
     const name = rowName(row);
     if (!name) { out.push(null); continue; }
 
-    const rowScopeKey = `${row.source_file_id ?? ""}::${row.fiscal_year ?? ""}`;
+    // CONFIRMED ROOT CAUSE (fixed here): this key used to include fiscal_year.
+    // Both extractors emit one row PER PERIOD COLUMN -- and that includes the
+    // header/group and total rows, not just the accounts. So on a multi-year
+    // document the key changed on essentially every row and reset the bracketing
+    // stack mid-document, destroying the ancestry of everything after the first
+    // row:
+    //   Income(2023) reset+push, Income(2024) reset+push, Income(2025) reset+push,
+    //   Sales(2023)  reset -> ancestry EMPTY, "Income" gone.
+    // A single-period document has one constant fiscal_year, so it was unaffected
+    // -- which is exactly why this stayed hidden until a genuinely multi-year P&L
+    // was used.
+    //
+    // Bracketing is a property of ONE DOCUMENT read top to bottom, so the scope
+    // is the source document alone. Callers already keep each document's rows
+    // contiguous (see keyReportSyncService's balanceSheetRowsForTree), and the
+    // "only pop when the target is actually open" guard below keeps a repeated
+    // total from draining the stack, so a document that repeats its structure per
+    // period stays correct.
+    const rowScopeKey = `${row.source_file_id ?? ""}`;
     if (rowScopeKey !== scopeKey) { scopeKey = rowScopeKey; scopeStack = []; }
 
     const hasOwnParentPath = Array.isArray(row.parent_path) && row.parent_path.length > 0;

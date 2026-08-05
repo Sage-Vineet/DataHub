@@ -490,7 +490,29 @@ const EQUITY_FIXED_PREFIX = Object.freeze(["Total Liabilities and Equity", "Tota
 // document heading to be trimmed away as a duplicate of the anchor's own
 // labels. Three levels is the whole fixed part; everything below is the
 // document's.
-const PL_FIXED_PREFIX = Object.freeze(["Total Liabilities and Equity", "Total Equity", "Total Equity"]);
+// The accounting-equation roll-up every P&L account sits beneath, shared by both
+// sides of the income statement. Fixed and company-independent -- the same
+// structural anchor concept as ASSET/LIABILITY/EQUITY_FIXED_PREFIX above, not
+// document content. The client's reference workbook carries these on Level 1..7
+// of EVERY P&L row, identically, regardless of that company's own section names.
+const PL_ROLLUP_PREFIX = Object.freeze([
+  "Total Liabilities and Equity", "Total Equity", "Total Equity",
+  "Net Income", "Pretax Income", "Operating Income", "Gross Profit",
+]);
+// Level 8 is the side of the statement the account rolls into. It deliberately
+// stops here: the next level is the document's OWN heading ("Income",
+// "Expenses", "Revenue", "Cost of Revenue", ...), which must never be part of
+// the anchor. An earlier 9-level anchor ended with "Income" itself, which made
+// every document heading look like a duplicate of the anchor and get trimmed
+// away -- that is the failure the previous 3-level anchor was reacting to.
+// Ending at "Total Revenue" / "Total Expenses" keeps the two distinct, so the
+// document heading survives as its own level (reference: L8 "Total Revenue",
+// L9 "Income").
+const PL_REVENUE_FIXED_PREFIX = Object.freeze([...PL_ROLLUP_PREFIX, "Total Revenue"]);
+const PL_EXPENSE_FIXED_PREFIX = Object.freeze([...PL_ROLLUP_PREFIX, "Total Expenses"]);
+// Retained for callers that only need the shared part (e.g. PL_ANCHOR_DEPTH in
+// financialStatementService, which reads the collapsed length of "the" P&L anchor).
+const PL_FIXED_PREFIX = PL_REVENUE_FIXED_PREFIX;
 const PROFIT_AND_LOSS_COA_PREFIX = PL_FIXED_PREFIX;
 // Same three anchors as ASSET/LIABILITY/EQUITY_FIXED_PREFIX above -- aliased so
 // getBalanceSheetPrefix and fixedPrefixFor can never drift apart.
@@ -502,7 +524,9 @@ function fixedPrefixFor(accountType) {
   if (accountType === "asset") return ASSET_FIXED_PREFIX;
   if (accountType === "liability") return LIABILITY_FIXED_PREFIX;
   if (accountType === "equity") return EQUITY_FIXED_PREFIX;
-  if (accountType === "income" || accountType === "cogs" || accountType === "expense") return PL_FIXED_PREFIX;
+  // Both P&L sides share Level 1..7; Level 8 is the side they roll into.
+  if (accountType === "income") return PL_REVENUE_FIXED_PREFIX;
+  if (accountType === "cogs" || accountType === "expense") return PL_EXPENSE_FIXED_PREFIX;
   return [];
 }
 
@@ -1251,7 +1275,14 @@ function normalizeFinalStatementType(statementType) {
 function getFinalCoaPrefix({ statementType, accountType }) {
   const statement = normalizeFinalStatementType(statementType);
   const type = String(accountType || "").trim().toLowerCase();
-  if (statement === "profit_loss") return PL_FIXED_PREFIX;
+  // Both P&L sides share Level 1..7; Level 8 differs (Total Revenue vs Total
+  // Expenses), so the side must be honoured here too -- returning one constant
+  // for all of profit_loss put every expense account under Total Revenue.
+  if (statement === "profit_loss") {
+    if (type === "cogs" || type === "expense") return PL_EXPENSE_FIXED_PREFIX;
+    if (type === "income") return PL_REVENUE_FIXED_PREFIX;
+    return PL_FIXED_PREFIX;
+  }
   if (statement === "balance_sheet") {
     if (type === "asset") return ASSET_FIXED_PREFIX;
     if (type === "liability") return LIABILITY_FIXED_PREFIX;
@@ -1302,7 +1333,7 @@ function stripAnyKnownCoaPrefix(path) {
   //     which never repeat themselves; only the collapsed form matches those.
   // Trying only one form under-consumes the other shape and leaves an anchor
   // label behind to be re-appended as a phantom document level.
-  const knownPrefixes = [PL_FIXED_PREFIX, LIABILITY_FIXED_PREFIX, EQUITY_FIXED_PREFIX, ASSET_FIXED_PREFIX]
+  const knownPrefixes = [PL_REVENUE_FIXED_PREFIX, PL_EXPENSE_FIXED_PREFIX, LIABILITY_FIXED_PREFIX, EQUITY_FIXED_PREFIX, ASSET_FIXED_PREFIX]
     .flatMap((prefix) => {
       const collapsed = collapse(prefix);
       return collapsed.length === prefix.length ? [prefix] : [prefix, collapsed];
@@ -1354,16 +1385,29 @@ function buildFinalCoaLevels({ statementType, accountType, matchedPath, accountN
 
 function buildTreeHierarchyLookup(tree, statementType) {
   const lookup = new Map();
-  // A CALCULATED_TOTAL node is a COMPUTED statement line (Gross Profit, Net
-  // Operating Income, Net Other Income, Net Income), not a document category.
-  // referenceTreeBuilder's P&L skeleton uses these to model how the statement
-  // sums up -- findFirstProfitAndLossAccount walks it for the GL Retained
-  // Earnings boundary, and the report layer relies on it -- but they are NOT
-  // hierarchy the user's chart of accounts should inherit. Including them
-  // prefixed every P&L account's COA path with "Net Income > Net Operating
-  // Income > ...", pushing the document's own real categories two levels deeper
-  // and burning level slots on figures that are derived, not posted. Skipped
-  // for path purposes only; the nodes themselves are untouched.
+  // A CALCULATED_TOTAL node is a computed statement line (Gross Profit, Net
+  // Operating Income, Net Other Income, Net Income). These ARE part of the
+  // chart-of-accounts hierarchy: the client's reference workbook shows every P&L
+  // account carrying its statement roll-up in Level 4..N, above the document's
+  // own section, e.g.
+  //   … > Net Income > Pretax Income > Operating Income > Gross Profit
+  //       > Total Expenses > Expenses > General and Administrative > <account>
+  // so the path walks THROUGH them rather than skipping them.
+  //
+  // They remain reporting nodes, never accounts: only nodeType === "ACCOUNT"
+  // becomes a COA leaf (and isRealPostingRow independently keeps a subtotal row
+  // out of the account population), so no calculated figure is double-counted as
+  // a GL account and the report layer stays authoritative for their values.
+  //
+  // The labels come from whatever the uploaded document/tree actually contains --
+  // nothing here names a statement line.
+  // The statement roll-up (Net Income > Pretax Income > Operating Income >
+  // Gross Profit > Total Revenue|Total Expenses) is supplied by the FIXED anchor
+  // (PL_ROLLUP_PREFIX), identically for every company. referenceTreeBuilder also
+  // models it as synthetic CALCULATED_TOTAL nodes so the report layer and the GL
+  // retained-earnings boundary can walk it -- but letting those into the COA path
+  // would emit it twice, with whichever labels that one document happened to use.
+  // Skipped for path purposes only; the nodes themselves are untouched.
   const isComputedLine = (node) => node.nodeType === "CALCULATED_TOTAL";
   const visit = (node, path) => {
     if (!node || typeof node !== "object") return;
@@ -1397,7 +1441,7 @@ function buildTreeHierarchyLookup(tree, statementType) {
           : bsSectionToType(node.sourceSection));
       const coaPath = statementType === "profit_loss"
         ? ensureAccountLeaf({
-          hierarchyPath: [...PROFIT_AND_LOSS_COA_PREFIX, ...cleanDynamicCoaParentPath(nextPath.slice(0, -1))],
+          hierarchyPath: [...fixedPrefixFor(accountType), ...cleanDynamicCoaParentPath(nextPath.slice(0, -1))],
           accountName: nextPath[nextPath.length - 1],
         })
         : statementType === "balance_sheet"
@@ -1449,7 +1493,7 @@ function buildTreeHierarchyLookup(tree, statementType) {
       ];
       const structuralPath = statementType === "profit_loss"
         ? ensureAccountLeaf({
-          hierarchyPath: [...PROFIT_AND_LOSS_COA_PREFIX, ...cleanDynamicCoaParentPath(structuralMatchedPath.slice(0, -1))],
+          hierarchyPath: [...fixedPrefixFor(structuralType), ...cleanDynamicCoaParentPath(structuralMatchedPath.slice(0, -1))],
           accountName: structuralMatchedPath[structuralMatchedPath.length - 1],
         })
         : statementType === "balance_sheet"
@@ -2559,10 +2603,47 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
     if (!isRealPostingRow(r)) continue;
     addLeaf(r.account_name, r.account_number || null, "profit_loss", r.fiscal_year, null, r.section);
   }
+  // ── Canonical account identity comes from the DOCUMENT ────────────────────
+  // CONFIRMED ROOT CAUSE (fixed here): leaf identity is accountKey() ->
+  // normName(), which is only trim().toLowerCase(). Document matching, by
+  // contrast, is punctuation-tolerant (pickDocHierarchy -> normStrict/fuzzy).
+  // So a GL account spelled with different punctuation from its own document
+  // row matched the right document node and INHERITED the right hierarchy, yet
+  // was still registered under its own key -- producing TWO chart_of_accounts
+  // rows for one real account. Confirmed on a document/GL pair shaped like the
+  // reference workbook: the P&L's "Bank Charges and Fees" and the GL's
+  // "Bank Charges & Fees" both became leaves (8 leaves for 7 GL accounts), each
+  // carrying the same hierarchy.
+  //
+  // Fix: before a GL name becomes a leaf, ask the EXISTING matcher whether the
+  // uploaded document already has a node for it, and if so adopt that node's
+  // name as the canonical one. The document is the source of truth for the
+  // account's identity as well as its hierarchy, so the GL variant merges into
+  // the document-named leaf (addLeaf already unions sources/fiscal years).
+  //
+  // No new matcher, no name rules: pickDocHierarchy is the same function the
+  // hierarchy resolution uses, so identity and hierarchy can never disagree.
+  // A name with no document node is left exactly as the GL spells it.
+  const canonicalDocName = (rawName) => {
+    const nm = String(rawName || "").trim();
+    if (!nm) return nm;
+    const key = normName(nm);
+    // Already spelled exactly as a document node -- nothing to canonicalize.
+    if (plHierarchyByName?.has(key) || bsHierarchyByName?.has(key)) return nm;
+    let match = null;
+    try {
+      match = pickDocHierarchy(nm, key, glBucketByKey, bsHierarchyByName, plHierarchyByName, null, {});
+    } catch { return nm; }
+    const nodeName = match?.nodeName ? String(match.nodeName).trim() : "";
+    // Only adopt a genuinely different spelling of the SAME account. An empty
+    // or identical nodeName means there is nothing to merge into.
+    return nodeName && normName(nodeName) !== key ? nodeName : nm;
+  };
+
   const knownGlAccountNamesForSplit = collectKnownGlAccountNames(glRows);
   for (const r of glRows || []) {
     const glYear = glRowYear(r);
-    const name = r.account_name || r.account_section || "";
+    const name = canonicalDocName(r.account_name || r.account_section || "");
     if (name) addLeaf(name, r.account_number || null, "general_ledger", glYear, null);
     const splitName = r.split_account ? String(r.split_account).trim() : "";
     // A split_account that's really just a reference to an account already
@@ -2571,7 +2652,10 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
     // for the same real-world account (confirmed root cause of a Balance
     // Sheet imbalance).
     if (splitName && !isKnownAccountReference(splitName, knownGlAccountNamesForSplit)) {
-      addLeaf(splitName, null, "general_ledger", glYear, null);
+      // Same document-canonical identity as the posting name above, so a split
+      // reference spelled differently from its document row cannot create a
+      // second leaf either.
+      addLeaf(canonicalDocName(splitName), null, "general_ledger", glYear, null);
     }
   }
 

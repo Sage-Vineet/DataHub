@@ -20,8 +20,8 @@ test('fixedPrefixFor returns the non-redundant hierarchy anchors used by Propose
   assert.deepEqual(coa.fixedPrefixFor('liability'), LIABILITY_FIXED_PREFIX);
   assert.deepEqual(coa.fixedPrefixFor('equity'), EQUITY_FIXED_PREFIX);
   assert.deepEqual(coa.fixedPrefixFor('income'), PL_FIXED_PREFIX);
-  assert.deepEqual(coa.fixedPrefixFor('cogs'), PL_FIXED_PREFIX);
-  assert.deepEqual(coa.fixedPrefixFor('expense'), PL_FIXED_PREFIX);
+  assert.deepEqual(coa.fixedPrefixFor('cogs'), PL_EXPENSE_FIXED_PREFIX);
+  assert.deepEqual(coa.fixedPrefixFor('expense'), PL_EXPENSE_FIXED_PREFIX);
 });
 
 // ---------------------------------------------------------------------------
@@ -89,7 +89,13 @@ const LIABILITY_FIXED_PREFIX = ['Total Liabilities and Equity', 'Total Liabiliti
 // Equity's anchor is 4 levels per the Balance Sheet level specification:
 // L1 "Total Liabilities and Equity", L2/L3 "Total Equity", L4 "Equity".
 const EQUITY_FIXED_PREFIX = ['Total Liabilities and Equity', 'Total Equity', 'Total Equity', 'Equity'];
-const PL_FIXED_PREFIX = ['Total Liabilities and Equity', 'Total Equity', 'Total Equity'];
+// The P&L anchor carries the accounting-equation roll-up (L1..L7) plus the side
+// the account rolls into (L8), per the client's reference chart of accounts.
+const PL_ROLLUP = ['Total Liabilities and Equity', 'Total Equity', 'Total Equity',
+  'Net Income', 'Pretax Income', 'Operating Income', 'Gross Profit'];
+const PL_REVENUE_FIXED_PREFIX = [...PL_ROLLUP, 'Total Revenue'];
+const PL_EXPENSE_FIXED_PREFIX = [...PL_ROLLUP, 'Total Expenses'];
+const PL_FIXED_PREFIX = PL_REVENUE_FIXED_PREFIX;
 
 function makeAssetLeaf(overrides = {}) {
   return {
@@ -120,7 +126,7 @@ function makeExpenseLeaf(overrides = {}) {
     accountNumber: '6010',
     accountType: 'expense',
     statementType: 'profit_loss',
-    levels: [...PL_FIXED_PREFIX, 'Operating Expenses', 'Salaries'],
+    levels: [...PL_EXPENSE_FIXED_PREFIX, 'Operating Expenses', 'Salaries'],
     displayName: 'Salaries',
     classificationMethod: 'document_hierarchy',
     matchTier: 'pl_section',
@@ -132,7 +138,7 @@ function makeExpenseLeaf(overrides = {}) {
     clientAccountId: null,
     mappedNormalBalance: 'debit',
     sortOrder: 2,
-    hierarchyPath: [...PL_FIXED_PREFIX, 'Operating Expenses', 'Salaries'].join(' > '),
+    hierarchyPath: [...PL_EXPENSE_FIXED_PREFIX, 'Operating Expenses', 'Salaries'].join(' > '),
     ...overrides,
   };
 }
@@ -443,7 +449,7 @@ test('partition statement type remains authoritative over equity account type an
   }]);
 
   assert.equal(leaf.statementType, 'profit_loss');
-  assert.deepEqual(leaf.levels.filter(Boolean).slice(0, 3), PL_FIXED_PREFIX);
+  assert.deepEqual(leaf.levels.filter(Boolean).slice(0, PL_FIXED_PREFIX.length), PL_FIXED_PREFIX);
   assert.equal(leaf.levels.filter(Boolean).at(-1), 'Retained Earnings');
   assert.equal(leaf.levels.filter(Boolean).includes('Total Liabilities'), false);
 });
@@ -461,8 +467,14 @@ test('final hierarchy builder applies statement-specific prefixes and cleaned dy
     coa.buildFinalCoaLevels({ statementType: 'balance_sheet', accountType: 'equity', matchedPath: ['Total for Liabilities and Equity', 'Total for Equity'], accountName: 'Net Income' }),
     ['Total Liabilities and Equity', 'Total Equity', 'Total Equity', 'Equity', 'Net Income'],
   );
+  // The statement roll-up now comes from the fixed anchor, and the reference tree
+  // no longer contributes its synthetic CALCULATED_TOTAL nodes to a matched path
+  // (buildTreeHierarchyLookup skips them), so a P&L matchedPath is the document's
+  // own headings only.
   assert.deepEqual(
-    coa.buildFinalCoaLevels({ statementType: 'profit_loss', accountType: 'expense', matchedPath: ['Net Income', 'Net Operating Income', 'Total for Expenses'], accountName: 'Payroll Expenses' }),
-    ['Total Liabilities and Equity', 'Total Equity', 'Total Equity', 'Net Income', 'Net Operating Income', 'Expenses', 'Payroll Expenses'],
+    coa.buildFinalCoaLevels({ statementType: 'profit_loss', accountType: 'expense', matchedPath: ['Total for Expenses'], accountName: 'Payroll Expenses' }),
+    ['Total Liabilities and Equity', 'Total Equity', 'Total Equity',
+     'Net Income', 'Pretax Income', 'Operating Income', 'Gross Profit', 'Total Expenses',
+     'Expenses', 'Payroll Expenses'],
   );
 });
