@@ -372,18 +372,29 @@ const _addBalance = (map, leaf) => {
 const _accountBalances = (entry) => {
   const st = entry?.statement || {};
   const out = {
-    deposits:    { assets: new Map(), liabilities: new Map() },
-    withdrawals: { assets: new Map(), liabilities: new Map() },
+    deposits:    { assets: new Map(), liabilities: new Map(), ltAssets: new Map(), ltLiabilities: new Map() },
+    withdrawals: { assets: new Map(), liabilities: new Map(), ltAssets: new Map(), ltLiabilities: new Map() },
   };
-  const route = (leaves, side) => {
+  const route = (leaves, side, category = "current") => {
     for (const leaf of leaves) {
       const section = _sectionForLeaf(leaf);
       if (section === "exclude") continue;
-      _addBalance(out[section][side], leaf);
+      const key = category === "ltAssets" ? "ltAssets" : category === "ltLiabilities" ? "ltLiabilities" : side;
+      _addBalance(out[section][key], leaf);
     }
   };
-  route(_bucketLeaves(st.assets?.currentAssets), "assets");
-  route(_bucketLeaves(st.liabilities?.currentLiabilities), "liabilities");
+  route(_bucketLeaves(st.assets?.currentAssets), "assets", "current");
+  route(_bucketLeaves(st.liabilities?.currentLiabilities), "liabilities", "current");
+
+  const ltAssetLeaves = [
+    ..._bucketLeaves(st.assets?.fixedAssets).filter((l) => !_isAccumulatedDepreciation(l)),
+    ..._bucketLeaves(st.assets?.otherAssets),
+  ];
+  route(ltAssetLeaves, "assets", "ltAssets");
+
+  const ltLiabLeaves = _bucketLeaves(st.liabilities?.longTermLiabilities);
+  route(ltLiabLeaves, "liabilities", "ltLiabilities");
+
   return out;
 };
 // `sign` comes from _CASH_EFFECT_SIGN. Unmoved accounts are dropped; a month with
@@ -459,11 +470,15 @@ const computeActivityReviewFromFs = (resp) => {
       amortizationExpense:        _round2(pl.amortization),
       badDebtExpense:             _round2(pl.badDebt),
       fixedAssetPurchases:        _round2(dGross > 0 ? -dGross : 0),
-      // Per-account "Changes in Assets" / "Changes in Liabilities" line items.
-      depositsAssetChanges:        _accountDeltas(curAcc.deposits.assets,         prevAcc?.deposits?.assets,         _CASH_EFFECT_SIGN.assets),
-      depositsLiabilityChanges:    _accountDeltas(curAcc.deposits.liabilities,    prevAcc?.deposits?.liabilities,    _CASH_EFFECT_SIGN.liabilities),
-      withdrawalsAssetChanges:     _accountDeltas(curAcc.withdrawals.assets,      prevAcc?.withdrawals?.assets,      _CASH_EFFECT_SIGN.assets),
-      withdrawalsLiabilityChanges: _accountDeltas(curAcc.withdrawals.liabilities, prevAcc?.withdrawals?.liabilities, _CASH_EFFECT_SIGN.liabilities),
+      // Per-account "Changes in Assets" / "Changes in Liabilities" / "Long-Term Assets" / "Long-Term Liabilities" line items.
+      depositsAssetChanges:             _accountDeltas(curAcc.deposits.assets,         prevAcc?.deposits?.assets,         _CASH_EFFECT_SIGN.assets),
+      depositsLiabilityChanges:         _accountDeltas(curAcc.deposits.liabilities,    prevAcc?.deposits?.liabilities,    _CASH_EFFECT_SIGN.liabilities),
+      depositsLongTermAssetChanges:     _accountDeltas(curAcc.deposits.ltAssets,       prevAcc?.deposits?.ltAssets,       _CASH_EFFECT_SIGN.assets),
+      depositsLongTermLiabilityChanges: _accountDeltas(curAcc.deposits.ltLiabilities,  prevAcc?.deposits?.ltLiabilities,  _CASH_EFFECT_SIGN.liabilities),
+      withdrawalsAssetChanges:             _accountDeltas(curAcc.withdrawals.assets,         prevAcc?.withdrawals?.assets,         _CASH_EFFECT_SIGN.assets),
+      withdrawalsLiabilityChanges:         _accountDeltas(curAcc.withdrawals.liabilities,    prevAcc?.withdrawals?.liabilities,    _CASH_EFFECT_SIGN.liabilities),
+      withdrawalsLongTermAssetChanges:     _accountDeltas(curAcc.withdrawals.ltAssets,       prevAcc?.withdrawals?.ltAssets,       _CASH_EFFECT_SIGN.assets),
+      withdrawalsLongTermLiabilityChanges: _accountDeltas(curAcc.withdrawals.ltLiabilities,  prevAcc?.withdrawals?.ltLiabilities,  _CASH_EFFECT_SIGN.liabilities),
     };
     prev = cur;
     prevAcc = curAcc;
@@ -1537,10 +1552,13 @@ export default function WorkspaceReconciliation() {
             selectedManualBankName || existing.selectedManualBankName || "",
           qbOneBankActivity:
             qbOneBankActivity ?? existing.qbOneBankActivity ?? null,
-          extractedBankPdfData: extractedBankPdfData,
-          // Store which source produced this data so stale cross-source data is never served.
-          extractedBankPdfDataSource:
-            extractedBankPdfData != null ? selectedReportSource : null,
+          // NOTE: extractedBankPdfData is deliberately NOT persisted here. This key
+          // is scoped by company only, so bank data written to it is not isolated by
+          // connection mode or Version. It lives in the source+version-scoped slot
+          // cache instead (getReconDataKey / saveStoredReconData). The restore path
+          // discarded this copy unconditionally anyway, so writing it only
+          // duplicated a large payload under an unsafe key and risked the
+          // sessionStorage quota.
           selectedReportSource,
         }),
       );
@@ -1561,7 +1579,6 @@ export default function WorkspaceReconciliation() {
     manualMonthEnd,
     selectedManualBankName,
     qbOneBankActivity,
-    extractedBankPdfData,
     selectedReportSource,
   ]);
 
@@ -1610,8 +1627,9 @@ export default function WorkspaceReconciliation() {
 
   // Restore the cached data for the current slot on mount and whenever the
   // version / connection mode changes — an instant, correctly-isolated view with
-  // no spinner. The unified loader effect then revalidates it in the background,
-  // so what is painted here is fast but never the final word.
+  // no spinner and no refetch. Returning to the page therefore shows exactly what
+  // the user left behind; the unified loader effect only fetches for a slot that
+  // has nothing cached yet (e.g. a Version viewed for the first time).
   useEffect(() => {
     if (!clientId || !selectedReportSource) return;
     const slot = getStoredReconData(clientId, selectedReportSource, reconDataVersion);
@@ -1754,19 +1772,13 @@ export default function WorkspaceReconciliation() {
     }
   };
 
-  // opts.background — revalidating behind data that is already on screen (restored
-  // from the session cache). Suppresses the full-table spinner and the "loading"
-  // banner so a populated table never flips back to "Loading…" while refreshing.
   const loadExtractedBankPdfData = useCallback(async (opts = {}) => {
-    const background = !!opts.background;
-    if (!background) {
-      setIsLoadingExtractedBankPdfData(true);
-      setExtractedBankPdfFetchStatus({
-        status: "loading",
-        message: "Loading extracted bank PDF records...",
-      });
-    }
+    setIsLoadingExtractedBankPdfData(true);
     setExtractedBankPdfError("");
+    setExtractedBankPdfFetchStatus({
+      status: "loading",
+      message: "Loading extracted bank PDF records...",
+    });
 
     try {
       const params = new URLSearchParams();
@@ -1812,7 +1824,7 @@ export default function WorkspaceReconciliation() {
       // good/restored view; only show empty if there was nothing to begin with.
       if (!extractedBankPdfDataRef.current) setExtractedBankPdfData(null);
     } finally {
-      if (!background && activeSourceRef.current === selectedReportSource) {
+      if (activeSourceRef.current === selectedReportSource) {
         setIsLoadingExtractedBankPdfData(false);
       }
     }
@@ -1827,16 +1839,13 @@ export default function WorkspaceReconciliation() {
       return;
     }
 
-    const background = !!opts.background;
-    if (!background) {
-      setIsLoadingExtractedBankPdfData(true);
-      setPlFinancials(null);
-      setExtractedBankPdfFetchStatus({
-        status: "loading",
-        message: "Loading bank statement data from QuickBooks Manual source...",
-      });
-    }
+    setIsLoadingExtractedBankPdfData(true);
     setExtractedBankPdfError("");
+    setPlFinancials(null);
+    setExtractedBankPdfFetchStatus({
+      status: "loading",
+      message: "Loading bank statement data from QuickBooks Manual source...",
+    });
 
     try {
       const params = new URLSearchParams();
@@ -1850,12 +1859,12 @@ export default function WorkspaceReconciliation() {
       const normalized = normalizeExtractedBankPdfData(data);
       // Discard result if source changed while this fetch was in-flight.
       if (activeSourceRef.current !== selectedReportSource) return;
-      // Foreground loads replace unconditionally (this slot owns the table). A
-      // background revalidation must not blank a populated table if it comes back
-      // empty — same guard the Manual Upload / Manual GL loaders use.
-      const replaced = applyBankData(normalized, { force: !background });
+      // force honours the caller: the unified loader replaces unconditionally (it
+      // only ever runs for a slot with no cached data of its own), while any
+      // non-forced call keeps a populated table if this result comes back empty.
+      const replaced = applyBankData(normalized, { force: opts.force });
       // Set P&L financials from merged response (Sales/Expenses per Financials for Activity Review)
-      if (!background || data.plFinancials) setPlFinancials(data.plFinancials ?? null);
+      setPlFinancials(data.plFinancials ?? null);
       setExtractedBankPdfFetchStatus({
         status: normalized ? "success" : "idle",
         message: !replaced
@@ -1871,7 +1880,7 @@ export default function WorkspaceReconciliation() {
       // Keep the last good/restored view on a transient error.
       if (!extractedBankPdfDataRef.current) setExtractedBankPdfData(null);
     } finally {
-      if (!background && activeSourceRef.current === selectedReportSource) {
+      if (activeSourceRef.current === selectedReportSource) {
         setIsLoadingExtractedBankPdfData(false);
       }
     }
@@ -1882,18 +1891,15 @@ export default function WorkspaceReconciliation() {
       console.warn(`[BankData] loadManualBankData blocked — activeSource=${activeSourceRef.current} is not Manual Upload`);
       return;
     }
-    const background = !!opts.background;
-    if (!background) {
-      setIsLoadingExtractedBankPdfData(true);
-      // In Key Reports mode the P&L figures are owned by the dedicated
-      // financial-statements fetch (see effect below); don't reset/clobber them here.
-      if (!krVersionIdRef.current) setPlFinancials(null);
-      setExtractedBankPdfFetchStatus({
-        status: "loading",
-        message: "Loading bank statement data from Manual Upload source...",
-      });
-    }
+    setIsLoadingExtractedBankPdfData(true);
     setExtractedBankPdfError("");
+    // In Key Reports mode the P&L figures are owned by the dedicated
+    // financial-statements fetch (see effect below); don't reset/clobber them here.
+    if (!krVersionIdRef.current) setPlFinancials(null);
+    setExtractedBankPdfFetchStatus({
+      status: "loading",
+      message: "Loading bank statement data from Manual Upload source...",
+    });
     try {
       const params = new URLSearchParams();
       if (clientId) params.append("clientId", clientId);
@@ -1942,7 +1948,7 @@ export default function WorkspaceReconciliation() {
       // Keep the last good/restored view on a transient error.
       if (!extractedBankPdfDataRef.current) setExtractedBankPdfData(null);
     } finally {
-      if (!background && activeSourceRef.current === selectedReportSource) {
+      if (activeSourceRef.current === selectedReportSource) {
         setIsLoadingExtractedBankPdfData(false);
       }
     }
@@ -2117,30 +2123,34 @@ export default function WorkspaceReconciliation() {
   useEffect(() => {
     if (!clientId || !selectedReportSource || !isSourceConfirmedByServer) return;
 
-    // Stale-while-revalidate, keyed on this exact slot (company + connection mode
-    // + version). There is no manual Refresh button: this effect is the only
-    // refresh path, and it re-runs on every slot change (including a Version
-    // switch, via reconDataVersion / kr.selectedVersionId below).
+    // Cache-first, keyed on this exact slot (company + connection mode + version).
+    // There is no manual Refresh button; this effect is the only fetch path and it
+    // re-runs on every slot change (a Version switch included, via
+    // reconDataVersion / kr.selectedVersionId in the dep list below).
     //
-    //   slot IS cached  → the restore effect already painted it, so refresh in the
-    //                     BACKGROUND: no spinner, no waiting, and a failed or empty
-    //                     revalidation leaves the shown data intact (applyBankData).
-    //   slot NOT cached → foreground load with the spinner, and force:true so the
-    //                     result replaces whatever the previous slot left on screen.
-    //                     Without force, switching to a version that has no bank
-    //                     statements would keep displaying the old version's rows.
+    //   slot IS cached  → RETURN. The restore effect has already painted this exact
+    //                     slot from session storage, so coming back to the page
+    //                     leaves the table exactly as the user left it: no spinner,
+    //                     no waiting, nothing refetched. This must skip EVERY loader
+    //                     below, not just the bank-data one — loadBsBankBalances and
+    //                     loadManualBankData both reset bsBankBalances to null when a
+    //                     response comes back empty, which would blank the restored
+    //                     "Per Balance Sheet" row.
+    //   slot NOT cached → fetch, with force:true so the result replaces whatever the
+    //                     previously-viewed slot left on screen. Without force,
+    //                     switching to a version that has no bank statements would
+    //                     keep displaying the old version's rows.
     const manualSource =
       selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ||
       selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL ||
       selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
-    const cachedSlot = manualSource
-      ? getStoredReconData(clientId, selectedReportSource, reconDataVersion)
-      : null;
-    const background = !!(
-      cachedSlot &&
-      (cachedSlot.extractedBankPdfData || cachedSlot.bsBankBalances || cachedSlot.plFinancials)
-    );
-    const loadOpts = { background, force: !background };
+    if (manualSource) {
+      const slot = getStoredReconData(clientId, selectedReportSource, reconDataVersion);
+      if (slot && (slot.extractedBankPdfData || slot.bsBankBalances || slot.plFinancials)) {
+        return;
+      }
+    }
+    const loadOpts = { force: true };
 
     if (selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) {
       // Manual Upload → single endpoint returns both bank data and balanceSheetBankAccounts
@@ -2271,6 +2281,12 @@ export default function WorkspaceReconciliation() {
     setExtractedBankPdfFetchStatus({ status: "idle", message: "" });
     setExtractedBankPdfError("");
     setBsBankBalances(null);
+    // plFinancials is source-specific ("Sales/Expenses per Financials"), and only
+    // the Manual Upload and QMS loaders ever set it — the Manual GL loader never
+    // does. Leaving it behind showed the previous mode's figures in the new mode's
+    // Activity Review. Clear it on every source change so each mode starts blank
+    // and fills from its own endpoint.
+    setPlFinancials(null);
     setIsSourceConfirmedByServer(true);
   }, [contextActiveSource, contextSourceRecords, kr.krActive]);
 
@@ -2280,11 +2296,18 @@ export default function WorkspaceReconciliation() {
   useEffect(() => {
     if (!kr.krActive || !kr.effectiveSource) return;
     setSelectedReportSourceState(kr.effectiveSource);
-    // Clear cross-version data before the unified loader refetches.
+    // Clear cross-version data before the unified loader refetches. Every field
+    // here is version-specific, so leaving any of it behind would show the
+    // previously-selected Version's numbers under the newly-selected one until its
+    // own fetch lands. The financial-statements effect below repopulates
+    // plFinancials / activityReview / bsMonthlyBalances for the new version.
     setExtractedBankPdfData(null);
     setExtractedBankPdfFetchStatus({ status: "idle", message: "" });
     setExtractedBankPdfError("");
     setBsBankBalances(null);
+    setPlFinancials(null);
+    setActivityReview(null);
+    setBsMonthlyBalances(null);
     setIsSourceConfirmedByServer(true);
   }, [
     kr.krActive,
@@ -2309,6 +2332,12 @@ export default function WorkspaceReconciliation() {
     setQbOneBankActivity(null);
     setOneBankActivityFetchStatus({ status: "idle", message: "" });
     setOneBankActivityError("");
+    // Source-specific derived figures. Without these the new mode's Activity
+    // Review kept rendering the previous mode's "Sales/Expenses per Financials"
+    // and Balance Sheet-derived rows.
+    setPlFinancials(null);
+    setActivityReview(null);
+    setBsMonthlyBalances(null);
     try {
       const payload = await setSelectedReportSource(normalized, { clientId });
       const confirmedKey = normalizeReportSourceKey(payload?.selectedSource) || normalized;
@@ -3320,10 +3349,10 @@ export default function WorkspaceReconciliation() {
             </span>
           )}
         </div>
-        {isLoadingExtractedBankPdfData ? (
-          <div className="border-t border-border bg-white flex items-center gap-2 px-4 py-5 text-[13px] text-text-secondary">
-            <LoaderCircle size={15} className="animate-spin" />
-            Loading bank statement data...
+        {isLoadingExtractedBankPdfData || extractedBankPdfFetchStatus.status === "loading" ? (
+          <div className="border-t border-border bg-white flex items-center justify-center gap-2.5 px-4 py-8 text-[13px] font-medium text-text-secondary">
+            <LoaderCircle size={16} className="animate-spin text-primary" />
+            Loading bank statement data from backend...
           </div>
         ) : pdfMonths.length === 0 ? (
           <div className="border-t border-border bg-white px-4 py-5 text-[13px] text-text-muted">No data available.</div>
@@ -3496,13 +3525,19 @@ export default function WorkspaceReconciliation() {
     const av = (f) => [...rows.map((r) => fmtAmt(r[f])), fmtAmt(ttm[f])];
     const avRaw = (f) => [...rows.map((r) => r[f] ?? null), ttm[f] ?? null];
 
-    // Per-account Balance Sheet movement rows for the four category headers.
+    // Per-account Balance Sheet movement rows for the category headers.
     // Display-only: they are NOT summed into the Unreconciled Variance (see note
     // below — only Addbacks feed that).
     const depAssetRows = buildAccountChangeRows("depositsAssetChanges", months);
     const depLiabRows = buildAccountChangeRows("depositsLiabilityChanges", months);
+    const depLTAssetRows = buildAccountChangeRows("depositsLongTermAssetChanges", months);
+    const depLTLiabRows = buildAccountChangeRows("depositsLongTermLiabilityChanges", months);
+
     const wdrAssetRows = buildAccountChangeRows("withdrawalsAssetChanges", months);
     const wdrLiabRows = buildAccountChangeRows("withdrawalsLiabilityChanges", months);
+    const wdrLTAssetRows = buildAccountChangeRows("withdrawalsLongTermAssetChanges", months);
+    const wdrLTLiabRows = buildAccountChangeRows("withdrawalsLongTermLiabilityChanges", months);
+
     const acctRows = (list) =>
       list.map((r) => <DR key={r.key} label={r.label} values={r.values.map(fmtAmt)} indent />);
 
@@ -3569,6 +3604,12 @@ export default function WorkspaceReconciliation() {
         <GroupHeaderRow label="Changes in Liabilities" months={months} />
         {acctRows(depLiabRows)}
 
+        <GroupHeaderRow label="Long-Term Assets" months={months} />
+        {acctRows(depLTAssetRows)}
+
+        <GroupHeaderRow label="Long-Term Liabilities" months={months} />
+        {acctRows(depLTLiabRows)}
+
         <GroupHeaderRow label="P&L Account Adjustments" months={months} />
         <AddbacksRowGroup
           section="deposits"
@@ -3605,6 +3646,12 @@ export default function WorkspaceReconciliation() {
 
         <GroupHeaderRow label="Changes in Liabilities" months={months} />
         {acctRows(wdrLiabRows)}
+
+        <GroupHeaderRow label="Long-Term Assets" months={months} />
+        {acctRows(wdrLTAssetRows)}
+
+        <GroupHeaderRow label="Long-Term Liabilities" months={months} />
+        {acctRows(wdrLTLiabRows)}
 
         <GroupHeaderRow label="P&L Account Adjustments" months={months} />
         <AddbacksRowGroup
@@ -3843,6 +3890,10 @@ export default function WorkspaceReconciliation() {
         ...acctCsv("depositsAssetChanges"),
         ["Changes in Liabilities"],
         ...acctCsv("depositsLiabilityChanges"),
+        ["Long-Term Assets"],
+        ...acctCsv("depositsLongTermAssetChanges"),
+        ["Long-Term Liabilities"],
+        ...acctCsv("depositsLongTermLiabilityChanges"),
         ["P&L Account Adjustments"],
         ...addbackItems.filter((i) => i.section === "deposits").map((item) => [
           `  ${item.name}`,
@@ -3862,6 +3913,10 @@ export default function WorkspaceReconciliation() {
         ...acctCsv("withdrawalsAssetChanges"),
         ["Changes in Liabilities"],
         ...acctCsv("withdrawalsLiabilityChanges"),
+        ["Long-Term Assets"],
+        ...acctCsv("withdrawalsLongTermAssetChanges"),
+        ["Long-Term Liabilities"],
+        ...acctCsv("withdrawalsLongTermLiabilityChanges"),
         ["P&L Account Adjustments"],
         ...addbackItems.filter((i) => i.section === "withdrawals").map((item) => [
           `  ${item.name}`,
@@ -4075,7 +4130,7 @@ export default function WorkspaceReconciliation() {
       const adjDepURaw = [...depUnrec, ttmDepUnrec];
       const adjWdrURaw = [...wdrUnrec, ttmWdrUnrec];
       const av = (f) => [...actRows.map((r) => r[f] ?? null), actTTM[f] ?? null];
-      // Per-account Changes in Assets / Liabilities rows (same source as the table).
+      // Per-account Changes in Assets / Liabilities / Long-Term Assets / Long-Term Liabilities rows (same source as the table).
       const drawAcctRows = (field) =>
         buildAccountChangeRows(field, months).forEach((r) => drawRow(r.label, r.values, { indent: 1 }));
       drawTableHeader("Activity Review", colHeaders);
@@ -4089,6 +4144,10 @@ export default function WorkspaceReconciliation() {
       drawAcctRows("depositsAssetChanges");
       drawRow("Changes in Liabilities", [], { bold: true });
       drawAcctRows("depositsLiabilityChanges");
+      drawRow("Long-Term Assets", [], { bold: true });
+      drawAcctRows("depositsLongTermAssetChanges");
+      drawRow("Long-Term Liabilities", [], { bold: true });
+      drawAcctRows("depositsLongTermLiabilityChanges");
       drawRow("P&L Account Adjustments", [], { bold: true });
       addbackItems.filter((i) => i.section === "deposits").forEach((item) => {
         drawRow(item.name, [...actRows.map((r) => item.monthAmounts[r.month] ?? null),
@@ -4106,6 +4165,10 @@ export default function WorkspaceReconciliation() {
       drawAcctRows("withdrawalsAssetChanges");
       drawRow("Changes in Liabilities", [], { bold: true });
       drawAcctRows("withdrawalsLiabilityChanges");
+      drawRow("Long-Term Assets", [], { bold: true });
+      drawAcctRows("withdrawalsLongTermAssetChanges");
+      drawRow("Long-Term Liabilities", [], { bold: true });
+      drawAcctRows("withdrawalsLongTermLiabilityChanges");
       drawRow("P&L Account Adjustments", [], { bold: true });
       addbackItems.filter((i) => i.section === "withdrawals").forEach((item) => {
         drawRow(item.name, [...actRows.map((r) => item.monthAmounts[r.month] ?? null),
@@ -4320,10 +4383,10 @@ export default function WorkspaceReconciliation() {
                   </div>
                 </>
               )}
-              {/* No manual Refresh button: the unified loader effect refreshes
-                  automatically on mount and whenever the slot changes (Version or
-                  connection mode), painting the session-cached table instantly and
-                  revalidating in the background. */}
+              {/* No manual Refresh button: the unified loader effect fetches
+                  automatically for any slot (Version + connection mode) not yet in
+                  the session cache, and a cached slot is restored as-is — so
+                  returning to this page keeps the data intact without a refetch. */}
               {/* Key Reports Version selector — only when Key Reports is the active source */}
               {krSelected && <KeyReportVersionSelector clientId={clientId} variant="filter" />}
               {/* Bank Account dropdown — temporarily hidden in Key Reports mode:
@@ -4407,7 +4470,12 @@ export default function WorkspaceReconciliation() {
 
           <div>
           {(isManualUpload || isManualGl || isQBManual) ? (
-            extractedBankPdfData ? (
+            (isLoadingExtractedBankPdfData || extractedBankPdfFetchStatus.status === "loading") ? (
+              <div className="flex items-center justify-center gap-3 rounded-2xl border border-border bg-white p-8 text-[14px] font-medium text-text-secondary shadow-sm">
+                <LoaderCircle size={18} className="animate-spin text-primary" />
+                <span>Loading bank reconciliation data from backend...</span>
+              </div>
+            ) : extractedBankPdfData ? (
               // Key Reports mode: dropdown is hidden, so render every bank stacked
               // below one another instead of only the selected one.
               krSelected ? (
@@ -4428,8 +4496,15 @@ export default function WorkspaceReconciliation() {
                 No bank statements found for the active source. Upload PDF or Excel files to the Bank Statement folder and sync.
               </div>
             ) : (
-              renderManualBalanceAccountTable(null)
+              <div className="rounded-2xl border border-dashed border-border bg-bg-page/40 p-6 text-[14px] text-text-muted">
+                No bank statement data available.
+              </div>
             )
+          ) : (isLoadingBankActivity || isLoadingOneBankActivity) ? (
+            <div className="flex items-center justify-center gap-3 rounded-2xl border border-border bg-white p-8 text-[14px] font-medium text-text-secondary shadow-sm">
+              <LoaderCircle size={18} className="animate-spin text-primary" />
+              <span>Loading QuickBooks bank activity from backend...</span>
+            </div>
           ) : hasData ? (
             visibleBalanceAccounts.map((account) =>
               renderBalanceAccountTable(account),
@@ -4456,15 +4531,27 @@ export default function WorkspaceReconciliation() {
             </div>
           </div>
           {(isManualUpload || isManualGl || isQBManual) ? (
-            extractedBankPdfData?.months?.length ? (
+            (isLoadingExtractedBankPdfData || extractedBankPdfFetchStatus.status === "loading") ? (
+              <div className="flex items-center justify-center gap-3 rounded-2xl border border-border bg-white p-8 text-[14px] font-medium text-text-secondary shadow-sm">
+                <LoaderCircle size={18} className="animate-spin text-primary" />
+                <span>Loading Activity Review data from backend...</span>
+              </div>
+            ) : extractedBankPdfData?.months?.length ? (
               renderManualActivityTable()
             ) : extractedBankPdfFetchStatus.status === "success" ? (
               <div className="rounded-2xl border border-dashed border-border bg-bg-page/40 p-6 text-[14px] text-text-muted">
                 No bank statements found for the active source. Upload PDF or Excel files to the Bank Statement folder and sync.
               </div>
             ) : (
-              renderManualActivityTable()
+              <div className="rounded-2xl border border-dashed border-border bg-bg-page/40 p-6 text-[14px] text-text-muted">
+                No Activity Review data available.
+              </div>
             )
+          ) : (isLoadingBankActivity || isLoadingOneBankActivity) ? (
+            <div className="flex items-center justify-center gap-3 rounded-2xl border border-border bg-white p-8 text-[14px] font-medium text-text-secondary shadow-sm">
+              <LoaderCircle size={18} className="animate-spin text-primary" />
+              <span>Loading Activity Review data from backend...</span>
+            </div>
           ) : hasData ? (
             renderActivityTable()
           ) : (
