@@ -1022,6 +1022,99 @@ function classifyBsAncestorLabel(label) {
   return null;
 }
 
+// Which financial statement an accountType belongs to. The ONE mapping used
+// wherever the two vocabularies have to be compared.
+function statementOfAccountType(accountType) {
+  const t = String(accountType || "").toLowerCase();
+  if (t === "asset" || t === "liability" || t === "equity") return "balance_sheet";
+  if (t === "income" || t === "cogs" || t === "expense") return "profit_loss";
+  return null;
+}
+
+/**
+ * Does the AI's OWN suggested hierarchy contradict the AI's OWN classification?
+ *
+ * CONFIRMED ROOT CAUSE (this is the guard for it): the model routinely returns a
+ * Balance-Sheet path for an account it simultaneously classifies as a P&L type --
+ * e.g. accountType "expense" with levels
+ *   ["Total Assets", "Non-Current Assets", "Intangible Assets"].
+ * Nothing checked the two against each other. Worse, the path was then
+ * LAUNDERED: buildFinalCoaLevels -> stripAnyKnownCoaPrefix removes a recognised
+ * anchor prefix, so the giveaway root ("Total Assets") was silently deleted and
+ * only its Balance-Sheet SUB-categories survived, which were then concatenated
+ * onto the account's own P&L anchor. The stored result read
+ *   Total Liabilities and Equity > Total Equity > Total Equity
+ *     > Non-Current Assets > Intangible Assets > Licensing
+ * -- a P&L account sitting on Balance-Sheet branches, with statementType and
+ * hierarchy disagreeing.
+ *
+ * The check therefore runs on the RAW model output, BEFORE any stripping, and
+ * reuses inferAccountTypeFromReferencePath -- the single existing
+ * section-vocabulary reader, the same one document ancestry is classified with.
+ * No new keyword list, no account names, no company rules: if the model's own
+ * path resolves to a section on the OTHER statement, its hierarchy is not
+ * trustworthy for this account.
+ *
+ * Used for BOTH the raw AI output and (via crossStatementViolation) the finished
+ * level chain, so one rule decides "does this hierarchy contradict this
+ * classification" everywhere -- there is no second opinion anywhere.
+ *
+ * @param {string[]} levels a hierarchy path (category labels, no leaf name)
+ * @param {string} accountType the accountType claimed for the same account
+ * @returns {string|null} the contradicting statement, or null when consistent
+ */
+function hierarchyContradictsClassification(levels, accountType) {
+  const own = statementOfAccountType(accountType);
+  if (!own || !Array.isArray(levels) || !levels.length) return null;
+  const other = own === "balance_sheet" ? "profit_loss" : "balance_sheet";
+  // Resolve the path under the OPPOSITE statement's vocabulary. A hit means the
+  // labels describe a section the account was not classified into.
+  const impliedOther = inferAccountTypeFromReferencePath(other, levels);
+  if (!impliedOther) return null;
+  // Only a genuine cross-statement disagreement counts. A path that ALSO
+  // resolves under the account's own statement is not a contradiction -- this
+  // is what keeps ordinary Balance Sheet categories that merely contain a P&L
+  // word (e.g. a real "Prepaid Expenses" asset group, which the P&L vocabulary
+  // matches on the substring "expense") from being flagged.
+  const impliedOwn = inferAccountTypeFromReferencePath(own, levels);
+  if (impliedOwn) return null;
+  return other;
+}
+
+/**
+ * The finished-chain form of the check above: looks at the DYNAMIC labels only --
+ * everything between the code-defined anchor and the account's own name -- since
+ * the anchor is validated separately (and the P&L anchor deliberately shares its
+ * opening labels with the equity anchor, so including it would false-positive on
+ * every P&L account).
+ *
+ * BACKSTOP ONLY, and deliberately a weak one. By the time a chain exists the
+ * laundering described in hierarchyContradictsClassification has already run, so
+ * the one label that carried a recognisable section signal (the stripped root)
+ * may be gone -- leaving company-specific free text this cannot judge. Inventing
+ * a wider keyword list to "catch" those would be exactly the name-matching this
+ * codebase must not contain. The real defence is the gate at source in
+ * buildLeafHierarchies, which sees the model's raw output before any stripping.
+ */
+function crossStatementViolation(leaf) {
+  if (!leaf || leaf.needsMapping) return null;
+  const anchor = fixedPrefixFor(leaf.accountType);
+  if (!anchor.length) return null;
+  const real = (leaf.levels || []).filter(Boolean);
+  // Skip only the leading labels that ACTUALLY match the anchor, position by
+  // position, stopping at the first divergence. Assuming the anchor always
+  // occupies the first anchor.length slots is wrong: a shorter real chain can
+  // put a dynamic label inside that window (a stored chain read
+  // "Total Liabilities and Equity > Total Equity > Owner's Equity > Owner",
+  // where the third slot is already a dynamic label, not the anchor's repeated
+  // "Total Equity") -- and blindly slicing past it hid the very conflict this
+  // is meant to find.
+  let i = 0;
+  while (i < anchor.length && i < real.length && normName(real[i]) === normName(anchor[i])) i += 1;
+  const dynamic = real.slice(i, Math.max(i, real.length - 1));
+  return hierarchyContradictsClassification(dynamic, leaf.accountType);
+}
+
 function inferAccountTypeFromReferencePath(statementType, path) {
   if (statementType === "balance_sheet") {
     // CONFIRMED ROOT CAUSE (fixed here): the old implementation joined the
@@ -1218,9 +1311,22 @@ function buildFinalCoaLevels({ statementType, accountType, matchedPath, accountN
 
 function buildTreeHierarchyLookup(tree, statementType) {
   const lookup = new Map();
+  // A CALCULATED_TOTAL node is a COMPUTED statement line (Gross Profit, Net
+  // Operating Income, Net Other Income, Net Income), not a document category.
+  // referenceTreeBuilder's P&L skeleton uses these to model how the statement
+  // sums up -- findFirstProfitAndLossAccount walks it for the GL Retained
+  // Earnings boundary, and the report layer relies on it -- but they are NOT
+  // hierarchy the user's chart of accounts should inherit. Including them
+  // prefixed every P&L account's COA path with "Net Income > Net Operating
+  // Income > ...", pushing the document's own real categories two levels deeper
+  // and burning level slots on figures that are derived, not posted. Skipped
+  // for path purposes only; the nodes themselves are untouched.
+  const isComputedLine = (node) => node.nodeType === "CALCULATED_TOTAL";
   const visit = (node, path) => {
     if (!node || typeof node !== "object") return;
-    const nextPath = node.nodeType === "REPORT" ? path : [...path, node.name].filter(Boolean);
+    const nextPath = (node.nodeType === "REPORT" || isComputedLine(node))
+      ? path
+      : [...path, node.name].filter(Boolean);
     if (node.nodeType === "ACCOUNT" && node.name) {
       const key = normName(node.name);
       // Section evidence, richest first:
@@ -2686,6 +2792,44 @@ async function buildLeafHierarchies(leaves, _existingByKey = new Map()) {
       const anchor = getFinalCoaPrefix({ statementType: leaf.statementType, accountType: leaf.accountType });
       const anchorNormSet = new Set(anchor.map((l) => normName(l)));
       const baseAccount = leaf.accountName || displayName;
+      // Gate: the model's own hierarchy must not describe the OTHER statement.
+      // Evaluated on the RAW levels, before the stripping below can launder the
+      // giveaway root away -- see aiHierarchyContradictsClassification.
+      const contradicts = hierarchyContradictsClassification(leaf.aiLevels, leaf.accountType);
+      if (contradicts) {
+        // Keep the code-defined anchor for the type the account genuinely IS,
+        // plus its own name -- a valid, non-contradictory placement that invents
+        // no category -- and flag it for the user instead of silently storing a
+        // cross-statement hierarchy. The account stays visible in the Proposed
+        // COA under its correct section, where the existing review/drag-and-drop
+        // flow can place it properly. No UI change: needsReview/needsMapping are
+        // the surfaces that already exist.
+        const anchorOnly = buildFinalCoaLevels({
+          statementType: leaf.statementType,
+          accountType: leaf.accountType,
+          matchedPath: [...anchor],
+          accountName: baseAccount,
+        });
+        const anchorLevels = new Array(MAX_LEVELS).fill(null);
+        anchorOnly.forEach((label, li) => { if (li < MAX_LEVELS) anchorLevels[li] = label; });
+        console.warn(
+          `[ChartOfAccounts][AI_HIERARCHY_REJECTED] account="${baseAccount}" accountType=${leaf.accountType} ` +
+          `statementType=${leaf.statementType} aiLevels=${JSON.stringify(leaf.aiLevels)} ` +
+          `implies=${contradicts} -- hierarchy withheld, flagged for review`,
+        );
+        return {
+          ...leaf,
+          levels: anchorLevels,
+          hierarchyPath: anchorOnly.join(" > "),
+          baseAccount,
+          displayName,
+          needsMapping: false,
+          needsReview: true,
+          aiHierarchyRejected: true,
+          matchTier: "ai_classification_only",
+          matchConfidence: leaf.confidence,
+        };
+      }
       let aiCategories = leaf.aiLevels.slice();
       // Strip any leading labels that just restate the anchor (AI may guess
       // none, some, or all of it) and any trailing label that just repeats
@@ -3994,17 +4138,54 @@ function validateHierarchyConsistency(hierarchical) {
         accountType: leaf.accountType,
         actualPrefix,
         expectedPrefix,
+        kind: "anchor_mismatch",
       });
+    }
+
+    // Cross-statement check on the DYNAMIC labels. The anchor test above passes
+    // happily for the real defect this catches -- a P&L account whose anchor is
+    // correctly the P&L one, but whose category labels after it describe Balance
+    // Sheet branches -- because it only ever inspected the anchor. This is also
+    // a BACKSTOP, not the primary defence: buildLeafHierarchies already refuses
+    // a contradictory AI hierarchy at source. Anything still reaching here is
+    // flagged for review rather than silently returned to the frontend.
+    const violation = crossStatementViolation(leaf);
+    if (violation) {
+      const real = (leaf.levels || []).filter(Boolean);
+      issues.push({
+        accountName: leaf.accountName,
+        accountType: leaf.accountType,
+        statementType: leaf.statementType,
+        hierarchyPath: real.join(" > "),
+        impliedStatement: violation,
+        kind: "cross_statement_hierarchy",
+      });
+      // Expose it through the surface the Proposed COA review flow already has.
+      leaf.needsReview = true;
+      leaf.hierarchyConflict = violation;
     }
   }
   if (issues.length) {
-    console.warn(
-      `[ChartOfAccounts][validateHierarchy] ${issues.length} anomaly/anomalies:\n` +
-      issues.slice(0, 10).map((i) =>
-        `  "${i.accountName}" (${i.accountType}): actual="${i.actualPrefix.filter(Boolean).join(" > ")}" expected="${i.expectedPrefix.join(" > ")}"`,
-      ).join("\n") +
-      (issues.length > 10 ? `\n  ... and ${issues.length - 10} more` : ""),
-    );
+    const anchor = issues.filter((i) => i.kind === "anchor_mismatch");
+    const cross = issues.filter((i) => i.kind === "cross_statement_hierarchy");
+    if (anchor.length) {
+      console.warn(
+        `[ChartOfAccounts][validateHierarchy] ${anchor.length} anchor anomaly/anomalies:\n` +
+        anchor.slice(0, 10).map((i) =>
+          `  "${i.accountName}" (${i.accountType}): actual="${i.actualPrefix.filter(Boolean).join(" > ")}" expected="${i.expectedPrefix.join(" > ")}"`,
+        ).join("\n") +
+        (anchor.length > 10 ? `\n  ... and ${anchor.length - 10} more` : ""),
+      );
+    }
+    if (cross.length) {
+      console.warn(
+        `[ChartOfAccounts][validateHierarchy] ${cross.length} CROSS-STATEMENT hierarchy conflict(s) -- flagged needs_review:\n` +
+        cross.slice(0, 10).map((i) =>
+          `  "${i.accountName}" (${i.accountType}/${i.statementType}) hierarchy implies ${i.impliedStatement}: "${i.hierarchyPath}"`,
+        ).join("\n") +
+        (cross.length > 10 ? `\n  ... and ${cross.length - 10} more` : ""),
+      );
+    }
   }
   return issues;
 }
@@ -6248,6 +6429,11 @@ function printHierarchySampleVerification(results) {
 }
 
 module.exports = {
+  // Classification/hierarchy consistency (exported for unit testing).
+  statementOfAccountType,
+  hierarchyContradictsClassification,
+  crossStatementViolation,
+  validateHierarchyConsistency,
   generateChartOfAccounts,
   getChartOfAccounts,
   updateAccount,

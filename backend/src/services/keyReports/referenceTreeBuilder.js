@@ -75,6 +75,119 @@ function findTotalNode(root, sectionName) {
   return null;
 }
 
+// ─── ONE canonical document-ancestry resolver ────────────────────────────────
+//
+// The SINGLE source of truth for "what is this row's ancestor chain in the
+// uploaded document", shared by the Balance Sheet and Profit & Loss builders
+// below. Both statements are laid out the same way by the same accounting
+// systems, so they must not have two independent ancestry algorithms that can
+// drift (the P&L builder previously had none at all -- see its own note).
+//
+// Two signals, in priority order:
+//   1. row.parent_path -- the extractor's own ancestry, read from the
+//      document's indentation. PRIMARY: an indented document is unaffected.
+//   2. Header/total BRACKETING -- a header row OPENS a scope and a matching
+//      "Total for <same name>" row CLOSES it, with the children in between.
+//      This is how QuickBooks (and similar) convey nesting when the export
+//      carries NO indentation at all: confirmed on a real client export where
+//      every single row had parent_path empty, no leading whitespace, no cell
+//      indent attribute, and every label sat in column A.
+//
+// Purely structural and document-driven: a row opens a scope IFF the document
+// itself also contains a total row closing that same name. No keywords, no
+// account-name rules, no assumed depth, no per-company special cases.
+//
+// @param {Array} rows document rows in document order
+// @returns {Array} one entry per row (null for nameless rows):
+//   { ancestry: string[], hasOwnParentPath, isTotalRow, sectionName, closesOpenScope, isContainer }
+function resolveDocumentAncestry(rows) {
+  // A name is a container iff the document closes it with its own total row.
+  const closesAScope = new Set();
+  for (const r of rows || []) {
+    if (isTotal(r)) closesAScope.add(normName(stripTotalPrefix(rowName(r))));
+  }
+
+  const out = [];
+  // Bracketing is only meaningful within ONE report, so the stack resets
+  // whenever the row sequence moves to a different source document / period.
+  let scopeStack = [];
+  let scopeKey = null;
+  const top = () => (scopeStack.length ? normName(scopeStack[scopeStack.length - 1]) : null);
+
+  for (const row of rows || []) {
+    const name = rowName(row);
+    if (!name) { out.push(null); continue; }
+
+    const rowScopeKey = `${row.source_file_id ?? ""}::${row.fiscal_year ?? ""}`;
+    if (rowScopeKey !== scopeKey) { scopeKey = rowScopeKey; scopeStack = []; }
+
+    const hasOwnParentPath = Array.isArray(row.parent_path) && row.parent_path.length > 0;
+    const ancestry = hasOwnParentPath ? row.parent_path : [...scopeStack];
+    const isTotalRow = isTotal(row);
+    const sectionName = isTotalRow ? stripTotalPrefix(name) : null;
+    // Opens a scope iff a matching total closes it later AND it is not already
+    // the open scope -- guards a header and a real posting account sharing one
+    // name (e.g. header "Accounts Receivable" then account "Accounts Receivable"),
+    // and the repeated-row case described below.
+    const opensScope = !isTotalRow && closesAScope.has(normName(name)) && top() !== normName(name);
+    const closesOpenScope = isTotalRow && !hasOwnParentPath && top() === normName(sectionName);
+
+    out.push({
+      ancestry,
+      hasOwnParentPath,
+      isTotalRow,
+      sectionName,
+      closesOpenScope,
+      // A row is a container iff the document closes it with its own total.
+      // A posting account CAN be one: accounting systems emit a parent account
+      // that carries its own balance as a normal row, followed later by its own
+      // "Total for <name>" (confirmed on a real export: a parent account with
+      // amounts whose total equals itself plus its children).
+      isContainer: closesAScope.has(normName(name)) && !isTotalRow,
+    });
+
+    // Mutate the stack only AFTER this row's own ancestry has been recorded.
+    if (isTotalRow) {
+      if (!hasOwnParentPath) {
+        const target = normName(sectionName);
+        // CONFIRMED ROOT CAUSE (guarded here): a P&L export emits one row per
+        // PERIOD COLUMN, so the same "Total for X" row legitimately appears
+        // N times in a row. Popping unconditionally drains the whole stack on
+        // the 2nd occurrence (the target is no longer open), which destroys the
+        // ancestry of every row after it. Only pop when the target is genuinely
+        // still open.
+        if (scopeStack.some((s) => normName(s) === target)) {
+          while (scopeStack.length) { if (normName(scopeStack.pop()) === target) break; }
+        }
+      }
+    } else if (!hasOwnParentPath && opensScope) {
+      scopeStack.push(name);
+    }
+  }
+  return out;
+}
+
+// A HEADING row that the document never closes with its own total row cannot be
+// a real container in the bracketing regime -- and since nothing closes it, it
+// opens no scope, so no row ever inherits it either: the node it would create is
+// necessarily childless. What actually lands here is document chrome, the
+// "Cash Basis <timestamp>" / "Accrual Basis <timestamp>" footer these exports
+// end with, which the extractor classifies as a heading and which otherwise
+// became a first-class tree node (confirmed: it materialised as a
+// "Total for Cash Basis Monday, June 29, 2026 02:44 PM GMTZ" container hanging
+// off the Equity section).
+//
+// Structural test only -- no text matching, no keywords, so it cannot misfire on
+// a real account or section name. Deliberately scoped to !hasOwnParentPath so a
+// properly-indented document is completely unaffected. Amounts are NOT consulted:
+// the extractor emits amount=0 (not null) for a value-less row, so an
+// amount-based test would never fire here.
+function isDocumentChrome(row, info) {
+  if (!info || info.isTotalRow || info.isContainer) return false;
+  if (info.hasOwnParentPath) return false;
+  return Boolean(isHeading(row));
+}
+
 function buildBalanceSheetTreeFromData({ reportName, rows }) {
   const existing = unwrapTree(rows);
   if (existing) return existing;
@@ -88,78 +201,36 @@ function buildBalanceSheetTreeFromData({ reportName, rows }) {
   // its hierarchy ambiguous.
   const placedAccounts = new Set();
 
-  // ── Ancestry reconstruction for documents with no indentation ─────────────
-  // CONFIRMED ROOT CAUSE (fixed here): ancestry used to come ONLY from
-  // row.parent_path. A very common Balance Sheet layout (QuickBooks and
-  // similar) conveys nesting NOT by indentation but by bracketing: a header
-  // row OPENS a section and a matching "Total for <same name>" row CLOSES it,
-  // with the children in between. Such a document extracts with parent_path
-  // empty on every row, so every account attached directly to the report root
-  // and the ENTIRE intermediate hierarchy was lost -- e.g. a real
-  //   Assets > Current Assets > Bank Accounts > Ent. Bank & Trust Chk (3856)
-  // collapsed to  Total Assets > Ent. Bank & Trust Chk (3856).
-  // Confirmed live: 0 of 103 uploaded rows had a parent_path, yet the document
-  // had 28 header rows and 28 exactly-matching "Total for ..." rows.
-  //
-  // Reconstruction is purely structural and document-driven: a row opens a
-  // scope iff the document ALSO contains a total row closing that same name.
-  // No keywords, no account-name rules, no assumed depth -- it works for any
-  // company and any nesting depth. parent_path remains the PRIMARY signal, so
-  // properly-indented documents are unaffected.
-  const closesAScope = new Set();
-  for (const r of rows || []) {
-    if (isTotal(r)) closesAScope.add(normName(stripTotalPrefix(rowName(r))));
-  }
-  // Scope stack, reset whenever the row sequence moves to a different source
-  // document / fiscal year (bracketing is only meaningful within one report).
-  let scopeStack = [];
-  let scopeKey = null;
-  const top = () => (scopeStack.length ? normName(scopeStack[scopeStack.length - 1]) : null);
+  // Ancestry comes from the ONE shared resolver above (parent_path when the
+  // extractor captured indentation, otherwise header/"Total for X" bracketing).
+  const ancestryInfo = resolveDocumentAncestry(rows);
 
-  for (const row of rows || []) {
+  rows = rows || [];
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
+    const info = ancestryInfo[i];
+    if (!info) continue;
     const name = rowName(row);
-    if (!name) continue;
     const amount = rowAmount(row);
+    const { ancestry, hasOwnParentPath, isTotalRow, sectionName, closesOpenScope } = info;
 
-    const rowScopeKey = `${row.source_file_id ?? ""}::${row.fiscal_year ?? ""}`;
-    if (rowScopeKey !== scopeKey) { scopeKey = rowScopeKey; scopeStack = []; }
+    if (isDocumentChrome(row, info)) continue;
 
-    const hasOwnParentPath = Array.isArray(row.parent_path) && row.parent_path.length > 0;
-    // Ancestry: the row's own parent_path when the extractor captured one,
-    // otherwise the currently-open bracketing scopes.
-    const ancestry = hasOwnParentPath ? row.parent_path : [...scopeStack];
-    // A row opens a scope iff a matching total closes it later, and it is not
-    // already the open scope (guards the common case where a header and a real
-    // posting account share the same name, e.g. header "Accounts Receivable"
-    // immediately followed by account "Accounts Receivable").
-    const opensScope = closesAScope.has(normName(name)) && top() !== normName(name);
-
-    if (isHeading(row) && !isTotal(row)) {
+    if (isHeading(row) && !isTotalRow) {
       ensureTotalPath(root, [...ancestry, name]);
-      if (!hasOwnParentPath && opensScope) scopeStack.push(name);
       continue;
     }
-    if (isTotal(row)) {
-      const sectionName = stripTotalPrefix(name);
+    if (isTotalRow) {
       // A total row IS its section's container node. When it closes the
       // currently-open scope, `ancestry` already ends with that scope, so
       // appending the name again would nest a redundant duplicate total under
       // the node it is supposed to be.
-      const closesOpenScope = !hasOwnParentPath && top() === normName(sectionName);
       const totalPath = hasOwnParentPath
         ? [...row.parent_path, sectionName]
         : (closesOpenScope ? [...ancestry] : [...ancestry, sectionName]);
       const totalNode = ensureTotalPath(root, totalPath);
       totalNode.name = totalName(sectionName);
       totalNode.value = amount;
-      if (!hasOwnParentPath) {
-        // Close the scope this total belongs to: pop until (and including) it.
-        const target = normName(sectionName);
-        while (scopeStack.length) {
-          const popped = normName(scopeStack.pop());
-          if (popped === target) break;
-        }
-      }
       continue;
     }
     // One tree node per distinct account, first placement wins (see
@@ -167,12 +238,6 @@ function buildBalanceSheetTreeFromData({ reportName, rows }) {
     // same key pickDocHierarchy/normName use to look accounts up, so a name
     // that would resolve to one COA leaf resolves to one tree node here too.
     const accountKey = normName(name);
-    // A posting account can itself be a parent that carries its own balance
-    // (QuickBooks emits it as a normal account row followed later by its own
-    // "Total for <name>"). Open its scope so the rows nested under it inherit
-    // it as an ancestor -- done regardless of the dedup skip below, otherwise a
-    // repeated parent name would silently drop its children a level.
-    if (!hasOwnParentPath && opensScope) scopeStack.push(name);
     if (placedAccounts.has(accountKey)) continue;
     placedAccounts.add(accountKey);
     const parent = ensureTotalPath(root, ancestry);
@@ -230,49 +295,90 @@ function buildProfitLossTreeFromData({ reportName, periodKeys, rows }) {
     return grossProfit;
   };
 
-  for (const row of rows || []) {
+  // CONFIRMED ROOT CAUSE (fixed here): this builder had NO ancestry
+  // reconstruction of any kind. It read ancestry ONLY from row.parent_path and,
+  // when that was empty, substituted a single invented level -- literally
+  // `["Expenses"]` or `["Income"]`. The Balance Sheet builder had already been
+  // given header/"Total for X" bracketing for exactly this case; the P&L side
+  // never was. On any export that conveys nesting by bracketing rather than
+  // indentation (parent_path empty on every row), EVERY intermediate P&L group
+  // was therefore destroyed. Confirmed on a real client P&L: all 107 rows had
+  // an empty parent_path, and the resulting tree hung 48 accounts flat
+  // underneath one "Total for Expenses" node --
+  //   Expenses > Advertising and Marketing > Listing fees   (document)
+  //   Expenses > Listing fees                               (tree, group lost)
+  //   Expenses > Payroll expenses > Payroll Taxes           (document)
+  //   Expenses > Payroll Taxes                              (tree, group lost)
+  // and every group's own "Total for ..." node was left childless beside them.
+  // Other Income / Other Expenses were worse: the invented fallback put
+  // "Interest earned" under a fabricated "Income" node and
+  // "Vehicle gas & fuel" under a fabricated "Expenses" node, discarding the
+  // real "Vehicle expenses" group entirely.
+  //
+  // Both builders now derive ancestry from the SAME resolver, so there is one
+  // document-driven algorithm rather than two that can disagree.
+  const ancestryInfo = resolveDocumentAncestry(rows);
+  // One tree node per distinct account -- the P&L extractor emits one row per
+  // PERIOD COLUMN, so without this every account appeared once per period
+  // (confirmed: "Session Income" twice, "Payroll Taxes" twice, ...), leaving its
+  // hierarchy ambiguous. Mirrors the Balance Sheet builder's own placedAccounts.
+  const placedAccounts = new Set();
+
+  rows = rows || [];
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
+    const info = ancestryInfo[i];
+    if (!info) continue;
     const name = rowName(row);
-    if (!name) continue;
-    if (isHeading(row) && !isTotal(row)) continue;
+    const { ancestry, isTotalRow, sectionName } = info;
+
+    if (isDocumentChrome(row, info)) continue;
+    // Section headers are placed by their children's ancestry (and by their own
+    // total row); they contribute no node of their own here.
+    if (isHeading(row) && !isTotalRow) continue;
+
     const section = String(row?.section || "").toLowerCase();
-    const relationship = String(row?.section || "").toLowerCase().includes("expense") ||
-      String(row?.section || "").toLowerCase() === "cost_of_sales"
-      ? "SUBTRACT"
-      : "ADD";
-    if (isTotal(row)) {
-      const sectionName = stripTotalPrefix(name);
-      const parent = relationship === "SUBTRACT" && section !== "other_expense"
-        ? netOperatingIncome
-        : sectionRoot(row);
-      const totalNode = findTotalNode(parent, sectionName) || ensureTotalPath(parent, [sectionName]);
+    const relationship = section.includes("expense") || section === "cost_of_sales" ? "SUBTRACT" : "ADD";
+    // Which computed-subtotal branch this row's section belongs under. Retained
+    // verbatim: the P&L skeleton (Net Income > Net Operating Income > Gross
+    // Profit / Net Other Income) is what findFirstProfitAndLossAccount walks for
+    // the GL Retained-Earnings boundary, and what the report layer expects.
+    const parentRoot = relationship === "SUBTRACT" && section !== "other_expense"
+      ? netOperatingIncome
+      : sectionRoot(row);
+
+    if (isTotalRow) {
+      // Anchor the total at its real document ancestry, so a nested group's
+      // total lands inside its parent group rather than flat under the section.
+      const totalPath = info.closesOpenScope
+        ? normalizedPath(ancestry)
+        : [...normalizedPath(ancestry), sectionName];
+      const existingNode = findTotalNode(parentRoot, sectionName);
+      const totalNode = existingNode || ensureTotalPath(parentRoot, totalPath.length ? totalPath : [sectionName]);
       totalNode.name = totalName(sectionName);
       totalNode.nodeType = "TOTAL";
       totalNode.values = valuesForRow(row, periodKeys);
       totalNode.relationship = relationship;
       continue;
     }
-    const path = normalizedPath(row.parent_path || []);
-    // CONFIRMED ROOT CAUSE (fixed here): this used to be `[path[0]]` -- only
-    // the OUTERMOST ancestor -- so the P&L reference tree was flattened to
-    // exactly ONE level below its section root, silently discarding every
-    // intermediate document group. A real document reading
-    // "Expenses > Payroll > Salaries" produced a tree of
-    // "Expenses > Salaries", losing "Payroll" entirely, and that loss then
-    // propagated into hierarchy_path and level_1..15 for every P&L account
-    // nested more than one level deep. The Balance Sheet builder above
-    // already uses the row's FULL parent_path (ensureTotalPath(root,
-    // row.parent_path)); the P&L side must too -- the document's own
-    // ancestry is the source of truth for depth, not a fixed one-level
-    // assumption.
-    const sectionPath = path.length ? path : [row?.section && relationship === "SUBTRACT" ? "Expenses" : "Income"];
-    const parentRoot = relationship === "SUBTRACT" && section !== "other_expense"
-      ? netOperatingIncome
-      : sectionRoot(row);
-    const parent = ensureTotalPath(parentRoot, sectionPath);
+
+    // A computed statement line (Gross Profit / Net Operating Income / Net Other
+    // Income / Net Income) is not an account and must never become a COA leaf or
+    // a hierarchy level -- the skeleton above already represents these.
+    if (String(row?.node_type || "").toLowerCase() === "subtotal") continue;
+
+    const accountKey = normName(name);
+    if (placedAccounts.has(accountKey)) continue;
+    placedAccounts.add(accountKey);
+
+    // The document's own ancestry, verbatim -- no invented fallback level. An
+    // account the document genuinely places at the section root correctly gets
+    // an empty path and attaches directly to its section branch.
+    const parent = ensureTotalPath(parentRoot, normalizedPath(ancestry));
     parent.relationship = relationship === "SUBTRACT" ? "SUBTRACT" : "ADD";
     parent.children.push({
       name,
-      nodeType: String(row?.node_type || "").toLowerCase() === "subtotal" ? "CALCULATED_TOTAL" : "ACCOUNT",
+      nodeType: "ACCOUNT",
       values: valuesForRow(row, periodKeys),
       relationship: "ADD",
       children: [],

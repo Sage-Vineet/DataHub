@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { Fragment, useState, useMemo } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn, formatCurrency, isReportGroupRow } from "../../../lib/utils";
 import FrozenPaneTable from "../shared/FrozenPaneTable";
@@ -46,7 +46,14 @@ const PNLRow = ({ line, depth = 0, columns }) => {
   const isHeader = line.type === "header";
   const isTotal = line.type === "total";
   const isGroup = isReportGroupRow(line, hasChildren, isTotal);
-  const hasVendors = !isTotal && !isHeader && Array.isArray(line.vendors) && line.vendors.length > 0;
+  // Counterparty breakdown groups. `vendors` is the long-standing field (QuickBooks
+  // and Key Reports both supply it); `customers` is the parallel field Key Reports
+  // adds. A source that sends neither behaves exactly as before.
+  const entityGroups = [
+    { label: "Vendor", items: line.vendors },
+    { label: "Customer", items: line.customers },
+  ].filter((g) => Array.isArray(g.items) && g.items.length > 0);
+  const hasVendors = !isTotal && !isHeader && entityGroups.length > 0;
   const nameLower = (line.name || "").toLowerCase();
 
   // Bold specific rows as per requirements
@@ -241,20 +248,20 @@ const PNLRow = ({ line, depth = 0, columns }) => {
         ))
       )}
 
-      {/* Vendor breakdown rows */}
-      {vendorsOpen && hasVendors && (
-        <>
+      {/* Vendor / Customer breakdown rows */}
+      {vendorsOpen && hasVendors && entityGroups.map((group) => (
+        <Fragment key={group.label}>
           <tr className="bg-bg-page/20">
             <td
               colSpan={50}
               style={{ paddingLeft: `${(depth + 1) * 24 + 16}px` }}
               className="py-1 text-[10px] font-bold uppercase tracking-widest text-text-muted"
             >
-              Vendor
+              {group.label}
             </td>
           </tr>
-          {line.vendors.map((vendor) => (
-            <tr key={vendor.name} className="border-b border-border-light/50 hover:bg-bg-page/20">
+          {group.items.map((vendor) => (
+            <tr key={`${group.label}-${vendor.name}`} className="border-b border-border-light/50 hover:bg-bg-page/20">
               <td className="py-1.5 px-4 text-left sticky left-0 z-10 bg-bg-card border-r border-border-light">
                 <div className="flex items-center">
                   <div className="flex shrink-0">
@@ -278,8 +285,8 @@ const PNLRow = ({ line, depth = 0, columns }) => {
               {hasYTD && <><td className="py-1.5 px-3 text-right text-[13px] text-text-muted/50 whitespace-nowrap">—</td><td className="py-1.5 px-3 text-right text-[13px] text-text-muted/50 whitespace-nowrap">—</td><td className="py-1.5 px-4 text-right text-[13px] text-text-muted/50 whitespace-nowrap">—</td></>}
             </tr>
           ))}
-        </>
-      )}
+        </Fragment>
+      ))}
     </>
   );
 };
