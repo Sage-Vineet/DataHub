@@ -16,18 +16,18 @@ const VERIFICATION_TOKEN_TTL = "15m";
 // yet (development). Run migration 040 in production for proper persistence.
 const _mem = new Map();
 
-function _memKey(email) {
-  return email.toLowerCase();
+function _memKey(email, purpose) {
+  return `${purpose}:${email.toLowerCase()}`;
 }
 
-function _memGetActive(email) {
-  const r = _mem.get(_memKey(email));
+function _memGetActive(email, purpose) {
+  const r = _mem.get(_memKey(email, purpose));
   if (!r || r.verified || r.expiresAt < Date.now()) return null;
   return r;
 }
 
-function _memCreate(email, otpHash, currentResendCount) {
-  _mem.set(_memKey(email), {
+function _memCreate(email, purpose, otpHash, currentResendCount) {
+  _mem.set(_memKey(email, purpose), {
     id: `mem-${Date.now()}`,
     otp_hash: otpHash,
     attempts: 0,
@@ -38,19 +38,25 @@ function _memCreate(email, otpHash, currentResendCount) {
   });
 }
 
-function _memResendCount(email) {
-  const r = _mem.get(_memKey(email));
+function _memResendCount(email, purpose) {
+  const r = _mem.get(_memKey(email, purpose));
   return r ? (r.resend_count || 0) : 0;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function _isTableMissing(err) {
+function _isTableMissing(err, status) {
+  if (!err) return false;
   const msg = String(err?.message || err?.details || "").toLowerCase();
-  return (
-    err?.code === "42P01" ||
-    msg.includes("does not exist") ||
-    msg.includes("relation \"email_verifications\"")
-  );
+  if (err?.code === "42P01" || err?.code === "42703" || err?.code === "PGRST204") return true;
+  if (msg.includes("does not exist")) return true;
+  if (msg.includes("relation \"email_verifications\"")) return true;
+  if (msg.includes("could not find") && msg.includes("column")) return true;
+  // PostgREST can return a bare 400 with an empty message when its schema
+  // cache doesn't recognize a queried column (e.g. `purpose`, before
+  // migration 087 has been applied to this environment's DB) — treat that
+  // the same as a missing table/column and fall back to the in-memory store.
+  if (status === 400 && !msg) return true;
+  return false;
 }
 
 function generateOtp() {
@@ -58,41 +64,44 @@ function generateOtp() {
 }
 
 // ── Supabase operations (each falls back gracefully) ─────────────────────────
-async function _getResendCount(email) {
+async function _getResendCount(email, purpose) {
   try {
     const since = new Date(Date.now() - RESEND_WINDOW_MS).toISOString();
-    const { count, error } = await supabase
+    const { count, error, status } = await supabase
       .from("email_verifications")
       .select("id", { count: "exact", head: true })
       .eq("email", email)
+      .eq("purpose", purpose)
       .gte("created_at", since);
     if (error) {
-      if (_isTableMissing(error)) return _memResendCount(email);
+      if (_isTableMissing(error, status)) return _memResendCount(email, purpose);
       throw error;
     }
     return count || 0;
   } catch (err) {
-    if (_isTableMissing(err)) return _memResendCount(email);
+    if (_isTableMissing(err)) return _memResendCount(email, purpose);
     throw err;
   }
 }
 
-async function _storeOtp(email, otpHash, resendCount) {
+async function _storeOtp(email, purpose, otpHash, resendCount) {
   const now = new Date();
   const expiresAt = new Date(now.getTime() + OTP_EXPIRY_MS);
 
-  // Clear previous unverified records for this email
+  // Clear previous unverified records for this email + purpose
   try {
     await supabase
       .from("email_verifications")
       .delete()
       .eq("email", email)
+      .eq("purpose", purpose)
       .eq("verified", false);
   } catch { /* non-fatal — proceed with insert */ }
 
   try {
-    const { error } = await supabase.from("email_verifications").insert({
+    const { error, status } = await supabase.from("email_verifications").insert({
       email,
+      purpose,
       otp_hash: otpHash,
       attempts: 0,
       resend_count: resendCount,
@@ -101,8 +110,8 @@ async function _storeOtp(email, otpHash, resendCount) {
       expires_at: expiresAt.toISOString(),
     });
     if (error) {
-      if (_isTableMissing(error)) {
-        _memCreate(email, otpHash, resendCount);
+      if (_isTableMissing(error, status)) {
+        _memCreate(email, purpose, otpHash, resendCount);
         console.warn(
           "[OTP Service] email_verifications table not found — using in-memory store. " +
           "Run migration 040_email_verifications.sql for production persistence."
@@ -113,7 +122,7 @@ async function _storeOtp(email, otpHash, resendCount) {
     }
   } catch (err) {
     if (_isTableMissing(err)) {
-      _memCreate(email, otpHash, resendCount);
+      _memCreate(email, purpose, otpHash, resendCount);
       console.warn("[OTP Service] Falling back to in-memory OTP store.");
       return;
     }
@@ -121,12 +130,13 @@ async function _storeOtp(email, otpHash, resendCount) {
   }
 }
 
-async function _getActiveRecord(email) {
+async function _getActiveRecord(email, purpose) {
   try {
-    const { data, error } = await supabase
+    const { data, error, status } = await supabase
       .from("email_verifications")
       .select("*")
       .eq("email", email)
+      .eq("purpose", purpose)
       .eq("verified", false)
       .gt("expires_at", new Date().toISOString())
       .order("created_at", { ascending: false })
@@ -134,19 +144,19 @@ async function _getActiveRecord(email) {
       .maybeSingle();
 
     if (error) {
-      if (_isTableMissing(error) || error.code === "PGRST116") return _memGetActive(email);
+      if (_isTableMissing(error, status) || error.code === "PGRST116") return _memGetActive(email, purpose);
       throw error;
     }
-    return data || _memGetActive(email);
+    return data || _memGetActive(email, purpose);
   } catch (err) {
-    if (_isTableMissing(err)) return _memGetActive(email);
+    if (_isTableMissing(err)) return _memGetActive(email, purpose);
     throw err;
   }
 }
 
-async function _incrementAttempts(recordId, currentAttempts, email) {
+async function _incrementAttempts(recordId, currentAttempts, email, purpose) {
   if (String(recordId).startsWith("mem-")) {
-    const r = _mem.get(_memKey(email));
+    const r = _mem.get(_memKey(email, purpose));
     if (r) r.attempts = currentAttempts + 1;
     return;
   }
@@ -156,14 +166,14 @@ async function _incrementAttempts(recordId, currentAttempts, email) {
       .update({ attempts: currentAttempts + 1 })
       .eq("id", recordId);
   } catch {
-    const r = _mem.get(_memKey(email));
+    const r = _mem.get(_memKey(email, purpose));
     if (r) r.attempts = currentAttempts + 1;
   }
 }
 
-async function _markVerified(recordId, email) {
+async function _markVerified(recordId, email, purpose) {
   if (String(recordId).startsWith("mem-")) {
-    const r = _mem.get(_memKey(email));
+    const r = _mem.get(_memKey(email, purpose));
     if (r) { r.verified = true; r.verifiedAt = Date.now(); }
     return;
   }
@@ -173,7 +183,7 @@ async function _markVerified(recordId, email) {
       .update({ verified: true, verified_at: new Date().toISOString() })
       .eq("id", recordId);
   } catch {
-    const r = _mem.get(_memKey(email));
+    const r = _mem.get(_memKey(email, purpose));
     if (r) { r.verified = true; r.verifiedAt = Date.now(); }
   }
 }
@@ -186,12 +196,13 @@ async function _markVerified(recordId, email) {
  * Returns the plain-text OTP (to be emailed — never stored plain).
  *
  * @param {string} email
+ * @param {string} [purpose] - "email_verification" (default, broker signup) or "password_reset"
  * @returns {Promise<string>} plain-text OTP
  */
-async function sendOtp(email) {
+async function sendOtp(email, purpose = "email_verification") {
   const normalized = email.toLowerCase();
 
-  const count = await _getResendCount(normalized);
+  const count = await _getResendCount(normalized, purpose);
   if (count >= MAX_RESENDS) {
     const err = new Error(
       "Too many verification requests. Please wait 10 minutes before trying again."
@@ -202,9 +213,9 @@ async function sendOtp(email) {
 
   const otp = generateOtp();
   const otpHash = await bcrypt.hash(otp, 10);
-  await _storeOtp(normalized, otpHash, count + 1);
+  await _storeOtp(normalized, purpose, otpHash, count + 1);
 
-  console.log(`[OTP Service] OTP created for <${normalized}> (send #${count + 1})`);
+  console.log(`[OTP Service] OTP created for <${normalized}> purpose=${purpose} (send #${count + 1})`);
   return otp;
 }
 
@@ -215,12 +226,13 @@ async function sendOtp(email) {
  *
  * @param {string} email
  * @param {string} otp
+ * @param {string} [purpose] - "email_verification" (default, broker signup) or "password_reset"
  * @returns {Promise<{ verified: true, verificationToken: string }>}
  */
-async function verifyOtp(email, otp) {
+async function verifyOtp(email, otp, purpose = "email_verification") {
   const normalized = email.toLowerCase();
 
-  const record = await _getActiveRecord(normalized);
+  const record = await _getActiveRecord(normalized, purpose);
   if (!record) {
     const err = new Error(
       "Verification code has expired or was not found. Please request a new code."
@@ -238,7 +250,7 @@ async function verifyOtp(email, otp) {
     throw err;
   }
 
-  await _incrementAttempts(record.id, attempts, normalized);
+  await _incrementAttempts(record.id, attempts, normalized, purpose);
 
   const isValid = await bcrypt.compare(String(otp).trim(), record.otp_hash);
 
@@ -253,15 +265,15 @@ async function verifyOtp(email, otp) {
     throw err;
   }
 
-  await _markVerified(record.id, normalized);
+  await _markVerified(record.id, normalized, purpose);
 
   const verificationToken = jwt.sign(
-    { purpose: "email_verification", email: normalized },
+    { purpose, email: normalized },
     process.env.JWT_SECRET || "change_me",
     { expiresIn: VERIFICATION_TOKEN_TTL }
   );
 
-  console.log(`[OTP Service] Email <${normalized}> verified successfully`);
+  console.log(`[OTP Service] Email <${normalized}> verified successfully (purpose=${purpose})`);
   return { verified: true, verificationToken };
 }
 

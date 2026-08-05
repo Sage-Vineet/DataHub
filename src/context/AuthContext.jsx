@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
-import { brokerSignupRequest, loginRequest, logoutRequest, meRequest, setStoredToken, getStoredToken } from '../lib/api';
+import { brokerSignupRequest, loginRequest, logoutRequest, meRequest, resetPasswordRequest, setStoredToken, getStoredToken } from '../lib/api';
 import {
   startSession,
   clearSession,
@@ -290,6 +290,31 @@ export function AuthProvider({ children }) {
     }
   };
 
+  const resetPassword = async (payload) => {
+    try {
+      setError('');
+      const response = await resetPasswordRequest(payload);
+      const token = extractToken(response);
+      const userData = unwrapUser(response);
+
+      if (!token || !userData) {
+        throw new Error('Invalid reset password response');
+      }
+
+      setStoredToken(token);
+      startSession();
+      const normalizedUser = normalizeUser(userData);
+      setUser(normalizedUser);
+      scheduleExpiryLogout();
+      return normalizedUser;
+    } catch (resetError) {
+      setError(resetError?.message || 'Unable to reset password.');
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const refreshUser = async () => {
     try {
       const payload = await meRequest();
@@ -332,7 +357,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, login, signupBroker, logout, error, setError, loading, refreshUser }}>
+    <AuthContext.Provider value={{ user, login, signupBroker, resetPassword, logout, error, setError, loading, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );
