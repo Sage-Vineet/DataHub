@@ -364,6 +364,7 @@ async function chunkedInsertGeneric(table, rows, chunk = 500) {
 const {
   validateChartOfAccounts, ensureCoaComplete, printCoaValidationBlock, finalizeCoaHierarchy,
   buildProposedCoaTree, persistApprovedCoaTree, serializeProposedTree, validateFinalCoaTree,
+  isRealPostingRow,
 } = require('../chartOfAccountsService');
 const { replaceValidationResults } = require('./keyReportValidationService');
 const { classifyWorkflowDocuments, generateTrialBalance, generateMonthlyBalanceSheets, generateMonthlyBalanceSheetsReverse, generateReconciliation, linkGlToCoa, linkBsToCoa, coaTypeMap } = require('./keyReportAccountingService');
@@ -934,10 +935,19 @@ async function generateFinancialTables(version, opts = {}) {
       plParsedByFile.push({ fileName, validRows: [], error: err.message });
     }
   }
-  // Account rows only (no totals/headers) — this is what feeds hierarchy
-  // grouping and the GL-vs-P&L comparison; Net Income totals are read
-  // separately from validRows further below.
-  const plAccountRows = plParsedByFile.flatMap((f) => f.validRows.filter((r) => !r.is_total && !r.is_header));
+  // REAL POSTING account rows only — no totals, no headers, and no CALCULATED
+  // statement lines. This is what feeds hierarchy grouping, the GL-vs-P&L
+  // comparison and (via buildProposedCoaTree/ensureCoaComplete) the COA itself;
+  // Net Income totals are read separately from validRows further below.
+  //
+  // The old filter here was `!r.is_total && !r.is_header`, which let every
+  // computed subtotal through: the P&L extractor derives `is_total` from
+  // /^total/ | /total$/ | /net income/, so "Gross Profit" (and
+  // "Net Operating Income" / "Net Other Income" / "Operating Income" /
+  // "Net Loss") arrived with is_total=false and became COA accounts with their
+  // own system ids. isRealPostingRow reads the extractor's own structural
+  // `node_type` instead — see its doc comment.
+  const plAccountRows = plParsedByFile.flatMap((f) => f.validRows.filter(isRealPostingRow));
   if (plMappings.length) {
     logger.log(`  Parsed ${plMappings.length} P&L file(s): ${plAccountRows.length} account row(s) available for hierarchy grouping + validation.`);
   } else {
