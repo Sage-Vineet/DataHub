@@ -76,6 +76,102 @@ const NEEDS_MAPPING_SECTION = {
 // systemId + acctNum + acctName + acctIdName + stmt + 15 levels + path + method + adjustedName + actions
 const TOTAL_COLS = 5 + MAX_LEVELS + 4;
 
+// ── Display-only hierarchy normalization ─────────────────────────────────────
+// PRESENTATION ONLY. Nothing below writes to a node, a level field, or the API —
+// it reads the ancestry the backend already sent (walkAncestry over parentKey, via
+// getLevelsArray) and decides how to DRAW it. No classification, no name
+// heuristics, no hardcoded section/subsection names.
+
+/** Length of the longest leading run of labels every chain shares. */
+function commonPrefixLength(chains) {
+  if (!chains.length) return 0;
+  let n = 0;
+  for (;;) {
+    const label = chains[0][n];
+    if (label === undefined) return n;
+    for (const c of chains) if (c[n] !== label) return n;
+    n += 1;
+  }
+}
+
+/**
+ * Order a sub-group's accounts into nested category headers + account rows.
+ *
+ * The shared leading prefix of a sub-group is the statement anchor the backend
+ * puts in front of every account of that type (Total Assets… / Total Liabilities
+ * and Equity > Total Liabilities… ). It carries no information the sub-group
+ * header above it doesn't already convey, so it is not drawn — derived from the
+ * DATA (what all these accounts happen to share), never from a list of names, so
+ * it adapts to any company's anchor depth.
+ *
+ * An account never loses its last remaining category: the drop is capped at
+ * chain.length - 1, so a lone account in a sub-group still shows the group it
+ * sits in rather than being flattened to nothing.
+ *
+ * Walks the ACTUAL node tree (childrenByParentKey, which buildIndexes has already
+ * ordered by the backend's sortOrder and then display name — the app's existing
+ * canonical ordering), descending only into the categories that lead to accounts
+ * in this sub-group. Because each category is a real node, it is drawn exactly
+ * ONCE.
+ *
+ * The first version of this compared each row's path only against the row
+ * immediately before it, which silently split any category whose accounts were
+ * not adjacent in the array: the node list arrives ordered by system id (BS-006,
+ * BS-018, BS-019, … BS-007, BS-020), so "Current Assets > Bank Accounts" and
+ * "Other Current Assets" each rendered twice, once per run.
+ *
+ * Within a category, direct accounts are listed before sub-categories — how a
+ * financial statement reads.
+ */
+function buildSubGroupItems(rows, section, sg, nodesByKey, childrenByParentKey) {
+  if (!rows.length) return [];
+  const rowByKey = new Map(rows.map((r) => [r.key, r]));
+
+  // Ancestor CATEGORY keys for an account, root-first.
+  const ancestorKeys = (key) => {
+    const out = [];
+    let cur = nodesByKey.get(key)?.parentKey ?? null;
+    while (cur) { out.unshift(cur); cur = nodesByKey.get(cur)?.parentKey ?? null; }
+    return out;
+  };
+  const chains = rows.map((r) => ancestorKeys(r.key));
+  // Categories that lead to an account in THIS sub-group. A shared anchor (e.g.
+  // Total Liabilities and Equity) also carries other sub-groups' accounts, so the
+  // walk must be restricted rather than rendering the whole tree.
+  const included = new Set();
+  for (const chain of chains) for (const k of chain) included.add(k);
+
+  // Hide the leading anchor levels every account here shares (see above), never
+  // taking an account's last remaining category.
+  const minLen = Math.min(...chains.map((c) => c.length));
+  const hideDepth = Math.max(0, Math.min(commonPrefixLength(chains), minLen - 1));
+
+  const items = [];
+  const walk = (parentKey, depth, remainingHidden) => {
+    const children = childrenByParentKey.get(parentKey) || [];
+    for (const n of children) {
+      if (n.nodeType !== "ACCOUNT") continue;
+      const row = rowByKey.get(n.key);
+      if (row) items.push({ kind: "account", section, sg, row, depth });
+    }
+    const parentLabel = parentKey ? displayName(nodesByKey.get(parentKey) || {}) : null;
+    for (const n of children) {
+      if (n.nodeType === "ACCOUNT" || !included.has(n.key)) continue;
+      const label = displayName(n);
+      // Hidden either because it is part of the shared anchor, or because it just
+      // repeats its parent's label (the backend's anchors legitimately do, e.g.
+      // Total Assets twice) — a storage convention, not real hierarchy.
+      const hidden = remainingHidden > 0 || label === parentLabel;
+      if (!hidden) {
+        items.push({ kind: "category", section, sg, label, depth, key: `cat-${sg.key}-${n.key}` });
+      }
+      walk(n.key, hidden ? depth : depth + 1, Math.max(0, remainingHidden - 1));
+    }
+  };
+  walk(null, 0, hideDepth);
+  return items;
+}
+
 function parsePathInput(value) {
   return String(value || "").split(">").map((s) => s.trim()).filter(Boolean);
 }
@@ -192,7 +288,7 @@ export default function ChartOfAccountsGrid({
   useEffect(() => { void Promise.resolve().then(() => load()); }, [load]);
 
   // ── Derived data ─────────────────────────────────────────────────────────
-  const { nodesByKey } = useMemo(() => buildIndexes(nodes), [nodes]);
+  const { nodesByKey, childrenByParentKey } = useMemo(() => buildIndexes(nodes), [nodes]);
   const accountRows = useMemo(
     () => nodes
       .filter((n) => n.nodeType === "ACCOUNT")
@@ -574,9 +670,10 @@ export default function ChartOfAccountsGrid({
 
         items.push({ kind: "subGroup", section, sg, count: rows.length });
 
-        for (const row of rows) {
-          items.push({ kind: "account", section, sg, row });
-        }
+        // Nest the accounts under the category headers the backend's own
+        // ancestry already describes, instead of listing them flat. Presentation
+        // only — see buildSubGroupItems.
+        for (const item of buildSubGroupItems(rows, section, sg, nodesByKey, childrenByParentKey)) items.push(item);
         if (rows.length === 0) {
           items.push({ kind: "empty", section, sg });
         }
@@ -816,6 +913,23 @@ export default function ChartOfAccountsGrid({
                   );
                 }
 
+                // A subsection header straight from the backend's ancestry. Not an
+                // account: it deliberately carries no system id, account number,
+                // statement badge, level cells or row actions.
+                if (item.kind === "category") {
+                  return (
+                    <tr key={item.key} className="border-b border-border/40 bg-gray-50">
+                      <td
+                        colSpan={TOTAL_COLS}
+                        className="py-1.5 text-[12px] font-semibold text-text-secondary"
+                        style={{ paddingLeft: `${32 + item.depth * 16}px`, paddingRight: "12px" }}
+                      >
+                        {item.label}
+                      </td>
+                    </tr>
+                  );
+                }
+
                 const { row } = item;
                 const isEditing = editingKey === row.key;
                 const levels = row.levels || [];
@@ -854,7 +968,12 @@ export default function ChartOfAccountsGrid({
                       {row.accountNumber || ""}
                     </td>
 
-                    <td className="whitespace-nowrap px-3 py-1.5 border-r border-border/30">
+                    {/* Indented to sit under its category header. Indentation only —
+                        every existing cell, badge and action below is untouched. */}
+                    <td
+                      className="whitespace-nowrap px-3 py-1.5 border-r border-border/30"
+                      style={item.depth ? { paddingLeft: `${12 + item.depth * 16}px` } : undefined}
+                    >
                       <span className="text-text-primary text-[13px]" title={row.accountName}>
                         {row.accountName}
                       </span>

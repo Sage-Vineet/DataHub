@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from "react";
+import { Fragment, useState, useMemo, useCallback } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn, formatCurrency, isReportGroupRow } from "../../../lib/utils";
 import FrozenPaneTable from "../shared/FrozenPaneTable";
@@ -78,7 +78,14 @@ function BSRow({ row, isCollapsed, onToggle, columns }) {
 
   const { name, amounts, depth, hasChildren, isTotal, isHeader } = row;
   const { yearCols = [], changeCols = [] } = columns || {};
-  const hasVendors = !isTotal && !isHeader && Array.isArray(row.vendors) && row.vendors.length > 0;
+  // Counterparty breakdown groups. `vendors` is the long-standing field (QuickBooks
+  // and Key Reports both supply it); `customers` is the parallel field Key Reports
+  // adds. A source that sends neither behaves exactly as before.
+  const entityGroups = [
+    { label: "Vendor", items: row.vendors },
+    { label: "Customer", items: row.customers },
+  ].filter((g) => Array.isArray(g.items) && g.items.length > 0);
+  const hasVendors = !isTotal && !isHeader && entityGroups.length > 0;
   const isGroup = isReportGroupRow(row, hasChildren, isTotal);
 
   const nameLower = (name || "").toLowerCase();
@@ -171,19 +178,19 @@ function BSRow({ row, isCollapsed, onToggle, columns }) {
       </tr>
 
       {/* Vendor / Customer breakdown rows */}
-      {vendorsOpen && hasVendors && (
-        <>
+      {vendorsOpen && hasVendors && entityGroups.map((group) => (
+        <Fragment key={group.label}>
           <tr className="bg-bg-page/20">
             <td
               colSpan={totalDataCols + 1}
               style={{ paddingLeft: `${(depth + 1) * 24 + 16}px` }}
               className="py-1 text-[10px] font-bold uppercase tracking-widest text-text-muted"
             >
-              Customer / Vendor
+              {group.label}
             </td>
           </tr>
-          {row.vendors.map((vendor) => (
-            <tr key={vendor.name} className="border-b border-border-light/50 hover:bg-bg-page/20">
+          {group.items.map((vendor) => (
+            <tr key={`${group.label}-${vendor.name}`} className="border-b border-border-light/50 hover:bg-bg-page/20">
               <td className="py-1.5 px-4 text-left sticky left-0 z-10 bg-bg-card border-r border-border-light">
                 <div className="flex items-center">
                   <div className="flex shrink-0">
@@ -211,8 +218,8 @@ function BSRow({ row, isCollapsed, onToggle, columns }) {
               )}
             </tr>
           ))}
-        </>
-      )}
+        </Fragment>
+      ))}
     </>
   );
 }

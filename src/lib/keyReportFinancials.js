@@ -19,7 +19,15 @@ const MONTHS_SHORT = [
 // sessionStorage per client + version. Returning to the Reports page re-uses it
 // instead of re-hitting the network. Invalidated (clearCachedFinancials) when a
 // version is re-generated so freshly synced data is never masked by a stale copy.
-const FINANCIALS_STORAGE_PREFIX = "datahub-key-reports-financials";
+// The prefix carries a PAYLOAD SHAPE version for the same reason the backend's
+// result cache does (see FIN_STMT_PAYLOAD_VERSION in financialStatementService):
+// this key is otherwise only client + version, neither of which changes when the
+// payload shape changes in a new build. A browser tab holding a pre-vendor
+// payload would keep rendering it for the whole session, so the vendor/customer
+// rows would still be missing even against a fully fixed backend. Bump the
+// suffix whenever the payload shape changes -- old keys are simply never read
+// again (sessionStorage dies with the tab, so no cleanup is needed).
+const FINANCIALS_STORAGE_PREFIX = "datahub-key-reports-financials-v2";
 
 function financialsKey(clientId, versionId) {
   return `${FINANCIALS_STORAGE_PREFIX}:${clientId || "default"}:${versionId}`;
@@ -91,8 +99,8 @@ function totalRow(id, name, perPeriodValue) {
 // every Profit & Loss section (Revenue / Cost of Sales / Operating Expenses)
 // so a document's own real sub-category depth survives instead of collapsing
 // to a flat list or a single grouping level.
-function hierarchySectionNode(id, name, entries, colKey, pickHierarchy, totalName, perPeriodTotal) {
-  const children = mergeDynamicHierarchy(entries, colKey, pickHierarchy, id);
+function hierarchySectionNode(id, name, entries, colKey, pickHierarchy, totalName, perPeriodTotal, entityIndex) {
+  const children = mergeDynamicHierarchy(entries, colKey, pickHierarchy, id, entityIndex);
   children.push(totalRow(`${id}-total`, totalName, perPeriodTotal));
   return { id, name, type: "header", amounts: {}, children };
 }
@@ -100,18 +108,21 @@ function hierarchySectionNode(id, name, entries, colKey, pickHierarchy, totalNam
 function buildProfitAndLoss(entries, cols) {
   const colKey = (i) => cols[i].key;
   const per = (pick) => entries.map((e, i) => ({ colKey: colKey(i), value: pick(e.statement || {}) }));
+  const entityIndex = buildEntityIndex(entries, cols);
 
   const revenue = hierarchySectionNode(
     "pl-rev", "Revenue", entries, colKey,
     (s) => s.revenue?.hierarchy,
     "Total Revenue",
     per((s) => s.revenue?.total),
+    entityIndex,
   );
   const costOfSales = hierarchySectionNode(
     "pl-cos", "Cost of Sales", entries, colKey,
     (s) => s.costOfSales?.hierarchy,
     "Total Cost of Sales",
     per((s) => s.costOfSales?.total),
+    entityIndex,
   );
   const grossProfit = totalRow("pl-gp", "Gross Profit", per((s) => s.grossProfit));
 
@@ -120,6 +131,7 @@ function buildProfitAndLoss(entries, cols) {
     (s) => s.operatingExpenses?.hierarchy,
     "Total Operating Expenses",
     per((s) => s.operatingExpenses?.total),
+    entityIndex,
   );
 
   const operatingIncome = totalRow("pl-oi", "Operating Income", per((s) => s.operatingIncome));
@@ -143,7 +155,7 @@ function buildProfitAndLoss(entries, cols) {
 // merges whatever tree the backend already built by name at each depth — it
 // never invents, renames, or reclassifies a node. Containers are matched by
 // name; leaves are matched by systemId (falling back to name).
-function mergeDynamicHierarchy(entries, colKey, pickHierarchy, idPrefix) {
+function mergeDynamicHierarchy(entries, colKey, pickHierarchy, idPrefix, entityIndex = null) {
   function mergeLevel(perPeriodNodes, parentId) {
     const order = [];
     const byKey = new Map(); // matchKey -> { isLeaf, name, occurrences: [{colKey, node}] }
@@ -161,7 +173,17 @@ function mergeDynamicHierarchy(entries, colKey, pickHierarchy, idPrefix) {
       if (rec.isLeaf) {
         const amounts = {};
         rec.occurrences.forEach(({ colKey: ck, node }) => { amounts[ck] = Number(node.amount) || 0; });
-        return { id, name: rec.name, amounts };
+        // Counterparty sub-rows for this account, merged across every period
+        // column. Only leaves carry them: a container row's amount is a rollup
+        // of its children, so hanging a vendor list off it would double-count.
+        const entities = entityIndex ? entityIndex(rec.name) : null;
+        return {
+          id,
+          name: rec.name,
+          amounts,
+          ...(entities?.vendors?.length ? { vendors: entities.vendors } : {}),
+          ...(entities?.customers?.length ? { customers: entities.customers } : {}),
+        };
       }
       const childPerPeriod = rec.occurrences.map(({ colKey: ck, node }) => ({ colKey: ck, nodes: node.children || [] }));
       const children = mergeLevel(childPerPeriod, id);
@@ -180,6 +202,78 @@ function mergeDynamicHierarchy(entries, colKey, pickHierarchy, idPrefix) {
   return mergeLevel(perPeriodRoot, idPrefix);
 }
 
+/**
+ * Build a lookup that turns an account's display name into its Vendor and
+ * Customer sub-rows, merged across every period column.
+ *
+ * The backend emits `vendorsByAccount` / `customersByAccount` per period, keyed
+ * by the COA leaf display name and carrying that period's signed `amount`. This
+ * pivots them into the shape the report rows already render:
+ *
+ *   [{ name, amounts: { [colKey]: number }, total }]
+ *
+ * A counterparty present in only some periods gets those columns populated and
+ * the rest left absent — the renderer already falls back to 0 — so ONE row per
+ * counterparty spans every year/month rather than one row per period. That is
+ * what makes a single multi-year GL and several single-year GL files render
+ * identically: both produce the same set of period entries.
+ *
+ * @param {Array} entries  period entries, in the same order as `cols`
+ * @param {Array} cols     column descriptors from buildColumns
+ * @returns {(accountName: string) => {vendors: Array, customers: Array}}
+ */
+function buildEntityIndex(entries, cols) {
+  // accountName -> kind -> entityName -> { name, amounts, total }
+  const index = new Map();
+
+  const ingest = (accountMap, colKeyStr, kind) => {
+    if (!accountMap || typeof accountMap !== "object") return;
+    Object.entries(accountMap).forEach(([accountName, rows]) => {
+      if (!Array.isArray(rows) || !rows.length) return;
+      let perAccount = index.get(accountName);
+      if (!perAccount) { perAccount = { vendors: new Map(), customers: new Map() }; index.set(accountName, perAccount); }
+      const target = perAccount[kind];
+      rows.forEach((row) => {
+        const name = String(row?.name ?? "").trim();
+        if (!name) return;
+        // `amount` is this period's signed total for the counterparty; `total`
+        // is accepted as a fallback for any caller that only sends that field.
+        const value = Number(row?.amount ?? row?.total ?? 0) || 0;
+        let entry = target.get(name);
+        if (!entry) { entry = { name, amounts: {}, total: 0 }; target.set(name, entry); }
+        entry.amounts[colKeyStr] = (entry.amounts[colKeyStr] || 0) + value;
+        entry.total += value;
+      });
+    });
+  };
+
+  entries.forEach((entry, i) => {
+    const ck = cols[i]?.key;
+    if (!ck) return;
+    ingest(entry?.vendorsByAccount, ck, "vendors");
+    ingest(entry?.customersByAccount, ck, "customers");
+  });
+
+  const finalize = (map) =>
+    Array.from(map.values())
+      .map((e) => ({ ...e, total: Math.round(e.total * 100) / 100 }))
+      // Drop counterparties that net to zero across the whole visible range —
+      // they add rows without adding information (matches the backend's own rule).
+      .filter((e) => Math.abs(e.total) >= 0.005)
+      .sort((a, b) => Math.abs(b.total) - Math.abs(a.total) || a.name.localeCompare(b.name));
+
+  const cache = new Map();
+  return (accountName) => {
+    if (cache.has(accountName)) return cache.get(accountName);
+    const perAccount = index.get(accountName);
+    const result = perAccount
+      ? { vendors: finalize(perAccount.vendors), customers: finalize(perAccount.customers) }
+      : { vendors: [], customers: [] };
+    cache.set(accountName, result);
+    return result;
+  };
+}
+
 function buildBalanceSheet(entries, cols) {
   const colKey = (i) => cols[i].key;
   const per = (pick) => entries.map((e, i) => ({ colKey: colKey(i), value: pick(e.statement || {}) }));
@@ -189,12 +283,15 @@ function buildBalanceSheet(entries, cols) {
   // already carries its own rolled-up "Total …" child — used directly as the
   // top-level row(s), with no extra hardcoded "Assets"/"Liabilities" wrapper
   // or redundant appended total layered on top of it.
-  const assetRows  = mergeDynamicHierarchy(entries, colKey, (s) => s.assets?.hierarchy, "bs-a");
-  const liabRows   = mergeDynamicHierarchy(entries, colKey, (s) => s.liabilities?.hierarchy, "bs-l");
+  // Balance Sheet accounts get the same counterparty sub-rows as P&L when the
+  // period carries them — the payload shape is identical, so no separate path.
+  const entityIndex = buildEntityIndex(entries, cols);
+  const assetRows  = mergeDynamicHierarchy(entries, colKey, (s) => s.assets?.hierarchy, "bs-a", entityIndex);
+  const liabRows   = mergeDynamicHierarchy(entries, colKey, (s) => s.liabilities?.hierarchy, "bs-l", entityIndex);
   // Same genuine, arbitrary-depth merge as assets/liabilities above — equity's
   // own document sub-headings (e.g. "Owner's Equity" > "Capital") survive as
   // real nested rows instead of collapsing into one flat account list.
-  const equityRows = mergeDynamicHierarchy(entries, colKey, (s) => s.equity?.hierarchy, "bs-eq");
+  const equityRows = mergeDynamicHierarchy(entries, colKey, (s) => s.equity?.hierarchy, "bs-eq", entityIndex);
   const tle = totalRow("bs-tle", "Total Liabilities and Equity", per((s) => s.totalLiabilitiesAndEquity));
 
   return { rows: [...assetRows, ...liabRows, ...equityRows, tle], columns: { yearCols: cols } };

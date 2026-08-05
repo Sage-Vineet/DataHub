@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
+  AlertTriangle,
   ArrowLeft,
   BarChart3,
   CalendarDays,
@@ -8835,6 +8836,11 @@ export default function WorkspaceCimPrep() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [updatedAt, setUpdatedAt] = useState("");
+  const [unsavedChangesDialogOpen, setUnsavedChangesDialogOpen] = useState(false);
+  const [savingBeforeLeave, setSavingBeforeLeave] = useState(false);
+  const [isCimPrepDirty, setIsCimPrepDirty] = useState(false);
+  const lastSavedSnapshotRef = useRef(null);
+  const initialSnapshotCapturedRef = useRef(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewSlideIndex, setPreviewSlideIndex] = useState(0);
   const [questionnaireOpen, setQuestionnaireOpen] = useState(false);
@@ -8916,6 +8922,41 @@ export default function WorkspaceCimPrep() {
     leadAdvisorEmail: globalDetails.leadAdvisorEmail || advisorDefaults.leadAdvisorEmail,
     leadAdvisorPhone: globalDetails.leadAdvisorPhone || advisorDefaults.leadAdvisorPhone,
   }), [advisorDefaults, globalDetails]);
+
+  // Mirrors the exact fields `handleSave` persists so a straight string comparison
+  // tells us whether the user has made edits since the last successful save/load.
+  const buildCimPrepSnapshot = useCallback(() => JSON.stringify({
+    globalDetails: effectiveGlobalDetails,
+    fieldValues,
+    assetValues,
+    chartValues,
+    cimBuilderState: normalizeCimBuilderState(cimBuilderState),
+    financialAutofillRange,
+    financialAutofillReportVersionId,
+    financialAutofillDatasetVersion,
+  }), [
+    effectiveGlobalDetails,
+    fieldValues,
+    assetValues,
+    chartValues,
+    cimBuilderState,
+    financialAutofillRange,
+    financialAutofillReportVersionId,
+    financialAutofillDatasetVersion,
+  ]);
+
+  useEffect(() => {
+    if (loading || initialSnapshotCapturedRef.current) return;
+    initialSnapshotCapturedRef.current = true;
+    lastSavedSnapshotRef.current = buildCimPrepSnapshot();
+    setIsCimPrepDirty(false);
+  }, [loading, buildCimPrepSnapshot]);
+
+  const currentCimPrepSnapshot = useMemo(() => buildCimPrepSnapshot(), [buildCimPrepSnapshot]);
+  useEffect(() => {
+    if (!initialSnapshotCapturedRef.current) return;
+    setIsCimPrepDirty(currentCimPrepSnapshot !== lastSavedSnapshotRef.current);
+  }, [currentCimPrepSnapshot]);
 
   useEffect(() => {
     let cancelled = false;
@@ -10121,6 +10162,8 @@ export default function WorkspaceCimPrep() {
       const savedAt = payload?.updatedAt || state.updatedAt;
       setUpdatedAt(savedAt);
       window.localStorage.setItem(localKey, JSON.stringify({ ...state, updatedAt: savedAt, unsynced: false }));
+      lastSavedSnapshotRef.current = buildCimPrepSnapshot();
+      setIsCimPrepDirty(false);
       showToast({
         type: "success",
         title: "CIM Prep Saved",
@@ -10157,7 +10200,31 @@ export default function WorkspaceCimPrep() {
     cimBuilderState,
     showToast,
     styleProfilesState,
+    buildCimPrepSnapshot,
   ]);
+
+  const cimPrepBackPath = `/broker/client/${clientId}/analytics`;
+
+  const handleBackClick = useCallback(() => {
+    if (isCimPrepDirty) {
+      setUnsavedChangesDialogOpen(true);
+      return;
+    }
+    navigate(cimPrepBackPath);
+  }, [isCimPrepDirty, navigate, cimPrepBackPath]);
+
+  const handleDiscardAndLeave = useCallback(() => {
+    setUnsavedChangesDialogOpen(false);
+    navigate(cimPrepBackPath);
+  }, [navigate, cimPrepBackPath]);
+
+  const handleSaveAndLeave = useCallback(async () => {
+    setSavingBeforeLeave(true);
+    await handleSave();
+    setSavingBeforeLeave(false);
+    setUnsavedChangesDialogOpen(false);
+    navigate(cimPrepBackPath);
+  }, [handleSave, navigate, cimPrepBackPath]);
 
   const handleExport = useCallback(async () => {
     const missingSlides = PREVIEW_SLIDES.filter((slideNumber) => !styledLayouts[slideNumber]);
@@ -10250,7 +10317,7 @@ export default function WorkspaceCimPrep() {
       <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
           <button
-            onClick={() => navigate(`/broker/client/${clientId}/analytics`)}
+            onClick={handleBackClick}
             className="flex h-10 w-10 items-center justify-center rounded-lg border border-border bg-white text-[#6D6E71] shadow-card transition hover:bg-[#EEF6E0] hover:text-[#476E2C]"
           >
             <ArrowLeft size={18} />
@@ -10595,6 +10662,47 @@ export default function WorkspaceCimPrep() {
         globalDetails={effectiveGlobalDetails}
         styleProfile={activeStyleProfile}
       />
+
+      <Modal
+        isOpen={unsavedChangesDialogOpen}
+        onClose={() => setUnsavedChangesDialogOpen(false)}
+        title="Unsaved changes"
+        size="sm"
+      >
+        <div className="flex items-start gap-3">
+          <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-[#FEF5E7]">
+            <AlertTriangle size={20} className="text-[#E67E22]" />
+          </div>
+          <p className="text-sm leading-6 text-[#6D6E71]">
+            You have unsaved changes in this CIM. Save them before leaving, or discard them and continue.
+          </p>
+        </div>
+        <div className="mt-6 flex flex-wrap justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setUnsavedChangesDialogOpen(false)}
+            className="rounded-lg border border-border px-4 py-2 text-sm font-semibold text-[#6D6E71] transition hover:bg-gray-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleDiscardAndLeave}
+            className="rounded-lg border border-red-200 px-4 py-2 text-sm font-semibold text-red-500 transition hover:bg-red-50"
+          >
+            Discard changes
+          </button>
+          <button
+            type="button"
+            onClick={handleSaveAndLeave}
+            disabled={savingBeforeLeave}
+            className="theme-btn-primary flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            {savingBeforeLeave ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+            Save changes
+          </button>
+        </div>
+      </Modal>
     </div>
   );
 }

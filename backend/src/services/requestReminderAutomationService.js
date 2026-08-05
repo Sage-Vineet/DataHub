@@ -6,6 +6,7 @@ const { deliverRequestReminder } = require("./requestReminderDeliveryService");
 const {
   isRequestOverdue,
   resolveNextReminderAt,
+  resolveScheduledReminderAt,
 } = require("../utils/requestReminders");
 
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
@@ -61,13 +62,26 @@ async function processReminderRequest(request, history, now) {
   const actorId = request.approved_by || request.created_by;
   if (!actorId) return { skipped: true, reason: "missing_actor" };
 
-  const overdueNotice = history.find((event) => reminderEventType(event) === "overdue");
   if (isRequestOverdue(request, now)) {
-    if (overdueNotice) return { skipped: true, reason: "overdue_notice_already_sent" };
+    // Overdue notices repeat on the same priority-based cadence as pre-due-date
+    // reminders instead of firing once — each notice's `scheduled_for` anchors when
+    // the next one is due, mirroring the "sent"/"skipped" cadence logic below.
+    const lastOverdueNotice = history.find((event) => reminderEventType(event) === "overdue");
+    const overdueBaseTime = getCadenceBaseTime(lastOverdueNotice);
+    if (lastOverdueNotice) {
+      const nextOverdueAt = resolveScheduledReminderAt(overdueBaseTime, request.priority, request.reminder_frequency_days);
+      if (nextOverdueAt && new Date(nextOverdueAt) > now) {
+        return { skipped: true, reason: "overdue_notice_not_due", scheduledFor: nextOverdueAt };
+      }
+    }
 
     const sentAt = now.toISOString();
+    const scheduledFor = lastOverdueNotice
+      ? resolveScheduledReminderAt(overdueBaseTime, request.priority, request.reminder_frequency_days) || sentAt
+      : sentAt;
     await requestService.createReminderEvent(request.id, actorId, sentAt, {
       eventType: "overdue",
+      scheduledFor,
       metadata: { trigger: "automatic_overdue" },
     });
     await deliverRequestReminder({

@@ -1434,6 +1434,58 @@ function buildBSHierarchicalRows(entriesByYear, years) {
   return { hierarchicalRows, yearCols, asOfDate: latestAsOfDate };
 }
 
+// Converts financialStatementService's per-year Balance Sheet `statement`
+// (the same COA parent_account_id-tree computation used by
+// /reports/financial-statements, QoE, and KPI) into the generic
+// hierarchicalRows tree the Balance Sheet tab and CIM Prep autofill both
+// consume — mirroring plYearlyToRows's role for the P&L tab above. Each
+// section's real COA account tree (statement.<section>.hierarchy, already
+// amount-rolled-up by buildDynamicHierarchy) is kept as-is so name-based
+// line-item matching (cash, AR, inventory, ...) keeps working, and an
+// explicit "Total <Section>" row is appended using the statement's own
+// authoritative totals so exact-name lookups (Total Assets, Total
+// Liabilities, Total Equity, Total Liabilities and Equity, Total Current
+// Assets/Liabilities) resolve without depending on the client's own COA
+// category naming.
+function bsSectionToRow(sectionKey, label, section, totalAmount, extraTotalRows = []) {
+  return {
+    id: `bs-section-${sectionKey}`,
+    name: label,
+    type: 'header',
+    amount: safeNum(totalAmount),
+    children: [
+      ...(section?.hierarchy || []),
+      ...extraTotalRows,
+      { id: `bs-total-${sectionKey}`, name: `Total ${label}`, type: 'total', amount: safeNum(totalAmount) },
+    ],
+  };
+}
+
+function bsStatementToRows(statement) {
+  if (!statement) return [];
+
+  const currentAssetsTotal = statement.assets?.currentAssets?.total;
+  const assetExtras = Number.isFinite(currentAssetsTotal)
+    ? [{ id: 'bs-total-current-assets', name: 'Total Current Assets', type: 'total', amount: safeNum(currentAssetsTotal) }]
+    : [];
+  const currentLiabTotal = statement.liabilities?.currentLiabilities?.total;
+  const liabilityExtras = Number.isFinite(currentLiabTotal)
+    ? [{ id: 'bs-total-current-liabilities', name: 'Total Current Liabilities', type: 'total', amount: safeNum(currentLiabTotal) }]
+    : [];
+
+  return [
+    bsSectionToRow('assets', 'Assets', statement.assets, statement.totalAssets, assetExtras),
+    bsSectionToRow('liabilities', 'Liabilities', statement.liabilities, statement.totalLiabilities, liabilityExtras),
+    bsSectionToRow('equity', 'Equity', statement.equity, statement.totalEquity),
+    {
+      id: 'bs-total-liabilities-equity',
+      name: 'Total Liabilities and Equity',
+      type: 'total',
+      amount: safeNum(statement.totalLiabilitiesAndEquity),
+    },
+  ];
+}
+
 // ─── General Ledger ───────────────────────────────────────────────────────────
 
 /**
@@ -1763,10 +1815,19 @@ async function getBalanceSheetReport(versionId, {
 
   if (!forceGenerate) {
     const snapshot = await generatedReportSnapshots.getSnapshot(versionId, 'balance_sheet', { year, period: 'year' });
-    if (snapshot && !(await isSnapshotStale(versionId, snapshot.generatedAt))) {
+    // A snapshot persisted before hierarchicalRows/rows existed on this report
+    // (see bsStatementToRows above) predates the fix — treat it as absent so
+    // callers reading `.rows` (CIM Prep autofill, the Balance Sheet tab) don't
+    // keep getting an empty array served straight from cache indefinitely.
+    const snapshotHasRows = Array.isArray(snapshot?.rows) && snapshot.rows.length > 0;
+    if (snapshot && snapshotHasRows && !(await isSnapshotStale(versionId, snapshot.generatedAt))) {
       return { ...snapshot, source: 'generated_report_snapshots' };
     }
-    if (snapshot) console.log(`[KeyReports][BS] versionId=${versionId} snapshot stale (COA changed since ${snapshot.generatedAt}) — recomputing live`);
+    if (snapshot && !snapshotHasRows) {
+      console.log(`[KeyReports][BS] versionId=${versionId} cached snapshot predates the rows/hierarchicalRows fix — regenerating live`);
+    } else if (snapshot) {
+      console.log(`[KeyReports][BS] versionId=${versionId} snapshot stale (COA changed since ${snapshot.generatedAt}) — recomputing live`);
+    }
   }
 
   console.log(`[KeyReports][BS] versionId=${versionId} year=${year || 'all'}`);
@@ -1779,30 +1840,47 @@ async function getBalanceSheetReport(versionId, {
   const allYearly = fs?.reports?.balanceSheet?.yearly || [];
   const allMonthly = fs?.reports?.balanceSheet?.monthly || [];
   const years = (year ? allYearly.filter((e) => Number(e.year) === Number(year)) : allYearly)
-    .map((e) => Number(e.year));
+    .map((e) => Number(e.year))
+    .sort((a, b) => a - b);
 
   if (!years.length) {
     console.warn(`[KeyReports][BS] versionId=${versionId} NO DATA — run Sync first`);
-    return { source: 'key_reports_entry_tables', years: [], yearly: [], monthly: [] };
+    return { source: 'key_reports_entry_tables', years: [], yearly: [], monthly: [], hierarchicalRows: [], rows: [] };
   }
 
   const yearlyFiltered = allYearly.filter((e) => years.includes(Number(e.year)));
   const monthlyFiltered = allMonthly.filter((e) => years.includes(Number(e.year)));
   for (const y of years) auditReport(versionId, 'balance_sheet', y, 0, { generatedFromGL: true, engine: 'financialStatementService' });
 
-  console.log(`[KeyReports][BS] versionId=${versionId} years=[${years.join(',')}] yearly=${yearlyFiltered.length} monthly=${monthlyFiltered.length}`);
+  // hierarchicalRows/rows mirror the P&L tab's contract (see plYearlyToRows)
+  // — this is what CIM Prep autofill (extractGroupedBalanceSheetMetrics) and
+  // the Balance Sheet tab (BalanceSheetQBSummary) actually read; `yearly` above
+  // is kept for existing consumers of the raw per-year statement (e.g. the
+  // financial-statements/QoE/KPI endpoints) and is unchanged.
+  const treesByYear = {};
+  for (const e of yearlyFiltered) treesByYear[Number(e.year)] = bsStatementToRows(e.statement);
+  const lastYear = years[years.length - 1];
+  const hierarchicalRows = treesByYear[lastYear] || [];
+  const yearCols = years.map((y) => ({ key: `y${y}`, label: `FY ${y}` }));
+
+  console.log(`[KeyReports][BS] versionId=${versionId} years=[${years.join(',')}] yearly=${yearlyFiltered.length} monthly=${monthlyFiltered.length} hierarchicalRows=${hierarchicalRows.length}`);
 
   const result = {
     source: 'key_reports_entry_tables',
     years,
     yearly: yearlyFiltered,
     monthly: monthlyFiltered,
+    hierarchicalRows,
+    rows: hierarchicalRows,
+    yearCols,
   };
 
   if (persist) {
     if (!companyId) throw new Error('companyId is required when persisting generated reports');
     const snapshots = [{ scope: { period: 'year' }, payload: result }];
     for (const y of years) {
+      const rows = treesByYear[y] || [];
+      const cols = [{ key: `y${y}`, label: `FY ${y}` }];
       snapshots.push({
         scope: { year: y, period: 'year' },
         payload: {
@@ -1810,6 +1888,9 @@ async function getBalanceSheetReport(versionId, {
           years: [y],
           yearly: yearlyFiltered.filter((e) => Number(e.year) === y),
           monthly: monthlyFiltered.filter((e) => Number(e.year) === y),
+          hierarchicalRows: rows,
+          rows,
+          yearCols: cols,
         },
       });
     }

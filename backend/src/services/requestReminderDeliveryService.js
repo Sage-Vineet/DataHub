@@ -8,6 +8,7 @@ const { createUserNotification } = require("./notificationService");
 const {
   buildReminderFrequencyLabel,
   resolveNextReminderAt,
+  resolveScheduledReminderAt,
 } = require("../utils/requestReminders");
 
 function normalizeEmail(email) {
@@ -94,8 +95,11 @@ async function deliverRequestReminder({
 
   const isOverdue = noticeType === "overdue";
   const frequencyLabel = buildReminderFrequencyLabel(request.priority, request.reminder_frequency_days);
+  // Overdue notices now repeat on the same cadence as pre-due-date reminders (see
+  // requestReminderAutomationService), so this keeps computing a "next reminder"
+  // time for them too instead of hardcoding null / implying they're a one-off.
   const resolvedNextReminderAt = isOverdue
-    ? null
+    ? nextReminderAt || resolveScheduledReminderAt(sentAt, request.priority, request.reminder_frequency_days)
     : nextReminderAt || resolveNextReminderAt(sentAt, request.priority, request.reminder_frequency_days, request.due_date);
   const appUrl = buildPortalUrl(portalUrl);
   const title = isOverdue
