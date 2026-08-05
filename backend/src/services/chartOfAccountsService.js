@@ -293,6 +293,46 @@ function collectKnownGlAccountNames(glRows) {
 }
 
 /**
+ * Is this extracted financial-statement row a REAL POSTING ACCOUNT (something a
+ * GL transaction can hit), as opposed to a presentation-only row derived from
+ * other accounts?
+ *
+ * CONFIRMED ROOT CAUSE (fixed by applying this consistently): the extractors
+ * already classify every row STRUCTURALLY via `node_type`
+ * ('account' | 'total' | 'subtotal' | 'hierarchy_section' | 'hierarchy_group'),
+ * and a computed statement line such as Gross Profit is tagged
+ * `node_type: 'subtotal'`. But the account-collection paths tested only
+ * `is_total` / `is_header` and threw that label away. Those two flags do NOT
+ * cover a computed subtotal: the P&L extractor sets `is_total` from
+ * /^total\b/ | /\btotal$/ | /\bnet income\b/, none of which match
+ * "Gross Profit", so it arrived with is_total=false, is_header=false and
+ * sailed straight into the unique-account set -> AI/document classification ->
+ * a COA leaf with its own system id (e.g. INC-003) under Income. The same held
+ * for "Net Operating Income", "Net Other Income", "Operating Income" and
+ * "Net Loss".
+ *
+ * This reads the structural label the document/extractor already produced -- it
+ * does NOT match on account names, so it needs no list of metric names and picks
+ * up any calculated row the extractor tags, for any company. The identical
+ * predicate was already being used in the COA diagnostic block; it simply was
+ * never applied where accounts are actually collected.
+ *
+ * Removing these rows from the COA does not remove them from the reports:
+ * Gross Profit / Net Operating Income / Net Income are DERIVED in
+ * buildPlStatement (grossProfit = revenue - costOfSales) and rendered as
+ * calculated rows, which is where they belong.
+ */
+function isRealPostingRow(row) {
+  if (!row) return false;
+  if (row.is_total || row.is_header) return false;
+  const nodeType = String(row.node_type || "").trim().toLowerCase();
+  // Empty node_type = a row from an extraction that predates the structural
+  // tagging; treated as a posting row so older data behaves exactly as before.
+  if (!nodeType) return true;
+  return nodeType === "account";
+}
+
+/**
  * Collect the set of unique account names from GL + BS rows to send to the AI
  * classification pre-pass.
  *
@@ -331,7 +371,10 @@ function collectUniqueAccountNames(glRows, bsRows, plRows, stats = null) {
     if (r.account_name) add(r.account_name, r.account_number, r.section);
   }
   for (const r of plRows || []) {
-    if (r.account_name) add(r.account_name, r.account_number, null, r.section);
+    // Only real posting accounts become COA candidates -- a computed statement
+    // line (Gross Profit, Net Operating Income, ...) is derived by the report
+    // engine and must never be classified or given a system id.
+    if (r.account_name && isRealPostingRow(r)) add(r.account_name, r.account_number, null, r.section);
   }
   for (const r of glRows || []) {
     if (r.account_name) add(r.account_name, r.account_number, r.account_section);
@@ -2511,6 +2554,9 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
     addLeaf(r.account_name, r.account_number || null, "balance_sheet", r.fiscal_year, r.section, null, r.sub_section);
   }
   for (const r of plRows || []) {
+    // Same structural gate as collectUniqueAccountNames: a calculated row is
+    // never a COA leaf. See isRealPostingRow.
+    if (!isRealPostingRow(r)) continue;
     addLeaf(r.account_name, r.account_number || null, "profit_loss", r.fiscal_year, null, r.section);
   }
   const knownGlAccountNamesForSplit = collectKnownGlAccountNames(glRows);
@@ -6430,6 +6476,7 @@ function printHierarchySampleVerification(results) {
 
 module.exports = {
   // Classification/hierarchy consistency (exported for unit testing).
+  isRealPostingRow,
   statementOfAccountType,
   hierarchyContradictsClassification,
   crossStatementViolation,
