@@ -8,7 +8,13 @@
       "Bash(node \"/c/Users/Swapnil/AppData/Local/Temp/claude/d--Company-DataHub-2-DataHub/c4501242-cb45-4774-bacf-e88dbb16cf7d/scratchpad/test_net_non_operating.js\")",
       "Bash(node \"/c/Users/Swapnil/AppData/Local/Temp/claude/d--Company-DataHub-2-DataHub/c4501242-cb45-4774-bacf-e88dbb16cf7d/scratchpad/test_numeric_code_gate.js\")",
       "Bash(grep -rln 'from\\(\"reminders\"\\)\\\\|from\\(`reminders' /Users/shivrajechaudhari/Development/Projects/DataHub/backend/src)",
-      "Bash(awk -F: '$1>10500')"
+      "Bash(awk -F: '$1>10500')",
+      "Bash(node -c src/controllers/requests.js)",
+      "Bash(node -c src/services/requestReminderDeliveryService.js)",
+      "Bash(node -c src/services/requestReminderAutomationService.js)",
+      "Bash(node -c src/services/emailService.js)",
+      "Bash(git fetch *)",
+      "Bash(node -c src/services/keyReports/financialStatementService.js)"
     ]
   }
 }
