@@ -14,7 +14,15 @@
       "Bash(node -c src/services/requestReminderAutomationService.js)",
       "Bash(node -c src/services/emailService.js)",
       "Bash(git fetch *)",
-      "Bash(node -c src/services/keyReports/financialStatementService.js)"
+      "Bash(node -c src/services/keyReports/financialStatementService.js)",
+      "Bash(ps -o pid,lstart,command -p 18532)",
+      "Bash(ps -o pid,etime,command -p 18532)",
+      "Bash(curl -s -X POST http://localhost:4000/auth/login -H \"Content-Type: application/json\" -d '{\"email\":\"adikote@gmail.com\",\"password\":\"broker123\"}')",
+      "Bash(curl -s 'http://localhost:4000/key-reports/versions/980d2766-2284-43b6-a90a-8b3645f1461c/reports/balance-sheet?year=2024&period=year' -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkMTNjNjQyZC0wMzgxLTQyYjgtOGVkOC03YWJmNWQwZmQxODkiLCJpYXQiOjE3ODU5MTE0MTYsImV4cCI6MTc4NjUxNjIxNn0.wXjfr4jIZ-vE80ZSuKY7icWbaRJl9P5F8XFwC0HP0hc' -H 'X-Client-Id: fd2d34a5-3bce-49b6-a3de-6e18b00c371c')",
+      "Bash(python3 -c ' *)",
+      "Bash(kill 18532)",
+      "Bash(curl -s 'http://localhost:4000/key-reports/versions/980d2766-2284-43b6-a90a-8b3645f1461c/reports/balance-sheet?year=2024&period=year&forceGenerate=true' -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkMTNjNjQyZC0wMzgxLTQyYjgtOGVkOC03YWJmNWQwZmQxODkiLCJpYXQiOjE3ODU5MTE0MTYsImV4cCI6MTc4NjUxNjIxNn0.wXjfr4jIZ-vE80ZSuKY7icWbaRJl9P5F8XFwC0HP0hc' -H 'X-Client-Id: fd2d34a5-3bce-49b6-a3de-6e18b00c371c' -o /tmp/bs_resp.json -w 'HTTP %{http_code}\\\\n')",
+      "Bash(pkill -f \"node src/server.js\")"
     ]
   }
 }
