@@ -17,6 +17,25 @@ async function resolveAssigneeInputForCompany(companyId, body = {}) {
   return requestService.resolveAssigneesForCompany(companyId, rawInput);
 }
 
+// Delivers a reminder email/notification the same way sendWelcomeEmail is used in
+// controllers/users.js: awaited before the response so delivery is confirmed (or
+// its failure logged) as part of the same request, instead of a background
+// setImmediate whose outcome nobody observes. Never throws — a delivery failure
+// must never fail the request/reminder operation that triggered it.
+async function deliverReminderSafely(params, context) {
+  try {
+    const result = await deliverRequestReminder(params);
+    console.log(
+      `[Audit] [Reminder Email] ${context} requestId=${params.request?.id} trigger=${params.trigger} ` +
+      `recipients=${result?.recipients ?? 0} emailsSent=${result?.emails ?? 0} notifications=${result?.notifications ?? 0}`
+    );
+    return result;
+  } catch (deliveryErr) {
+    console.error(`[${context}] Reminder delivery failed:`, deliveryErr.message);
+    return { recipients: 0, emails: 0, notifications: 0, error: deliveryErr.message };
+  }
+}
+
 const listRequests = asyncHandler(async (req, res) => {
   if (!permissionService.canAccessCompany(req.user, req.params.id)) {
     return res.status(403).json({ error: "Access denied." });
@@ -62,22 +81,22 @@ const createRequest = asyncHandler(async (req, res) => {
     });
   }
   const createdRequest = await requestService.getRequestById(created.id);
-  res.status(201).json(createdRequest);
 
+  let reminderDelivery = { recipients: 0, emails: 0, notifications: 0 };
   if (normalized.value.approval_status === "approved") {
-    setImmediate(async () => {
-      try {
-        await deliverRequestReminder({
-          request: createdRequest,
-          sentBy: req.user?.id || normalized.value.approved_by || normalized.value.created_by,
-          sentAt: initialReminderAt || createdRequest?.created_at || new Date().toISOString(),
-          trigger: "initial",
-        });
-      } catch (deliveryErr) {
-        console.error("[createRequest] Reminder delivery failed:", deliveryErr.message);
-      }
-    });
+    reminderDelivery = await deliverReminderSafely({
+      request: createdRequest,
+      sentBy: req.user?.id || normalized.value.approved_by || normalized.value.created_by,
+      sentAt: initialReminderAt || createdRequest?.created_at || new Date().toISOString(),
+      trigger: "initial",
+    }, "createRequest");
   }
+
+  res.status(201).json({
+    ...createdRequest,
+    reminderEmailSent: reminderDelivery.emails > 0,
+    reminderRecipientCount: reminderDelivery.recipients,
+  });
 });
 
 const createRequestsBulk = asyncHandler(async (req, res) => {
@@ -98,23 +117,23 @@ const createRequestsBulk = asyncHandler(async (req, res) => {
 
   res.status(201).json({ message: `Successfully created ${result.count} requests` });
 
-  // Fire-and-forget: deliver immediate reminders per created request.
+  // Not awaited before responding — a large CSV import can create many
+  // requests, and awaiting every email here risks the HTTP request timing out.
+  // Each item's delivery is isolated via deliverReminderSafely (which never
+  // throws) so a single failed delivery can no longer break out of the loop
+  // and silently skip reminders for every request after it in the batch.
   setImmediate(async () => {
-    try {
-      for (const requestId of result.ids || []) {
-        const createdRequest = await requestService.getRequestById(requestId);
-        if (!createdRequest) continue;
-        const history = await requestService.listReminderEventsForRequest(requestId).catch(() => []);
-        const initialEvent = (history || []).find((event) => String(event.event_type || "sent").toLowerCase() === "sent");
-        await deliverRequestReminder({
-          request: createdRequest,
-          sentBy: req.user.id,
-          sentAt: initialEvent?.sent_at || createdRequest.created_at || new Date().toISOString(),
-          trigger: "initial_bulk",
-        });
-      }
-    } catch (deliveryErr) {
-      console.error("[createRequestsBulk] Reminder delivery failed:", deliveryErr.message);
+    for (const requestId of result.ids || []) {
+      const createdRequest = await requestService.getRequestById(requestId).catch(() => null);
+      if (!createdRequest) continue;
+      const history = await requestService.listReminderEventsForRequest(requestId).catch(() => []);
+      const initialEvent = (history || []).find((event) => String(event.event_type || "sent").toLowerCase() === "sent");
+      await deliverReminderSafely({
+        request: createdRequest,
+        sentBy: req.user.id,
+        sentAt: initialEvent?.sent_at || createdRequest.created_at || new Date().toISOString(),
+        trigger: "initial_bulk",
+      }, "createRequestsBulk");
     }
   });
 });
@@ -194,19 +213,18 @@ const approveRequest = asyncHandler(async (req, res) => {
 
   await requestService.approveRequest(req.params.id, req.user.id, assigneeResolution?.ids);
   const approvedRequest = await requestService.getRequestById(req.params.id);
-  res.json(approvedRequest);
 
-  setImmediate(async () => {
-    try {
-      await deliverRequestReminder({
-        request: approvedRequest,
-        sentBy: req.user.id,
-        sentAt: approvedRequest?.approved_at || new Date().toISOString(),
-        trigger: "approval",
-      });
-    } catch (deliveryErr) {
-      console.error("[approveRequest] Reminder delivery failed:", deliveryErr.message);
-    }
+  const reminderDelivery = await deliverReminderSafely({
+    request: approvedRequest,
+    sentBy: req.user.id,
+    sentAt: approvedRequest?.approved_at || new Date().toISOString(),
+    trigger: "approval",
+  }, "approveRequest");
+
+  res.json({
+    ...approvedRequest,
+    reminderEmailSent: reminderDelivery.emails > 0,
+    reminderRecipientCount: reminderDelivery.recipients,
   });
 });
 
@@ -239,20 +257,18 @@ const addRequestReminder = asyncHandler(async (req, res) => {
     eventType: "sent",
     metadata: { trigger: "manual" },
   });
-  res.status(201).json(reminder);
 
-  // Fire-and-forget: send reminder emails and in-app notices to request recipients.
-  setImmediate(async () => {
-    try {
-      await deliverRequestReminder({
-        request: current,
-        sentBy,
-        sentAt,
-        trigger: "manual",
-      });
-    } catch (deliveryErr) {
-      console.error("[addRequestReminder] Reminder delivery failed:", deliveryErr.message);
-    }
+  const reminderDelivery = await deliverReminderSafely({
+    request: current,
+    sentBy,
+    sentAt,
+    trigger: "manual",
+  }, "addRequestReminder");
+
+  res.status(201).json({
+    ...reminder,
+    reminderEmailSent: reminderDelivery.emails > 0,
+    reminderRecipientCount: reminderDelivery.recipients,
   });
 });
 

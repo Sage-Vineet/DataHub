@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Folder, FolderOpen, File, FileText, Search, Download, Eye, Upload,
   ChevronRight, ChevronDown, Trash2, Home, Archive, X, ArrowLeft, Check,
   MoreVertical, LayoutGrid, List, AlertCircle, Pencil, FolderPlus,
   ArrowUpDown, ArrowUp, ArrowDown, CheckCircle, Share2, Users, Loader2,
-  RotateCcw, Palette,
+  RotateCcw, Palette, Video,
 } from 'lucide-react';
 import {
   useFileExplorerStore,
@@ -30,12 +31,16 @@ const PDF_EXTENSIONS = ['pdf'];
 const SPREADSHEET_EXTENSIONS = ['xls', 'xlsx'];
 const WORD_EXTENSIONS = ['doc', 'docx'];
 const TEXT_EXTENSIONS = ['txt', 'md', 'json'];
+const VIDEO_EXTENSIONS = [
+  'mp4', 'webm', 'ogv', 'mov', 'm4v', 'avi', 'mkv', 'wmv', 'flv', 'mpg', 'mpeg', '3gp', '3g2', 'ts', 'm2ts',
+];
 const PREVIEWABLE_EXTENSIONS = [
   ...PDF_EXTENSIONS,
   ...IMAGE_EXTENSIONS,
   ...SPREADSHEET_EXTENSIONS,
   ...WORD_EXTENSIONS,
   ...TEXT_EXTENSIONS,
+  ...VIDEO_EXTENSIONS,
 ];
 const MAX_SPREADSHEET_ROWS = 100;
 const MAX_SPREADSHEET_COLUMNS = 24;
@@ -48,6 +53,7 @@ function getMimeIcon(ext) {
   if (['doc', 'docx'].includes(e)) return { Icon: FileText, color: '#2980B9', bg: '#EBF5FB' };
   if (['ppt', 'pptx'].includes(e)) return { Icon: FileText, color: '#E67E22', bg: '#FEF5E7' };
   if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(e)) return { Icon: Eye, color: '#9B59B6', bg: '#F5EEF8' };
+  if (VIDEO_EXTENSIONS.includes(e)) return { Icon: Video, color: '#D35400', bg: '#FDF0E6' };
   if (['zip', 'rar', '7z', 'tar', 'gz'].includes(e)) return { Icon: Archive, color: '#7F8C8D', bg: '#F2F3F4' };
   if (['txt', 'md'].includes(e)) return { Icon: FileText, color: '#6D6E71', bg: '#F4F6F7' };
   return { Icon: File, color: '#95A5A6', bg: '#F2F3F4' };
@@ -70,6 +76,7 @@ function getFileKind(ext) {
   if (['xlsx', 'xls', 'csv'].includes(normalized)) return 'Spreadsheet';
   if (['doc', 'docx'].includes(normalized)) return 'Word Document';
   if (['ppt', 'pptx'].includes(normalized)) return 'Presentation';
+  if (VIDEO_EXTENSIONS.includes(normalized)) return 'Video File';
   return normalized ? `${normalized.toUpperCase()} File` : 'Document';
 }
 
@@ -1406,14 +1413,53 @@ function FileTable({
   );
 }
 
+// Fixed-position menu anchored to a trigger button, rendered via a portal so it
+// can never be clipped by an ancestor's overflow-hidden/overflow-auto (e.g. the
+// scrollable file list or sidebar), and flips upward when there isn't room below.
+function useAnchoredMenuPosition(open, triggerRef, estimatedHeight, width = 224) {
+  const [position, setPosition] = useState(null);
+
+  useEffect(() => {
+    if (!open || !triggerRef.current) {
+      setPosition(null);
+      return undefined;
+    }
+    const updatePosition = () => {
+      if (!triggerRef.current) return;
+      const rect = triggerRef.current.getBoundingClientRect();
+      const spaceBelow = window.innerHeight - rect.bottom;
+      const openUpward = spaceBelow < estimatedHeight + 12 && rect.top > estimatedHeight;
+      const top = openUpward
+        ? Math.max(8, rect.top - estimatedHeight - 4)
+        : Math.min(rect.bottom + 4, window.innerHeight - 8);
+      const left = Math.min(Math.max(8, rect.right - width), window.innerWidth - width - 8);
+      setPosition({ top, left });
+    };
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [open, triggerRef, estimatedHeight, width]);
+
+  return position;
+}
+
 function FolderActionMenu({ onShareAccess, onRename, onMove, onArchive, onDelete, onColorChange, color, isArchiveView, className }) {
   const [open, setOpen] = useState(false);
+  const buttonRef = useRef(null);
   const menuRef = useRef(null);
+  const position = useAnchoredMenuPosition(open, buttonRef, isArchiveView ? 100 : 340, 224);
 
   useEffect(() => {
     if (!open) return undefined;
     const handle = (e) => {
-      if (menuRef.current && !menuRef.current.contains(e.target)) setOpen(false);
+      if (
+        menuRef.current && !menuRef.current.contains(e.target)
+        && buttonRef.current && !buttonRef.current.contains(e.target)
+      ) setOpen(false);
     };
     document.addEventListener('mousedown', handle);
     return () => document.removeEventListener('mousedown', handle);
@@ -1426,16 +1472,21 @@ function FolderActionMenu({ onShareAccess, onRename, onMove, onArchive, onDelete
   };
 
   return (
-    <div className={`relative ${className || ''}`} ref={menuRef}>
+    <div className={`relative ${className || ''}`}>
       <button
+        ref={buttonRef}
         onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
         className="w-7 h-7 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center hover:bg-gray-50"
         aria-label="Folder actions"
       >
         <MoreVertical size={13} className="text-[#6D6E71]" />
       </button>
-      {open && (
-        <div className="absolute right-0 mt-2 w-56 bg-white rounded-2xl shadow-xl border border-gray-100 py-2 z-20 animate-fadeIn">
+      {open && position && createPortal(
+        <div
+          ref={menuRef}
+          className="fixed w-56 bg-white rounded-2xl shadow-xl border border-gray-100 py-2 z-50 animate-fadeIn"
+          style={{ top: position.top, left: position.left }}
+        >
           {!isArchiveView && (
             <>
               <button
@@ -1478,7 +1529,8 @@ function FolderActionMenu({ onShareAccess, onRename, onMove, onArchive, onDelete
             <Trash2 size={14} />
             Delete Folder
           </button>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
@@ -1502,12 +1554,17 @@ function FileActionMenu({
   className,
 }) {
   const [open, setOpen] = useState(false);
+  const buttonRef = useRef(null);
   const menuRef = useRef(null);
+  const position = useAnchoredMenuPosition(open, buttonRef, isArchiveView ? 100 : 400, 224);
 
   useEffect(() => {
     if (!open) return undefined;
     const handle = (e) => {
-      if (menuRef.current && !menuRef.current.contains(e.target)) setOpen(false);
+      if (
+        menuRef.current && !menuRef.current.contains(e.target)
+        && buttonRef.current && !buttonRef.current.contains(e.target)
+      ) setOpen(false);
     };
     document.addEventListener('mousedown', handle);
     return () => document.removeEventListener('mousedown', handle);
@@ -1524,16 +1581,21 @@ function FileActionMenu({
   };
 
   return (
-    <div className={`relative ${className || ''}`} ref={menuRef}>
+    <div className={`relative ${className || ''}`}>
       <button
+        ref={buttonRef}
         onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
         className="w-7 h-7 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center hover:bg-gray-50"
         aria-label="File actions"
       >
         <MoreVertical size={13} className="text-[#6D6E71]" />
       </button>
-      {open && (
-        <div className="absolute right-0 mt-2 w-56 bg-white rounded-2xl shadow-xl border border-gray-100 py-2 z-20 animate-fadeIn">
+      {open && position && createPortal(
+        <div
+          ref={menuRef}
+          className="fixed w-56 bg-white rounded-2xl shadow-xl border border-gray-100 py-2 z-50 animate-fadeIn"
+          style={{ top: position.top, left: position.left }}
+        >
           {canRead && (
             <button
               onClick={(e) => run(e, onPreview)}
@@ -1603,7 +1665,8 @@ function FileActionMenu({
               </button>
             </>
           )}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
@@ -2165,6 +2228,23 @@ function PdfPreview({ blobUrl, name, zoom, setZoom }) {
   );
 }
 
+function VideoPreview({ blobUrl, name, onError }) {
+  return (
+    <div className="flex h-full items-center justify-center bg-black p-4">
+      <video
+        src={blobUrl}
+        controls
+        autoPlay={false}
+        className="max-h-full max-w-full rounded-xl"
+        onError={onError}
+      >
+        <track kind="captions" />
+        {name}
+      </video>
+    </div>
+  );
+}
+
 function SpreadsheetPreview({ sheets, activeSheetIndex, setActiveSheetIndex }) {
   const activeSheet = sheets[activeSheetIndex] || sheets[0];
   if (!activeSheet) return null;
@@ -2293,6 +2373,7 @@ function PreviewModal({ onDownloadFile }) {
   const isText = TEXT_EXTENSIONS.includes(normalizedExt);
   const isSpreadsheet = SPREADSHEET_EXTENSIONS.includes(normalizedExt);
   const isWordDoc = WORD_EXTENSIONS.includes(normalizedExt);
+  const isVideo = VIDEO_EXTENSIONS.includes(normalizedExt);
   const canPreview = canInlinePreview(previewItem?.ext) && Boolean(previewItem?.fileUrl);
 
   useEffect(() => {
@@ -2435,6 +2516,12 @@ function PreviewModal({ onDownloadFile }) {
                   zoom={pdfZoom}
                   setZoom={setPdfZoom}
                 />
+              ) : isVideo && blobUrl ? (
+                <VideoPreview
+                  blobUrl={blobUrl}
+                  name={previewItem.name}
+                  onError={() => setPreviewError('This video format can\'t be played in your browser. Download the file to watch it.')}
+                />
               ) : isSpreadsheet && spreadsheetPreview.length ? (
                 <SpreadsheetPreview
                   sheets={spreadsheetPreview}
@@ -2493,7 +2580,7 @@ function PreviewModal({ onDownloadFile }) {
               <div className="rounded-2xl bg-[#F8FAFC] border border-gray-100 p-4">
                 <p className="text-sm font-semibold text-[#050505]">Preview Notes</p>
                 <p className="text-xs leading-5 text-[#6D6E71] mt-2">
-                  PDFs, spreadsheets, Word documents, and images render inside this preview when the file can be read safely. Large files are trimmed for responsiveness.
+                  PDFs, spreadsheets, Word documents, images, and videos render inside this preview when the file can be read safely. Large files are trimmed for responsiveness.
                 </p>
               </div>
             </div>

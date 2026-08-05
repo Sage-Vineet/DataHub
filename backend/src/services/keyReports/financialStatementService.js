@@ -2470,8 +2470,26 @@ async function _generateFinancialStatementsImpl(versionId, options = {}) {
         (r) => isFinStmtCacheRowUsable(r?.data, { versionId, syncedAt, coaUpdatedAt, yearKey }),
       );
       if (hit) {
-        console.log(`[FinStmt][Cache] hit v=${versionId} year=${yearKey}`);
-        return { ...hit.data.result, companyName: options.companyName || "", currency: options.currency || "USD" };
+        // The cache key only tracks DATA freshness (syncedAt/coaUpdatedAt) — it
+        // has no way to know the balance sheet's own shape changed underneath it
+        // (buildBsStatement started returning a per-section `hierarchy` tree,
+        // consumed by getBalanceSheetReport's rows/hierarchicalRows). A row
+        // cached before that shape existed stays a "fresh" hit forever (nothing
+        // about the underlying GL/COA changed), silently serving balance sheets
+        // with no hierarchy to every reader — reproducing exactly the CIM Prep
+        // slide 26 / Balance Sheet tab "blank on live, fine on local" symptom,
+        // since a locally-tested company/version has no such stale cache row.
+        // Guard against it the same way the generated_report_snapshots
+        // self-heal check does: verify the shape this call actually needs is
+        // present before trusting the cache, otherwise fall through and
+        // recompute (which re-persists a correctly-shaped row below).
+        const cachedBsYearly = hit.data.result?.reports?.balanceSheet?.yearly || [];
+        const cachedBsShapeIsCurrent = cachedBsYearly.every((e) => Array.isArray(e?.statement?.assets?.hierarchy));
+        if (cachedBsShapeIsCurrent) {
+          console.log(`[FinStmt][Cache] hit v=${versionId} year=${yearKey}`);
+          return { ...hit.data.result, companyName: options.companyName || "", currency: options.currency || "USD" };
+        }
+        console.log(`[FinStmt][Cache] stale-shape hit v=${versionId} year=${yearKey} — cached Balance Sheet predates the hierarchy tree, recomputing`);
       }
     } catch {
       /* cache read failed — fall through to compute */

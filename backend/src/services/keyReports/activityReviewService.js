@@ -87,6 +87,36 @@ function depAmortKind(leaf) {
 function isBadDebt(leaf) {
   return BAD_DEBT_RE.test(leafName(leaf));
 }
+// Which Activity Review section an account's movement is reported under. Driven
+// ONLY by the report_tag the Chart of Accounts pipeline already assigned — this
+// engine never scans account names to decide a section, so it works for any
+// client's chart of accounts no matter what their accounts are called
+// (reportTagRules.js owns name matching, once, at classification time).
+//
+//   "exclude"     cash/bank — it IS the deposits and withdrawals being
+//                 reconciled, so counting its movement would be circular
+//   "deposits"    bridges Sales → cash received (receivables)
+//   "withdrawals" bridges Expenses → cash paid — the default, and where every
+//                 account the COA left untagged lands (that is most of them:
+//                 payables, inventory, prepaids, accruals, credit cards …)
+//
+// This is the single place the routing is defined. If the COA pipeline ever
+// emits a new tag, map it here and both engines pick it up — e.g. a future
+// deferred-revenue tag would be "deposits". Unknown and untagged accounts fall
+// through to DEFAULT_SECTION rather than being dropped, so no account is ever
+// silently lost from the table.
+const SECTION_BY_REPORT_TAG = {
+  cash: "exclude",
+  accounts_receivable: "deposits",
+};
+const DEFAULT_SECTION = "withdrawals";
+const sectionForLeaf = (leaf) => SECTION_BY_REPORT_TAG[leaf?.reportTag] || DEFAULT_SECTION;
+
+// Cash-effect sign per statement side — the formula the reference Bank Statement
+// Review workbook encodes in its cell formulas:
+//   assets      −(current − prior)   increase → outflow (−), decrease → inflow (+)
+//   liabilities  (current − prior)   increase → inflow (+),  decrease → outflow (−)
+const CASH_EFFECT_SIGN = { assets: -1, liabilities: 1 };
 
 // ─── Balance-sheet leaf extraction ──────────────────────────────────────────
 // Flatten the {groups:{[name]:{accounts:[leaf]}}} KPI buckets the statement
@@ -121,6 +151,78 @@ function bsSnapshot(entry) {
     // Gross fixed-asset cost only (contra accumulated depreciation removed).
     grossFixed:    sum(fixedAssets.filter((l) => !isAccumulatedDepreciation(l))),
   };
+}
+
+// ─── Per-account "Changes in Assets / Liabilities" breakdown ────────────────
+// The reference Bank Statement Review workbook lists these two categories as
+// per-ACCOUNT line items (e.g. "127 Prepaid State Taxes", "Total Credit Cards"),
+// each the period-over-period movement of one Balance Sheet account, signed per
+// CASH_EFFECT_SIGN and routed per SECTION_BY_REPORT_TAG (both defined above).
+//
+// Every part of this is derived from the financial-statements payload: which
+// accounts exist, what they are called, which section they belong to, and which
+// months are covered. There is no fixed account list, no name matching, and no
+// assumption about how many accounts a client has — whatever the Balance Sheet
+// contains is what gets rendered.
+
+const acctKey = (leaf) =>
+  String(leaf?.systemId || leaf?.accountNumber || leafName(leaf) || "").trim().toLowerCase();
+
+// Workbook-style label: account number prefix when the COA carries one.
+function acctLabel(leaf) {
+  const name = leafName(leaf).trim() || "Unnamed account";
+  const num = leaf?.accountNumber ? String(leaf.accountNumber).trim() : "";
+  return num && !name.startsWith(num) ? `${num} ${name}` : name;
+}
+
+function addBalance(map, leaf) {
+  const key = acctKey(leaf);
+  if (!key) return;
+  const existing = map.get(key);
+  if (existing) existing.amount = safeNum(existing.amount + safeNum(leaf.amount));
+  else map.set(key, { key, label: acctLabel(leaf), amount: safeNum(leaf.amount) });
+}
+
+// Per-account closing balances for one Balance Sheet month, routed into the
+// section × statement-side bucket each account reports under. Accounts are
+// discovered from the payload, so any chart of accounts works as-is.
+function accountBalances(entry) {
+  const st = entry?.statement || {};
+  const out = {
+    deposits:    { assets: new Map(), liabilities: new Map() },
+    withdrawals: { assets: new Map(), liabilities: new Map() },
+  };
+  const route = (leaves, side) => {
+    for (const leaf of leaves) {
+      const section = sectionForLeaf(leaf);
+      if (section === "exclude") continue;
+      addBalance(out[section][side], leaf);
+    }
+  };
+  route(bucketLeaves(st.assets?.currentAssets), "assets");
+  route(bucketLeaves(st.liabilities?.currentLiabilities), "liabilities");
+  return out;
+}
+
+/**
+ * Signed cash effect per account for one month; `sign` comes from
+ * CASH_EFFECT_SIGN. Accounts that did not move are dropped so the payload stays
+ * small and the table only shows real activity; a month with no prior period
+ * yields no rows at all. An account absent from one of the two months is treated
+ * as a 0 balance there, so accounts that open or close mid-window still report
+ * their full movement.
+ */
+function accountDeltas(curMap, prevMap, sign) {
+  if (!prevMap) return [];
+  const rows = [];
+  for (const key of new Set([...curMap.keys(), ...prevMap.keys()])) {
+    const cur = curMap.get(key);
+    const prior = prevMap.get(key);
+    const amount = round2(sign * safeNum(safeNum(cur?.amount) - safeNum(prior?.amount)));
+    if (amount === 0) continue;
+    rows.push({ key, label: cur?.label || prior?.label || key, amount });
+  }
+  return rows.sort((a, b) => a.label.localeCompare(b.label));
 }
 
 // ─── P&L monthly non-cash expense extraction ────────────────────────────────
@@ -173,10 +275,12 @@ function computeMonthlyActivityReview(fs) {
 
   const result = {};
   let prev = null;
+  let prevAcc = null;
   for (const entry of bsMonthly) {
     const key = monthKeyOf(entry);
     if (!key) continue;
     const cur = bsSnapshot(entry);
+    const curAcc = accountBalances(entry);
 
     // Period-over-period deltas (0 when there is no prior period).
     const dAR       = prev ? safeNum(cur.ar - prev.ar) : 0;
@@ -204,15 +308,24 @@ function computeMonthlyActivityReview(fs) {
       amortizationExpense:        round2(pl.amortization),            // non-cash add-back (+)
       badDebtExpense:             round2(pl.badDebt),                 // non-cash add-back (+)
       fixedAssetPurchases:        round2(dGross > 0 ? -dGross : 0),   // cost ↑ → outflow (−)
+      // Per-account "Changes in Assets" / "Changes in Liabilities" line items,
+      // one entry per Balance Sheet account that moved this month.
+      depositsAssetChanges:        accountDeltas(curAcc.deposits.assets,         prevAcc?.deposits?.assets,         CASH_EFFECT_SIGN.assets),
+      depositsLiabilityChanges:    accountDeltas(curAcc.deposits.liabilities,    prevAcc?.deposits?.liabilities,    CASH_EFFECT_SIGN.liabilities),
+      withdrawalsAssetChanges:     accountDeltas(curAcc.withdrawals.assets,      prevAcc?.withdrawals?.assets,      CASH_EFFECT_SIGN.assets),
+      withdrawalsLiabilityChanges: accountDeltas(curAcc.withdrawals.liabilities, prevAcc?.withdrawals?.liabilities, CASH_EFFECT_SIGN.liabilities),
     };
     prev = cur;
+    prevAcc = curAcc;
   }
 
   return result;
 }
 
 // ─── Cached wrapper (mirrors getMonthlyPlFinancials) ────────────────────────
-const ACTIVITY_REVIEW_CACHE_TYPE = "kr_activity_review_v1";
+// v2 added the per-account depositsAssetChanges / withdrawalsLiabilityChanges
+// breakdowns — the bump retires v1 payloads that predate those fields.
+const ACTIVITY_REVIEW_CACHE_TYPE = "kr_activity_review_v2";
 
 /**
  * Cached per-version Activity Review adjustments. Keyed on version +

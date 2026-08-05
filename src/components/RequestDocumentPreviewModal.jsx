@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Archive, Download, Eye, File, FileText, Loader2, X, AlertCircle, CheckCircle, Clock } from 'lucide-react';
+import { Archive, Download, Eye, File, FileText, Loader2, X, AlertCircle, CheckCircle, Clock, Video } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useAuth } from '../context/AuthContext';
 import { fetchProtectedFileBlob, recordDocumentActivity } from '../lib/api';
@@ -8,6 +8,9 @@ const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'];
 const TEXT_EXTENSIONS = ['txt', 'md', 'json', 'log', 'xml', 'html', 'htm', 'yaml', 'yml'];
 const DELIMITED_EXTENSIONS = ['csv', 'tsv'];
 const SPREADSHEET_EXTENSIONS = ['xlsx', 'xls', 'xlsm', 'xlsb', 'ods'];
+const VIDEO_EXTENSIONS = [
+  'mp4', 'webm', 'ogv', 'mov', 'm4v', 'avi', 'mkv', 'wmv', 'flv', 'mpg', 'mpeg', '3gp', '3g2', 'ts', 'm2ts',
+];
 
 function getMimeIcon(ext) {
   const normalized = (ext || '').toLowerCase();
@@ -16,6 +19,7 @@ function getMimeIcon(ext) {
   if (['doc', 'docx'].includes(normalized)) return { Icon: FileText, color: '#2980B9', bg: '#EBF5FB' };
   if (['ppt', 'pptx'].includes(normalized)) return { Icon: FileText, color: '#E67E22', bg: '#FEF5E7' };
   if (IMAGE_EXTENSIONS.includes(normalized)) return { Icon: Eye, color: '#9B59B6', bg: '#F5EEF8' };
+  if (VIDEO_EXTENSIONS.includes(normalized)) return { Icon: Video, color: '#D35400', bg: '#FDF0E6' };
   if (['zip', 'rar', '7z', 'tar', 'gz'].includes(normalized)) return { Icon: Archive, color: '#7F8C8D', bg: '#F2F3F4' };
   if (TEXT_EXTENSIONS.includes(normalized)) return { Icon: FileText, color: '#6D6E71', bg: '#F4F6F7' };
   return { Icon: File, color: '#95A5A6', bg: '#F2F3F4' };
@@ -30,12 +34,13 @@ function getFileKind(ext) {
   if (SPREADSHEET_EXTENSIONS.includes(normalized)) return 'Spreadsheet';
   if (['doc', 'docx'].includes(normalized)) return 'Word Document';
   if (['ppt', 'pptx'].includes(normalized)) return 'Presentation';
+  if (VIDEO_EXTENSIONS.includes(normalized)) return 'Video File';
   return normalized ? `${normalized.toUpperCase()} File` : 'Document';
 }
 
 function canInlinePreview(ext) {
   const normalized = (ext || '').toLowerCase();
-  return ['pdf', ...IMAGE_EXTENSIONS, ...TEXT_EXTENSIONS, ...SPREADSHEET_EXTENSIONS, ...DELIMITED_EXTENSIONS].includes(normalized);
+  return ['pdf', ...IMAGE_EXTENSIONS, ...TEXT_EXTENSIONS, ...SPREADSHEET_EXTENSIONS, ...DELIMITED_EXTENSIONS, ...VIDEO_EXTENSIONS].includes(normalized);
 }
 
 const STATUS_META = {

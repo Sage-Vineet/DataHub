@@ -1236,45 +1236,351 @@ function getFinancialRowAmount(row, year) {
   return getRowAmount(row);
 }
 
-function extractGroupedBalanceSheetMetrics(rows = [], year) {
-  const flat = flattenRows(rows).map((row) => ({
-    row,
-    name: normalizeFinancialRowName(getRowName(row)),
-    amount: getFinancialRowAmount(row, year),
-    hasChildren: Array.isArray(row?.children) && row.children.length > 0,
-  }));
-  const leaves = flat.filter((item) => !item.hasChildren && item.row?.type !== "total");
-  const sumMatches = (matchers) => leaves.reduce((sum, item) => (
-    matchers.some((matcher) => matcher.test(item.name)) ? sum + item.amount : sum
-  ), 0);
-  const exactTotal = (matchers) => {
-    const match = flat.find((item) => matchers.some((matcher) => matcher.test(item.name)));
-    return match ? match.amount : 0;
-  };
+function normalizeBalanceSheetRowType(row) {
+  return String(row?.type || row?.rowType || row?.row_type || "").toLowerCase();
+}
 
-  const prepaidOtherCurrent = sumMatches([
-    /prepaid/, /other current asset/, /short term asset/, /deferred cost/, /deposit current/,
+function normalizeBalanceSheetReportTag(row) {
+  return String(row?.reportTag || row?.report_tag || row?.metadata?.report_tag || "").trim().toLowerCase();
+}
+
+function flattenBalanceSheetMetricRows(rows = [], year) {
+  const output = [];
+  const walk = (items, path = []) => {
+    (Array.isArray(items) ? items : []).forEach((row, index) => {
+      if (!row || typeof row !== "object") return;
+      const rawName = getRowName(row);
+      const name = normalizeFinancialRowName(rawName);
+      const pathNames = [...path, rawName].filter(Boolean);
+      const pathText = normalizeFinancialRowName(pathNames.join(" "));
+      const children = Array.isArray(row.children)
+        ? row.children
+        : Array.isArray(row.Rows?.Row)
+        ? row.Rows.Row
+        : [];
+      const amount = getFinancialRowAmount(row, year);
+      output.push({
+        row,
+        rawName,
+        name,
+        amount,
+        depth: path.length,
+        order: output.length + index,
+        pathNames,
+        pathKey: pathNames.map(normalizeFinancialRowName).join("\u001f"),
+        pathText,
+        hasChildren: children.length > 0,
+        type: normalizeBalanceSheetRowType(row),
+        reportTag: normalizeBalanceSheetReportTag(row),
+      });
+      if (children.length) walk(children, pathNames);
+    });
+  };
+  walk(rows);
+  return output;
+}
+
+function hasFiniteBalanceSheetAmount(item) {
+  return item?.amount !== null && item?.amount !== undefined && Number.isFinite(toNumber(item.amount, Number.NaN));
+}
+
+function isBalanceSheetTotalItem(item) {
+  return item?.type === "total" || /^total\b/.test(item?.name || "");
+}
+
+function balanceSheetMatcherMatches(item, matchers = [], { includePath = false } = {}) {
+  if (!item?.name) return false;
+  return matchers.some((matcher) => matcher.test(item.name) || (includePath && matcher.test(item.pathText || "")));
+}
+
+function canonicalBalanceSheetMetricName(item) {
+  return String(item?.name || "")
+    .replace(/^total\s+(for|of)\s+/, "")
+    .replace(/^total\s+/, "")
+    .trim();
+}
+
+function rankBalanceSheetMetricItem(item) {
+  if (item?.hasChildren) return 5;
+  if (isBalanceSheetTotalItem(item)) return 4;
+  if (item?.type === "leaf" || !item?.type || item?.type === "data") return 3;
+  return 1;
+}
+
+function makeBalanceSheetMetricResult(found, amount = 0) {
+  return { found: Boolean(found), amount: toNumber(amount, 0) };
+}
+
+function firstBalanceSheetMetricAmount(...results) {
+  const found = results.find((result) => result?.found);
+  return found ? found.amount : 0;
+}
+
+function sumBestBalanceSheetRows(flat = [], matchers = [], options = {}) {
+  const {
+    includePath = false,
+    exclude = () => false,
+  } = options;
+  const candidates = flat
+    .filter((item) =>
+      hasFiniteBalanceSheetAmount(item) &&
+      !exclude(item) &&
+      balanceSheetMatcherMatches(item, matchers, { includePath }),
+    );
+
+  if (!candidates.length) return makeBalanceSheetMetricResult(false);
+
+  const bestByName = new Map();
+  candidates.forEach((item) => {
+    const key = canonicalBalanceSheetMetricName(item);
+    const previous = bestByName.get(key);
+    if (!previous || rankBalanceSheetMetricItem(item) > rankBalanceSheetMetricItem(previous)) {
+      bestByName.set(key, item);
+    }
+  });
+
+  const selected = [];
+  Array.from(bestByName.values())
+    .sort((a, b) =>
+      a.depth - b.depth ||
+      rankBalanceSheetMetricItem(b) - rankBalanceSheetMetricItem(a) ||
+      a.order - b.order,
+    )
+    .forEach((item) => {
+      const isDescendant = selected.some((parent) =>
+        item.pathKey && parent.pathKey && item.pathKey.startsWith(`${parent.pathKey}\u001f`),
+      );
+      if (!isDescendant) selected.push(item);
+    });
+
+  return makeBalanceSheetMetricResult(
+    selected.length > 0,
+    selected.reduce((sum, item) => sum + toNumber(item.amount, 0), 0),
+  );
+}
+
+function findBestBalanceSheetRowAmount(flat = [], matchers = [], options = {}) {
+  const result = sumBestBalanceSheetRows(flat, matchers, options);
+  return result.found ? result : makeBalanceSheetMetricResult(false);
+}
+
+function sumBalanceSheetLeaves(flat = [], matchers = [], options = {}) {
+  const {
+    includePath = false,
+    exclude = () => false,
+  } = options;
+  const matches = flat.filter((item) =>
+    hasFiniteBalanceSheetAmount(item) &&
+    !item.hasChildren &&
+    !isBalanceSheetTotalItem(item) &&
+    !exclude(item) &&
+    balanceSheetMatcherMatches(item, matchers, { includePath }),
+  );
+  return makeBalanceSheetMetricResult(
+    matches.length > 0,
+    matches.reduce((sum, item) => sum + toNumber(item.amount, 0), 0),
+  );
+}
+
+function sumBalanceSheetTaggedLeaves(flat = [], tags = [], options = {}) {
+  const tagSet = new Set(tags.map((tag) => String(tag || "").toLowerCase()));
+  const {
+    exclude = () => false,
+    include = () => true,
+  } = options;
+  const matches = flat.filter((item) =>
+    tagSet.has(item.reportTag) &&
+    hasFiniteBalanceSheetAmount(item) &&
+    !item.hasChildren &&
+    !isBalanceSheetTotalItem(item) &&
+    include(item) &&
+    !exclude(item),
+  );
+  return makeBalanceSheetMetricResult(
+    matches.length > 0,
+    matches.reduce((sum, item) => sum + toNumber(item.amount, 0), 0),
+  );
+}
+
+function extractGroupedBalanceSheetMetrics(rows = [], year) {
+  const flat = flattenBalanceSheetMetricRows(rows, year);
+  const currentDebtPatterns = [
+    /current portion.*debt/,
+    /current maturit/,
+    /short term debt/,
+    /short term borrow/,
+    /line of credit/,
+    /credit card/,
+    /current.*loan/,
+    /current.*notes? payable/,
+  ];
+  const longTermDebtExclude = (item) => currentDebtPatterns.some((matcher) => matcher.test(item.name || "") || matcher.test(item.pathText || ""));
+
+  const currentAssetsResult = findBestBalanceSheetRowAmount(flat, [/^total current assets?$/, /^current assets?$/]);
+  const currentLiabilitiesResult = findBestBalanceSheetRowAmount(flat, [/^total current liabilities?$/, /^current liabilities?$/]);
+  const totalAssetsResult = findBestBalanceSheetRowAmount(flat, [/^total assets?$/]);
+  const totalLiabilitiesResult = findBestBalanceSheetRowAmount(flat, [/^total liabilities$/]);
+  const totalEquityResult = findBestBalanceSheetRowAmount(flat, [
+    /^total equity$/,
+    /^shareholders equity$/,
+    /^shareholder s equity$/,
+    /^stockholders equity$/,
+    /^stockholder s equity$/,
+    /^total shareholders equity$/,
+    /^total shareholder s equity$/,
+    /^total stockholders equity$/,
+    /^total stockholder s equity$/,
   ]);
-  const ppeNet = sumMatches([
-    /property plant/, /fixed asset/, /equipment/, /leasehold improvement/, /furniture/, /vehicle/,
+  const totalLiabilitiesEquityResult = findBestBalanceSheetRowAmount(flat, [
+    /^total liabilities and equity$/,
+    /^total liabilities and shareholders equity$/,
+    /^total liabilities and stockholders equity$/,
+    /^total liabilities equity$/,
   ]);
-  const intangiblesGoodwill = sumMatches([
-    /goodwill/, /intangible/, /capitalized software/, /customer relationship/, /trade name/,
-  ]);
-  const accruedLiabilities = sumMatches([
-    /accrued/, /payroll liabilit/, /wages payable/, /sales tax payable/, /other current liabilit/,
-  ]);
-  const deferredRevenue = sumMatches([/deferred revenue/, /unearned revenue/, /customer deposit/]);
-  const currentDebt = sumMatches([
-    /current portion.*debt/, /short term debt/, /line of credit/, /credit card/, /current.*loan/,
-  ]);
-  const cashAndBankBalance = sumMatches([/cash/, /bank account/, /checking/, /savings/]);
-  const accountReceivable = sumMatches([/accounts? receivable/, /trade receivable/]);
-  const inventoryValue = sumMatches([/inventory/, /stock in trade/]);
-  const accountPayable = sumMatches([/accounts? payable/, /trade payable/]);
-  const longTermDebt = sumMatches([/long term debt/, /non current.*loan/, /term loan/]);
-  const currentAssetsExact = exactTotal([/^total current assets?$/, /^current assets?$/]);
-  const currentLiabilitiesExact = exactTotal([/^total current liabilities?$/, /^current liabilities?$/]);
+
+  const cashAndBankBalance = firstBalanceSheetMetricAmount(
+    sumBestBalanceSheetRows(flat, [
+      /cash and cash equivalents?/,
+      /cash and equivalents?/,
+      /cash equivalents?/,
+      /cash and bank/,
+      /bank accounts?/,
+      /^cash$/,
+    ]),
+    sumBalanceSheetTaggedLeaves(flat, ["cash"]),
+    sumBalanceSheetLeaves(flat, [/cash/, /bank accounts?/, /checking/, /savings/, /money market/]),
+  );
+  const accountReceivable = firstBalanceSheetMetricAmount(
+    sumBestBalanceSheetRows(flat, [
+      /^accounts? receivable\b/,
+      /^receivables?\b/,
+      /^trade accounts? receivable\b/,
+      /trade receivable/,
+      /^a r$/,
+      /^ar$/,
+    ]),
+    sumBalanceSheetTaggedLeaves(flat, ["accounts_receivable"]),
+    sumBalanceSheetLeaves(flat, [/accounts? receivable/, /trade receivable/]),
+  );
+  const inventoryValue = firstBalanceSheetMetricAmount(
+    sumBestBalanceSheetRows(flat, [/^inventory$/, /inventories/, /stock in trade/]),
+    sumBalanceSheetTaggedLeaves(flat, ["inventory"]),
+    sumBalanceSheetLeaves(flat, [/inventory/, /stock in trade/]),
+  );
+  const prepaidOtherCurrentResult = [
+    sumBestBalanceSheetRows(flat, [
+      /prepaid/,
+      /other current assets?/,
+      /short term assets?/,
+      /deferred costs?/,
+      /current deposits?/,
+    ]),
+    sumBalanceSheetLeaves(flat, [
+      /prepaid/,
+      /other current assets?/,
+      /short term assets?/,
+      /deferred costs?/,
+      /current deposits?/,
+    ]),
+  ].find((result) => result?.found) || makeBalanceSheetMetricResult(false);
+  const currentAssetsExact = currentAssetsResult.amount;
+  const prepaidOtherCurrent = prepaidOtherCurrentResult.found
+    ? prepaidOtherCurrentResult.amount
+    : currentAssetsResult.found
+      ? currentAssetsExact - cashAndBankBalance - accountReceivable - inventoryValue
+      : 0;
+  const ppeNet = firstBalanceSheetMetricAmount(
+    sumBestBalanceSheetRows(flat, [
+      /property plant/,
+      /^property and equipment\b/,
+      /^property equipment\b/,
+      /^fixed assets?$/,
+      /^net fixed assets?$/,
+      /pp and e/,
+      /leasehold improvements?/,
+      /^equipment$/,
+      /^furniture/,
+      /^vehicles?/,
+    ]),
+    sumBalanceSheetLeaves(flat, [
+      /property plant/,
+      /fixed assets?/,
+      /equipment/,
+      /leasehold improvements?/,
+      /furniture/,
+      /vehicles?/,
+    ]),
+  );
+  const intangiblesGoodwill = firstBalanceSheetMetricAmount(
+    sumBestBalanceSheetRows(flat, [
+      /goodwill/,
+      /intangibles?/,
+      /capitalized software/,
+      /customer relationships?/,
+      /trade names?/,
+    ]),
+    sumBalanceSheetLeaves(flat, [
+      /goodwill/,
+      /intangibles?/,
+      /capitalized software/,
+      /customer relationships?/,
+      /trade names?/,
+    ]),
+  );
+  const accountPayable = firstBalanceSheetMetricAmount(
+    sumBestBalanceSheetRows(flat, [/^accounts? payable\b/, /^payables?\b/, /trade payable/, /^a p$/, /^ap$/]),
+    sumBalanceSheetTaggedLeaves(flat, ["accounts_payable"]),
+    sumBalanceSheetLeaves(flat, [/accounts? payable/, /trade payable/]),
+  );
+  const accruedLiabilities = firstBalanceSheetMetricAmount(
+    sumBestBalanceSheetRows(flat, [
+      /accrued/,
+      /payroll liabilit/,
+      /wages payable/,
+      /sales tax payable/,
+      /other current liabilit/,
+    ]),
+    sumBalanceSheetLeaves(flat, [
+      /accrued/,
+      /payroll liabilit/,
+      /wages payable/,
+      /sales tax payable/,
+      /other current liabilit/,
+    ]),
+  );
+  const deferredRevenue = firstBalanceSheetMetricAmount(
+    sumBestBalanceSheetRows(flat, [/deferred revenue/, /unearned revenue/, /customer deposits?/, /contract liabilit/]),
+    sumBalanceSheetLeaves(flat, [/deferred revenue/, /unearned revenue/, /customer deposits?/, /contract liabilit/]),
+  );
+  const currentDebt = firstBalanceSheetMetricAmount(
+    sumBestBalanceSheetRows(flat, currentDebtPatterns),
+    sumBalanceSheetTaggedLeaves(flat, ["long_term_debt"], {
+      include: (item) => currentDebtPatterns.some((matcher) => matcher.test(item.name || "") || matcher.test(item.pathText || "")),
+    }),
+    sumBalanceSheetLeaves(flat, currentDebtPatterns),
+  );
+  const longTermDebt = firstBalanceSheetMetricAmount(
+    sumBestBalanceSheetRows(flat, [
+      /long term debt/,
+      /long term borrow/,
+      /non current.*loan/,
+      /term loan/,
+      /notes? payable/,
+      /mortgage/,
+      /bond payable/,
+    ], { exclude: longTermDebtExclude }),
+    sumBalanceSheetTaggedLeaves(flat, ["long_term_debt"], { exclude: longTermDebtExclude }),
+    sumBalanceSheetLeaves(flat, [
+      /long term debt/,
+      /long term borrow/,
+      /non current.*loan/,
+      /term loan/,
+      /notes? payable/,
+      /mortgage/,
+      /bond payable/,
+    ], { exclude: longTermDebtExclude }),
+  );
+  const currentLiabilitiesExact = currentLiabilitiesResult.amount;
 
   return {
     cashAndBankBalance,
@@ -1291,14 +1597,11 @@ function extractGroupedBalanceSheetMetrics(rows = [], year) {
     currentAssetsExact,
     currentLiabilitiesExact,
     workingCapital: currentAssetsExact - currentLiabilitiesExact,
-    totalAssets: exactTotal([/^total assets?$/]),
-    totalLiabilitiesExact: exactTotal([/^total liabilities$/]),
-    totalEquity: exactTotal([/^total equity$/, /^shareholders equity$/, /^stockholders equity$/]),
-    totalLiabilitiesEquity: exactTotal([
-      /^total liabilities and equity$/,
-      /^total liabilities and shareholders equity$/,
-      /^total liabilities and stockholders equity$/,
-    ]),
+    totalAssets: totalAssetsResult.amount,
+    totalLiabilitiesExact: totalLiabilitiesResult.amount,
+    totalEquity: totalEquityResult.amount,
+    totalLiabilitiesEquity: totalLiabilitiesEquityResult.amount,
+    totalDebt: currentDebt + longTermDebt,
   };
 }
 

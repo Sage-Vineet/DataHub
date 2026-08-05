@@ -452,13 +452,13 @@ async function sendReminderEmail({
     status         ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Status</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5;text-transform:capitalize">${escapeHtml(status)}</td></tr>` : "",
     frequencyLabel ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Cadence</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${escapeHtml(frequencyLabel)}</td></tr>` : "",
     formattedReminderAt ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Reminder Sent</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${formattedReminderAt}</td></tr>` : "",
-    formattedNextReminderAt && !isOverdue ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Next Reminder</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${formattedNextReminderAt}</td></tr>` : "",
+    formattedNextReminderAt ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Next Reminder</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${formattedNextReminderAt}</td></tr>` : "",
   ].filter(Boolean).join("\n");
 
   const html = `
     <div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#333">
       <p>${greeting}</p>
-      <p>${escapeHtml(sentBy)} has ${isOverdue ? "sent a final overdue notice" : "sent you a reminder"} for the following document request:</p>
+      <p>${escapeHtml(sentBy)} has ${isOverdue ? "sent an overdue notice" : "sent you a reminder"} for the following document request:</p>
       <table style="border-collapse:collapse;width:100%;margin:16px 0">
         <tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600;width:140px">Request</td>
             <td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${title}</td></tr>
@@ -471,7 +471,7 @@ async function sendReminderEmail({
 
   const textLines = [
     greeting, "",
-    `${sentBy} has sent ${isOverdue ? "a final overdue notice" : "a reminder"} for: ${requestTitle || "Document Request"}`,
+    `${sentBy} has sent ${isOverdue ? "an overdue notice" : "a reminder"} for: ${requestTitle || "Document Request"}`,
     companyName         ? `Company:      ${companyName}` : "",
     requestType         ? `Type:         ${requestType}` : "",
     priority            ? `Priority:     ${priority}` : "",
@@ -479,7 +479,7 @@ async function sendReminderEmail({
     status              ? `Status:       ${status}` : "",
     frequencyLabel      ? `Cadence:      ${frequencyLabel}` : "",
     formattedReminderAt ? `Reminder Sent: ${formattedReminderAt}` : "",
-    formattedNextReminderAt && !isOverdue ? `Next Reminder: ${formattedNextReminderAt}` : "",
+    formattedNextReminderAt ? `Next Reminder: ${formattedNextReminderAt}` : "",
     description         ? `\nDescription:\n${description}` : "",
     "",
     actionCopy,
