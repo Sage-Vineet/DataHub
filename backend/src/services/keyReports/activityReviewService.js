@@ -186,11 +186,19 @@ function addBalance(map, leaf) {
 // Per-account closing balances for one Balance Sheet month, routed into the
 // section × statement-side bucket each account reports under. Accounts are
 // discovered from the payload, so any chart of accounts works as-is.
+//
+// Long-term buckets (ltAssets / ltLiabilities) mirror the current-asset /
+// current-liability ones but source from fixedAssets + otherAssets (gross —
+// accumulated depreciation excluded, same contra-asset exclusion grossFixed
+// uses) and longTermLiabilities respectively. Kept as their own map key
+// (rather than folding into assets/liabilities) so "Changes in Assets" /
+// "Changes in Liabilities" stay current-only and the new "Long-Term Assets" /
+// "Long-Term Liabilities" rows report only non-current movement.
 function accountBalances(entry) {
   const st = entry?.statement || {};
   const out = {
-    deposits:    { assets: new Map(), liabilities: new Map() },
-    withdrawals: { assets: new Map(), liabilities: new Map() },
+    deposits:    { assets: new Map(), liabilities: new Map(), ltAssets: new Map(), ltLiabilities: new Map() },
+    withdrawals: { assets: new Map(), liabilities: new Map(), ltAssets: new Map(), ltLiabilities: new Map() },
   };
   const route = (leaves, side) => {
     for (const leaf of leaves) {
@@ -201,6 +209,14 @@ function accountBalances(entry) {
   };
   route(bucketLeaves(st.assets?.currentAssets), "assets");
   route(bucketLeaves(st.liabilities?.currentLiabilities), "liabilities");
+
+  const ltAssetLeaves = [
+    ...bucketLeaves(st.assets?.fixedAssets).filter((l) => !isAccumulatedDepreciation(l)),
+    ...bucketLeaves(st.assets?.otherAssets),
+  ];
+  route(ltAssetLeaves, "ltAssets");
+  route(bucketLeaves(st.liabilities?.longTermLiabilities), "ltLiabilities");
+
   return out;
 }
 
@@ -308,12 +324,16 @@ function computeMonthlyActivityReview(fs) {
       amortizationExpense:        round2(pl.amortization),            // non-cash add-back (+)
       badDebtExpense:             round2(pl.badDebt),                 // non-cash add-back (+)
       fixedAssetPurchases:        round2(dGross > 0 ? -dGross : 0),   // cost ↑ → outflow (−)
-      // Per-account "Changes in Assets" / "Changes in Liabilities" line items,
+      // Per-account "Changes in Assets" / "Changes in Liabilities" / "Long-Term Assets" / "Long-Term Liabilities" line items,
       // one entry per Balance Sheet account that moved this month.
-      depositsAssetChanges:        accountDeltas(curAcc.deposits.assets,         prevAcc?.deposits?.assets,         CASH_EFFECT_SIGN.assets),
-      depositsLiabilityChanges:    accountDeltas(curAcc.deposits.liabilities,    prevAcc?.deposits?.liabilities,    CASH_EFFECT_SIGN.liabilities),
-      withdrawalsAssetChanges:     accountDeltas(curAcc.withdrawals.assets,      prevAcc?.withdrawals?.assets,      CASH_EFFECT_SIGN.assets),
-      withdrawalsLiabilityChanges: accountDeltas(curAcc.withdrawals.liabilities, prevAcc?.withdrawals?.liabilities, CASH_EFFECT_SIGN.liabilities),
+      depositsAssetChanges:             accountDeltas(curAcc.deposits.assets,         prevAcc?.deposits?.assets,         CASH_EFFECT_SIGN.assets),
+      depositsLiabilityChanges:         accountDeltas(curAcc.deposits.liabilities,    prevAcc?.deposits?.liabilities,    CASH_EFFECT_SIGN.liabilities),
+      depositsLongTermAssetChanges:     accountDeltas(curAcc.deposits.ltAssets,       prevAcc?.deposits?.ltAssets,       CASH_EFFECT_SIGN.assets),
+      depositsLongTermLiabilityChanges: accountDeltas(curAcc.deposits.ltLiabilities,  prevAcc?.deposits?.ltLiabilities,  CASH_EFFECT_SIGN.liabilities),
+      withdrawalsAssetChanges:             accountDeltas(curAcc.withdrawals.assets,         prevAcc?.withdrawals?.assets,         CASH_EFFECT_SIGN.assets),
+      withdrawalsLiabilityChanges:         accountDeltas(curAcc.withdrawals.liabilities,    prevAcc?.withdrawals?.liabilities,    CASH_EFFECT_SIGN.liabilities),
+      withdrawalsLongTermAssetChanges:     accountDeltas(curAcc.withdrawals.ltAssets,       prevAcc?.withdrawals?.ltAssets,       CASH_EFFECT_SIGN.assets),
+      withdrawalsLongTermLiabilityChanges: accountDeltas(curAcc.withdrawals.ltLiabilities,  prevAcc?.withdrawals?.ltLiabilities,  CASH_EFFECT_SIGN.liabilities),
     };
     prev = cur;
     prevAcc = curAcc;
