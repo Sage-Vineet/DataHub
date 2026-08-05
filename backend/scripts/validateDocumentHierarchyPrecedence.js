@@ -123,9 +123,7 @@ console.log("\n=== 8-9. Deep and shallow document hierarchy, complete ancestor p
     checkTrue("11. P&L account (Product Sales) never inherits a BS anchor (no 'Total Assets'/'Total Liabilities')",
       !sales.levels.some((l) => l === "Total Assets" || l === "Total Liabilities"));
     check("11b. Product Sales hierarchy comes from the P&L document tree", sales.levels.filter(Boolean),
-      ["Total Liabilities and Equity", "Total Equity", "Total Equity",
-       "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Revenue",
-       "Income", "Product Sales"]);
+      ["Total Liabilities and Equity", "Total Equity", "Total Equity", "Income", "Product Sales"]);
     checkTrue("Office Rent (P&L expense) never inherits a BS anchor either",
       !rent.levels.some((l) => l === "Total Assets" || l === "Total Liabilities"));
 

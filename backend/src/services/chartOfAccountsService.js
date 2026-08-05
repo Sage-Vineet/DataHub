@@ -495,9 +495,14 @@ const EQUITY_FIXED_PREFIX = Object.freeze(["Total Liabilities and Equity", "Tota
 // structural anchor concept as ASSET/LIABILITY/EQUITY_FIXED_PREFIX above, not
 // document content. The client's reference workbook carries these on Level 1..7
 // of EVERY P&L row, identically, regardless of that company's own section names.
+// Only the bridge into the Balance Sheet is fixed: no P&L document contains
+// these, they are the accounting equation's own link between the two statements.
+// The statement ROLL-UP (bottom line > operating result > gross result) is NOT
+// frozen here -- referenceTreeBuilder reads those labels from the uploaded
+// document's own subtotal rows, so a file saying "Net Operating Income" keeps
+// that wording instead of one hardcoded here.
 const PL_ROLLUP_PREFIX = Object.freeze([
   "Total Liabilities and Equity", "Total Equity", "Total Equity",
-  "Net Income", "Pretax Income", "Operating Income", "Gross Profit",
 ]);
 // Level 8 is the side of the statement the account rolls into. It deliberately
 // stops here: the next level is the document's OWN heading ("Income",
@@ -508,8 +513,8 @@ const PL_ROLLUP_PREFIX = Object.freeze([
 // Ending at "Total Revenue" / "Total Expenses" keeps the two distinct, so the
 // document heading survives as its own level (reference: L8 "Total Revenue",
 // L9 "Income").
-const PL_REVENUE_FIXED_PREFIX = Object.freeze([...PL_ROLLUP_PREFIX, "Total Revenue"]);
-const PL_EXPENSE_FIXED_PREFIX = Object.freeze([...PL_ROLLUP_PREFIX, "Total Expenses"]);
+const PL_REVENUE_FIXED_PREFIX = PL_ROLLUP_PREFIX;
+const PL_EXPENSE_FIXED_PREFIX = PL_ROLLUP_PREFIX;
 // Retained for callers that only need the shared part (e.g. PL_ANCHOR_DEPTH in
 // financialStatementService, which reads the collapsed length of "the" P&L anchor).
 const PL_FIXED_PREFIX = PL_REVENUE_FIXED_PREFIX;
@@ -1408,10 +1413,9 @@ function buildTreeHierarchyLookup(tree, statementType) {
   // retained-earnings boundary can walk it -- but letting those into the COA path
   // would emit it twice, with whichever labels that one document happened to use.
   // Skipped for path purposes only; the nodes themselves are untouched.
-  const isComputedLine = (node) => node.nodeType === "CALCULATED_TOTAL";
   const visit = (node, path) => {
     if (!node || typeof node !== "object") return;
-    const nextPath = (node.nodeType === "REPORT" || isComputedLine(node))
+    const nextPath = node.nodeType === "REPORT"
       ? path
       : [...path, node.name].filter(Boolean);
     if (node.nodeType === "ACCOUNT" && node.name) {

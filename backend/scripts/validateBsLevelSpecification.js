@@ -40,13 +40,13 @@ console.log("\n=== 1-3. The three fixed anchors ===");
     ["Total Liabilities and Equity", "Total Equity", "Total Equity", "Equity"]);
   // The P&L anchor carries the accounting-equation roll-up on L1..L7 and the
   // side it rolls into on L8, per the client's reference chart of accounts.
-  const PL_ROLLUP = ["Total Liabilities and Equity", "Total Equity", "Total Equity",
-    "Net Income", "Pretax Income", "Operating Income", "Gross Profit"];
-  checkTrue("3b. P&L revenue anchor is the roll-up + Total Revenue",
-    JSON.stringify(coa.fixedPrefixFor("income")) === JSON.stringify([...PL_ROLLUP, "Total Revenue"]));
-  checkTrue("3c. P&L expense/COGS anchor is the roll-up + Total Expenses",
-    JSON.stringify(coa.fixedPrefixFor("expense")) === JSON.stringify([...PL_ROLLUP, "Total Expenses"])
-    && JSON.stringify(coa.fixedPrefixFor("cogs")) === JSON.stringify([...PL_ROLLUP, "Total Expenses"]));
+  // The P&L anchor is ONLY the accounting-equation bridge. The statement roll-up
+  // is read from the uploaded document's own subtotal rows, never frozen here.
+  const PL_BRIDGE = ["Total Liabilities and Equity", "Total Equity", "Total Equity"];
+  checkTrue("3b. P&L anchor is the equation bridge only (roll-up comes from the document)",
+    JSON.stringify(coa.fixedPrefixFor("income")) === JSON.stringify(PL_BRIDGE)
+    && JSON.stringify(coa.fixedPrefixFor("expense")) === JSON.stringify(PL_BRIDGE)
+    && JSON.stringify(coa.fixedPrefixFor("cogs")) === JSON.stringify(PL_BRIDGE));
 }
 
 console.log("\n=== 4. Spec example 1 -- asset, verbatim ===");

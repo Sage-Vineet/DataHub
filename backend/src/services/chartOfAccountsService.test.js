@@ -91,11 +91,9 @@ const LIABILITY_FIXED_PREFIX = ['Total Liabilities and Equity', 'Total Liabiliti
 const EQUITY_FIXED_PREFIX = ['Total Liabilities and Equity', 'Total Equity', 'Total Equity', 'Equity'];
 // The P&L anchor carries the accounting-equation roll-up (L1..L7) plus the side
 // the account rolls into (L8), per the client's reference chart of accounts.
-const PL_ROLLUP = ['Total Liabilities and Equity', 'Total Equity', 'Total Equity',
-  'Net Income', 'Pretax Income', 'Operating Income', 'Gross Profit'];
-const PL_REVENUE_FIXED_PREFIX = [...PL_ROLLUP, 'Total Revenue'];
-const PL_EXPENSE_FIXED_PREFIX = [...PL_ROLLUP, 'Total Expenses'];
-const PL_FIXED_PREFIX = PL_REVENUE_FIXED_PREFIX;
+const PL_FIXED_PREFIX = ['Total Liabilities and Equity', 'Total Equity', 'Total Equity'];
+const PL_REVENUE_FIXED_PREFIX = PL_FIXED_PREFIX;
+const PL_EXPENSE_FIXED_PREFIX = PL_FIXED_PREFIX;
 
 function makeAssetLeaf(overrides = {}) {
   return {
@@ -472,9 +470,7 @@ test('final hierarchy builder applies statement-specific prefixes and cleaned dy
   // (buildTreeHierarchyLookup skips them), so a P&L matchedPath is the document's
   // own headings only.
   assert.deepEqual(
-    coa.buildFinalCoaLevels({ statementType: 'profit_loss', accountType: 'expense', matchedPath: ['Total for Expenses'], accountName: 'Payroll Expenses' }),
-    ['Total Liabilities and Equity', 'Total Equity', 'Total Equity',
-     'Net Income', 'Pretax Income', 'Operating Income', 'Gross Profit', 'Total Expenses',
-     'Expenses', 'Payroll Expenses'],
+    coa.buildFinalCoaLevels({ statementType: 'profit_loss', accountType: 'expense', matchedPath: ['Net Income', 'Net Operating Income', 'Total for Expenses'], accountName: 'Payroll Expenses' }),
+    ['Total Liabilities and Equity', 'Total Equity', 'Total Equity', 'Net Income', 'Net Operating Income', 'Expenses', 'Payroll Expenses'],
   );
 });

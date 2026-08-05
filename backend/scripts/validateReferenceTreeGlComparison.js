@@ -144,11 +144,11 @@ assert.deepStrictEqual(builtGrossProfit.children.map((n) => n.name), ["Total for
 assert.strictEqual(builtNetOperatingIncome.children.find((n) => n.name === "Total for Expenses").relationship, "SUBTRACT");
 assert.deepStrictEqual(
   coa.buildTreeHierarchyLookup(builtPlTree, "profit_loss").get("rent & lease")[0].levels,
-  ["Total Liabilities and Equity", "Total Equity", "Total Equity", "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Expenses", "Expenses", "Rent & Lease"],
+  ["Total Liabilities and Equity", "Total Equity", "Total Equity", "Net Income", "Net Operating Income", "Expenses", "Rent & Lease"],
 );
 assert.deepStrictEqual(
   coa.buildTreeHierarchyLookup(builtPlTree, "profit_loss").get("sales")[0].levels,
-  ["Total Liabilities and Equity", "Total Equity", "Total Equity", "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Revenue", "Income", "Sales"],
+  ["Total Liabilities and Equity", "Total Equity", "Total Equity", "Net Income", "Net Operating Income", "Gross Profit", "Income", "Sales"],
 );
 
 assert.deepStrictEqual(bsLookup.get("hdfc bank")[0].levels, ["Total Assets", "Total Assets", "Current Assets", "HDFC Bank"]);
@@ -157,13 +157,13 @@ assert.deepStrictEqual(bsLookup.get("accounts payable")[0].levels, [
 ]);
 assert.deepStrictEqual(plLookup.get("product sales")[0].levels, [
   "Total Liabilities and Equity", "Total Equity", "Total Equity",
-  "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Revenue", "Income", "Product Sales",
+  "Net Income", "Net Operating Income", "Gross Profit", "Income", "Product Sales",
 ]);
 // 4, not 3: the asset anchor contributes "Total Assets" at levels 1-2 per the
 // Balance Sheet level specification, then "Current Assets" > "HDFC Bank".
 assert.strictEqual(bsLookup.get("hdfc bank")[0].level, 4);
 assert.strictEqual(bsLookup.get("accounts payable")[0].level, 3);
-assert.strictEqual(plLookup.get("product sales")[0].level, 10);
+assert.strictEqual(plLookup.get("product sales")[0].level, 8);
 assert.deepStrictEqual(balanceSheetTree, originalBs);
 assert.deepStrictEqual(profitLossTree, originalPl);
 
@@ -185,19 +185,19 @@ assert.deepStrictEqual(liabilityMatch.levels, ["Total Liabilities and Equity", "
 const incomeMatch = coa.pickDocHierarchy("Product Sales", "product sales", null, bsLookup, plLookup, null, { accountType: "income" });
 assert.deepStrictEqual(incomeMatch.levels, [
   "Total Liabilities and Equity", "Total Equity", "Total Equity",
-  "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Revenue", "Income", "Product Sales",
+  "Net Income", "Net Operating Income", "Gross Profit", "Income", "Product Sales",
 ]);
 
 const expenseMatch = coa.pickDocHierarchy("Office Rent", "office rent", null, bsLookup, plLookup, null, { accountType: "expense" });
 assert.deepStrictEqual(expenseMatch.levels, [
   "Total Liabilities and Equity", "Total Equity", "Total Equity",
-  "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Expenses", "Expenses", "Office Rent",
+  "Net Income", "Net Operating Income", "Gross Profit", "Expenses", "Office Rent",
 ]);
 
 const sameNamePl = coa.pickDocHierarchy("Interest", "interest", null, bsLookup, plLookup, null, { statementType: "profit_loss" });
 assert.deepStrictEqual(sameNamePl.levels, [
   "Total Liabilities and Equity", "Total Equity", "Total Equity",
-  "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Revenue", "Income", "Interest",
+  "Net Income", "Net Operating Income", "Gross Profit", "Income", "Interest",
 ]);
 
 const noCrossFallback = coa.pickDocHierarchy("Product Sales", "product sales", null, bsLookup, plLookup, null, { statementType: "balance_sheet" });
@@ -303,14 +303,7 @@ assert.deepStrictEqual(
 assert.deepStrictEqual(coa.fixedPrefixFor("equity"), ["Total Liabilities and Equity", "Total Equity", "Total Equity", "Equity"]);
 assert.deepStrictEqual(coa.fixedPrefixFor("liability"), ["Total Liabilities and Equity", "Total Liabilities"]);
 assert.deepStrictEqual(coa.fixedPrefixFor("asset"), ["Total Assets", "Total Assets"]);
-assert.deepStrictEqual(coa.fixedPrefixFor("income"), [
-  "Total Liabilities and Equity", "Total Equity", "Total Equity",
-  "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Revenue",
-]);
-assert.deepStrictEqual(coa.fixedPrefixFor("expense"), [
-  "Total Liabilities and Equity", "Total Equity", "Total Equity",
-  "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Expenses",
-]);
+assert.deepStrictEqual(coa.fixedPrefixFor("income"), ["Total Liabilities and Equity", "Total Equity", "Total Equity"]);
 assert.notStrictEqual(
   coa.applyBalanceSheetCoaPrefix({ accountType: "liability", matchedPath: ["Total for Liabilities and Equity", "Total for Liabilities", "Accounts Payable"] })[1],
   "Total Equity",
