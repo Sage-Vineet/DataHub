@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn, formatCurrency, isReportGroupRow } from "../../../lib/utils";
 import FrozenPaneTable from "../shared/FrozenPaneTable";
@@ -17,17 +17,40 @@ const cellText = (value, isGroup) => (isGroup ? "" : formatValue(value));
 
 const QBRow = ({ line, depth = 0, columns, isMonthly }) => {
   const [isOpen, setIsOpen] = useState(true);
+  const [entitiesOpen, setEntitiesOpen] = useState(false);
   const hasChildren = Boolean(line.children?.length);
   const isHeader = line.type === "header";
   const isTotal = line.type === "total" || line.name.toLowerCase().startsWith("total");
   const isGroup = isReportGroupRow(line, hasChildren, isTotal);
   const yearCols = columns?.yearCols;
 
+  // Counterparty breakdown groups, supplied per LEAF account row by the report
+  // payload. Only a real posting row can carry them -- a header/total/container
+  // row's amount is a rollup of its children, so hanging a breakdown off it
+  // would double-count. A row with neither field behaves exactly as before.
+  const entityGroups = [
+    { label: "Vendor", items: line.vendors },
+    { label: "Customer", items: line.customers },
+  ].filter((g) => Array.isArray(g.items) && g.items.length > 0);
+  const hasEntities = !isTotal && !isHeader && !hasChildren && entityGroups.length > 0;
+
   const toggle = (e) => {
-    if (!hasChildren) return;
-    e.stopPropagation();
-    setIsOpen((prev) => !prev);
+    if (hasChildren) {
+      e.stopPropagation();
+      setIsOpen((prev) => !prev);
+      return;
+    }
+    if (hasEntities) {
+      e.stopPropagation();
+      setEntitiesOpen((prev) => !prev);
+    }
   };
+
+  // Number of amount columns actually rendered, so a sub-row lines up with the
+  // header row exactly (the monthly view drops a trailing "Total" column).
+  const renderedCols = yearCols
+    ? yearCols.filter((col) => !(isMonthly && col.label.toLowerCase() === "total"))
+    : null;
 
   return (
     <>
@@ -35,8 +58,8 @@ const QBRow = ({ line, depth = 0, columns, isMonthly }) => {
         onClick={toggle}
         className={cn(
           "group transition-colors border-b border-border-light",
-          hasChildren && "cursor-pointer hover:bg-bg-page/50",
-          !hasChildren && "hover:bg-bg-page/30",
+          (hasChildren || hasEntities) && "cursor-pointer hover:bg-bg-page/50",
+          !hasChildren && !hasEntities && "hover:bg-bg-page/30",
           (isTotal || (isHeader && depth === 0)) && "bg-bg-page/60 font-semibold border-b-2 border-text-primary",
         )}
       >
@@ -55,6 +78,12 @@ const QBRow = ({ line, depth = 0, columns, isMonthly }) => {
               <div className="w-5 flex items-center justify-center shrink-0">
                 {hasChildren ? (
                   isOpen ? (
+                    <ChevronDown size={14} className="text-text-muted" />
+                  ) : (
+                    <ChevronRight size={14} className="text-text-muted" />
+                  )
+                ) : hasEntities ? (
+                  entitiesOpen ? (
                     <ChevronDown size={14} className="text-text-muted" />
                   ) : (
                     <ChevronRight size={14} className="text-text-muted" />
@@ -105,6 +134,52 @@ const QBRow = ({ line, depth = 0, columns, isMonthly }) => {
           <QBRow key={child.id || `row-${depth}-${index}`} line={child} depth={depth + 1} columns={columns} isMonthly={isMonthly} />
         ))
       )}
+
+      {/* Vendor / Customer breakdown rows — same structure, indentation and
+          type scale as the account rows above; no new styling introduced. */}
+      {entitiesOpen && hasEntities && entityGroups.map((group) => (
+        <Fragment key={group.label}>
+          <tr className="bg-bg-page/20">
+            <td
+              colSpan={(renderedCols?.length || 1) + 1}
+              style={{ paddingLeft: `${(depth + 1) * 24 + 16}px` }}
+              className="py-1 text-[10px] font-bold uppercase tracking-widest text-text-muted"
+            >
+              {group.label}
+            </td>
+          </tr>
+          {group.items.map((entity) => (
+            <tr key={`${group.label}-${entity.name}`} className="border-b border-border-light/50 hover:bg-bg-page/20">
+              <td className="py-1.5 px-4 text-left sticky left-0 z-10 bg-bg-card border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]">
+                <div className="flex items-center">
+                  <div className="flex shrink-0">
+                    {Array.from({ length: depth + 2 }).map((_, i) => (
+                      <div key={i} className="w-6 h-5" />
+                    ))}
+                  </div>
+                  <span className="text-[13px] text-text-muted whitespace-nowrap pl-1">
+                    {entity.name}
+                  </span>
+                </div>
+              </td>
+              {renderedCols ? (
+                renderedCols.map((col) => (
+                  <td
+                    key={col.key}
+                    className="py-1.5 px-4 text-right tabular-nums text-[13px] text-text-muted whitespace-nowrap"
+                  >
+                    {formatValue(entity.amounts?.[col.key] || 0)}
+                  </td>
+                ))
+              ) : !isMonthly ? (
+                <td className="py-1.5 px-4 text-right tabular-nums text-[13px] text-text-muted whitespace-nowrap">
+                  {formatValue(entity.total ?? entity.amount ?? 0)}
+                </td>
+              ) : null}
+            </tr>
+          ))}
+        </Fragment>
+      ))}
     </>
   );
 };
