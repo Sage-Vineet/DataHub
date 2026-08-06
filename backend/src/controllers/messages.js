@@ -6,14 +6,6 @@ function isBroker(user) {
   return ["broker", "admin"].includes(String(user?.role || "").toLowerCase());
 }
 
-const COMPANY_BROKER_COLUMN_CANDIDATES = [
-  "onboarded_by",
-  "created_by",
-  "added_by",
-  "broker_id",
-  "created_by_user_id",
-];
-
 const USER_COMPANY_BROKER_COLUMN_CANDIDATES = [
   "assigned_by",
   "created_by",
@@ -80,79 +72,6 @@ async function getBrokerParticipantsByIds(company, brokerIds) {
     .map((row) => buildParticipantFromUserRow(row, company));
 }
 
-async function getCompanyBrokerIdsFromCompanyColumns(companyId) {
-  const brokerIds = [];
-
-  for (const columnName of COMPANY_BROKER_COLUMN_CANDIDATES) {
-    const { data, error } = await supabase
-      .from("companies")
-      .select(columnName)
-      .eq("id", companyId)
-      .maybeSingle();
-
-    if (error) continue;
-    if (data?.[columnName]) brokerIds.push(data[columnName]);
-  }
-
-  return uniqueIds(brokerIds);
-}
-
-async function getCompanyBrokerIdsFromCompanyActivity(companyId) {
-  const [requestRowsResult, folderRowsResult] = await Promise.all([
-    supabase
-      .from("requests")
-      .select("created_by, created_at")
-      .eq("company_id", companyId)
-      .order("created_at", { ascending: true })
-      .limit(100),
-    supabase
-      .from("folders")
-      .select("created_by, created_at")
-      .eq("company_id", companyId)
-      .order("created_at", { ascending: true })
-      .limit(100),
-  ]);
-
-  const requestRows = requestRowsResult.error ? [] : (requestRowsResult.data || []);
-  const folderRows = folderRowsResult.error ? [] : (folderRowsResult.data || []);
-
-  const orderedEvents = [...requestRows, ...folderRows]
-    .filter((row) => row?.created_by)
-    .sort((a, b) => {
-      const aTime = new Date(a?.created_at || 0).getTime();
-      const bTime = new Date(b?.created_at || 0).getTime();
-      if (aTime !== bTime) return aTime - bTime;
-      return String(a?.created_by || "").localeCompare(String(b?.created_by || ""));
-    });
-
-  const candidateIds = uniqueIds(orderedEvents.map((row) => row.created_by));
-
-  if (!candidateIds.length) return [];
-
-  const { data: users, error } = await supabase
-    .from("users")
-    .select("id, role, status")
-    .in("id", candidateIds)
-    .eq("status", "active");
-
-  if (error) return [];
-
-  const brokerIdSet = new Set(
-    (users || [])
-      .filter((row) => ["broker", "admin"].includes(String(row.role || "").toLowerCase()))
-      .map((row) => String(row.id)),
-  );
-
-  return candidateIds.filter((id) => brokerIdSet.has(String(id)));
-}
-
-async function getOnboardingBrokerIdsForCompany(companyId) {
-  const fromCompanyColumns = await getCompanyBrokerIdsFromCompanyColumns(companyId);
-  if (fromCompanyColumns.length) return [fromCompanyColumns[0]];
-  const fromActivity = await getCompanyBrokerIdsFromCompanyActivity(companyId);
-  return fromActivity.length ? [fromActivity[0]] : [];
-}
-
 async function getAssignedBrokerIdsForUserCompany(companyId, userId) {
   const brokerIds = [];
 
@@ -172,25 +91,6 @@ async function getAssignedBrokerIdsForUserCompany(companyId, userId) {
 
   const uniqueBrokerIds = uniqueIds(brokerIds);
   return uniqueBrokerIds.length ? [uniqueBrokerIds[0]] : [];
-}
-
-async function getAssignedBrokerIdsForUser(userId) {
-  const brokerIds = [];
-
-  for (const columnName of USER_COMPANY_BROKER_COLUMN_CANDIDATES) {
-    const { data, error } = await supabase
-      .from("user_companies")
-      .select(columnName)
-      .eq("user_id", userId)
-      .limit(1000);
-
-    if (error) continue;
-    for (const row of data || []) {
-      if (row?.[columnName]) brokerIds.push(row[columnName]);
-    }
-  }
-
-  return uniqueIds(brokerIds);
 }
 
 async function getHistoricalBrokerIdsForUserCompany(companyId, userId) {
@@ -267,24 +167,12 @@ async function getCompanyAssignmentBrokerIds(companyId) {
   return uniqueIds(brokerIds);
 }
 
+// Explicit user_companies assignment is the sole source of truth for which
+// broker-role accounts (including banker/loan_broker sub-roles) are relevant
+// to a company's chat contacts — never inferred from folder/request authorship,
+// which can be stamped by whichever session happened to trigger it.
 async function getRelevantBrokerIdsForCompany(companyId) {
-  const [onboardingIds, assignmentIds] = await Promise.all([
-    getOnboardingBrokerIdsForCompany(companyId),
-    getCompanyAssignmentBrokerIds(companyId),
-  ]);
-
-  return uniqueIds([...onboardingIds, ...assignmentIds]);
-}
-
-async function getRelevantBrokerIdsForUser(user) {
-  const companyIds = getUserCompanyIds(user);
-  if (!companyIds.length) return [];
-
-  const brokerIdLists = await Promise.all(
-    companyIds.map((companyId) => getRelevantBrokerIdsForCompany(companyId)),
-  );
-
-  return uniqueIds(brokerIdLists.flat());
+  return getCompanyAssignmentBrokerIds(companyId);
 }
 
 function normalizeParticipantRole(userRow, company) {
@@ -516,29 +404,22 @@ async function resolveDirectMessagingContext(user, companyId) {
 
   let brokerIds = [];
   if (messagingRole === "client") {
-    // Use the full relevant-broker lookup upfront — covers user_companies assignment
-    // and folder/request activity in one pass so the broker is always found.
+    // Explicit user_companies assignment for this specific company only.
     brokerIds = await getRelevantBrokerIdsForCompany(companyId);
   } else if (messagingRole === "user") {
     const [
       assignedBrokerIds,
-      userLevelAssignedBrokerIds,
-      onboardingBrokerIds,
       historicalBrokerIds,
-      userRelevantBrokerIds,
+      companyAssignedBrokerIds,
     ] = await Promise.all([
       getAssignedBrokerIdsForUserCompany(companyId, user.id),
-      getAssignedBrokerIdsForUser(user.id),
-      getOnboardingBrokerIdsForCompany(companyId),
       getHistoricalBrokerIdsForUserCompany(companyId, user.id),
-      getRelevantBrokerIdsForUser(user),
+      getRelevantBrokerIdsForCompany(companyId),
     ]);
     brokerIds = uniqueIds([
       ...assignedBrokerIds,
-      ...userLevelAssignedBrokerIds,
-      ...onboardingBrokerIds,
       ...historicalBrokerIds,
-      ...userRelevantBrokerIds,
+      ...companyAssignedBrokerIds,
     ]);
   } else {
     brokerIds = await getRelevantBrokerIdsForCompany(companyId);
