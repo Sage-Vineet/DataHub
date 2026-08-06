@@ -1,6 +1,12 @@
-import { useState, useMemo, useCallback } from "react";
+import { Fragment, useState, useMemo, useCallback } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { cn, formatCurrency } from "../../../lib/utils";
+import { cn, formatCurrency, isReportGroupRow } from "../../../lib/utils";
+import FrozenPaneTable from "../shared/FrozenPaneTable";
+
+const NAME_COL_WIDTH = "320px";
+const YEAR_COL_WIDTH = "90px";
+const CHANGE_COL_WIDTH = "110px";
+const MONTHLY_CHANGE_COL_WIDTH = "140px";
 
 // ─── Utility Functions ──────────────────────────────────────────────────────
 
@@ -71,8 +77,16 @@ function BSRow({ row, isCollapsed, onToggle, columns }) {
   const [vendorsOpen, setVendorsOpen] = useState(false);
 
   const { name, amounts, depth, hasChildren, isTotal, isHeader } = row;
-  const { yearCols, changeCols } = columns;
-  const hasVendors = !isTotal && !isHeader && Array.isArray(row.vendors) && row.vendors.length > 0;
+  const { yearCols = [], changeCols = [] } = columns || {};
+  // Counterparty breakdown groups. `vendors` is the long-standing field (QuickBooks
+  // and Key Reports both supply it); `customers` is the parallel field Key Reports
+  // adds. A source that sends neither behaves exactly as before.
+  const entityGroups = [
+    { label: "Vendor", items: row.vendors },
+    { label: "Customer", items: row.customers },
+  ].filter((g) => Array.isArray(g.items) && g.items.length > 0);
+  const hasVendors = !isTotal && !isHeader && entityGroups.length > 0;
+  const isGroup = isReportGroupRow(row, hasChildren, isTotal);
 
   const nameLower = (name || "").toLowerCase();
   const isBold = [
@@ -80,6 +94,10 @@ function BSRow({ row, isCollapsed, onToggle, columns }) {
     "total current liabilities", "total long term liabilities", "total liabilities",
     "total equity", "total liabilities and equity", "assets", "liabilities and equity"
   ].includes(nameLower);
+
+  // Sticky cells need an explicit, opaque background (not the translucent
+  // bg-*/NN the row itself uses) so scrolling content never shows through.
+  const stickyColBg = (isTotal || isBold || (isHeader && depth === 0)) ? "bg-bg-page" : "bg-bg-card";
 
   // Total number of data columns (excluding the name cell) for vendor label colSpan.
   const totalDataCols = yearCols.length + changeCols.length + (changeCols.length > 0 ? 1 : 0);
@@ -101,7 +119,7 @@ function BSRow({ row, isCollapsed, onToggle, columns }) {
           isHeader && depth === 0 && "bg-bg-page/30 border-t border-border"
         )}
       >
-        <td className="py-2.5 px-4 text-left bg-inherit z-10 min-w-[320px]">
+        <td className={cn("py-2.5 px-4 text-left z-10 sticky left-0 border-r border-border-light", stickyColBg)}>
           <div className="flex items-center">
             <div className="flex shrink-0">
               {Array.from({ length: depth }).map((_, index) => (
@@ -142,38 +160,38 @@ function BSRow({ row, isCollapsed, onToggle, columns }) {
             col.isCurrent ? "font-semibold text-text-primary" : "text-text-secondary",
             isTotal ? "font-semibold" : "font-medium"
           )}>
-            {formatBSCurrency(amounts?.[col.key])}
+            {isGroup ? "" : formatBSCurrency(amounts?.[col.key])}
           </td>
         ))}
 
         {changeCols.map((col) => (
           <td key={col.key} className="py-2.5 px-3 text-right tabular-nums text-[14px] text-text-muted font-medium whitespace-nowrap">
-            {formatBSCurrency(calculateChange(amounts?.[col.to], amounts?.[col.from]))}
+            {isGroup ? "" : formatBSCurrency(calculateChange(amounts?.[col.to], amounts?.[col.from]))}
           </td>
         ))}
 
         {changeCols.length > 0 && (
           <td className="py-2.5 px-4 text-right tabular-nums text-[14px] font-semibold text-primary whitespace-nowrap">
-            {formatBSCurrency(amounts?.monthlyChange || 0)}
+            {isGroup ? "" : formatBSCurrency(amounts?.monthlyChange || 0)}
           </td>
         )}
       </tr>
 
       {/* Vendor / Customer breakdown rows */}
-      {vendorsOpen && hasVendors && (
-        <>
+      {vendorsOpen && hasVendors && entityGroups.map((group) => (
+        <Fragment key={group.label}>
           <tr className="bg-bg-page/20">
             <td
               colSpan={totalDataCols + 1}
               style={{ paddingLeft: `${(depth + 1) * 24 + 16}px` }}
               className="py-1 text-[10px] font-bold uppercase tracking-widest text-text-muted"
             >
-              Customer / Vendor
+              {group.label}
             </td>
           </tr>
-          {row.vendors.map((vendor) => (
-            <tr key={vendor.name} className="border-b border-border-light/50 hover:bg-bg-page/20">
-              <td className="py-1.5 px-4 text-left min-w-[320px]">
+          {group.items.map((vendor) => (
+            <tr key={`${group.label}-${vendor.name}`} className="border-b border-border-light/50 hover:bg-bg-page/20">
+              <td className="py-1.5 px-4 text-left sticky left-0 z-10 bg-bg-card border-r border-border-light">
                 <div className="flex items-center">
                   <div className="flex shrink-0">
                     {Array.from({ length: depth + 2 }).map((_, i) => (
@@ -200,8 +218,8 @@ function BSRow({ row, isCollapsed, onToggle, columns }) {
               )}
             </tr>
           ))}
-        </>
-      )}
+        </Fragment>
+      ))}
     </>
   );
 }
@@ -265,8 +283,43 @@ export default function BalanceSheetSummary({
     );
   }
 
+  const hasChangeCols = Boolean(columns.changeCols && columns.changeCols.length > 0);
+  const columnWidths = [
+    NAME_COL_WIDTH,
+    ...columns.yearCols.map(() => YEAR_COL_WIDTH),
+    ...(hasChangeCols ? columns.changeCols.map(() => CHANGE_COL_WIDTH) : []),
+    ...(hasChangeCols ? [MONTHLY_CHANGE_COL_WIDTH] : []),
+  ];
+
+  const headerRow = (
+    <tr className="border-b-2 border-text-primary">
+      <th className="sticky left-0 z-20 bg-bg-card pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider border-b-2 border-text-primary border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]">
+        Accounting Classification
+      </th>
+      {columns.yearCols.map((col) => (
+        <th key={col.key} className={cn(
+          "bg-bg-card pb-3 pt-2 px-3 text-right text-[12px] font-medium whitespace-nowrap",
+          col.isCurrent ? "text-text-primary font-bold" : "text-text-muted"
+        )}>
+          {col.label}
+        </th>
+      ))}
+      {hasChangeCols && columns.changeCols.map((col) => (
+        <th key={col.key} className="bg-bg-card pb-3 pt-2 px-3 text-right text-[12px] font-medium text-text-muted whitespace-nowrap">
+          {col.label}
+        </th>
+      ))}
+      {hasChangeCols && (
+        <th className="bg-bg-card pb-3 pt-2 px-4 text-right text-[12px] font-bold text-primary whitespace-nowrap">
+          <span className="text-[10px] uppercase font-medium text-text-muted mr-1.5 align-middle">MONTHLY CHG:</span>
+          <span className="align-middle">{columns.currentMonth}</span>
+        </th>
+      )}
+    </tr>
+  );
+
   return (
-    <div className={cn("font-inter animate-in fade-in duration-700", isPreview ? "" : "flex-1 overflow-y-auto bg-bg-page/50 p-10 lg:p-16")}>
+    <div className={cn("font-inter animate-in fade-in duration-700", isPreview ? "" : "bg-bg-page/50 p-10 lg:p-16")}>
       <div className={cn("flex flex-col", isPreview ? "" : "max-w-[1400px] mx-auto card-base p-10 min-h-[1000px] rounded-sm")}>
 
         {/* Header Section Matches P&L Style */}
@@ -283,56 +336,25 @@ export default function BalanceSheetSummary({
           )}
         </div>
 
-        <div className="overflow-x-auto flex-1">
-          <table className="w-full min-w-max border-collapse">
-            <thead>
-              <tr className="border-b-2 border-text-primary sticky top-0 bg-bg-card z-20">
-                <th className="sticky top-0 left-0 z-30 bg-bg-card pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[320px] border-b-2 border-text-primary border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]">
-                  Accounting Classification
-                </th>
-                {columns.yearCols.map((col) => (
-                  <th key={col.key} className={cn(
-                    "pb-3 pt-2 px-3 text-right text-[12px] font-medium whitespace-nowrap min-w-[90px]",
-                    col.isCurrent ? "text-text-primary font-bold" : "text-text-muted"
-                  )}>
-                    {col.label}
-                  </th>
-                ))}
-                {columns.changeCols && columns.changeCols.length > 0 && columns.changeCols.map((col) => (
-                  <th key={col.key} className="pb-3 pt-2 px-3 text-right text-[12px] font-medium text-text-muted whitespace-nowrap">
-                    {col.label}
-                  </th>
-                ))}
-                {columns.changeCols && columns.changeCols.length > 0 && (
-                  <th className="pb-3 pt-2 px-4 text-right text-[12px] font-bold text-primary whitespace-nowrap">
-                    <span className="text-[10px] uppercase font-medium text-text-muted mr-1.5 align-middle">MONTHLY CHG:</span>
-                    <span className="align-middle">{columns.currentMonth}</span>
-                  </th>
-                )}
-
-              </tr>
-            </thead>
-            <tbody className="">
-              {visibleRows.length > 0 ? (
-                visibleRows.map((row) => (
-                  <BSRow
-                    key={row.id}
-                    row={row}
-                    isCollapsed={collapsedSections.has(row.id)}
-                    onToggle={toggleSection}
-                    columns={columns}
-                  />
-                ))
-              ) : (
-                <tr>
-                  <td colSpan={11} className="py-20 text-center text-text-muted italic">
-                    No report data found for this period.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+        <FrozenPaneTable columnWidths={columnWidths} headerRows={headerRow} tableClassName="min-w-max">
+          {visibleRows.length > 0 ? (
+            visibleRows.map((row) => (
+              <BSRow
+                key={row.id}
+                row={row}
+                isCollapsed={collapsedSections.has(row.id)}
+                onToggle={toggleSection}
+                columns={columns}
+              />
+            ))
+          ) : (
+            <tr>
+              <td colSpan={11} className="py-20 text-center text-text-muted italic">
+                No report data found for this period.
+              </td>
+            </tr>
+          )}
+        </FrozenPaneTable>
 
         {/* Footer Matches P&L Exactly */}
         {!isPreview && <div className="mt-16 pt-8 border-t border-border flex flex-col items-center gap-4">

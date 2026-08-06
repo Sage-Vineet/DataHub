@@ -3,6 +3,7 @@
 const { supabase } = require("../db");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { getAllManualUploadedReports } = require("./manualReportUploadService");
+const { getGeminiModels } = require("../config/geminiModels");
 
 const CF_GENERATED_SOURCE = "manual_upload_generated";
 const CF_REPORT_TYPE = "cash_flow";
@@ -840,7 +841,9 @@ function generatedCfToRows(cf) {
 
 // ── Gemini Cash Flow Generation (Indirect Method) ─────────────────────────────
 
-const GEMINI_CF_MODELS = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"];
+// Dynamically selected via GEMINI_MODELS / GEMINI_MODEL env; this array is the
+// default fallback order used when no override is configured.
+const GEMINI_CF_MODELS = getGeminiModels(["gemini-2.5-flash-lite", "gemini-2.5-flash"]);
 const GEMINI_CF_SLEEP = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function serializeFinancialRows(nodes, indent = 0) {

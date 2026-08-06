@@ -228,10 +228,105 @@ export function verifyVerificationOtpRequest(payload) {
   });
 }
 
+export function forgotPasswordRequest(payload) {
+  return fetch(buildUrl('/auth/forgot-password'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+    credentials: 'omit',
+  }).then(async (response) => {
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = new Error(data?.error || 'Failed to send reset code.');
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  });
+}
+
+export function verifyResetOtpRequest(payload) {
+  return fetch(buildUrl('/auth/verify-reset-otp'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+    credentials: 'omit',
+  }).then(async (response) => {
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = new Error(data?.error || 'Verification failed.');
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  });
+}
+
+export function resetPasswordRequest(payload) {
+  return fetch(buildUrl('/auth/reset-password'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+    credentials: 'omit',
+  }).then(async (response) => {
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = new Error(data?.error || 'Failed to reset password.');
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  });
+}
+
 export function loadSavedQBBankActivityRequest(clientId) {
   const params = new URLSearchParams();
   if (clientId) params.append("clientId", clientId);
   return request(`/qb-bank-activity/saved?${params}`);
+}
+
+export function getCimBankReconciliationRequest({
+  clientId,
+  sourceKey,
+  datasetVersion,
+  keyReportVersionId,
+  fiscalYear,
+} = {}) {
+  const params = new URLSearchParams();
+  if (clientId) params.append('clientId', clientId);
+  if (datasetVersion) params.append('datasetVersion', String(datasetVersion));
+  if (keyReportVersionId) params.append('keyReportVersionId', String(keyReportVersionId));
+  if (fiscalYear) params.append('fiscalYear', String(fiscalYear));
+  if (sourceKey) params.append('source', sourceKey);
+  if (sourceKey === 'quickbooks' || sourceKey === 'quickbooks_online') {
+    return request(`/qb-bank-activity/saved?${params}`);
+  }
+  if (sourceKey === 'manual_upload' || sourceKey === 'manual_upload_excel_pdf') {
+    return request(`/manual-upload/bank-data?${params}`);
+  }
+  if (sourceKey === 'quickbooks_manual') return request(`/manual-report-uploads/qms-bank-data?${params}`);
+  return request(`/extract-bank-pdf-records?${params}`);
+}
+
+export function getCimTaxReconciliationRequest({ clientId, sourceKey, datasetVersion, keyReportVersionId, year } = {}) {
+  const params = new URLSearchParams();
+  if (clientId) params.append('clientId', clientId);
+  if (datasetVersion) params.append('datasetVersion', String(datasetVersion));
+  if (keyReportVersionId) params.append('keyReportVersionId', String(keyReportVersionId));
+  if (year) params.append('start_date', `${year}-01-01`);
+  const isQuickBooks = sourceKey === 'quickbooks' || sourceKey === 'quickbooks_online';
+  return request(`${isQuickBooks ? '/tax-data' : '/manual-report-uploads/tax-data'}?${params}`);
+}
+
+export function getCimProfitLossForTaxRequest({ clientId, datasetVersion, keyReportVersionId } = {}) {
+  const params = new URLSearchParams();
+  if (clientId) params.append('clientId', clientId);
+  if (datasetVersion) params.append('datasetVersion', String(datasetVersion));
+  if (keyReportVersionId) params.append('keyReportVersionId', String(keyReportVersionId));
+  return request(`/manual-report-uploads/pl-for-tax?${params}`);
 }
 
 export function brokerSignupRequest(payload) {
@@ -435,6 +530,10 @@ export function createRequestReminder(requestId, payload) {
   return request(`/requests/${requestId}/reminders`, { method: 'POST', body: payload }).then(unwrapPayload);
 }
 
+export function skipNextRequestReminder(requestId, payload = {}) {
+  return request(`/requests/${requestId}/reminders/skip-next`, { method: 'POST', body: payload }).then(unwrapPayload);
+}
+
 export function listCompanyReminders(companyId) {
   return request(`/companies/${companyId}/reminders`).then(ensureArray);
 }
@@ -459,6 +558,23 @@ export function saveWorkspacePageStateRequest(pageKey, state, options = {}) {
   });
 }
 
+export function getCimStyleProfilesRequest(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/cim-style-profiles${query}`, { ...options, clientId });
+}
+
+export function saveCimStyleProfilesRequest(state, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/cim-style-profiles${query}`, {
+    ...options,
+    clientId,
+    method: 'PUT',
+    body: { state, clientId },
+  });
+}
+
 export function getCimQuestionnaireRequest(options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
   const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
@@ -473,6 +589,28 @@ export function saveCimQuestionnaireRequest(state, options = {}) {
     method: 'PUT',
     body: { state },
   });
+}
+
+export function getCimReviewRequest(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/cim-review${query}`, options);
+}
+
+export function saveCimReviewRequest(state, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/cim-review${query}`, {
+    ...options,
+    method: 'PUT',
+    body: { state },
+  });
+}
+
+export function getCimReviewContentRequest(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/cim-review/content${query}`, options);
 }
 
 export async function uploadFile(file, options = {}) {
@@ -1209,7 +1347,10 @@ export function getLatestManualUploadedReport(statementType, options = {}) {
 
 export function getAllManualUploadedReports(statementType, options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  const params = new URLSearchParams();
+  if (clientId) params.set("clientId", clientId);
+  if (options.keyReportVersionId) params.set("keyReportVersionId", options.keyReportVersionId);
+  const query = params.toString() ? `?${params}` : "";
   return request(
     `/manual-report-uploads/reports/${encodeURIComponent(statementType)}/all${query}`,
     options,
@@ -1218,7 +1359,10 @@ export function getAllManualUploadedReports(statementType, options = {}) {
 
 export function getAllQMSUploadedReports(statementType, options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  const params = new URLSearchParams();
+  if (clientId) params.set("clientId", clientId);
+  if (options.keyReportVersionId) params.set("keyReportVersionId", options.keyReportVersionId);
+  const query = params.toString() ? `?${params}` : "";
   return request(
     `/manual-report-uploads/qms-reports/${encodeURIComponent(statementType)}/all${query}`,
     options,
@@ -1355,6 +1499,17 @@ export function deleteDocument(documentId) {
   return request(`/documents/${documentId}`, { method: 'DELETE' });
 }
 
+export function updateDocument(documentId, payload) {
+  return request(`/documents/${documentId}`, { method: 'PATCH', body: payload }).then(unwrapPayload);
+}
+
+export function bulkDeleteDataRoomItems(items) {
+  return request('/data-room/items/bulk-delete', {
+    method: 'POST',
+    body: { items },
+  }).then(unwrapPayload);
+}
+
 export function archiveDocument(documentId) {
   return request(`/documents/${documentId}/archive`, { method: 'POST' }).then(unwrapPayload);
 }
@@ -1420,6 +1575,15 @@ export function syncKeyReportVersion(versionId) {
   return request(`/key-reports/versions/${versionId}/sync`, { method: 'POST', body: {} });
 }
 
+/**
+ * Single-click full workflow: AI Processing → COA → Financial Reports →
+ * Snapshots → Validation. Calls the /generate endpoint (semantic alias for
+ * /sync). Returns the same shape as syncKeyReportVersion.
+ */
+export function generateKeyReportVersion(versionId) {
+  return request(`/key-reports/versions/${versionId}/generate`, { method: 'POST', body: {} });
+}
+
 export async function getActiveKeyReportMappings() {
   const res = await getKeyReportVersions();
   const versions = res?.versions || [];
@@ -1431,6 +1595,15 @@ export async function getActiveKeyReportMappings() {
 
 export function getKeyReportSyncLogs(versionId) {
   return request(`/key-reports/versions/${versionId}/sync-logs`);
+}
+
+/**
+ * Live generation progress for the Generate Workflow bar. Returns
+ * { progress: { stage, done, updatedAt } | null }. Polled while a generation is
+ * in flight so the bar reflects the real pipeline stage instead of a timer.
+ */
+export function getKeyReportGenerateProgress(versionId) {
+  return request(`/key-reports/versions/${versionId}/generate-progress`);
 }
 
 /**
@@ -1479,6 +1652,56 @@ export function setKeyReportPopupPreference(dismissed) {
   return request('/key-reports/popup-preference', { method: 'PUT', body: { dismissed } });
 }
 
+export async function exportKeyReportData(versionId) {
+  if (!versionId) {
+    throw new Error('versionId is required');
+  }
+
+  const token = getStoredToken();
+  const clientId = resolveClientIdFromLocation();
+  const headers = {
+    'Cache-Control': 'no-store',
+    ...(clientId ? { 'X-Client-Id': clientId } : {}),
+  };
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const url = buildUrl(`/key-reports/versions/${versionId}/export`);
+  const response = await fetch(url, {
+    method: 'GET',
+    headers,
+    credentials: 'omit',
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(text || `Export failed: ${response.status}`);
+  }
+
+  // Get filename from Content-Disposition header
+  const contentDisposition = response.headers.get('Content-Disposition');
+  let fileName = 'KeyReports_Data.xlsx';
+  if (contentDisposition) {
+    const match = contentDisposition.match(/filename="([^"]+)"/);
+    if (match) fileName = match[1];
+  }
+
+  const blob = await response.blob();
+
+  // Trigger download
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(link.href);
+
+  return { success: true, fileName };
+}
+
 // ---- Chart of Accounts -----------------------------------------------------
 
 export function getChartOfAccounts(versionId) {
@@ -1501,11 +1724,14 @@ export function resetChartOfAccount(accountId) {
   return request(`/key-reports/chart-of-accounts/${accountId}/reset`, { method: 'POST', body: {} });
 }
 
-// Bulk-save an edited hierarchy for a version.
+// Save/Approve the version's COMPLETE reviewed Chart of Accounts tree (every
+// node, not a diff) — the same flat node-list shape GET .../chart-of-accounts
+// and .../regenerate return. Validates, persists, and (only on success) runs
+// Trial Balance/Reconciliation/Monthly Balance Sheets/report snapshots.
 export function saveChartOfAccounts(versionId, nodes) {
   return request(`/key-reports/versions/${versionId}/chart-of-accounts/save`, {
     method: 'POST',
-    body: { nodes },
+    body: { tree: { nodes } },
   });
 }
 
@@ -1519,9 +1745,25 @@ export function getChartOfAccountsHistory(versionId) {
   return request(`/key-reports/versions/${versionId}/chart-of-accounts/history`);
 }
 
-// Standardized hierarchy taxonomy (reference data for UI filters).
-export function getHierarchyLevels() {
-  return request(`/key-reports/hierarchy-levels`);
+// AI Hierarchy Recommendations — advisory-only suggestions generated after
+// COA generation. Listing never changes any data; accept/ignore are the only
+// mutating actions, and accept only ever inserts via updateAccountHierarchy().
+export function getHierarchyRecommendations(versionId) {
+  return request(`/key-reports/versions/${versionId}/hierarchy-recommendations`);
+}
+
+export function acceptHierarchyRecommendation(recommendationId) {
+  return request(`/key-reports/hierarchy-recommendations/${recommendationId}/accept`, {
+    method: 'POST',
+    body: {},
+  });
+}
+
+export function ignoreHierarchyRecommendation(recommendationId) {
+  return request(`/key-reports/hierarchy-recommendations/${recommendationId}/ignore`, {
+    method: 'POST',
+    body: {},
+  });
 }
 
 // COA-mapped financial statements (monthly + yearly P&L and Balance Sheet).
@@ -1531,6 +1773,13 @@ export function getFinancialStatements(versionId, { year, currency } = {}) {
   if (currency) params.set("currency", currency);
   const qs = params.toString();
   return request(`/key-reports/versions/${versionId}/reports/financial-statements${qs ? `?${qs}` : ""}`);
+}
+
+// Lightweight period metadata for a version — { monthly: {min,max}, yearly: {min,max} }.
+// Used to set the Reports page's Monthly/Yearly filter defaults without fetching
+// the full financial-statements payload.
+export function getKeyReportAvailablePeriods(versionId) {
+  return request(`/key-reports/versions/${versionId}/available-periods`);
 }
 
 export function listFolderAccess(folderId) {

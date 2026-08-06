@@ -197,7 +197,7 @@ class DataSourceService {
     ]);
 
     const activeSource =
-      normalizeSourceKey(company?.data_source_type) || REPORT_SOURCE_KEYS.QUICKBOOKS;
+      normalizeSourceKey(company?.data_source_type) || REPORT_SOURCE_KEYS.KEY_REPORTS;
 
     return {
       activeSource,
@@ -223,7 +223,7 @@ class DataSourceService {
     if (isCircuitBreakerOpen()) {
       console.warn("[getDataSourceState] Circuit breaker open for:", companyId);
       return {
-        activeSource: REPORT_SOURCE_KEYS.QUICKBOOKS,
+        activeSource: REPORT_SOURCE_KEYS.KEY_REPORTS,
         quickbooksConnected: false,
         manualUploadActive: false,
         lastSourceSwitchAt: null,
@@ -243,7 +243,7 @@ class DataSourceService {
       // that may be stale if the DB migration adding a new source key hasn't been run yet.
       // Prioritising selectedSource prevents stale companySource from reverting a recent switch.
       const activeSource =
-        selectedSource || companySource || REPORT_SOURCE_KEYS.QUICKBOOKS;
+        selectedSource || companySource || REPORT_SOURCE_KEYS.KEY_REPORTS;
 
       if (activeSource && selectedSource !== activeSource) {
         // selectedSource was null — initialise report_source_records from the companies row.
@@ -350,10 +350,15 @@ class DataSourceService {
       );
     }
 
-    if (isManualSourceKey(normalizedTargetSource)) {
-      if (currentState.quickbooksConnected && forceDisconnectQuickbooks) {
-        await softDisconnectQuickBooks(companyId);
-      }
+    // Honor an explicit QuickBooks disconnect for any non-QuickBooks target
+    // (manual sources or the default Key Reports source). This powers the
+    // "Disconnect" action on the Connections page, which reverts to Key Reports.
+    if (
+      normalizedTargetSource !== REPORT_SOURCE_KEYS.QUICKBOOKS &&
+      currentState.quickbooksConnected &&
+      forceDisconnectQuickbooks
+    ) {
+      await softDisconnectQuickBooks(companyId);
     }
 
     // Update report_source_records selection + do a single authoritative sync.

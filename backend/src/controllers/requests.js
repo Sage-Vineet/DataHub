@@ -1,18 +1,39 @@
 const requestService = require("../services/requestService");
 const permissionService = require("../services/permissionService");
-const userService = require("../services/userService");
-const folderService = require("../services/folderService");
 const documentService = require("../services/documentService");
-const companyService = require("../services/companyService");
-const { sendReminderEmail, sendRequestNotificationEmail } = require("../services/emailService");
+const { deliverRequestReminder } = require("../services/requestReminderDeliveryService");
 const asyncHandler = require("../utils");
-const { buildAppBaseUrl } = require("../utils/uploadStorage");
-const { isRequestResolved } = require("../utils/requestReminders");
+const {
+  isRequestOverdue,
+  isRequestResolved,
+  resolveReminderFrequencyDays,
+  resolveNextReminderAt,
+} = require("../utils/requestReminders");
 
-async function validateAssignedUserForCompany(assignedUserId, companyId) {
-  if (!assignedUserId) return true;
-  const assignedUser = await userService.getUserById(assignedUserId);
-  return Boolean(assignedUser && userService.canAccessCompany(assignedUser, companyId));
+async function resolveAssigneeInputForCompany(companyId, body = {}) {
+  const rawInput = requestService.hasAssigneeInput(body)
+    ? requestService.extractAssigneeInput(body)
+    : undefined;
+  return requestService.resolveAssigneesForCompany(companyId, rawInput);
+}
+
+// Delivers a reminder email/notification the same way sendWelcomeEmail is used in
+// controllers/users.js: awaited before the response so delivery is confirmed (or
+// its failure logged) as part of the same request, instead of a background
+// setImmediate whose outcome nobody observes. Never throws — a delivery failure
+// must never fail the request/reminder operation that triggered it.
+async function deliverReminderSafely(params, context) {
+  try {
+    const result = await deliverRequestReminder(params);
+    console.log(
+      `[Audit] [Reminder Email] ${context} requestId=${params.request?.id} trigger=${params.trigger} ` +
+      `recipients=${result?.recipients ?? 0} emailsSent=${result?.emails ?? 0} notifications=${result?.notifications ?? 0}`
+    );
+    return result;
+  } catch (deliveryErr) {
+    console.error(`[${context}] Reminder delivery failed:`, deliveryErr.message);
+    return { recipients: 0, emails: 0, notifications: 0, error: deliveryErr.message };
+  }
 }
 
 const listRequests = asyncHandler(async (req, res) => {
@@ -46,46 +67,35 @@ const createRequest = asyncHandler(async (req, res) => {
   if (normalized.errors.length > 0) {
     return res.status(400).json({ error: normalized.errors.join("; ") });
   }
-  if (!(await validateAssignedUserForCompany(normalized.value.assigned_to, req.params.id))) {
-    return res.status(400).json({ error: "Assigned user is not part of this company." });
-  }
 
-  const created = await requestService.createRequest(req.params.id, normalized.value);
+  const assigneeResolution = await resolveAssigneeInputForCompany(req.params.id, req.body || {});
+  const created = await requestService.createRequest(req.params.id, normalized.value, {
+    assigneeIds: assigneeResolution.ids,
+  });
+  let initialReminderAt = null;
   if (normalized.value.approval_status === "approved") {
-    await requestService.createReminderEvent(created.id, req.user?.id || normalized.value.approved_by || normalized.value.created_by);
+    initialReminderAt = new Date().toISOString();
+    await requestService.createReminderEvent(created.id, req.user?.id || normalized.value.approved_by || normalized.value.created_by, initialReminderAt, {
+      eventType: "sent",
+      metadata: { trigger: "initial" },
+    });
   }
-  res.status(201).json(await requestService.getRequestById(created.id));
+  const createdRequest = await requestService.getRequestById(created.id);
 
-  // Fire-and-forget: notify assigned member or all client team members — must not fail the request
-  setImmediate(async () => {
-    try {
-      const companyId = req.params.id;
-      const assignedTo = normalized.value.assigned_to || null;
-      let recipients;
-      if (assignedTo) {
-        const user = await userService.getUserById(assignedTo);
-        recipients = user?.email ? [{ name: user.name, email: user.email }] : [];
-      } else {
-        recipients = await userService.getClientTeamMembersForCompany(companyId);
-      }
-      if (!recipients.length) return;
-      const [company, sender] = await Promise.all([
-        companyService.getCompanyById(companyId),
-        userService.getUserById(req.user?.id),
-      ]);
-      for (const r of recipients) {
-        await sendRequestNotificationEmail({
-          toName: r.name || null,
-          toEmail: r.email,
-          requestTitle: created.title,
-          dueDate: created.due_date || null,
-          senderName: sender?.name || null,
-          companyName: company?.name || null,
-        });
-      }
-    } catch (emailErr) {
-      console.error("[createRequest] Email notification failed:", emailErr.message);
-    }
+  let reminderDelivery = { recipients: 0, emails: 0, notifications: 0 };
+  if (normalized.value.approval_status === "approved") {
+    reminderDelivery = await deliverReminderSafely({
+      request: createdRequest,
+      sentBy: req.user?.id || normalized.value.approved_by || normalized.value.created_by,
+      sentAt: initialReminderAt || createdRequest?.created_at || new Date().toISOString(),
+      trigger: "initial",
+    }, "createRequest");
+  }
+
+  res.status(201).json({
+    ...createdRequest,
+    reminderEmailSent: reminderDelivery.emails > 0,
+    reminderRecipientCount: reminderDelivery.recipients,
   });
 });
 
@@ -99,19 +109,6 @@ const createRequestsBulk = asyncHandler(async (req, res) => {
     return res.status(400).json({ error: "requests array is required" });
   }
 
-  const invalidAssignedRow = [];
-  for (let index = 0; index < items.length; index += 1) {
-    const assignedTo = typeof items[index]?.assigned_to === "string" && items[index].assigned_to.trim()
-      ? items[index].assigned_to.trim()
-      : null;
-    if (assignedTo && !(await validateAssignedUserForCompany(assignedTo, req.params.id))) {
-      invalidAssignedRow.push(index + 1);
-    }
-  }
-  if (invalidAssignedRow.length) {
-    return res.status(400).json({ error: `Assigned user is not part of this company in row(s): ${invalidAssignedRow.join(", ")}` });
-  }
-
   const result = await requestService.createRequestsBulk(req.params.id, items, req.user.id);
   if (result.validationErrors) {
     const summary = result.validationErrors.map(v => `Row ${v.row}: ${v.errors.join(", ")}`).join("; ");
@@ -120,42 +117,23 @@ const createRequestsBulk = asyncHandler(async (req, res) => {
 
   res.status(201).json({ message: `Successfully created ${result.count} requests` });
 
-  // Fire-and-forget: notify per-item recipients — must not fail the request
+  // Not awaited before responding — a large CSV import can create many
+  // requests, and awaiting every email here risks the HTTP request timing out.
+  // Each item's delivery is isolated via deliverReminderSafely (which never
+  // throws) so a single failed delivery can no longer break out of the loop
+  // and silently skip reminders for every request after it in the batch.
   setImmediate(async () => {
-    try {
-      const companyId = req.params.id;
-      const [company, sender] = await Promise.all([
-        companyService.getCompanyById(companyId),
-        userService.getUserById(req.user.id),
-      ]);
-      let allClientMembers = null;
-      for (const item of items) {
-        const assignedTo = typeof item.assigned_to === "string" && item.assigned_to.trim()
-          ? item.assigned_to.trim()
-          : null;
-        let recipients;
-        if (assignedTo) {
-          const user = await userService.getUserById(assignedTo);
-          recipients = user?.email ? [{ name: user.name, email: user.email }] : [];
-        } else {
-          if (!allClientMembers) {
-            allClientMembers = await userService.getClientTeamMembersForCompany(companyId);
-          }
-          recipients = allClientMembers;
-        }
-        for (const r of recipients) {
-          await sendRequestNotificationEmail({
-            toName: r.name || null,
-            toEmail: r.email,
-            requestTitle: item.title || "Document Request",
-            dueDate: item.due_date || null,
-            senderName: sender?.name || null,
-            companyName: company?.name || null,
-          });
-        }
-      }
-    } catch (emailErr) {
-      console.error("[createRequestsBulk] Email notification failed:", emailErr.message);
+    for (const requestId of result.ids || []) {
+      const createdRequest = await requestService.getRequestById(requestId).catch(() => null);
+      if (!createdRequest) continue;
+      const history = await requestService.listReminderEventsForRequest(requestId).catch(() => []);
+      const initialEvent = (history || []).find((event) => String(event.event_type || "sent").toLowerCase() === "sent");
+      await deliverReminderSafely({
+        request: createdRequest,
+        sentBy: req.user.id,
+        sentAt: initialEvent?.sent_at || createdRequest.created_at || new Date().toISOString(),
+        trigger: "initial_bulk",
+      }, "createRequestsBulk");
     }
   });
 });
@@ -202,13 +180,21 @@ const updateRequest = asyncHandler(async (req, res) => {
   const updates = { ...body, updated_at: new Date().toISOString() };
   delete updates.reminder_frequency_days;
   delete updates.company_id;
-  if (updates.assigned_to !== undefined && !(await validateAssignedUserForCompany(updates.assigned_to, current.company_id))) {
-    return res.status(400).json({ error: "Assigned user is not part of this company." });
+  const hasAssigneeUpdate = requestService.hasAssigneeInput(body);
+  let assigneeResolution = null;
+  if (hasAssigneeUpdate) {
+    assigneeResolution = await resolveAssigneeInputForCompany(current.company_id, body);
+    updates.assigned_to = assigneeResolution.ids[0] || null;
+  }
+  if (updates.priority !== undefined) {
+    updates.reminder_frequency_days = resolveReminderFrequencyDays(updates.priority, null);
   }
 
   if (Object.keys(updates).length <= 1) return res.status(400).json({ error: "No updates" });
 
-  await requestService.updateRequest(req.params.id, updates);
+  await requestService.updateRequest(req.params.id, updates, {
+    assigneeIds: assigneeResolution?.ids,
+  });
   res.json(await requestService.getRequestById(req.params.id));
 });
 
@@ -219,14 +205,27 @@ const approveRequest = asyncHandler(async (req, res) => {
     return res.status(403).json({ error: "Access denied." });
   }
 
-  // Optional: broker can route the request to a specific client team member on approval
-  const assignedTo = req.body?.assigned_to || null;
-  if (assignedTo && !(await validateAssignedUserForCompany(assignedTo, current.company_id))) {
-    return res.status(400).json({ error: "Assigned user is not part of this company." });
-  }
+  // Optional: broker can route the request to all or selected client team members on approval.
+  const hasAssigneeUpdate = requestService.hasAssigneeInput(req.body || {});
+  const assigneeResolution = hasAssigneeUpdate
+    ? await resolveAssigneeInputForCompany(current.company_id, req.body || {})
+    : null;
 
-  await requestService.approveRequest(req.params.id, req.user.id, assignedTo);
-  res.json(await requestService.getRequestById(req.params.id));
+  await requestService.approveRequest(req.params.id, req.user.id, assigneeResolution?.ids);
+  const approvedRequest = await requestService.getRequestById(req.params.id);
+
+  const reminderDelivery = await deliverReminderSafely({
+    request: approvedRequest,
+    sentBy: req.user.id,
+    sentAt: approvedRequest?.approved_at || new Date().toISOString(),
+    trigger: "approval",
+  }, "approveRequest");
+
+  res.json({
+    ...approvedRequest,
+    reminderEmailSent: reminderDelivery.emails > 0,
+    reminderRecipientCount: reminderDelivery.recipients,
+  });
 });
 
 const deleteRequest = asyncHandler(async (req, res) => {
@@ -254,57 +253,65 @@ const addRequestReminder = asyncHandler(async (req, res) => {
   const sentAt = req.body?.sent_at || new Date().toISOString();
   if (!sentBy) return res.status(400).json({ error: "sent_by required" });
 
-  const reminder = await requestService.createReminderEvent(req.params.id, sentBy, sentAt);
-  res.status(201).json(reminder);
-
-  // Fire-and-forget: send reminder emails to request recipients — must not fail the reminder creation
-  setImmediate(async () => {
-    try {
-      const companyId = current.company_id;
-      const assignedTo = current.assigned_to || null;
-
-      let recipients;
-      if (assignedTo) {
-        const user = await userService.getUserById(assignedTo);
-        recipients = user?.email ? [{ name: user.name, email: user.email }] : [];
-      } else {
-        recipients = await userService.getClientTeamMembersForCompany(companyId);
-      }
-
-      if (!recipients.length) return;
-
-      const [company, sender] = await Promise.all([
-        companyService.getCompanyById(companyId),
-        userService.getUserById(sentBy),
-      ]);
-
-      const portalUrl = process.env.APP_BASE_URL
-        ? process.env.APP_BASE_URL.replace(/\/$/, "")
-        : null;
-
-      const seen = new Set();
-      for (const r of recipients) {
-        if (seen.has(r.email)) continue;
-        seen.add(r.email);
-        await sendReminderEmail({
-          toName: r.name || null,
-          toEmail: r.email,
-          requestTitle: current.title,
-          dueDate: current.due_date || null,
-          senderName: sender?.name || null,
-          companyName: company?.name || null,
-          requestType: current.category || current.response_type || null,
-          description: current.description || null,
-          priority: current.priority || null,
-          status: current.status || null,
-          reminderAt: sentAt,
-          portalUrl,
-        });
-      }
-    } catch (emailErr) {
-      console.error("[addRequestReminder] Email notification failed:", emailErr.message);
-    }
+  const reminder = await requestService.createReminderEvent(req.params.id, sentBy, sentAt, {
+    eventType: "sent",
+    metadata: { trigger: "manual" },
   });
+
+  const reminderDelivery = await deliverReminderSafely({
+    request: current,
+    sentBy,
+    sentAt,
+    trigger: "manual",
+  }, "addRequestReminder");
+
+  res.status(201).json({
+    ...reminder,
+    reminderEmailSent: reminderDelivery.emails > 0,
+    reminderRecipientCount: reminderDelivery.recipients,
+  });
+});
+
+const skipNextRequestReminder = asyncHandler(async (req, res) => {
+  const current = await requestService.getRequestById(req.params.id);
+  if (!current) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.isBroker(req.user) || !permissionService.canAccessCompany(req.user, current.company_id)) {
+    return res.status(403).json({ error: "Access denied." });
+  }
+  if (isRequestResolved(current.status)) {
+    return res.status(400).json({ error: "Resolved requests do not need reminder changes." });
+  }
+  if (isRequestOverdue(current)) {
+    return res.status(400).json({ error: "Overdue requests no longer have upcoming reminders." });
+  }
+
+  const history = await requestService.listReminderEventsForRequest(req.params.id);
+  const lastCadenceEvent = (history || []).find((event) => {
+    const eventType = String(event.event_type || "sent").toLowerCase();
+    return eventType === "sent" || eventType === "skipped";
+  });
+  const baseTime = lastCadenceEvent
+    ? lastCadenceEvent.scheduled_for || lastCadenceEvent.sent_at
+    : current.approved_at || current.created_at || new Date().toISOString();
+  const scheduledFor = resolveNextReminderAt(
+    baseTime,
+    current.priority,
+    current.reminder_frequency_days,
+    current.due_date,
+  );
+
+  if (!scheduledFor) {
+    return res.status(400).json({ error: "No upcoming reminder is available to skip." });
+  }
+
+  const skipped = await requestService.createReminderEvent(req.params.id, req.user.id, new Date().toISOString(), {
+    eventType: "skipped",
+    deliveryChannel: "in_app",
+    scheduledFor,
+    metadata: { trigger: "manual_skip" },
+  });
+
+  res.status(201).json(skipped);
 });
 
 const listRequestDocuments = asyncHandler(async (req, res) => {
@@ -404,6 +411,7 @@ module.exports = {
   approveRequest,
   deleteRequest,
   addRequestReminder,
+  skipNextRequestReminder,
   listRequestDocuments,
   addRequestDocument,
   updateNarrative,

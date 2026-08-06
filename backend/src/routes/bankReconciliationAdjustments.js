@@ -76,19 +76,41 @@ router.get("/bank-reconciliation-addback-items", async (req, res) => {
     return res.status(403).json({ success: false, error: "Access denied" });
   }
   const { section, reportSource } = req.query;
+  const keyReportVersionId = String(req.query.keyReportVersionId || "").trim() || null;
   if (!reportSource) {
     return res.status(400).json({ success: false, error: "Missing reportSource" });
   }
   try {
-    let query = supabase
-      .from("bank_reconciliation_addback_items")
-      .select("id, section, name, source, month_amounts, sort_order, report_source")
-      .eq("company_id", clientId)
-      .eq("report_source", reportSource)
-      .order("sort_order", { ascending: true })
-      .order("created_at", { ascending: true });
-    if (section) query = query.eq("section", section);
-    const { data, error } = await query;
+    // Key Reports mode passes a keyReportVersionId so each version keeps its own
+    // addbacks; the 4 connection modes pass none (key_report_version_id IS NULL).
+    const buildQuery = (withVersionScope) => {
+      let q = supabase
+        .from("bank_reconciliation_addback_items")
+        .select("id, section, name, source, month_amounts, sort_order, report_source")
+        .eq("company_id", clientId)
+        .eq("report_source", reportSource)
+        .order("sort_order", { ascending: true })
+        .order("created_at", { ascending: true });
+      if (section) q = q.eq("section", section);
+      if (withVersionScope) {
+        q = keyReportVersionId
+          ? q.eq("key_report_version_id", keyReportVersionId)
+          : q.is("key_report_version_id", null);
+      }
+      return q;
+    };
+
+    const isVersionColumnErr = (err) => {
+      if (!err) return false;
+      const str = String(err.message || err.details || err.hint || JSON.stringify(err));
+      return /key_report_version_id/i.test(str) || err.code === "PGRST204" || err.code === "42703";
+    };
+
+    let { data, error } = await buildQuery(true);
+    // Graceful fallback if migration 066 (key_report_version_id) is not applied.
+    if (error && isVersionColumnErr(error)) {
+      ({ data, error } = await buildQuery(false));
+    }
     if (error) throw error;
     return res.json({
       success: true,
@@ -114,22 +136,31 @@ router.post("/bank-reconciliation-addback-items", async (req, res) => {
     return res.status(403).json({ success: false, error: "Access denied" });
   }
   const { section, name, source, monthAmounts, reportSource } = req.body;
+  const keyReportVersionId = req.body?.keyReportVersionId || null;
   if (!section || !name || !reportSource) {
     return res.status(400).json({ success: false, error: "Missing section, name, or reportSource" });
   }
   try {
-    const { data, error } = await supabase
-      .from("bank_reconciliation_addback_items")
-      .insert({
-        company_id: clientId,
-        section,
-        name,
-        source: source || "manual",
-        month_amounts: monthAmounts || {},
-        report_source: reportSource,
-      })
-      .select("id, section, name, source, month_amounts, sort_order, report_source")
-      .single();
+    const baseRow = {
+      company_id: clientId,
+      section,
+      name,
+      source: source || "manual",
+      month_amounts: monthAmounts || {},
+      report_source: reportSource,
+    };
+    const insertRow = (withVersion) =>
+      supabase
+        .from("bank_reconciliation_addback_items")
+        .insert(withVersion ? { ...baseRow, key_report_version_id: keyReportVersionId } : baseRow)
+        .select("id, section, name, source, month_amounts, sort_order, report_source")
+        .single();
+
+    let { data, error } = await insertRow(true);
+    // Graceful fallback if migration 066 (key_report_version_id) is not applied.
+    if (error && isVersionColumnErr(error)) {
+      ({ data, error } = await insertRow(false));
+    }
     if (error) throw error;
     return res.json({
       success: true,

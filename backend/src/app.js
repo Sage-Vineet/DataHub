@@ -19,6 +19,7 @@ const activityRoutes = require("./routes/activity");
 const uploadRoutes = require("./routes/uploads");
 const messageRoutes = require("./routes/messages");
 const workspacePageStateRoutes = require("./routes/workspacePageState");
+const cimStyleProfileRoutes = require("./routes/cimStyleProfiles");
 const manualGlRoutes = require("./routes/manualGl");
 const manualReportUploadRoutes = require("./routes/manualReportUploads");
 const reportSourceRoutes = require("./routes/reportSources");
@@ -43,6 +44,14 @@ const syncRoutes = require("./routes/quickbooks/sync");
 const messageGroupRoutes = require("./routes/messageGroups");
 
 const app = express();
+app.disable("etag");
+
+app.use((req, res, next) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+  next();
+});
 
 function normalizeOrigin(origin) {
   try {
@@ -128,6 +137,7 @@ app.use("/companies", companyRoutes);
 app.use("/", tokenRoutes);
 app.use("/", uploadRoutes);
 app.use("/", workspacePageStateRoutes);
+app.use("/", cimStyleProfileRoutes);
 app.use("/", manualGlRoutes);
 app.use("/", manualReportUploadRoutes);
 app.use("/", reportSourceRoutes);

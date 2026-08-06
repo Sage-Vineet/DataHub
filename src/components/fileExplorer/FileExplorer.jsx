@@ -1,12 +1,20 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Folder, FolderOpen, File, FileText, Search, Download, Eye, Upload,
   ChevronRight, ChevronDown, Trash2, Home, Archive, X, ArrowLeft, Check,
   MoreVertical, LayoutGrid, List, AlertCircle, Pencil, FolderPlus,
   ArrowUpDown, ArrowUp, ArrowDown, CheckCircle, Share2, Users, Loader2,
-  RotateCcw,
+  RotateCcw, Palette, Video,
 } from 'lucide-react';
-import { useFileExplorerStore, findById, getPathTo } from '../../store/fileExplorerStore';
+import {
+  useFileExplorerStore,
+  findById,
+  getPathTo,
+  DATA_ROOM_COLOR_PALETTE,
+  DEFAULT_DATA_ROOM_COLOR,
+  normalizeDataRoomColor,
+} from '../../store/fileExplorerStore';
 import {
   fetchProtectedFileBlob,
   listCompanyGroups,
@@ -23,12 +31,16 @@ const PDF_EXTENSIONS = ['pdf'];
 const SPREADSHEET_EXTENSIONS = ['xls', 'xlsx'];
 const WORD_EXTENSIONS = ['doc', 'docx'];
 const TEXT_EXTENSIONS = ['txt', 'md', 'json'];
+const VIDEO_EXTENSIONS = [
+  'mp4', 'webm', 'ogv', 'mov', 'm4v', 'avi', 'mkv', 'wmv', 'flv', 'mpg', 'mpeg', '3gp', '3g2', 'ts', 'm2ts',
+];
 const PREVIEWABLE_EXTENSIONS = [
   ...PDF_EXTENSIONS,
   ...IMAGE_EXTENSIONS,
   ...SPREADSHEET_EXTENSIONS,
   ...WORD_EXTENSIONS,
   ...TEXT_EXTENSIONS,
+  ...VIDEO_EXTENSIONS,
 ];
 const MAX_SPREADSHEET_ROWS = 100;
 const MAX_SPREADSHEET_COLUMNS = 24;
@@ -41,15 +53,19 @@ function getMimeIcon(ext) {
   if (['doc', 'docx'].includes(e)) return { Icon: FileText, color: '#2980B9', bg: '#EBF5FB' };
   if (['ppt', 'pptx'].includes(e)) return { Icon: FileText, color: '#E67E22', bg: '#FEF5E7' };
   if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(e)) return { Icon: Eye, color: '#9B59B6', bg: '#F5EEF8' };
+  if (VIDEO_EXTENSIONS.includes(e)) return { Icon: Video, color: '#D35400', bg: '#FDF0E6' };
   if (['zip', 'rar', '7z', 'tar', 'gz'].includes(e)) return { Icon: Archive, color: '#7F8C8D', bg: '#F2F3F4' };
   if (['txt', 'md'].includes(e)) return { Icon: FileText, color: '#6D6E71', bg: '#F4F6F7' };
   return { Icon: File, color: '#95A5A6', bg: '#F2F3F4' };
 }
 
-const FOLDER_PALETTE = ['#00B0F0','#742982','#F68C1F','#8BC53D','#05164D','#b45e08','#476E2C','#00648F'];
-
-function randomFolderColor() {
-  return FOLDER_PALETTE[Math.floor(Math.random() * FOLDER_PALETTE.length)];
+function getItemVisual(item) {
+  const itemColor = normalizeDataRoomColor(item?.color, DEFAULT_DATA_ROOM_COLOR);
+  if (item?.type === 'folder') {
+    return { Icon: Folder, color: itemColor, bg: `${itemColor}20` };
+  }
+  const mime = getMimeIcon(item?.ext);
+  return { Icon: mime.Icon, color: itemColor, bg: `${itemColor}20` };
 }
 
 function getFileKind(ext) {
@@ -60,6 +76,7 @@ function getFileKind(ext) {
   if (['xlsx', 'xls', 'csv'].includes(normalized)) return 'Spreadsheet';
   if (['doc', 'docx'].includes(normalized)) return 'Word Document';
   if (['ppt', 'pptx'].includes(normalized)) return 'Presentation';
+  if (VIDEO_EXTENSIONS.includes(normalized)) return 'Video File';
   return normalized ? `${normalized.toUpperCase()} File` : 'Document';
 }
 
@@ -292,6 +309,52 @@ function IconTooltipButton({ label, className = '', children, ...props }) {
         {label}
       </span>
     </button>
+  );
+}
+
+function DataRoomColorPicker({ value, onChange, size = 'sm', className = '' }) {
+  const selected = normalizeDataRoomColor(value);
+  const chipSize = size === 'xs' ? 'h-5 w-5' : 'h-6 w-6';
+
+  return (
+    <div className={`flex flex-wrap items-center gap-1.5 ${className}`} role="group" aria-label="Choose color">
+      {DATA_ROOM_COLOR_PALETTE.map((color) => {
+        const isSelected = selected === color;
+        return (
+          <button
+            key={color}
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onChange?.(color);
+            }}
+            className={`${chipSize} rounded-full border transition-all ${
+              isSelected
+                ? 'border-[#050505] ring-2 ring-[#050505]/15'
+                : 'border-gray-200 hover:scale-105 hover:border-[#6D6E71]/50'
+            }`}
+            style={{ backgroundColor: color }}
+            aria-label={`Use color ${color}`}
+            title={color}
+          >
+            {isSelected && <Check size={size === 'xs' ? 11 : 12} className="mx-auto text-white drop-shadow" />}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ColorMenuSection({ value, onChange }) {
+  return (
+    <div className="px-3 py-2">
+      <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[#6D6E71]">
+        <Palette size={13} />
+        Color
+      </div>
+      <DataRoomColorPicker value={value} onChange={onChange} size="xs" />
+    </div>
   );
 }
 
@@ -528,16 +591,28 @@ function Breadcrumbs({ tree, currentPath }) {
 }
 
 // ── TopBar ────────────────────────────────────────────────────────────────────
-function TopBar({ tree, currentPath, onUpload, role, currentFolderPermissions, archivedCount }) {
+function TopBar({
+  tree,
+  currentPath,
+  currentItems,
+  onUpload,
+  role,
+  currentFolderPermissions,
+  archivedCount,
+  onRequestDelete,
+  onArchiveItems,
+}) {
   const {
     view, setView, sortBy, sortDir, setSortBy, searchQuery, setSearchQuery,
-    startNewFolder, goBack, selectedItems, deleteItems, archiveItems, unarchiveItems,
+    startNewFolder, goBack, selectedItems, selectItems,
     navigateTo,
   } = useFileExplorerStore();
   const currentFolderId = currentPath[currentPath.length - 1];
   const isArchiveView = currentFolderId === 'archive';
   const canWrite = role === 'broker' || currentFolderPermissions.write;
   const canCreateHere = canWrite && !isArchiveView;
+  const currentItemIds = (currentItems || []).map((item) => item.id);
+  const allVisibleSelected = currentItemIds.length > 0 && currentItemIds.every((id) => selectedItems.includes(id));
   const runSelectedAction = (e, action) => {
     e.preventDefault();
     e.stopPropagation();
@@ -561,6 +636,78 @@ function TopBar({ tree, currentPath, onUpload, role, currentFolderPermissions, a
         <Breadcrumbs tree={tree} currentPath={currentPath} />
       </div>
 
+      {/* Selection Command Bar */}
+      {selectedItems.length > 0 && canWrite && (
+        <div className="px-4 py-2.5 border-b border-[#05164D]/10 bg-[#F6FAFD] flex flex-wrap items-center gap-3 shadow-[inset_0_-1px_0_rgba(5,22,77,0.03)]">
+          <div className="flex items-center gap-2 min-w-0">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                selectItems(allVisibleSelected ? [] : currentItemIds);
+              }}
+              className={`h-6 w-6 rounded-md border flex items-center justify-center transition-colors ${
+                allVisibleSelected
+                  ? 'bg-[#05164D] border-[#05164D] text-white'
+                  : 'bg-white border-[#A5A5A5] text-transparent hover:border-[#05164D]'
+              }`}
+              aria-label={allVisibleSelected ? 'Clear selection' : 'Select all visible items'}
+            >
+              <Check size={14} />
+            </button>
+            <span className="text-sm font-bold text-[#05164D]">
+              {selectedItems.length} selected
+            </span>
+            {currentItemIds.length > 1 && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  selectItems(allVisibleSelected ? [] : currentItemIds);
+                }}
+                className="rounded-lg border border-[#05164D]/15 bg-white px-3 py-1.5 text-xs font-bold text-[#05164D] shadow-sm hover:bg-[#05164D]/5"
+              >
+                {allVisibleSelected ? 'Clear selection' : `Select all ${currentItemIds.length}`}
+              </button>
+            )}
+          </div>
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              onClick={(e) => runSelectedAction(e, (ids) => onArchiveItems?.(ids, isArchiveView ? 'unarchive' : 'archive'))}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-[#476E2C]/15 bg-white px-3 py-1.5 text-xs font-bold text-[#476E2C] shadow-sm hover:bg-[#E6F3D3]"
+            >
+              {isArchiveView ? <RotateCcw size={14} /> : <Archive size={14} />}
+              {isArchiveView ? 'Restore' : 'Archive'}
+            </button>
+            {role === 'broker' && (
+              <button
+                type="button"
+                onClick={(e) => runSelectedAction(e, onRequestDelete)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-red-100 bg-white px-3 py-1.5 text-xs font-bold text-red-500 shadow-sm hover:bg-red-50"
+              >
+                <Trash2 size={14} />
+                Delete
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                useFileExplorerStore.getState().clearSelection();
+              }}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-bold text-[#6D6E71] shadow-sm hover:bg-gray-50"
+            >
+              <X size={14} />
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Row 2: Controls */}
       <div className="px-4 py-2 flex items-center gap-3 flex-wrap">
       {/* Search */}
@@ -578,36 +725,6 @@ function TopBar({ tree, currentPath, onUpload, role, currentFolderPermissions, a
           </button>
         )}
       </div>
-
-      {/* Action bar when items selected */}
-      {selectedItems.length > 0 && canWrite && (
-        <div className="flex items-center gap-1 px-2 py-1 bg-[#05164D]/8 rounded-xl border border-[#05164D]/15">
-          <span className="text-xs font-semibold text-[#05164D]">{selectedItems.length} selected</span>
-          <IconTooltipButton
-            label={isArchiveView ? 'Unarchive' : 'Archive'}
-            onClick={(e) => runSelectedAction(e, (ids) => isArchiveView ? unarchiveItems(ids) : archiveItems(ids))}
-            className="ml-2 p-1 rounded-lg hover:bg-[#E6F3D3] text-[#476E2C] transition-colors"
-          >
-            {isArchiveView ? <RotateCcw size={14} /> : <Archive size={14} />}
-          </IconTooltipButton>
-          {role === 'broker' && (
-            <IconTooltipButton
-              label="Delete"
-              onClick={(e) => runSelectedAction(e, deleteItems)}
-              className="p-1 rounded-lg hover:bg-red-50 text-red-500 transition-colors"
-            >
-              <Trash2 size={14} />
-            </IconTooltipButton>
-          )}
-          <IconTooltipButton
-            label="Close"
-            onClick={(e) => { e.preventDefault(); e.stopPropagation(); useFileExplorerStore.getState().clearSelection(); }}
-            className="p-1 rounded-lg hover:bg-gray-100 text-[#6D6E71] transition-colors"
-          >
-            <X size={14} />
-          </IconTooltipButton>
-        </div>
-      )}
 
       <button
         onClick={() => navigateTo('archive')}
@@ -679,7 +796,10 @@ function TopBar({ tree, currentPath, onUpload, role, currentFolderPermissions, a
 function NewFolderInput({ parentId }) {
   const { createFolder, cancelNewFolder } = useFileExplorerStore();
   const [name, setName] = useState('New Folder');
+  const [color, setColor] = useState(DEFAULT_DATA_ROOM_COLOR);
   const inputRef = useRef(null);
+  const containerRef = useRef(null);
+  const submittedRef = useRef(false);
 
   useEffect(() => {
     setTimeout(() => {
@@ -688,24 +808,51 @@ function NewFolderInput({ parentId }) {
     }, 50);
   }, []);
 
-  const submit = () => createFolder(parentId, name);
+  const submit = () => {
+    if (submittedRef.current) return;
+    submittedRef.current = true;
+    createFolder(parentId, name, color).catch(() => {
+      submittedRef.current = false;
+    });
+  };
+
+  const handleBlur = () => {
+    requestAnimationFrame(() => {
+      if (!containerRef.current?.contains(document.activeElement)) submit();
+    });
+  };
 
   return (
-    <div className="flex flex-col items-center p-4 rounded-2xl bg-[#8BC53D]/8 border-2 border-[#8BC53D] border-dashed w-[140px] gap-2">
-      <div className="w-12 h-12 rounded-xl bg-[#8BC53D]/20 flex items-center justify-center">
-        <Folder size={24} className="text-[#8BC53D]" />
+    <div
+      ref={containerRef}
+      onBlur={handleBlur}
+      className="flex flex-col items-center p-3 rounded-2xl bg-white border-2 border-[#8BC53D] border-dashed w-[172px] gap-2 shadow-sm"
+    >
+      <div className="w-11 h-11 rounded-xl flex items-center justify-center" style={{ backgroundColor: `${color}20` }}>
+        <Folder size={23} style={{ color }} />
       </div>
       <input
         ref={inputRef}
         value={name}
         onChange={e => setName(e.target.value)}
-        onBlur={submit}
         onKeyDown={e => {
           if (e.key === 'Enter') submit();
           if (e.key === 'Escape') cancelNewFolder();
         }}
         className="w-full text-xs text-center bg-white border border-[#8BC53D]/50 rounded-lg px-2 py-1 outline-none focus:ring-2 focus:ring-[#8BC53D]/40"
       />
+      <DataRoomColorPicker value={color} onChange={setColor} size="xs" className="justify-center" />
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          submit();
+        }}
+        className="w-full rounded-lg bg-[#8BC53D] px-2 py-1.5 text-xs font-semibold text-white hover:bg-[#7ab535]"
+      >
+        Create
+      </button>
     </div>
   );
 }
@@ -740,7 +887,21 @@ function RenameInput({ item }) {
 }
 
 // ── FileCard (grid) ────────────────────────────────────────────────────────────
-function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFolder, onPreviewFile, onDownloadFile, onOpenActivity, isArchiveView }) {
+function FileCard({
+  item,
+  role,
+  permissions,
+  sharedMeta,
+  onShareAccess,
+  onMoveFolder,
+  onPreviewFile,
+  onDownloadFile,
+  onOpenActivity,
+  onRequestDelete,
+  onArchiveItem,
+  onChangeColor,
+  isArchiveView,
+}) {
   const {
     selectedItems, selectItem, renamingId, draggingItems, setDraggingItems,
     dragOver, setDragOver, moveItemsTo, clearDrag, navigateTo,
@@ -754,9 +915,7 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
   const canRead = permissions?.read ?? true;
   const canDownload = permissions?.download ?? true;
 
-  const { Icon, color, bg } = item.type === 'folder'
-    ? { Icon: Folder, color: item.color || '#6D6E71', bg: `${item.color || '#6D6E71'}20` }
-    : getMimeIcon(item.ext);
+  const { Icon, color, bg } = getItemVisual(item);
 
   const handleClick = (e) => {
     e.stopPropagation();
@@ -797,7 +956,7 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
   };
 
   const handleDownload = (e) => {
-    e.stopPropagation();
+    e?.stopPropagation?.();
     if (!canDownload) return;
     onDownloadFile(item);
   };
@@ -827,7 +986,10 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
             onRename={() => startRenaming(item.id)}
             onMove={() => onMoveFolder(item)}
             isArchiveView={isArchiveView}
-            onDelete={() => useFileExplorerStore.getState().deleteItems([item.id])}
+            color={item.color}
+            onColorChange={(nextColor) => onChangeColor(item, nextColor)}
+            onArchive={() => onArchiveItem([item.id], isArchiveView ? 'unarchive' : 'archive')}
+            onDelete={() => onRequestDelete([item.id])}
           />
         </div>
       )}
@@ -903,22 +1065,22 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
               <Users size={11} className="text-[#6D6E71]" />
             </button>
           )}
-          <button
-            onClick={handleDownload}
-            disabled={!canDownload}
-            className={`w-6 h-6 rounded-lg bg-white shadow border border-gray-100 flex items-center justify-center ${canDownload ? 'hover:bg-gray-50' : 'opacity-40 cursor-not-allowed'}`}
-            title="Download"
-          >
-            <Download size={11} className="text-[#6D6E71]" />
-          </button>
-          {canManage && (
-            <FileActionMenu
-              onRename={() => startRenaming(item.id)}
-              onMove={() => onMoveFolder(item)}
-              onDelete={() => useFileExplorerStore.getState().deleteItems([item.id])}
-              isArchiveView={isArchiveView}
-            />
-          )}
+          <FileActionMenu
+            onPreview={() => onPreviewFile(item)}
+            onDownload={handleDownload}
+            onOpenActivity={() => onOpenActivity(item)}
+            onRename={() => startRenaming(item.id)}
+            onMove={() => onMoveFolder(item)}
+            onDelete={() => onRequestDelete([item.id])}
+            onArchive={() => onArchiveItem([item.id], isArchiveView ? 'unarchive' : 'archive')}
+            onColorChange={(nextColor) => onChangeColor(item, nextColor)}
+            color={item.color}
+            canManage={canManage}
+            canRead={canRead}
+            canDownload={canDownload}
+            canViewActivity={role === 'broker'}
+            isArchiveView={isArchiveView}
+          />
         </div>
       )}
 
@@ -935,7 +1097,21 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
 }
 
 // ── FileRow (list) ─────────────────────────────────────────────────────────────
-function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFolder, onPreviewFile, onDownloadFile, onOpenActivity, isArchiveView }) {
+function FileRow({
+  item,
+  role,
+  permissions,
+  sharedMeta,
+  onShareAccess,
+  onMoveFolder,
+  onPreviewFile,
+  onDownloadFile,
+  onOpenActivity,
+  onRequestDelete,
+  onArchiveItem,
+  onChangeColor,
+  isArchiveView,
+}) {
   const {
     selectedItems, selectItem, renamingId, draggingItems, setDraggingItems,
     dragOver, setDragOver, moveItemsTo, clearDrag, navigateTo,
@@ -949,12 +1125,10 @@ function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFol
   const canRead = permissions?.read ?? true;
   const canDownload = permissions?.download ?? true;
 
-  const { Icon, color, bg } = item.type === 'folder'
-    ? { Icon: Folder, color: item.color || '#6D6E71', bg: `${item.color || '#6D6E71'}20` }
-    : getMimeIcon(item.ext);
+  const { Icon, color, bg } = getItemVisual(item);
 
   const handleDownload = (e) => {
-    e.stopPropagation();
+    e?.stopPropagation?.();
     if (!canDownload) return;
     onDownloadFile(item);
   };
@@ -1060,12 +1234,6 @@ function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFol
                   title="View activity"
                 ><Users size={13} /></button>
               )}
-              <button
-                onClick={handleDownload}
-                disabled={!canDownload}
-                className={`p-1 rounded-lg ${canDownload ? 'hover:bg-gray-100 text-[#6D6E71]' : 'text-[#C0C4CC] cursor-not-allowed'}`}
-                title="Download"
-              ><Download size={13} /></button>
             </>
           )}
           {item.type === 'folder' && canManage && (
@@ -1075,14 +1243,27 @@ function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFol
               onRename={() => startRenaming(item.id)}
               onMove={() => onMoveFolder(item)}
               isArchiveView={isArchiveView}
-              onDelete={() => useFileExplorerStore.getState().deleteItems([item.id])}
+              color={item.color}
+              onColorChange={(nextColor) => onChangeColor(item, nextColor)}
+              onArchive={() => onArchiveItem([item.id], isArchiveView ? 'unarchive' : 'archive')}
+              onDelete={() => onRequestDelete([item.id])}
             />
           )}
-          {item.type === 'file' && canManage && (
+          {item.type === 'file' && (
             <FileActionMenu
+              onPreview={() => onPreviewFile(item)}
+              onDownload={handleDownload}
+              onOpenActivity={() => onOpenActivity(item)}
               onRename={() => startRenaming(item.id)}
               onMove={() => onMoveFolder(item)}
-              onDelete={() => useFileExplorerStore.getState().deleteItems([item.id])}
+              onDelete={() => onRequestDelete([item.id])}
+              onArchive={() => onArchiveItem([item.id], isArchiveView ? 'unarchive' : 'archive')}
+              onColorChange={(nextColor) => onChangeColor(item, nextColor)}
+              color={item.color}
+              canManage={canManage}
+              canRead={canRead}
+              canDownload={canDownload}
+              canViewActivity={role === 'broker'}
               isArchiveView={isArchiveView}
               className="opacity-100"
             />
@@ -1105,6 +1286,9 @@ function FileGrid({
   onPreviewFile,
   onDownloadFile,
   onOpenActivity,
+  onRequestDelete,
+  onArchiveItem,
+  onChangeColor,
   currentFolderPermissions,
   isArchiveView,
 }) {
@@ -1131,6 +1315,9 @@ function FileGrid({
             onPreviewFile={onPreviewFile}
             onDownloadFile={onDownloadFile}
             onOpenActivity={onOpenActivity}
+            onRequestDelete={onRequestDelete}
+            onArchiveItem={onArchiveItem}
+            onChangeColor={onChangeColor}
             isArchiveView={isArchiveView}
           />
         );
@@ -1150,16 +1337,40 @@ function FileTable({
   onPreviewFile,
   onDownloadFile,
   onOpenActivity,
+  onRequestDelete,
+  onArchiveItem,
+  onChangeColor,
   currentFolderPermissions,
   isArchiveView,
 }) {
-  const { newFolderParentId } = useFileExplorerStore();
+  const { newFolderParentId, selectedItems, selectItems } = useFileExplorerStore();
+  const visibleIds = items.map((item) => item.id);
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedItems.includes(id));
   return (
     <div>
       <table className="w-full">
         <thead>
           <tr className="border-b border-gray-100">
-            <th className="pl-4 pr-2 py-2 w-8"></th>
+            <th className="pl-4 pr-2 py-2 w-8">
+              {visibleIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    selectItems(allVisibleSelected ? [] : visibleIds);
+                  }}
+                  className={`h-5 w-5 rounded border-2 flex items-center justify-center transition-all ${
+                    allVisibleSelected
+                      ? 'bg-[#05164D] border-[#05164D]'
+                      : 'bg-white border-gray-300 hover:border-[#05164D]/50'
+                  }`}
+                  aria-label={allVisibleSelected ? 'Clear selection' : 'Select all visible rows'}
+                >
+                  {allVisibleSelected && <Check size={11} className="text-white" />}
+                </button>
+              )}
+            </th>
             <th className="px-2 py-2 text-left text-xs font-semibold text-[#6D6E71]">Name</th>
             <th className="px-3 py-2 text-left text-xs font-semibold text-[#6D6E71]">Modified</th>
             <th className="px-3 py-2 text-left text-xs font-semibold text-[#6D6E71]">Size</th>
@@ -1189,6 +1400,9 @@ function FileTable({
                 onPreviewFile={onPreviewFile}
                 onDownloadFile={onDownloadFile}
                 onOpenActivity={onOpenActivity}
+                onRequestDelete={onRequestDelete}
+                onArchiveItem={onArchiveItem}
+                onChangeColor={onChangeColor}
                 isArchiveView={isArchiveView}
               />
             );
@@ -1199,120 +1413,260 @@ function FileTable({
   );
 }
 
-function FolderActionMenu({ onShareAccess, onRename, onMove, onDelete, isArchiveView, className }) {
+// Fixed-position menu anchored to a trigger button, rendered via a portal so it
+// can never be clipped by an ancestor's overflow-hidden/overflow-auto (e.g. the
+// scrollable file list or sidebar), and flips upward when there isn't room below.
+function useAnchoredMenuPosition(open, triggerRef, estimatedHeight, width = 224) {
+  const [position, setPosition] = useState(null);
+
+  useEffect(() => {
+    if (!open || !triggerRef.current) {
+      setPosition(null);
+      return undefined;
+    }
+    const updatePosition = () => {
+      if (!triggerRef.current) return;
+      const rect = triggerRef.current.getBoundingClientRect();
+      const spaceBelow = window.innerHeight - rect.bottom;
+      const openUpward = spaceBelow < estimatedHeight + 12 && rect.top > estimatedHeight;
+      const top = openUpward
+        ? Math.max(8, rect.top - estimatedHeight - 4)
+        : Math.min(rect.bottom + 4, window.innerHeight - 8);
+      const left = Math.min(Math.max(8, rect.right - width), window.innerWidth - width - 8);
+      setPosition({ top, left });
+    };
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [open, triggerRef, estimatedHeight, width]);
+
+  return position;
+}
+
+function FolderActionMenu({ onShareAccess, onRename, onMove, onArchive, onDelete, onColorChange, color, isArchiveView, className }) {
   const [open, setOpen] = useState(false);
+  const buttonRef = useRef(null);
   const menuRef = useRef(null);
+  const position = useAnchoredMenuPosition(open, buttonRef, isArchiveView ? 100 : 340, 224);
 
   useEffect(() => {
     if (!open) return undefined;
     const handle = (e) => {
-      if (menuRef.current && !menuRef.current.contains(e.target)) setOpen(false);
+      if (
+        menuRef.current && !menuRef.current.contains(e.target)
+        && buttonRef.current && !buttonRef.current.contains(e.target)
+      ) setOpen(false);
     };
     document.addEventListener('mousedown', handle);
     return () => document.removeEventListener('mousedown', handle);
   }, [open]);
 
+  const run = (e, action) => {
+    e.stopPropagation();
+    action?.();
+    setOpen(false);
+  };
+
   return (
-    <div className={`relative ${className || ''}`} ref={menuRef}>
+    <div className={`relative ${className || ''}`}>
       <button
+        ref={buttonRef}
         onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
         className="w-7 h-7 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center hover:bg-gray-50"
         aria-label="Folder actions"
       >
         <MoreVertical size={13} className="text-[#6D6E71]" />
       </button>
-      {open && (
-        <div className="absolute right-0 mt-2 w-48 bg-white rounded-2xl shadow-xl border border-gray-100 py-2 z-20 animate-fadeIn">
+      {open && position && createPortal(
+        <div
+          ref={menuRef}
+          className="fixed w-56 bg-white rounded-2xl shadow-xl border border-gray-100 py-2 z-50 animate-fadeIn"
+          style={{ top: position.top, left: position.left }}
+        >
           {!isArchiveView && (
             <>
               <button
-                onClick={() => { onShareAccess(); setOpen(false); }}
+                onClick={(e) => run(e, onShareAccess)}
                 className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-gray-50"
               >
                 <Share2 size={14} className="text-[#05164D]" />
                 Share Access
               </button>
               <button
-                onClick={() => { onRename(); setOpen(false); }}
+                onClick={(e) => run(e, onRename)}
                 className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-gray-50"
               >
                 <Pencil size={14} className="text-[#6D6E71]" />
                 Rename Folder
               </button>
               <button
-                onClick={() => { onMove(); setOpen(false); }}
+                onClick={(e) => run(e, onMove)}
                 className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-gray-50"
               >
                 <ArrowUpDown size={14} className="text-[#6D6E71]" />
                 Move Folder
               </button>
+              <div className="my-1 border-t border-gray-100" />
+              <ColorMenuSection value={color} onChange={onColorChange} />
             </>
           )}
           {!isArchiveView && <div className="my-1 border-t border-gray-100" />}
           <button
-            onClick={() => { onDelete(); setOpen(false); }}
+            onClick={(e) => run(e, onArchive)}
+            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-[#E6F3D3]/60"
+          >
+            {isArchiveView ? <RotateCcw size={14} className="text-[#476E2C]" /> : <Archive size={14} className="text-[#476E2C]" />}
+            {isArchiveView ? 'Restore Folder' : 'Archive Folder'}
+          </button>
+          <button
+            onClick={(e) => run(e, onDelete)}
             className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left text-red-500 hover:bg-red-50"
           >
             <Trash2 size={14} />
             Delete Folder
           </button>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
 }
 
-function FileActionMenu({ onRename, onMove, onDelete, isArchiveView, className }) {
+function FileActionMenu({
+  onPreview,
+  onDownload,
+  onOpenActivity,
+  onRename,
+  onMove,
+  onArchive,
+  onDelete,
+  onColorChange,
+  color,
+  canManage = false,
+  canRead = true,
+  canDownload = true,
+  canViewActivity = false,
+  isArchiveView,
+  className,
+}) {
   const [open, setOpen] = useState(false);
+  const buttonRef = useRef(null);
   const menuRef = useRef(null);
+  const position = useAnchoredMenuPosition(open, buttonRef, isArchiveView ? 100 : 400, 224);
 
   useEffect(() => {
     if (!open) return undefined;
     const handle = (e) => {
-      if (menuRef.current && !menuRef.current.contains(e.target)) setOpen(false);
+      if (
+        menuRef.current && !menuRef.current.contains(e.target)
+        && buttonRef.current && !buttonRef.current.contains(e.target)
+      ) setOpen(false);
     };
     document.addEventListener('mousedown', handle);
     return () => document.removeEventListener('mousedown', handle);
   }, [open]);
 
+  const hasManageActions = canManage && !isArchiveView;
+  const hasAnyAction = canRead || canDownload || canViewActivity || hasManageActions || canManage;
+  if (!hasAnyAction) return null;
+
+  const run = (e, action) => {
+    e.stopPropagation();
+    action?.();
+    setOpen(false);
+  };
+
   return (
-    <div className={`relative ${className || ''}`} ref={menuRef}>
+    <div className={`relative ${className || ''}`}>
       <button
+        ref={buttonRef}
         onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
         className="w-7 h-7 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center hover:bg-gray-50"
         aria-label="File actions"
       >
         <MoreVertical size={13} className="text-[#6D6E71]" />
       </button>
-      {open && (
-        <div className="absolute right-0 mt-2 w-44 bg-white rounded-2xl shadow-xl border border-gray-100 py-2 z-20 animate-fadeIn">
-          {!isArchiveView && (
+      {open && position && createPortal(
+        <div
+          ref={menuRef}
+          className="fixed w-56 bg-white rounded-2xl shadow-xl border border-gray-100 py-2 z-50 animate-fadeIn"
+          style={{ top: position.top, left: position.left }}
+        >
+          {canRead && (
+            <button
+              onClick={(e) => run(e, onPreview)}
+              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-gray-50"
+            >
+              <Eye size={14} className="text-[#6D6E71]" />
+              Preview
+            </button>
+          )}
+          {canDownload && (
+            <button
+              onClick={(e) => run(e, onDownload)}
+              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-gray-50"
+            >
+              <Download size={14} className="text-[#6D6E71]" />
+              Download
+            </button>
+          )}
+          {canViewActivity && (
+            <button
+              onClick={(e) => run(e, onOpenActivity)}
+              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-gray-50"
+            >
+              <Users size={14} className="text-[#6D6E71]" />
+              View Activity
+            </button>
+          )}
+          {(canRead || canDownload || canViewActivity) && hasManageActions && (
+            <div className="my-1 border-t border-gray-100" />
+          )}
+          {hasManageActions && (
             <>
               <button
-                onClick={() => { onRename(); setOpen(false); }}
+                onClick={(e) => run(e, onRename)}
                 className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-gray-50"
               >
                 <Pencil size={14} className="text-[#6D6E71]" />
                 Rename File
               </button>
               <button
-                onClick={() => { onMove(); setOpen(false); }}
+                onClick={(e) => run(e, onMove)}
                 className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-gray-50"
               >
                 <ArrowUpDown size={14} className="text-[#6D6E71]" />
                 Move File
               </button>
+              <div className="my-1 border-t border-gray-100" />
+              <ColorMenuSection value={color} onChange={onColorChange} />
             </>
           )}
-          {!isArchiveView && <div className="my-1 border-t border-gray-100" />}
-          <button
-            onClick={() => { onDelete(); setOpen(false); }}
-            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left text-red-500 hover:bg-red-50"
-          >
-            <Trash2 size={14} />
-            Delete File
-          </button>
-        </div>
+          {canManage && (
+            <>
+              <div className="my-1 border-t border-gray-100" />
+              <button
+                onClick={(e) => run(e, onArchive)}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-[#E6F3D3]/60"
+              >
+                {isArchiveView ? <RotateCcw size={14} className="text-[#476E2C]" /> : <Archive size={14} className="text-[#476E2C]" />}
+                {isArchiveView ? 'Restore File' : 'Archive File'}
+              </button>
+              <button
+                onClick={(e) => run(e, onDelete)}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left text-red-500 hover:bg-red-50"
+              >
+                <Trash2 size={14} />
+                Delete File
+              </button>
+            </>
+          )}
+        </div>,
+        document.body
       )}
     </div>
   );
@@ -1582,9 +1936,9 @@ function MoveFolderModal({ isOpen, folder, tree, onMove, onClose }) {
 }
 
 // ── ContextMenu ───────────────────────────────────────────────────────────────
-function ContextMenu({ tree, onPreviewFile, onDownloadFile, onOpenActivity }) {
+function ContextMenu({ tree, onPreviewFile, onDownloadFile, onOpenActivity, onRequestDelete, onArchiveItem, onChangeColor }) {
   const {
-    contextMenu, hideContextMenu, deleteItems, startRenaming,
+    contextMenu, hideContextMenu, startRenaming,
     startNewFolder, navigateTo, selectedItems, tree: storeTree,
     currentPath,
   } = useFileExplorerStore();
@@ -1608,13 +1962,13 @@ function ContextMenu({ tree, onPreviewFile, onDownloadFile, onOpenActivity }) {
   const isArchiveView = currentPath[currentPath.length - 1] === 'archive';
 
   // Adjust to stay in viewport
-  const menuW = 200, menuH = 280;
+  const menuW = 224, menuH = 360;
   const x = Math.min(contextMenu.x, window.innerWidth - menuW - 8);
   const y = Math.min(contextMenu.y, window.innerHeight - menuH - 8);
 
   const MenuItem = ({ icon: Icon2, label, onClick, danger }) => (
     <button
-      onClick={() => { onClick(); hideContextMenu(); }}
+      onClick={(e) => { e.stopPropagation(); onClick(); hideContextMenu(); }}
       className={`w-full flex items-center gap-2.5 px-3 py-2 text-sm rounded-lg transition-colors text-left
         ${danger ? 'text-red-500 hover:bg-red-50' : 'text-[#050505] hover:bg-gray-50'}`}
     >
@@ -1652,8 +2006,19 @@ function ContextMenu({ tree, onPreviewFile, onDownloadFile, onOpenActivity }) {
         {item.type === 'folder' && ids.length === 1 && !isArchiveView && (
           <MenuItem icon={FolderPlus} label="New Folder Inside" onClick={() => startNewFolder(item.id)} />
         )}
+        {ids.length === 1 && !isArchiveView && (
+          <>
+            <div className="my-1 border-t border-gray-100" />
+            <ColorMenuSection value={item.color} onChange={(color) => onChangeColor(item, color)} />
+          </>
+        )}
         <div className="my-1 border-t border-gray-100" />
-        <MenuItem icon={Trash2} label={`Delete${ids.length > 1 ? ` (${ids.length})` : ''}`} onClick={() => deleteItems(ids)} danger />
+        <MenuItem
+          icon={isArchiveView ? RotateCcw : Archive}
+          label={`${isArchiveView ? 'Restore' : 'Archive'}${ids.length > 1 ? ` (${ids.length})` : ''}`}
+          onClick={() => onArchiveItem(ids, isArchiveView ? 'unarchive' : 'archive')}
+        />
+        <MenuItem icon={Trash2} label={`Delete${ids.length > 1 ? ` (${ids.length})` : ''}`} onClick={() => onRequestDelete(ids)} danger />
       </div>
     </div>
   );
@@ -1863,6 +2228,23 @@ function PdfPreview({ blobUrl, name, zoom, setZoom }) {
   );
 }
 
+function VideoPreview({ blobUrl, name, onError }) {
+  return (
+    <div className="flex h-full items-center justify-center bg-black p-4">
+      <video
+        src={blobUrl}
+        controls
+        autoPlay={false}
+        className="max-h-full max-w-full rounded-xl"
+        onError={onError}
+      >
+        <track kind="captions" />
+        {name}
+      </video>
+    </div>
+  );
+}
+
 function SpreadsheetPreview({ sheets, activeSheetIndex, setActiveSheetIndex }) {
   const activeSheet = sheets[activeSheetIndex] || sheets[0];
   if (!activeSheet) return null;
@@ -1985,12 +2367,13 @@ function PreviewModal({ onDownloadFile }) {
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [previewError, setPreviewError] = useState('');
   const normalizedExt = (previewItem?.ext || '').toLowerCase();
-  const { Icon, color, bg } = getMimeIcon(previewItem?.ext);
+  const { Icon, color, bg } = getItemVisual(previewItem);
   const isImage = IMAGE_EXTENSIONS.includes(normalizedExt);
   const isPdf = normalizedExt === 'pdf';
   const isText = TEXT_EXTENSIONS.includes(normalizedExt);
   const isSpreadsheet = SPREADSHEET_EXTENSIONS.includes(normalizedExt);
   const isWordDoc = WORD_EXTENSIONS.includes(normalizedExt);
+  const isVideo = VIDEO_EXTENSIONS.includes(normalizedExt);
   const canPreview = canInlinePreview(previewItem?.ext) && Boolean(previewItem?.fileUrl);
 
   useEffect(() => {
@@ -2133,6 +2516,12 @@ function PreviewModal({ onDownloadFile }) {
                   zoom={pdfZoom}
                   setZoom={setPdfZoom}
                 />
+              ) : isVideo && blobUrl ? (
+                <VideoPreview
+                  blobUrl={blobUrl}
+                  name={previewItem.name}
+                  onError={() => setPreviewError('This video format can\'t be played in your browser. Download the file to watch it.')}
+                />
               ) : isSpreadsheet && spreadsheetPreview.length ? (
                 <SpreadsheetPreview
                   sheets={spreadsheetPreview}
@@ -2191,7 +2580,7 @@ function PreviewModal({ onDownloadFile }) {
               <div className="rounded-2xl bg-[#F8FAFC] border border-gray-100 p-4">
                 <p className="text-sm font-semibold text-[#050505]">Preview Notes</p>
                 <p className="text-xs leading-5 text-[#6D6E71] mt-2">
-                  PDFs, spreadsheets, Word documents, and images render inside this preview when the file can be read safely. Large files are trimmed for responsiveness.
+                  PDFs, spreadsheets, Word documents, images, and videos render inside this preview when the file can be read safely. Large files are trimmed for responsiveness.
                 </p>
               </div>
             </div>
@@ -2307,6 +2696,99 @@ function DuplicateWarning({ names, onClose }) {
   );
 }
 
+function DeleteConfirmModal({ items, onConfirm, onCancel }) {
+  if (!items?.length) return null;
+  const folders = items.filter((item) => item.type === 'folder').length;
+  const files = items.length - folders;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#050505]/30 backdrop-blur-sm animate-fadeIn">
+      <div className="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl mx-4">
+        <div className="flex items-start gap-3 border-b border-gray-100 p-5">
+          <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-red-50 text-red-500">
+            <Trash2 size={18} />
+          </div>
+          <div className="min-w-0">
+            <h3 className="text-lg font-bold text-[#050505]">
+              Delete {items.length} item{items.length !== 1 ? 's' : ''}?
+            </h3>
+            <p className="mt-1 text-sm text-[#6D6E71]">
+              {files ? `${files} file${files !== 1 ? 's' : ''}` : ''}
+              {files && folders ? ' and ' : ''}
+              {folders ? `${folders} folder${folders !== 1 ? 's' : ''}` : ''} will be removed from the Data Room.
+            </p>
+          </div>
+        </div>
+        <div className="max-h-44 overflow-y-auto p-4">
+          <div className="space-y-2">
+            {items.slice(0, 6).map((item) => (
+              <div key={item.id} className="flex items-center gap-2 rounded-xl bg-gray-50 px-3 py-2">
+                {item.type === 'folder' ? <Folder size={14} className="text-[#6D6E71]" /> : <File size={14} className="text-[#6D6E71]" />}
+                <span className="truncate text-sm font-medium text-[#050505]">{item.name}</span>
+              </div>
+            ))}
+            {items.length > 6 && (
+              <p className="px-1 text-xs font-semibold text-[#A5A5A5]">
+                +{items.length - 6} more item{items.length - 6 !== 1 ? 's' : ''}
+              </p>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-3 border-t border-gray-100 p-4">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-xl border border-gray-200 px-4 py-2 text-sm font-semibold text-[#6D6E71] hover:bg-gray-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="rounded-xl bg-red-500 px-4 py-2 text-sm font-semibold text-white hover:bg-red-600"
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ActionUndoToast({ toast, onClose }) {
+  if (!toast) return null;
+  return (
+    <div className="fixed bottom-5 right-5 z-50 flex max-w-md items-center gap-3 rounded-2xl border border-gray-100 bg-white px-4 py-3 shadow-2xl animate-fadeIn">
+      <div className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl ${
+        toast.tone === 'danger' ? 'bg-red-50 text-red-500' : 'bg-[#E6F3D3] text-[#476E2C]'
+      }`}>
+        {toast.icon === 'archive' ? <Archive size={16} /> : <Trash2 size={16} />}
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-semibold text-[#050505]">{toast.message}</p>
+        {toast.detail && <p className="text-xs text-[#6D6E71]">{toast.detail}</p>}
+      </div>
+      {toast.onUndo && (
+        <button
+          type="button"
+          onClick={toast.onUndo}
+          className="rounded-lg px-3 py-1.5 text-sm font-semibold text-[#05164D] hover:bg-[#05164D]/8"
+        >
+          Undo
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={onClose}
+        className="rounded-lg p-1.5 text-[#A5A5A5] hover:bg-gray-100 hover:text-[#6D6E71]"
+        aria-label="Dismiss"
+      >
+        <X size={14} />
+      </button>
+    </div>
+  );
+}
+
 // ── Main FileExplorer ─────────────────────────────────────────────────────────
 export default function FileExplorer({ role = 'broker', title, companyId, currentUserId }) {
   const {
@@ -2314,10 +2796,13 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     clearSelection, hideContextMenu, uploadFiles, dragOver, draggingItems,
     setDragOver, moveItemsTo, clearDrag, newFolderParentId, folderAccess, setFolderAccess,
     hydrateFromApi, setCompanyId, setCreatedBy, loadFolderAccessFromApi, syncFolderAccessToApi,
-    showPreview,
+    showPreview, stageRemoveItems, restoreRemovedItems, commitDeleteEntries,
+    updateItemColor, archiveItems, unarchiveItems,
   } = useFileExplorerStore();
 
   const fileInputRef = useRef(null);
+  const undoTimerRef = useRef(null);
+  const pendingDeleteRef = useRef(null);
   const [loadingTree, setLoadingTree] = useState(false);
   const [treeError, setTreeError] = useState('');
   const [dragCounter, setDragCounter] = useState(0);
@@ -2325,8 +2810,18 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
   const [shareModal, setShareModal] = useState(null);
   const [moveModal, setMoveModal] = useState(null);
   const [activityModal, setActivityModal] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [actionToast, setActionToast] = useState(null);
   const [sharePeople, setSharePeople] = useState([]);
   const [currentUserGroupIds, setCurrentUserGroupIds] = useState([]);
+
+  useEffect(() => () => {
+    if (undoTimerRef.current) window.clearTimeout(undoTimerRef.current);
+    if (pendingDeleteRef.current?.length) {
+      useFileExplorerStore.getState().commitDeleteEntries(pendingDeleteRef.current).catch(() => {});
+      pendingDeleteRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     if (!companyId) return;
@@ -2593,6 +3088,100 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     fileInputRef.current?.click();
   };
 
+  const showTransientError = useCallback((message) => {
+    setTreeError(message);
+    setTimeout(() => setTreeError(''), 6000);
+  }, []);
+
+  const requestDeleteItems = useCallback((ids) => {
+    const normalizedIds = [...new Set(ids || [])].filter(Boolean);
+    if (!normalizedIds.length) return;
+    hideContextMenu();
+    setDeleteConfirm({ ids: normalizedIds });
+  }, [hideContextMenu]);
+
+  const confirmDeleteItems = useCallback(() => {
+    const ids = deleteConfirm?.ids || [];
+    setDeleteConfirm(null);
+    if (!ids.length) return;
+
+    if (undoTimerRef.current) window.clearTimeout(undoTimerRef.current);
+    if (pendingDeleteRef.current?.length) {
+      const pendingEntries = pendingDeleteRef.current;
+      pendingDeleteRef.current = null;
+      commitDeleteEntries(pendingEntries).catch((err) => {
+        const deletedIds = new Set(err?.deletedIds || []);
+        restoreRemovedItems(pendingEntries.filter((entry) => !deletedIds.has(entry.item.id)));
+        showTransientError(err?.message || 'Unable to delete selected items.');
+      });
+    }
+
+    const entries = stageRemoveItems(ids);
+    if (!entries.length) return;
+
+    const count = entries.length;
+    const commitEntries = entries;
+    pendingDeleteRef.current = commitEntries;
+    const commit = () => {
+      undoTimerRef.current = null;
+      const entriesToCommit = pendingDeleteRef.current || commitEntries;
+      pendingDeleteRef.current = null;
+      setActionToast(null);
+      commitDeleteEntries(entriesToCommit).catch((err) => {
+        const deletedIds = new Set(err?.deletedIds || []);
+        restoreRemovedItems(entriesToCommit.filter((entry) => !deletedIds.has(entry.item.id)));
+        showTransientError(err?.message || 'Unable to delete selected items.');
+      });
+    };
+
+    undoTimerRef.current = window.setTimeout(commit, 6000);
+    setActionToast({
+      tone: 'danger',
+      icon: 'delete',
+      message: `${count} item${count !== 1 ? 's' : ''} deleted`,
+      detail: 'Undo is available for a few seconds.',
+      onUndo: () => {
+        if (undoTimerRef.current) window.clearTimeout(undoTimerRef.current);
+        undoTimerRef.current = null;
+        const entriesToRestore = pendingDeleteRef.current || commitEntries;
+        pendingDeleteRef.current = null;
+        restoreRemovedItems(entriesToRestore);
+        setActionToast(null);
+      },
+    });
+  }, [commitDeleteEntries, deleteConfirm, restoreRemovedItems, showTransientError, stageRemoveItems]);
+
+  const runArchiveAction = useCallback((ids, mode = 'archive') => {
+    const normalizedIds = [...new Set(ids || [])].filter(Boolean);
+    if (!normalizedIds.length) return;
+    const isUnarchive = mode === 'unarchive';
+    const apply = isUnarchive ? unarchiveItems : archiveItems;
+    const undo = isUnarchive ? archiveItems : unarchiveItems;
+    const count = normalizedIds.length;
+
+    apply(normalizedIds)
+      .catch((err) => showTransientError(err?.message || `Unable to ${isUnarchive ? 'restore' : 'archive'} selected items.`));
+
+    setActionToast({
+      tone: 'success',
+      icon: 'archive',
+      message: `${count} item${count !== 1 ? 's' : ''} ${isUnarchive ? 'restored' : 'archived'}`,
+      detail: 'Undo is available for a few seconds.',
+      onUndo: () => {
+        undo(normalizedIds).catch((err) => showTransientError(err?.message || 'Unable to undo action.'));
+        setActionToast(null);
+      },
+    });
+    setTimeout(() => setActionToast((toast) => (toast?.icon === 'archive' ? null : toast)), 6000);
+  }, [archiveItems, showTransientError, unarchiveItems]);
+
+  const changeItemColor = useCallback((item, color) => {
+    if (!item?.id) return;
+    updateItemColor(item.id, color).catch((err) => {
+      showTransientError(err?.message || 'Unable to update item color.');
+    });
+  }, [showTransientError, updateItemColor]);
+
   // Keyboard shortcuts
   useEffect(() => {
     const handle = (e) => {
@@ -2603,7 +3192,7 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
       }
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedItems.length > 0 &&
           !['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) {
-        if (role === 'broker') useFileExplorerStore.getState().deleteItems(selectedItems);
+        if (role === 'broker') requestDeleteItems(selectedItems);
       }
       if (e.key === 'F2' && selectedItems.length === 1) {
         if (role === 'broker') useFileExplorerStore.getState().startRenaming(selectedItems[0]);
@@ -2611,11 +3200,14 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     };
     window.addEventListener('keydown', handle);
     return () => window.removeEventListener('keydown', handle);
-  }, [selectedItems, clearSelection, hideContextMenu, role]);
+  }, [selectedItems, clearSelection, hideContextMenu, role, requestDeleteItems]);
 
   const isSystemDragging = dragCounter > 0 && draggingItems.length === 0;
   const shareFolder = shareModal ? findById(tree, shareModal.folderId) : null;
   const moveFolder = moveModal ? findById(tree, moveModal.folderId) : null;
+  const deleteConfirmItems = useMemo(() => (
+    (deleteConfirm?.ids || []).map((id) => findById(tree, id)).filter(Boolean)
+  ), [deleteConfirm, tree]);
 
   const openShareAccess = async (folder) => {
     if (!canManageAccess || folder?.type !== 'folder') return;
@@ -2695,10 +3287,13 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
         <TopBar
           tree={tree}
           currentPath={currentPath}
+          currentItems={currentItems}
           onUpload={openUpload}
           role={role}
           currentFolderPermissions={currentFolderPermissions}
           archivedCount={archivedItems.length}
+          onRequestDelete={requestDeleteItems}
+          onArchiveItems={runArchiveAction}
         />
 
         {/* Content Area */}
@@ -2751,6 +3346,9 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
               onPreviewFile={previewFile}
               onDownloadFile={downloadFile}
               onOpenActivity={openActivity}
+              onRequestDelete={requestDeleteItems}
+              onArchiveItem={runArchiveAction}
+              onChangeColor={changeItemColor}
               currentFolderPermissions={currentFolderPermissions}
               isArchiveView={isArchiveView}
             />
@@ -2767,6 +3365,9 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
                 onPreviewFile={previewFile}
                 onDownloadFile={downloadFile}
                 onOpenActivity={openActivity}
+                onRequestDelete={requestDeleteItems}
+                onArchiveItem={runArchiveAction}
+                onChangeColor={changeItemColor}
                 currentFolderPermissions={currentFolderPermissions}
                 isArchiveView={isArchiveView}
               />
@@ -2782,6 +3383,9 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
           onPreviewFile={previewFile}
           onDownloadFile={downloadFile}
           onOpenActivity={openActivity}
+          onRequestDelete={requestDeleteItems}
+          onArchiveItem={runArchiveAction}
+          onChangeColor={changeItemColor}
         />
       )}
 
@@ -2814,6 +3418,17 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
           setMoveModal(null);
         }}
         onClose={() => setMoveModal(null)}
+      />
+
+      <DeleteConfirmModal
+        items={deleteConfirmItems}
+        onConfirm={confirmDeleteItems}
+        onCancel={() => setDeleteConfirm(null)}
+      />
+
+      <ActionUndoToast
+        toast={actionToast}
+        onClose={() => setActionToast(null)}
       />
 
       {/* Upload Progress Toast */}

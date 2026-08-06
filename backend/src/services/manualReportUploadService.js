@@ -15,6 +15,7 @@ const {
   buildBankResponseShape,
 } = require("./bankStatementExtractor");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { getGeminiModels } = require("../config/geminiModels");
 
 const PDF_WORKER_PATH = path.join(__dirname, "../workers/pdfParser.js");
 const PDF_PARSE_TIMEOUT_MS = 30000;
@@ -27,6 +28,23 @@ const STATEMENT_TYPES = {
   BANK_RECONCILIATION: "bank_reconciliation",
   TAX_RETURN: "tax_return",
 };
+
+// The report_types the Manual Upload sync itself produces, and therefore the ONLY
+// ones it may clear before re-syncing.
+//
+// The "manual_report_upload" source partition is shared: Key Reports result caches
+// (kr_financial_statements_v1, kr_pl_financials_v2, kr_activity_review_v2), bank
+// reconciliation caches (bank_reconciliation_kr_v3, bs_bank_balances_cache_v2), the
+// Tax Reconciliation cache (tax_return_kr_v7) and — critically —
+// tax_reconciliation_overrides, which holds values the USER typed by hand, all live
+// under the same `source`. Deleting the whole partition destroyed all of it on every
+// "Sync All", so the clear-down is restricted to this allow-list. Anything not
+// listed here is owned by another subsystem and must survive a re-sync; new cache
+// types are therefore safe by default.
+const MANUAL_UPLOAD_SYNC_OWNED_REPORT_TYPES = [
+  ...Object.values(STATEMENT_TYPES),
+  "pl_for_tax",
+];
 
 // ─── QMS Sync Progress Store ────────────────────────────────────────────────
 // In-memory store for live sync progress. Keyed by companyId.
@@ -66,7 +84,11 @@ function _clearManualUploadProgress(companyId) {
    Works for both text-based and scanned/image-based PDFs.
 ========================================================= */
 
-const TAX_GEMINI_MODELS = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"];
+// Dynamically selected via GEMINI_MODELS / GEMINI_MODEL env; this array is the
+// default fallback order used when no override is configured.
+// "gemini-2.0-flash" removed — decommissioned (API returns 404), so as a fallback
+// it only converted transient failures into hard errors.
+const TAX_GEMINI_MODELS = getGeminiModels(["gemini-2.5-flash-lite", "gemini-2.5-flash"]);
 const _taxExtractCache = new Map();
 const _taxExtractSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -83,22 +105,33 @@ Look at the very top of Page 1 for the form number:
 Set "formType" to "1120-S", "1065", or "1120" accordingly. Default to "1120-S" if unclear.
 
 ═══════════════════════════════════════════════════════
-FORM 1120-S (S-CORPORATION) — read PAGE 1 and PAGE 3
+FORM 1120-S (S-CORPORATION) — read PAGE 1 and the FULL SCHEDULE K
 ═══════════════════════════════════════════════════════
 
 PAGE 1 — INCOME & DEDUCTIONS (Form 1120-S):
   Line 1a  — Gross receipts or sales
   Line 1b  — Returns and allowances
-  Line 1c  — Balance (far-right column) → "totalRevenue"
+  Line 1c  — Balance = Line 1a − 1b (far-right column) → "totalRevenue"
+             ⚠️ "totalRevenue" is GROSS RECEIPTS ONLY (Line 1c). It is the top-line sales figure,
+                NOT Line 6 "Total income".
   Line 2   — Cost of goods sold         → "totalCostOfGoodsSold"
   Line 3   — Gross profit               → "grossProfit"
+  Line 4   — Net gain (loss) Form 4797  → "netGain4797" (0 if blank)
+  Line 5   — Other income (loss)        → "otherIncome"  (0 if blank; often shown as "See Statement")
+  Line 6   — Total income (loss)        → "totalIncome"
+             ⚠️ Line 6 = Line 3 + Line 4 + Line 5, and is LARGER than gross receipts. NEVER copy
+                Line 6 into "totalRevenue" — it goes in "totalIncome" only.
   Line 7   — Compensation of officers   → "officerWages"
   Line 13  — Interest                   → "interestExpense"
   Line 14  — Depreciation               → "depreciation"
   Line 19  — Other deductions           → "allOtherExpenses" (and check attached statement for amortization)
   Line 21  — Ordinary business income   → "netIncome"
 
-PAGE 3 ONLY — SCHEDULE K (Form 1120-S), Lines 2–16f:
+SCHEDULE K (Form 1120-S) — "Shareholders' Pro Rata Share Items", Lines 2 through 17:
+  ⚠️ Schedule K SPANS TWO PAGES (typically page 3 for lines 1–14 and page 4 for
+     lines 15–18). Read BOTH pages. Do NOT stop at line 14. The "Items Affecting
+     Shareholder Basis" (line 16) and "Other Information" (line 17) lines are on
+     the SECOND page and MUST be read.
 
   ⚠️ SCHEDULE K EXTRACTION RULES — READ CAREFULLY:
   1. Look at the "Total amount" column on the RIGHT SIDE of the Schedule K table.
@@ -107,6 +140,33 @@ PAGE 3 ONLY — SCHEDULE K (Form 1120-S), Lines 2–16f:
   4. If the cell is blank, empty, has a dash (—), or contains 0 → DO NOT include it.
   5. DO NOT guess, estimate, or carry values from other parts of the form.
   6. DO NOT include Line 1 (already captured as netIncome).
+  7. DO NOT include Line 18 "Income (loss) reconciliation" — it is only a TOTAL that
+     restates Ordinary business income and is NOT a reconciling item.
+  8. Use the EXACT label text below for each line — do not paraphrase or re-case it.
+  9. ROW ALIGNMENT — MATCH BY PRINTED LINE CODE, NOT BY ROW POSITION. Each amount in the
+     "Total amount" column belongs to the line whose printed code (e.g. "16c", "16d",
+     "17a") sits on the SAME horizontal row. Lines 15a–15f, 16a–16f and 17a–17b are
+     stacked very close together — do NOT shift a value up or down by a row. Read the line
+     code printed immediately to the left of each amount and attach the amount to THAT
+     code, then use that code's label from the list below. (Example: a single "912" printed
+     on the "16c" row is "Nondeductible Expenses" = 912 — it is NOT "16b" and NOT "16d".)
+  10. SOURCE RESTRICTION — SCHEDULE K "Total amount" COLUMN ONLY. Every reconcilingItems
+      value MUST be read from the Schedule K "Total amount" column. NEVER take a value from
+      Schedule M-1 or from Schedule M-2 ("Analysis of the Accumulated Adjustments Account …").
+      ⚠️ Schedule M-2's "Balance at beginning of tax year", "Combine lines 1 through 5", and
+         "Balance at end of tax year" are running ACCUMULATED ADJUSTMENTS ACCOUNT (AAA)
+         BALANCES — they are NOT distributions and must NEVER be reported as "Distributions"
+         (or any other Schedule K item). Schedule M-2 has its own line labeled "Distributions";
+         do not grab the AAA balance printed next to it and call it a distribution.
+      ⚠️ "16d Distributions" is taken ONLY from Schedule K line 16d's "Total amount" cell.
+         If that cell is blank/zero, Distributions = 0 and you MUST omit it — even when
+         Schedule M-2 shows a non-zero AAA balance.
+  11. SELF-CHECK (validation ONLY — never a source of numbers): a correctly-read Schedule K
+      value usually agrees with its companion line — "16c Nondeductible Expenses" ≈ Schedule
+      M-1 line 3 / M-2 "Other reductions"; "16d Distributions" ≈ Schedule M-2 LINE 7
+      "Distributions" (NOT the M-2 balance lines). If a Schedule K "Total amount" cell is blank,
+      the item is 0 regardless of any M-2 balance. The Schedule K "Total amount" column is
+      always authoritative — if in doubt, trust the blank Schedule K cell over any M-2 figure.
 
   Line → label mapping (ONLY add lines with a visible non-zero value in "Total amount"):
   2  → "Net Rental Real Estate Income"
@@ -143,6 +203,9 @@ PAGE 3 ONLY — SCHEDULE K (Form 1120-S), Lines 2–16f:
   16d → "Distributions"
   16e → "Repayment of Loans from Shareholders"
   16f → "Foreign Taxes Paid or Accrued"
+  17a → "Investment Income"
+  17b → "Investment Expenses"
+  (SKIP line 17c "Dividend distributions paid from AE&P" and line 18 reconciliation.)
 
 ═══════════════════════════════════════════════════════
 FORM 1065 (PARTNERSHIP) — read PAGE 1 and ONLY the partnership-level SCHEDULE K page
@@ -248,19 +311,29 @@ PAGE 1 — INCOME & DEDUCTIONS (Form 1120):
 COMMON RULES FOR ALL FORMS
 ═══════════════════════════════════════════════════════
 
-CRITICAL — totalRevenue:
-  ALWAYS use Line 1c (the Balance/far-right column), NOT Line 1a.
-  If Line 1b is blank, Line 1c = Line 1a.
+CRITICAL — totalRevenue (the single most common extraction error — read carefully):
+  totalRevenue = "Gross receipts or sales" Balance = Line 1c (Line 1a − Line 1b), far-right column.
+  • It is NOT "Total income" (Line 6 on Form 1120-S and 1120; Line 8 on Form 1065). "Total income"
+    ADDS net gain from Form 4797 and other income on top of gross profit, so it is LARGER than gross
+    receipts. NEVER put "Total income" into totalRevenue — capture that figure in "totalIncome".
+  • It is NOT Line 1a when Line 1b (returns and allowances) is non-zero — use Line 1c.
+  • If Line 1b is blank, Line 1c = Line 1a.
+  QUICK TEST: if your totalRevenue equals your totalIncome while "Other income" (Line 5 / Line 7) is
+  non-zero, you copied the WRONG line — totalRevenue must be the SMALLER Line 1c gross-receipts value.
 
 "year": 4-digit tax year printed at top-right of Page 1 (e.g. 2023).
 
 SELF-CHECK (mandatory before returning):
-After extracting all values, mentally verify BOTH formulas:
+After extracting all values, mentally verify these formulas:
   1) grossProfit  = totalRevenue - totalCostOfGoodsSold   (must match within $5)
-  2) netIncome    = grossProfit - officerWages - depreciation - amortization
+  2) totalIncome  = grossProfit + netGain4797 + otherIncome   (must match within $5)
+  3) netIncome    = grossProfit - officerWages - depreciation - amortization
                    - interestExpense - allOtherExpenses   (must match within $5)
-If either formula fails, re-examine the relevant lines and correct the values.
+If any formula fails, re-examine the relevant lines and correct the values.
 The most common mistakes:
+  - Putting Line 6 "Total income" into totalRevenue. totalRevenue is ALWAYS Line 1c "Gross receipts
+    or sales" — the smaller top-line figure BEFORE net gain and other income are added. Line 6 goes
+    in totalIncome. (If formula 1 fails, LOWER totalRevenue to Line 1c — do NOT raise grossProfit.)
   - Using Line 1a (gross receipts) instead of Line 1c (balance after returns) for totalRevenue
   - Reading the wrong line for netIncome (must be the "Ordinary business income" line, NOT taxable income)
   - Omitting a deduction line or double-counting it in allOtherExpenses
@@ -279,6 +352,9 @@ JSON schema:
   "totalRevenue": 0,
   "totalCostOfGoodsSold": 0,
   "grossProfit": 0,
+  "netGain4797": 0,
+  "otherIncome": 0,
+  "totalIncome": 0,
   "officerWages": 0,
   "depreciation": 0,
   "amortization": 0,
@@ -288,6 +364,87 @@ JSON schema:
   "reconcilingItems": []
 }
 `.trim();
+
+// ── Schedule K reconciling-item label canonicalization ──────────────────────
+// The extraction + Schedule-K verification passes emit the SAME line under
+// slightly different wording/casing across years ("Nondeductible expenses" vs
+// "Nondeductible Expenses", "Investment income" vs "Investment Income"), which
+// produced DUPLICATE rows and inconsistent columns in Tax Reconciliation. Every
+// variant is mapped to one canonical label. Lines that are NOT book-to-tax
+// reconciling items are dropped — notably Line 18 "Income (loss) reconciliation"
+// (1120-S) / the analysis line, which merely restates Ordinary business income
+// (already shown as Net Income) and must never appear as a reconciling item.
+const _normKey = (s) =>
+  String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+
+// Dropped entirely (not distributive-share reconciling items).
+const SCHEDULE_K_DROP = [
+  /income .*reconciliation/,   // Line 18 (1120-S) "Income (loss) reconciliation"
+  /^reconciliation$/,
+  /ordinary business income/,  // = netIncome, captured on page 1
+];
+
+// [regex on normalized key] → canonical label. ORDER MATTERS — more specific
+// patterns first (e.g. "investment interest expense" before "interest income").
+const SCHEDULE_K_CANON = [
+  [/nondeductible expense/, "Nondeductible Expenses"],
+  [/tax exempt interest/, "Tax-Exempt Interest Income"],
+  [/other tax exempt income/, "Other Tax-Exempt Income"],
+  [/repayment of loan/, "Repayment of Loans from Shareholders"],
+  [/distribution/, "Distributions"],
+  [/investment interest expense/, "Investment Interest Expense"],
+  [/investment income/, "Investment Income"],
+  [/investment expense/, "Investment Expenses"],
+  [/interest income/, "Interest Income"],
+  [/qualified dividend/, "Qualified Dividends"],
+  [/ordinary dividend/, "Ordinary Dividends"],
+  [/dividend/, "Ordinary Dividends"],
+  [/royalt/, "Royalties"],
+  [/section 179/, "Section 179 Deduction"],
+  [/charitable/, "Charitable Contributions"],
+  [/net rental real estate/, "Net Rental Real Estate Income"],
+  [/net rental/, "Other Net Rental Income"],
+  [/short term capital gain/, "Net Short-Term Capital Gain (Loss)"],
+  [/long term capital gain/, "Net Long-Term Capital Gain (Loss)"],
+  [/section 1231/, "Net Section 1231 Gain (Loss)"],
+  [/foreign tax/, "Foreign Taxes Paid or Accrued"],
+  [/self employ/, "Net Earnings from Self-Employment"],
+  [/guaranteed payment/, "Guaranteed Payments"],
+  [/other income/, "Other Income (Loss)"],
+];
+
+// Map an arbitrary Schedule K label to its canonical form; returns null to DROP.
+function canonicalizeReconLabel(label) {
+  const key = _normKey(label);
+  if (!key) return null;
+  if (SCHEDULE_K_DROP.some((rx) => rx.test(key))) return null;
+  for (const [rx, canon] of SCHEDULE_K_CANON) if (rx.test(key)) return canon;
+  return String(label).trim(); // unknown line — keep as-is, never lose data
+}
+
+// Canonicalize + de-duplicate the reconciling items inside a tax "data" array.
+// Main line items (isReconcilingItem false) pass through untouched and in order.
+// Idempotent — safe to run on freshly-built OR already-cached data.
+function canonicalizeReconcilingData(data) {
+  if (!Array.isArray(data)) return data;
+  const out = [];
+  const idxByLabel = new Map();
+  for (const row of data) {
+    if (!row || !row.isReconcilingItem) { out.push(row); continue; }
+    const canon = canonicalizeReconLabel(row.label);
+    if (!canon) continue; // dropped (e.g. Line 18 reconciliation)
+    const val = Number(row.taxReturn || 0);
+    if (idxByLabel.has(canon)) {
+      // Same line under a variant label — keep the larger-magnitude value.
+      const idx = idxByLabel.get(canon);
+      if (Math.abs(val) > Math.abs(Number(out[idx].taxReturn || 0))) out[idx].taxReturn = val;
+    } else {
+      idxByLabel.set(canon, out.length);
+      out.push({ ...row, label: canon });
+    }
+  }
+  return out;
+}
 
 function buildTaxReturnResponseData(tax) {
   // For Form 1065 (Partnership): allOtherExpenses comes directly from Line 21
@@ -330,7 +487,8 @@ function buildTaxReturnResponseData(tax) {
     }
   });
 
-  return data;
+  // Canonicalize + de-dup Schedule K reconciling items and drop non-items (Line 18).
+  return canonicalizeReconcilingData(data);
 }
 
 function clearTaxExtractCache(cacheKey) {
@@ -360,7 +518,8 @@ async function extractTaxDataFromBuffer(pdfBuffer, cacheKey) {
           let text = result.response.text().trim();
           text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
           const parsed = JSON.parse(text);
-          ["year", "totalRevenue", "totalCostOfGoodsSold", "grossProfit", "officerWages",
+          ["year", "totalRevenue", "totalCostOfGoodsSold", "grossProfit", "netGain4797",
+            "otherIncome", "totalIncome", "officerWages",
             "depreciation", "amortization", "interestExpense", "allOtherExpenses", "netIncome"]
             .forEach((f) => { parsed[f] = Number(parsed[f]) || 0; });
           if (!parsed.formType) parsed.formType = "1120-S";
@@ -373,6 +532,7 @@ async function extractTaxDataFromBuffer(pdfBuffer, cacheKey) {
         } catch (err) {
           lastError = err;
           const msg = String(err.message || err);
+          console.warn(`[TaxExtract] model=${modelName} key=${cacheKey} FAILED: ${msg.slice(0, 300)}`);
           if (msg.includes("404") || msg.toLowerCase().includes("not found")) break;
           if ((msg.includes("429") || msg.toLowerCase().includes("quota")) && retries > 1) {
             await _taxExtractSleep(delay);
@@ -410,6 +570,8 @@ function validateTaxExtraction(extracted) {
   const interest = Number(extracted.interestExpense      || 0);
   const other    = Number(extracted.allOtherExpenses     || 0);
   const netInc   = Number(extracted.netIncome            || 0);
+  const otherInc = Number(extracted.otherIncome          || 0);
+  const totalInc = Number(extracted.totalIncome          || 0);
   const year     = Number(extracted.year                 || 0);
 
   if (year < 2010 || year > 2030) {
@@ -437,6 +599,23 @@ function validateTaxExtraction(extracted) {
     );
   }
 
+  // Guard the #1 extraction error: totalRevenue must be gross receipts (Line 1c),
+  // never "Total income" (Line 6 on 1120-S/1120, Line 8 on 1065 — which adds net
+  // gain + other income). When revenue equals total income while other income is
+  // non-zero, Line 6/8 was copied into totalRevenue. Flagging it forces the
+  // targeted second pass to re-read Line 1c.
+  if (
+    otherInc !== 0 &&
+    totalInc !== 0 &&
+    Math.abs(rev - totalInc) <= TAX_VALIDATE_TOLERANCE &&
+    Math.abs(rev - (gp + cogs)) > TAX_VALIDATE_TOLERANCE
+  ) {
+    issues.push(
+      `totalRevenue (${rev}) looks like "Total income" (Line 6/8), not gross receipts (Line 1c). ` +
+      `Gross receipts should equal grossProfit + COGS = ${gp + cogs}; other income ${otherInc} must be excluded.`
+    );
+  }
+
   return { status: issues.length === 0 ? "Verified" : "Needs Review", issues };
 }
 
@@ -453,6 +632,9 @@ PREVIOUSLY EXTRACTED (INCORRECT) VALUES:
   totalRevenue:         ${extracted.totalRevenue}
   totalCostOfGoodsSold: ${extracted.totalCostOfGoodsSold}
   grossProfit:          ${extracted.grossProfit}
+  netGain4797:          ${extracted.netGain4797}
+  otherIncome:          ${extracted.otherIncome}
+  totalIncome:          ${extracted.totalIncome}
   officerWages:         ${extracted.officerWages}
   depreciation:         ${extracted.depreciation}
   amortization:         ${extracted.amortization}
@@ -464,13 +646,19 @@ FAILED CHECKS:
 ${issues.map((i) => `  • ${i}`).join("\n")}
 
 REQUIRED FORMULAS (must hold within $5):
-  grossProfit = totalRevenue - totalCostOfGoodsSold
+  grossProfit = totalRevenue - totalCostOfGoodsSold   (totalRevenue = Line 1c gross receipts ONLY)
+  totalIncome = grossProfit + netGain4797 + otherIncome   (Line 6 / Line 8 — NOT totalRevenue)
   netIncome   = grossProfit - officerWages - depreciation - amortization - interestExpense - allOtherExpenses
 
 INSTRUCTIONS:
 1. Go back to the specific form lines mentioned in each failed check.
 2. Re-read the printed dollar amount from the original PDF image — do NOT reuse the wrong values above.
-3. Common causes of failure:
+3. Common causes of failure (check the FIRST one first — it is the most frequent):
+   • totalRevenue was taken from "Total income" (Line 6 on 1120-S/1120, Line 8 on 1065) instead of
+     Line 1c "Gross receipts or sales". If grossProfit ≠ totalRevenue − COGS, the fix is almost
+     always to LOWER totalRevenue to the Line 1c gross-receipts figure — do NOT raise grossProfit to
+     match a Line-6 revenue. grossProfit must equal Line 3 exactly as printed, and totalRevenue must
+     exclude net gain (Line 4) and other income (Line 5 / Line 7).
    • Line 1a vs Line 1c confusion for totalRevenue (always use the "Balance" column, Line 1c)
    • Wrong line for netIncome (use "Ordinary business income", NOT "Taxable income")
    • allOtherExpenses over/under-counted — verify against Line 19 (1120-S), Line 21 (1065), or Line 26 (1120)
@@ -484,6 +672,9 @@ Return ONLY a raw JSON object in the exact same schema. No markdown, no explanat
   "totalRevenue": 0,
   "totalCostOfGoodsSold": 0,
   "grossProfit": 0,
+  "netGain4797": 0,
+  "otherIncome": 0,
+  "totalIncome": 0,
   "officerWages": 0,
   "depreciation": 0,
   "amortization": 0,
@@ -525,7 +716,8 @@ async function extractTaxDataWithVerification(pdfBuffer, cacheKey) {
         .replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
       const corrected = JSON.parse(text);
 
-      ["year","totalRevenue","totalCostOfGoodsSold","grossProfit","officerWages",
+      ["year","totalRevenue","totalCostOfGoodsSold","grossProfit","netGain4797",
+       "otherIncome","totalIncome","officerWages",
        "depreciation","amortization","interestExpense","allOtherExpenses","netIncome"]
         .forEach((f) => { corrected[f] = Number(corrected[f]) || 0; });
       if (!corrected.formType) corrected.formType = extracted.formType || "1120-S";
@@ -568,19 +760,44 @@ The prior extraction produced these Schedule K reconciling items:
 ${lines || "  (none)"}
 
 YOUR TASK — for EACH item above:
-1. Go to the Schedule K page in the PDF.
-2. Find the exact line that corresponds to that label.
-3. Look at the "Total amount" column (right side of the form) for that line.
+1. Go to the Schedule K page in the PDF (it spans TWO pages on 1120-S: lines 1–14 then
+   lines 15–18). Read BOTH pages.
+2. Find the exact line by its printed line CODE (e.g. "16c", "16d", "17a"), not by row
+   position. Lines 15a–15f, 16a–16f and 17a–17b are stacked tightly — the amount belongs
+   to the line code printed on the SAME horizontal row. Never shift a value up/down a row.
+3. Look at the "Total amount" column (right side of the form) for that line code.
 4. If you see a non-zero dollar amount printed there → KEEP the item with the correct value.
 5. If the cell is blank, empty, dashed, or zero → REMOVE it from the list.
 6. Correct the value if the amount you see differs from what was extracted.
 
-Also scan the ENTIRE Schedule K for any additional lines with non-zero values in the
-"Total amount" column that were MISSED by the prior extraction — add those too.
+Then scan the ENTIRE Schedule K for any additional non-zero "Total amount" lines the prior
+extraction MISSED and ADD them. Pay special attention to the "Items Affecting Shareholder
+Basis" and "Other Information" lines, which are the most commonly populated and the most
+often mis-read: 16a Tax-Exempt Interest Income, 16b Other Tax-Exempt Income,
+16c Nondeductible Expenses, 16d Distributions, 16e Repayment of Loans from Shareholders,
+16f Foreign Taxes Paid or Accrued, 17a Investment Income, 17b Investment Expenses.
+
+SOURCE RESTRICTION — read every value from the Schedule K "Total amount" column ONLY. NEVER
+pull a value from Schedule M-1 or Schedule M-2. In particular, Schedule M-2's Accumulated
+Adjustments Account (AAA) balance lines — "Balance at beginning of tax year", "Combine lines
+1 through 5", and "Balance at end of tax year" — are NOT distributions; never report an M-2
+balance as "Distributions". If Schedule K line 16d "Total amount" is blank/zero, there are NO
+distributions and you MUST omit that item.
+
+CROSS-CHECK for VALIDATION ONLY (never a source of numbers) — a correctly-read value usually
+agrees with its companion line: "Nondeductible Expenses" (16c) ≈ M-1 line 3 / M-2 "Other
+reductions"; "Distributions" (16d) ≈ M-2 LINE 7 "Distributions" (NOT the M-2 balance lines).
+A blank Schedule K cell always wins over any M-2 figure.
 
 CRITICAL:
 - Use ONLY values visually printed on Schedule K in the "Total amount" column.
+- NEVER report a Schedule M-2 AAA balance (e.g. "Balance at end of tax year") as a Schedule K
+  item such as "Distributions". Schedule M-2 is a different schedule and is not a value source.
 - DO NOT include Line 1 (Ordinary business income — already captured separately).
+- DO NOT include the "Income (loss) reconciliation" line (Line 18 on 1120-S) — it is
+  only a total that restates ordinary business income, NOT a reconciling item.
+- Use standard IRS line names for labels (e.g. "Nondeductible Expenses", "Distributions",
+  "Other Tax-Exempt Income", "Investment Income") with consistent Title Case.
 - DO NOT guess or carry over values from other pages.
 
 Return ONLY a raw JSON array of confirmed items (empty array [] if none):
@@ -589,9 +806,17 @@ No markdown, no explanation.`;
 }
 
 async function verifyScheduleKItems(pdfBuffer, formType, reconcilingItems) {
-  if (!reconcilingItems.length) return reconcilingItems; // nothing to verify
+  const ft = String(formType || "").toUpperCase();
+  // C-Corporations (Form 1120, NOT 1120-S) have no Schedule K — nothing to fetch.
+  const isCCorp = ft.includes("1120") && !ft.includes("1120-S") && !ft.includes("1120S");
+  if (isCCorp) return [];
+
+  // Run the Schedule-K-focused pass even when the broad extraction found nothing.
+  // The prompt asks the model to scan the ENTIRE Schedule K "Total amount" column
+  // and ADD any non-zero lines the first pass missed — so this doubles as a
+  // recovery pass when Schedule K wasn't captured on the first extraction.
   const pdfBase64 = pdfBuffer.toString("base64");
-  const prompt = buildScheduleKVerificationPrompt(formType, reconcilingItems);
+  const prompt = buildScheduleKVerificationPrompt(formType || "1120-S", reconcilingItems);
 
   for (const modelName of TAX_GEMINI_MODELS) {
     try {
@@ -609,12 +834,20 @@ async function verifyScheduleKItems(pdfBuffer, formType, reconcilingItems) {
         .map((i) => ({ label: String(i.label || "").trim(), value: Number(i.value) || 0 }))
         .filter((i) => i.label && i.value !== 0);
       console.log(`[ScheduleKVerify] formType=${formType} — ${reconcilingItems.length} in, ${clean.length} confirmed via ${modelName}`);
+
+      // Non-destructive guard: never let a single flaky verify pass WIPE Schedule K
+      // items the first extraction confidently found. An empty verify result is
+      // only trusted when there was nothing to begin with.
+      if (clean.length === 0 && reconcilingItems.length > 0) {
+        console.warn(`[ScheduleKVerify] verify returned 0 items but extraction had ${reconcilingItems.length} — keeping original extraction to avoid dropping Schedule K data`);
+        return reconcilingItems;
+      }
       return clean;
     } catch (err) {
       console.warn(`[ScheduleKVerify] model=${modelName} failed: ${err.message}`);
     }
   }
-  // If verification completely fails, keep the original items unchanged
+  // If every verification attempt failed, keep the original items unchanged.
   return reconcilingItems;
 }
 
@@ -2779,13 +3012,16 @@ async function syncManualUploadSource(companyId) {
     percentage: 0,
   });
 
-  // Clear all existing manual upload records for this company so removed/renamed
-  // files don't leave stale rows behind after re-sync.
+  // Clear this company's previously-synced Manual Upload STATEMENTS so
+  // removed/renamed files don't leave stale rows behind after re-sync. Scoped to the
+  // report_types this sync owns — see MANUAL_UPLOAD_SYNC_OWNED_REPORT_TYPES for why
+  // deleting the whole `source` partition is destructive.
   const { error: deleteError } = await supabase
     .from("qb_synced_reports")
     .delete()
     .eq("company_id", companyId)
-    .eq("source", MANUAL_REPORT_UPLOAD_SOURCE);
+    .eq("source", MANUAL_REPORT_UPLOAD_SOURCE)
+    .in("report_type", MANUAL_UPLOAD_SYNC_OWNED_REPORT_TYPES);
 
   if (deleteError) {
     throw new Error(`Failed to clear existing records before sync: ${deleteError.message}`);
@@ -3076,7 +3312,7 @@ async function extractAndCacheReportAsOfDate(reportRow) {
   if (!asOfDate && isPdf && buffer?.length && process.env.GEMINI_API_KEY) {
     try {
       const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
+      const model = genAI.getGenerativeModel({ model: TAX_GEMINI_MODELS[0] });
       const result = await model.generateContent([
         {
           inlineData: {
@@ -3816,6 +4052,8 @@ module.exports = {
   validateTaxExtraction,
   clearTaxExtractCache,
   buildTaxReturnResponseData,
+  canonicalizeReconLabel,
+  canonicalizeReconcilingData,
   syncTaxReturnFolder,
   extractPLForTax,
   buildPLForTaxData,

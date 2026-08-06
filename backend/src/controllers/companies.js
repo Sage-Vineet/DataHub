@@ -26,6 +26,9 @@ const createCompany = asyncHandler(async (req, res) => {
       ? companyService.assignCompanyToUser(req.user.id, inserted.id).then(() => {
           if (!permissionService.isAdmin(req.user)) {
             req.user.company_ids = Array.from(new Set([...(req.user.company_ids || []), inserted.id]));
+            if (Array.isArray(req.user.direct_company_ids)) {
+              req.user.direct_company_ids = Array.from(new Set([...req.user.direct_company_ids, inserted.id]));
+            }
           }
         })
       : Promise.resolve(null),

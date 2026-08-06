@@ -1,6 +1,16 @@
-import React, { useState, useMemo, useCallback } from "react";
+import React, { Fragment, useState, useMemo } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { cn, formatCurrency } from "../../../lib/utils";
+import { cn, formatCurrency, isReportGroupRow } from "../../../lib/utils";
+import FrozenPaneTable from "../shared/FrozenPaneTable";
+
+const NAME_COL_WIDTH = "320px";
+const YEAR_COL_WIDTH = "90px";
+const YTD_CURRENT_COL_WIDTH = "120px";
+const VAR_DOLLAR_COL_WIDTH = "90px";
+const VAR_PCT_COL_WIDTH = "70px";
+const YTD_PREV_COL_WIDTH = "120px";
+const YTD_VAR_COL_WIDTH = "110px";
+const YTD_PCT_COL_WIDTH = "90px";
 
 // ─── Utility Functions ───────────────────────────────────────────────────────
 
@@ -35,7 +45,15 @@ const PNLRow = ({ line, depth = 0, columns }) => {
   const hasChildren = Boolean(line.children?.length);
   const isHeader = line.type === "header";
   const isTotal = line.type === "total";
-  const hasVendors = !isTotal && !isHeader && Array.isArray(line.vendors) && line.vendors.length > 0;
+  const isGroup = isReportGroupRow(line, hasChildren, isTotal);
+  // Counterparty breakdown groups. `vendors` is the long-standing field (QuickBooks
+  // and Key Reports both supply it); `customers` is the parallel field Key Reports
+  // adds. A source that sends neither behaves exactly as before.
+  const entityGroups = [
+    { label: "Vendor", items: line.vendors },
+    { label: "Customer", items: line.customers },
+  ].filter((g) => Array.isArray(g.items) && g.items.length > 0);
+  const hasVendors = !isTotal && !isHeader && entityGroups.length > 0;
   const nameLower = (line.name || "").toLowerCase();
 
   // Bold specific rows as per requirements
@@ -43,6 +61,10 @@ const PNLRow = ({ line, depth = 0, columns }) => {
     "total revenue", "gross profit", "total expenses", "net income",
     "total cost of goods sold", "total payroll expenses", "operating income"
   ].includes(nameLower);
+
+  // Sticky cells need an explicit, opaque background (not the translucent
+  // bg-*/NN the row itself uses) so scrolling content never shows through.
+  const stickyColBg = (isBold || (isHeader && depth === 0)) ? "bg-bg-page" : "bg-bg-card";
 
   const amounts = line.amounts || {};
   const yearCols = columns?.yearCols || [];
@@ -86,7 +108,7 @@ const PNLRow = ({ line, depth = 0, columns }) => {
           isHeader && depth === 0 && "bg-bg-page/30 border-t border-border"
         )}
       >
-        <td className="py-2.5 px-4 text-left bg-inherit z-10 min-w-[320px]">
+        <td className={cn("py-2.5 px-4 text-left z-10 sticky left-0 border-r border-border-light", stickyColBg)}>
           <div className="flex items-center">
             <div className="flex shrink-0">
               {Array.from({ length: depth }).map((_, index) => (
@@ -127,10 +149,10 @@ const PNLRow = ({ line, depth = 0, columns }) => {
             key={idx}
             className={cn(
               "py-2.5 px-3 text-right tabular-nums text-[14px] whitespace-nowrap",
-              val < 0 ? "text-status-error font-semibold" : "text-text-secondary",
+              !isGroup && val < 0 ? "text-status-error font-semibold" : "text-text-secondary",
             )}
           >
-            {formatValue(val)}
+            {isGroup ? "" : formatValue(val)}
           </td>
         ))}
 
@@ -139,10 +161,10 @@ const PNLRow = ({ line, depth = 0, columns }) => {
           <td
             className={cn(
               "py-2.5 px-3 text-right tabular-nums text-[14px] font-semibold bg-blue-50/20",
-              currentYTD < 0 ? "text-status-error" : "text-text-primary",
+              !isGroup && currentYTD < 0 ? "text-status-error" : "text-text-primary",
             )}
           >
-            {formatValue(currentYTD)}
+            {isGroup ? "" : formatValue(currentYTD)}
           </td>
         )}
 
@@ -152,18 +174,18 @@ const PNLRow = ({ line, depth = 0, columns }) => {
             <td
               className={cn(
                 "py-2.5 px-3 text-right tabular-nums text-[14px]",
-                v23Var < 0 ? "text-status-error font-semibold" : "text-text-muted",
+                !isGroup && v23Var < 0 ? "text-status-error font-semibold" : "text-text-muted",
               )}
             >
-              {formatValue(v23Var)}
+              {isGroup ? "" : formatValue(v23Var)}
             </td>
             <td
               className={cn(
                 "py-2.5 px-3 text-right tabular-nums text-[13px] border-r border-border-light",
-                v23Pct < 0 ? "text-status-error" : "text-text-muted",
+                !isGroup && v23Pct < 0 ? "text-status-error" : "text-text-muted",
               )}
             >
-              {formatPercentage(v23Pct)}
+              {isGroup ? "" : formatPercentage(v23Pct)}
             </td>
           </>
         )}
@@ -173,18 +195,18 @@ const PNLRow = ({ line, depth = 0, columns }) => {
             <td
               className={cn(
                 "py-2.5 px-3 text-right tabular-nums text-[14px]",
-                v24Var < 0 ? "text-status-error font-semibold" : "text-text-muted",
+                !isGroup && v24Var < 0 ? "text-status-error font-semibold" : "text-text-muted",
               )}
             >
-              {formatValue(v24Var)}
+              {isGroup ? "" : formatValue(v24Var)}
             </td>
             <td
               className={cn(
                 "py-2.5 px-3 text-right tabular-nums text-[13px] border-r border-border-light",
-                v24Pct < 0 ? "text-status-error" : "text-text-muted",
+                !isGroup && v24Pct < 0 ? "text-status-error" : "text-text-muted",
               )}
             >
-              {formatPercentage(v24Pct)}
+              {isGroup ? "" : formatPercentage(v24Pct)}
             </td>
           </>
         )}
@@ -195,26 +217,26 @@ const PNLRow = ({ line, depth = 0, columns }) => {
             <td
               className={cn(
                 "py-2.5 px-3 text-right tabular-nums text-[14px]",
-                prevYTD < 0 ? "text-status-error font-semibold" : "text-text-secondary",
+                !isGroup && prevYTD < 0 ? "text-status-error font-semibold" : "text-text-secondary",
               )}
             >
-              {formatValue(prevYTD)}
+              {isGroup ? "" : formatValue(prevYTD)}
             </td>
             <td
               className={cn(
                 "py-2.5 px-3 text-right tabular-nums text-[14px] font-semibold",
-                ytdVar < 0 ? "text-status-error" : "text-primary",
+                !isGroup && ytdVar < 0 ? "text-status-error" : "text-primary",
               )}
             >
-              {formatValue(ytdVar)}
+              {isGroup ? "" : formatValue(ytdVar)}
             </td>
             <td
               className={cn(
                 "py-2.5 px-4 text-right tabular-nums text-[13px] font-bold",
-                ytdPct < 0 ? "text-status-error" : "text-text-primary",
+                !isGroup && ytdPct < 0 ? "text-status-error" : "text-text-primary",
               )}
             >
-              {formatPercentage(ytdPct)}
+              {isGroup ? "" : formatPercentage(ytdPct)}
             </td>
           </>
         )}
@@ -226,21 +248,21 @@ const PNLRow = ({ line, depth = 0, columns }) => {
         ))
       )}
 
-      {/* Vendor breakdown rows */}
-      {vendorsOpen && hasVendors && (
-        <>
+      {/* Vendor / Customer breakdown rows */}
+      {vendorsOpen && hasVendors && entityGroups.map((group) => (
+        <Fragment key={group.label}>
           <tr className="bg-bg-page/20">
             <td
               colSpan={50}
               style={{ paddingLeft: `${(depth + 1) * 24 + 16}px` }}
               className="py-1 text-[10px] font-bold uppercase tracking-widest text-text-muted"
             >
-              Vendor
+              {group.label}
             </td>
           </tr>
-          {line.vendors.map((vendor) => (
-            <tr key={vendor.name} className="border-b border-border-light/50 hover:bg-bg-page/20">
-              <td className="py-1.5 px-4 text-left min-w-[320px]">
+          {group.items.map((vendor) => (
+            <tr key={`${group.label}-${vendor.name}`} className="border-b border-border-light/50 hover:bg-bg-page/20">
+              <td className="py-1.5 px-4 text-left sticky left-0 z-10 bg-bg-card border-r border-border-light">
                 <div className="flex items-center">
                   <div className="flex shrink-0">
                     {Array.from({ length: depth + 2 }).map((_, i) => (
@@ -263,8 +285,8 @@ const PNLRow = ({ line, depth = 0, columns }) => {
               {hasYTD && <><td className="py-1.5 px-3 text-right text-[13px] text-text-muted/50 whitespace-nowrap">—</td><td className="py-1.5 px-3 text-right text-[13px] text-text-muted/50 whitespace-nowrap">—</td><td className="py-1.5 px-4 text-right text-[13px] text-text-muted/50 whitespace-nowrap">—</td></>}
             </tr>
           ))}
-        </>
-      )}
+        </Fragment>
+      ))}
     </>
   );
 };
@@ -301,8 +323,82 @@ export default function ProfitAndLossSummary({
     );
   }
 
+  const columnWidths = [
+    NAME_COL_WIDTH,
+    ...yearCols.map(() => YEAR_COL_WIDTH),
+    ...(hasYTD ? [YTD_CURRENT_COL_WIDTH] : []),
+    ...(yearCols.length > 1 && hasYTD ? [VAR_DOLLAR_COL_WIDTH, VAR_PCT_COL_WIDTH] : []),
+    ...(yearCols.length > 2 && hasYTD ? [VAR_DOLLAR_COL_WIDTH, VAR_PCT_COL_WIDTH] : []),
+    ...(hasYTD ? [YTD_PREV_COL_WIDTH, YTD_VAR_COL_WIDTH, YTD_PCT_COL_WIDTH] : []),
+  ];
+
+  const headerRows = (
+    <>
+      {/* Row-level border-b renders through column labels with
+          border-collapse, making dates appear to sit on the divider line.
+          The fix: put border-b-2 on the <th> cells in the SECOND row
+          (date/year labels) and on the rowSpan=2 Description cell, so the
+          thick line sits cleanly BELOW all headers. */}
+      <tr className="bg-bg-card">
+        <th rowSpan={2} className="sticky left-0 z-20 bg-bg-card pt-3 pb-5 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider border-b-2 border-text-primary">
+          Description
+        </th>
+        <th colSpan={hasYTD ? yearCols.length + 1 : yearCols.length} className="bg-bg-card pb-1 text-center text-[10px] font-bold text-text-muted/60 uppercase border-b border-border-light">Actuals</th>
+        {yearCols.length > 1 && hasYTD && (
+          <th colSpan={2} className="bg-bg-card pb-1 text-center text-[10px] font-bold text-text-muted/60 uppercase border-b border-border-light border-l border-border-light">
+            {yearCols[1]?.label?.slice(-2)} Var
+          </th>
+        )}
+        {yearCols.length > 2 && hasYTD && (
+          <th colSpan={2} className="bg-bg-card pb-1 text-center text-[10px] font-bold text-text-muted/60 uppercase border-b border-border-light border-l border-border-light">
+            {yearCols[2]?.label?.slice(-2)} Var
+          </th>
+        )}
+        {hasYTD && (
+          <th colSpan={3} className="bg-bg-card pb-1 text-right text-[10px] font-bold text-primary uppercase border-b border-border-light border-l border-border-light">YTD Analysis</th>
+        )}
+      </tr>
+      <tr className="bg-bg-page/20">
+        {yearCols.map((col, idx) => (
+          <th key={idx} className="bg-bg-page/20 pt-3 pb-5 px-3 text-right text-[12px] font-medium text-text-muted uppercase whitespace-nowrap border-b-2 border-text-primary">
+            {col.label}
+          </th>
+        ))}
+        {hasYTD && (
+          <th className="pt-3 pb-5 px-3 text-right text-[12px] font-bold text-text-primary bg-blue-50/30 border-b-2 border-text-primary">
+            {ytdComp.currentLabel || "Current YTD"}
+          </th>
+        )}
+
+        {yearCols.length > 1 && hasYTD && (
+          <>
+            <th className="bg-bg-page/20 pt-3 pb-5 px-3 text-right text-[11px] font-medium text-text-muted border-b-2 border-text-primary">$ Δ</th>
+            <th className="bg-bg-page/20 pt-3 pb-5 px-3 text-right text-[11px] font-medium text-text-muted border-r border-border-light border-b-2 border-text-primary">% Δ</th>
+          </>
+        )}
+
+        {yearCols.length > 2 && hasYTD && (
+          <>
+            <th className="bg-bg-page/20 pt-3 pb-5 px-3 text-right text-[11px] font-medium text-text-muted border-b-2 border-text-primary">$ Δ</th>
+            <th className="bg-bg-page/20 pt-3 pb-5 px-3 text-right text-[11px] font-medium text-text-muted border-r border-border-light border-b-2 border-text-primary">% Δ</th>
+          </>
+        )}
+
+        {hasYTD && (
+          <>
+            <th className="bg-bg-page/20 pt-3 pb-5 px-3 text-right text-[12px] font-medium text-text-muted border-b-2 border-text-primary">
+              {ytdComp.prevLabel || "Prev YTD"}
+            </th>
+            <th className="bg-bg-page/20 pt-3 pb-5 px-3 text-right text-[12px] font-bold text-primary border-b-2 border-text-primary">$ Δ</th>
+            <th className="bg-bg-page/20 pt-3 pb-5 px-4 text-right text-[12px] font-bold text-text-primary border-b-2 border-text-primary">% Δ</th>
+          </>
+        )}
+      </tr>
+    </>
+  );
+
   return (
-    <div className={cn("font-inter", isPreview ? "" : "flex-1 overflow-y-auto bg-bg-page/50 p-10 lg:p-16")}>
+    <div className={cn("font-inter", isPreview ? "" : "bg-bg-page/50 p-10 lg:p-16")}>
       <div className={cn("flex flex-col", isPreview ? "" : "max-w-[1500px] mx-auto card-base p-10 min-h-[1000px] rounded-sm shadow-xl")}>
 
         {/* Header Section */}
@@ -319,89 +415,23 @@ export default function ProfitAndLossSummary({
           )}
         </div>
 
-        <div className="overflow-x-auto flex-1">
-          <table className="w-full min-w-max border-collapse">
-            <thead>
-              {/* Row-level border-b on sticky <tr> elements renders through column
-                  labels with border-collapse, making dates appear to sit on the
-                  divider line. The fix: put border-b-2 on the <th> cells in the
-                  SECOND row (date/year labels) and on the rowSpan=2 Description
-                  cell, so the thick line sits cleanly BELOW all headers. */}
-              <tr className="sticky top-0 bg-bg-card z-20">
-                <th rowSpan={2} className="pt-3 pb-5 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[320px] border-b-2 border-text-primary">
-                  Description
-                </th>
-                <th colSpan={hasYTD ? yearCols.length + 1 : yearCols.length} className="pb-1 text-center text-[10px] font-bold text-text-muted/60 uppercase border-b border-border-light">Actuals</th>
-                {yearCols.length > 1 && hasYTD && (
-                  <th colSpan={2} className="pb-1 text-center text-[10px] font-bold text-text-muted/60 uppercase border-b border-border-light border-l border-border-light">
-                    {yearCols[1]?.label?.slice(-2)} Var
-                  </th>
-                )}
-                {yearCols.length > 2 && hasYTD && (
-                  <th colSpan={2} className="pb-1 text-center text-[10px] font-bold text-text-muted/60 uppercase border-b border-border-light border-l border-border-light">
-                    {yearCols[2]?.label?.slice(-2)} Var
-                  </th>
-                )}
-                {hasYTD && (
-                  <th colSpan={3} className="pb-1 text-right text-[10px] font-bold text-primary uppercase border-b border-border-light border-l border-border-light">YTD Analysis</th>
-                )}
-              </tr>
-              <tr className="bg-bg-page/20 sticky top-[38px] z-20">
-                {yearCols.map((col, idx) => (
-                  <th key={idx} className="pt-3 pb-5 px-3 text-right text-[12px] font-medium text-text-muted uppercase whitespace-nowrap min-w-[90px] border-b-2 border-text-primary">
-                    {col.label}
-                  </th>
-                ))}
-                {hasYTD && (
-                  <th className="pt-3 pb-5 px-3 text-right text-[12px] font-bold text-text-primary bg-blue-50/30 border-b-2 border-text-primary">
-                    {ytdComp.currentLabel || "Current YTD"}
-                  </th>
-                )}
-
-                {yearCols.length > 1 && hasYTD && (
-                  <>
-                    <th className="pt-3 pb-5 px-3 text-right text-[11px] font-medium text-text-muted border-b-2 border-text-primary">$ Δ</th>
-                    <th className="pt-3 pb-5 px-3 text-right text-[11px] font-medium text-text-muted border-r border-border-light border-b-2 border-text-primary">% Δ</th>
-                  </>
-                )}
-
-                {yearCols.length > 2 && hasYTD && (
-                  <>
-                    <th className="pt-3 pb-5 px-3 text-right text-[11px] font-medium text-text-muted border-b-2 border-text-primary">$ Δ</th>
-                    <th className="pt-3 pb-5 px-3 text-right text-[11px] font-medium text-text-muted border-r border-border-light border-b-2 border-text-primary">% Δ</th>
-                  </>
-                )}
-
-                {hasYTD && (
-                  <>
-                    <th className="pt-3 pb-5 px-3 text-right text-[12px] font-medium text-text-muted border-b-2 border-text-primary">
-                      {ytdComp.prevLabel || "Prev YTD"}
-                    </th>
-                    <th className="pt-3 pb-5 px-3 text-right text-[12px] font-bold text-primary border-b-2 border-text-primary">$ Δ</th>
-                    <th className="pt-3 pb-5 px-4 text-right text-[12px] font-bold text-text-primary border-b-2 border-text-primary">% Δ</th>
-                  </>
-                )}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, index) => (
-                <PNLRow
-                  key={row.id || `pnl-root-${index}`}
-                  line={row}
-                  depth={0}
-                  columns={columns}
-                />
-              ))}
-              {rows.length === 0 && (
-                <tr>
-                  <td colSpan={12} className="py-20 text-center text-text-muted italic">
-                    No matching records found for the selected criteria.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+        <FrozenPaneTable columnWidths={columnWidths} headerRows={headerRows} tableClassName="min-w-max">
+          {rows.map((row, index) => (
+            <PNLRow
+              key={row.id || `pnl-root-${index}`}
+              line={row}
+              depth={0}
+              columns={columns}
+            />
+          ))}
+          {rows.length === 0 && (
+            <tr>
+              <td colSpan={12} className="py-20 text-center text-text-muted italic">
+                No matching records found for the selected criteria.
+              </td>
+            </tr>
+          )}
+        </FrozenPaneTable>
 
         {/* Footer */}
         {!isPreview && <div className="mt-16 pt-8 border-t border-border flex flex-col items-center gap-4">

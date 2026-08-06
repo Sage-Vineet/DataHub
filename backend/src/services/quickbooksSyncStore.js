@@ -519,11 +519,20 @@ async function getCachedReport({
   if (skipUnconstrained) return null;
 
   if (!hasDateFilter) {
+    // Legacy rows predate sync_source, so sync_source cannot be matched here — but
+    // `source` must still be, or this fallback returns another connection mode's
+    // data. report_type values like balance_sheet / profit_and_loss / cash_flow /
+    // general_ledger are written by FIVE different sources (manual_gl,
+    // manual_report_upload, quickbooks_manual_upload, manual_upload_generated,
+    // quickbooks), and every non-QuickBooks writer leaves sync_source NULL — exactly
+    // what an unfiltered query here selects. Without this filter the QuickBooks
+    // Online pages silently rendered manual-upload numbers.
     const { data: legacyHit, error: legacyError } = await supabase
       .from("qb_synced_reports")
       .select("*")
       .eq("company_id", companyId)
       .eq("report_type", reportType)
+      .eq("source", syncSource)
       .order("last_synced_at", { ascending: false })
       .order("updated_at", { ascending: false })
       .limit(1)

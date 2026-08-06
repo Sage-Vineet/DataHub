@@ -1,8 +1,11 @@
 import { useState } from "react";
 import { formatCurrency } from "../../../lib/utils";
 import { ChevronRight, ChevronDown } from "lucide-react";
+import FrozenPaneTable from "../shared/FrozenPaneTable";
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const NAME_COL_WIDTH = "220px";
+const MONTH_COL_WIDTH = "90px";
 
 function colClass(value) {
   return `px-3 py-1.5 text-right text-[12px] tabular-nums ${Number(value) < 0 ? "text-status-error" : "text-text-secondary"}`;
@@ -140,6 +143,7 @@ export default function ManualCashflowMonthlyDetail({
   subtitle: propSubtitle,
   entityName = "Company",
   selectedMonths = [],
+  isPreview = false,
 }) {
   const year = data?.year || null;
   const allMonths = Array.isArray(data?.months) ? data.months : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
@@ -159,7 +163,7 @@ export default function ManualCashflowMonthlyDetail({
 
   if (!sections.length) {
     return (
-      <div className="flex-1 overflow-y-auto bg-bg-page/50 p-10 font-inter">
+      <div className={isPreview ? "py-8" : "bg-bg-page/50 p-10 font-inter"}>
         <div className="max-w-[1400px] mx-auto card-base p-10 min-h-[400px] flex items-center justify-center rounded-sm shadow-xl">
           <p className="text-text-muted italic text-[14px]">
             No Cash Flow data found. Select a fiscal year filter and re-generate.
@@ -169,40 +173,41 @@ export default function ManualCashflowMonthlyDetail({
     );
   }
 
+  const columnWidths = [NAME_COL_WIDTH, ...months.map(() => MONTH_COL_WIDTH)];
+
+  const headerRow = (
+    <tr className="border-b-2 border-text-primary bg-bg-page">
+      <th className="sticky left-0 z-20 bg-bg-page px-3 py-2.5 text-left text-[12px] font-semibold text-text-primary border-b-2 border-text-primary border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]" />
+      {months.map((m) => (
+        <th key={m} className="bg-bg-page px-3 py-2.5 text-right text-[12px] font-semibold text-text-primary whitespace-nowrap border-b-2 border-text-primary">
+          {monthLabel(m)}
+        </th>
+      ))}
+    </tr>
+  );
+
   return (
-    <div className="flex-1 overflow-y-auto bg-bg-page/50 p-6 lg:p-10 font-inter">
-      <div className="max-w-[1600px] mx-auto card-base p-6 min-h-[900px] flex flex-col rounded-sm shadow-xl">
+    <div className={isPreview ? "" : "bg-bg-page/50 p-6 lg:p-10 font-inter"}>
+      <div className={isPreview ? "" : "max-w-[1600px] mx-auto card-base p-6 min-h-[900px] flex flex-col rounded-sm shadow-xl"}>
 
-        <div className="flex flex-col items-center mb-8">
-          <h1 className="text-[20px] font-bold text-text-primary tracking-tight">{entityName}</h1>
-          <h2 className="text-[17px] font-semibold text-text-secondary mt-1">{title}</h2>
-          {displaySubtitle && <p className="text-[13px] text-text-muted mt-1">{displaySubtitle}</p>}
-        </div>
+        {!isPreview && (
+          <div className="flex flex-col items-center mb-8">
+            <h1 className="text-[20px] font-bold text-text-primary tracking-tight">{entityName}</h1>
+            <h2 className="text-[17px] font-semibold text-text-secondary mt-1">{title}</h2>
+            {displaySubtitle && <p className="text-[13px] text-text-muted mt-1">{displaySubtitle}</p>}
+          </div>
+        )}
 
-        <div className="overflow-x-auto rounded-md border border-border">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="border-b-2 border-text-primary bg-bg-page sticky top-0 z-10">
-                <th className="sticky top-0 left-0 z-30 bg-bg-page px-3 py-2.5 text-left text-[12px] font-semibold text-text-primary min-w-[220px] border-b-2 border-text-primary border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]" />
-                {months.map((m) => (
-                  <th key={m} className="sticky top-0 z-20 bg-bg-page px-3 py-2.5 text-right text-[12px] font-semibold text-text-primary whitespace-nowrap min-w-[90px] border-b-2 border-text-primary">
-                    {monthLabel(m)}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {sections.map((section) =>
-                section.isCalculated ? (
-                  <CalculatedRow key={section.key} section={section} months={months} />
-                ) : (
-                  <SectionBlock key={section.key} section={section} months={months} />
-                )
-              )}
-            </tbody>
-          </table>
-        </div>
+        <FrozenPaneTable columnWidths={columnWidths} headerRows={headerRow} className="rounded-md border border-border" headerClassName="bg-bg-page">
+          {sections.map((section) =>
+            section.isCalculated ? (
+              <CalculatedRow key={section.key} section={section} months={months} />
+            ) : (
+              <SectionBlock key={section.key} section={section} months={months} />
+            )
+          )}
+        </FrozenPaneTable>
       </div>
-    </div >
+    </div>
   );
 }

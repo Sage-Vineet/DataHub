@@ -296,6 +296,59 @@ function _buildOtpText(otp) {
   ].join("\n");
 }
 
+// ── Password reset OTP email templates ────────────────────────────────────────
+
+function _buildResetOtpHtml(otp) {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Password Reset Code</title>
+  <style>
+    body{margin:0;padding:0;background:#f4f6f9;font-family:Arial,Helvetica,sans-serif}
+    .wrap{max-width:480px;margin:40px auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)}
+    .hdr{background:#05164D;padding:28px 40px;text-align:center}
+    .hdr h1{color:#fff;margin:0;font-size:20px;letter-spacing:.5px}
+    .bdy{padding:36px 40px;text-align:center}
+    .lbl{font-size:14px;color:#555;margin-bottom:24px;line-height:1.6}
+    .box{display:inline-block;background:#f0f4ff;border:2px solid #c3d0f0;border-radius:10px;padding:20px 44px;margin-bottom:24px}
+    .otp{font-size:40px;font-weight:800;letter-spacing:12px;color:#05164D;font-family:'Courier New',monospace}
+    .exp{font-size:13px;color:#888;margin-bottom:24px}
+    .wrn{font-size:12px;color:#aaa;border-top:1px solid #f0f0f0;padding-top:20px;line-height:1.6}
+    .ftr{background:#f4f6f9;padding:16px 40px;text-align:center;font-size:12px;color:#aaa}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hdr"><h1>Password Reset</h1></div>
+    <div class="bdy">
+      <p class="lbl">Your M&amp;A Hub password reset code is:</p>
+      <div class="box"><div class="otp">${otp}</div></div>
+      <p class="exp">This code expires in <strong>10 minutes</strong>.</p>
+      <p class="wrn">If you did not request a password reset, please ignore this email — your password will not be changed.<br/>Never share this code with anyone.</p>
+    </div>
+    <div class="ftr">M&amp;A Hub Team &mdash; Automated message, do not reply.</div>
+  </div>
+</body>
+</html>`;
+}
+
+function _buildResetOtpText(otp) {
+  return [
+    "M&A Hub Password Reset Code",
+    "",
+    `Your password reset code is: ${otp}`,
+    "",
+    "This code expires in 10 minutes.",
+    "",
+    "If you did not request a password reset, please ignore this email — your password will not be changed.",
+    "Never share this code with anyone.",
+    "",
+    "M&A Hub Team",
+  ].join("\n");
+}
+
 // ── Welcome email templates ───────────────────────────────────────────────────
 
 function _buildWelcomeHtml(userName, email, password, companyDisplay, loginUrl) {
@@ -387,6 +440,27 @@ async function sendOtpEmail(email, otp) {
 }
 
 /**
+ * Sends a 6-digit OTP password reset email.
+ */
+async function sendPasswordResetOtpEmail(email, otp) {
+  console.log(`[Email Service] Sending password reset OTP to <${email}> via Graph API`);
+  console.log(`[Email Service] Graph configured: ${isGraphConfigured()}`);
+
+  try {
+    const result = await _deliver(
+      email,
+      "M&A Hub Password Reset Code",
+      _buildResetOtpHtml(otp),
+      _buildResetOtpText(otp)
+    );
+    return result;
+  } catch (err) {
+    console.error(`[Email Service] Password reset OTP delivery completely failed for <${email}>: ${err.message}`);
+    return { sent: false, reason: "delivery_failed", error: err.message };
+  }
+}
+
+/**
  * Sends a welcome/invitation email to a newly created user.
  */
 async function sendWelcomeEmail({ userId, userName, email, password, companyNames }) {
@@ -424,6 +498,7 @@ async function sendWelcomeEmail({ userId, userName, email, password, companyName
 async function sendReminderEmail({
   toName, toEmail, requestTitle, dueDate, senderName, companyName,
   requestType, description, priority, status, reminderAt, portalUrl,
+  frequencyLabel, nextReminderAt, noticeType = "reminder",
 }) {
   const formattedDue = dueDate
     ? new Date(dueDate).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
@@ -431,9 +506,16 @@ async function sendReminderEmail({
   const formattedReminderAt = reminderAt
     ? new Date(reminderAt).toLocaleString("en-US", { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" })
     : null;
+  const formattedNextReminderAt = nextReminderAt
+    ? new Date(nextReminderAt).toLocaleString("en-US", { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" })
+    : null;
   const greeting = toName ? `Hi ${toName},` : "Hi,";
   const sentBy   = senderName || "Your broker";
   const title    = escapeHtml(requestTitle || "Document Request");
+  const isOverdue = noticeType === "overdue";
+  const actionCopy = isOverdue
+    ? "This request is now overdue. Please log in to the M&A Hub portal and complete it as soon as possible."
+    : "Please log in to the M&A Hub portal to complete any outstanding documents.";
 
   const detailRows = [
     companyName    ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600;width:140px">Company</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${escapeHtml(companyName)}</td></tr>` : "",
@@ -442,42 +524,52 @@ async function sendReminderEmail({
     priority       ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Priority</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5;text-transform:capitalize">${escapeHtml(priority)}</td></tr>` : "",
     formattedDue   ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Due Date</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${formattedDue}</td></tr>` : "",
     status         ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Status</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5;text-transform:capitalize">${escapeHtml(status)}</td></tr>` : "",
+    frequencyLabel ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Cadence</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${escapeHtml(frequencyLabel)}</td></tr>` : "",
     formattedReminderAt ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Reminder Sent</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${formattedReminderAt}</td></tr>` : "",
+    formattedNextReminderAt ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Next Reminder</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${formattedNextReminderAt}</td></tr>` : "",
   ].filter(Boolean).join("\n");
 
   const html = `
     <div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#333">
       <p>${greeting}</p>
-      <p>${escapeHtml(sentBy)} has sent you a reminder for the following document request:</p>
+      <p>${escapeHtml(sentBy)} has ${isOverdue ? "sent an overdue notice" : "sent you a reminder"} for the following document request:</p>
       <table style="border-collapse:collapse;width:100%;margin:16px 0">
         <tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600;width:140px">Request</td>
             <td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${title}</td></tr>
         ${detailRows}
       </table>
-      <p>Please log in to the M&amp;A Hub portal to complete any outstanding documents.</p>
+      <p>${escapeHtml(actionCopy)}</p>
       ${portalUrl ? `<p style="margin:16px 0"><a href="${escapeHtml(portalUrl)}" style="background:#05164D;color:#fff;padding:10px 24px;border-radius:6px;text-decoration:none;font-weight:600;display:inline-block">Open Request Portal</a></p>` : ""}
-      <p style="margin-top:24px;color:#6d6e71;font-size:13px">Automated reminder — do not reply.</p>
+      <p style="margin-top:24px;color:#6d6e71;font-size:13px">Automated ${isOverdue ? "overdue notice" : "reminder"} — do not reply.</p>
     </div>`;
 
   const textLines = [
     greeting, "",
-    `${sentBy} has sent you a reminder for: ${requestTitle || "Document Request"}`,
+    `${sentBy} has sent ${isOverdue ? "an overdue notice" : "a reminder"} for: ${requestTitle || "Document Request"}`,
     companyName         ? `Company:      ${companyName}` : "",
     requestType         ? `Type:         ${requestType}` : "",
     priority            ? `Priority:     ${priority}` : "",
     formattedDue        ? `Due:          ${formattedDue}` : "",
     status              ? `Status:       ${status}` : "",
+    frequencyLabel      ? `Cadence:      ${frequencyLabel}` : "",
     formattedReminderAt ? `Reminder Sent: ${formattedReminderAt}` : "",
+    formattedNextReminderAt ? `Next Reminder: ${formattedNextReminderAt}` : "",
     description         ? `\nDescription:\n${description}` : "",
     "",
-    "Please log in to the M&A Hub portal to complete any outstanding documents.",
+    actionCopy,
     portalUrl ? `Portal: ${portalUrl}` : "",
   ].filter(Boolean).join("\n");
 
   try {
-    await _deliver(toEmail, `Reminder: Action Required for Request - ${requestTitle || "Document Request"}`, html, textLines);
+    return await _deliver(
+      toEmail,
+      `${isOverdue ? "Overdue Request" : "Reminder"}: ${requestTitle || "Document Request"}`,
+      html,
+      textLines
+    );
   } catch (err) {
     console.error(`[Email Service] Reminder email failed for <${toEmail}>: ${err.message}`);
+    return { sent: false, reason: "delivery_failed", error: err.message };
   }
 }
 
@@ -616,6 +708,7 @@ async function sendCompanyCreatedEmail({ toName, toEmail, companyName, projectNa
 
 module.exports = {
   sendOtpEmail,
+  sendPasswordResetOtpEmail,
   sendWelcomeEmail,
   sendReminderEmail,
   sendRequestNotificationEmail,

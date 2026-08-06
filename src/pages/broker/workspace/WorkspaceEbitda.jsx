@@ -17,10 +17,12 @@ import {
   deleteEbitdaAdjustment,
   generateEbitdaComments,
   listEbitdaAdjustmentTypes,
+  getFinancialStatements,
 } from "../../../lib/api";
 import {
   getEbitdaData,
   extractEbitdaFromManualPLRows,
+  extractEbitdaFromKeyReportStatement,
 } from "../../../services/ebitdaService";
 import {
   loadAdjustmentWorkspaceData,
@@ -31,7 +33,7 @@ import { REPORT_SOURCE_KEYS, normalizeReportSourceKey } from "../../../lib/repor
 import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
 import EbitdaAdjustmentsPanel from "../../../components/reports/ebitda/EbitdaAdjustmentsPanel";
 import { useDataSource } from "../../../context/DataSourceContext";
-import { useKeyReportContextStore, selectKeyReportContext } from "../../../store/useKeyReportContextStore";
+import { useKeyReportContextStore, selectKeyReportContext, maskKeyReportContext } from "../../../store/useKeyReportContextStore";
 import { useShallow } from "zustand/react/shallow";
 import KeyReportVersionSelector from "../../../components/key-reports/KeyReportVersionSelector";
 
@@ -155,7 +157,16 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000
 export default function WorkspaceEbitda() {
   const { clientId } = useParams();
   const { activeSource, activeSourceMode } = useDataSource();
-  const kr = useKeyReportContextStore(useShallow(selectKeyReportContext));
+  // Key Reports drives this page ONLY when the active data source is
+  // "key_reports" (activated from the Key Reports page). For the 4 connection
+  // modes the KR context is masked inactive so the Connections-page selection
+  // is authoritative.
+  const krSelected = useMemo(
+    () => normalizeReportSourceKey(activeSource) === REPORT_SOURCE_KEYS.KEY_REPORTS,
+    [activeSource],
+  );
+  const rawKr = useKeyReportContextStore(useShallow(selectKeyReportContext));
+  const kr = useMemo(() => maskKeyReportContext(rawKr, krSelected), [rawKr, krSelected]);
 
   const accountingMethod = "Accrual";
 
@@ -188,12 +199,17 @@ export default function WorkspaceEbitda() {
 
   // Dataset version selection removed — consolidated into Key Reports.
   const selectedVersion = kr.resolvedDatasetVersion;
+  // The SELECTED Key Report version id — drives the manual_upload / QB-manual
+  // flows (the modern GL/COA-driven Key Reports versions), same as the other
+  // Key Report consumer pages (Reports, Bank & Tax Reconciliation).
+  const krVersionId = kr.krActive ? kr.selectedVersionId : null;
 
   const activeSourceRef = useRef(reportSource);
   // Tracks the currently-selected version so an in-flight request for a
   // previous version can be discarded if the user switches mid-fetch
   // (last-write-wins guard — prevents stale-version data overwriting fresh).
   const latestVersionRef = useRef(selectedVersion);
+  const latestKrVersionRef = useRef(krVersionId);
   const prevReportSourceForClearRef = useRef(reportSource);
   const adjustmentLoadTokenRef = useRef(0);
 
@@ -204,6 +220,10 @@ export default function WorkspaceEbitda() {
   useEffect(() => {
     latestVersionRef.current = selectedVersion;
   }, [selectedVersion]);
+
+  useEffect(() => {
+    latestKrVersionRef.current = krVersionId;
+  }, [krVersionId]);
 
   // Extract unique P&L accounts for addback dropdown (dynamic from API data)
   const plAccountOptions = useMemo(() => {
@@ -334,14 +354,17 @@ export default function WorkspaceEbitda() {
   // Manual GL internal version loading removed — consolidated into Key Reports.
 
   // Cache key includes version so switching versions always fetches fresh data
-  // and never serves a cached result from a different version.
+  // and never serves a cached result from a different version. Manual GL keys
+  // on the resolved dataset version; the manual_upload / QB-manual flows (the
+  // modern GL/COA-driven Key Reports versions) key on the Key Report version id.
   const ebitdaCacheKey = clientId && reportSource
-    ? `ebitda_data_${clientId}_${reportSource}${isManualGl && selectedVersion ? `_v${selectedVersion}` : ""}`
+    ? `ebitda_data_${clientId}_${reportSource}${isManualGl && selectedVersion ? `_v${selectedVersion}` : ""}${!isManualGl && krVersionId ? `_kr${krVersionId}` : ""}`
     : null;
 
   const handleGenerate = useCallback(async (skipCache = false) => {
     const requestSource = reportSource;
     const requestVersion = selectedVersion;
+    const requestKrVersionId = krVersionId;
     if (!skipCache && ebitdaCacheKey) {
       try {
         const cached = sessionStorage.getItem(ebitdaCacheKey);
@@ -355,6 +378,17 @@ export default function WorkspaceEbitda() {
           }
         }
       } catch { /* ignore corrupt cache */ }
+    }
+
+    // Key Reports is the active source but no usable Key Report Version resolved
+    // yet. Don't fall through to the QuickBooks path — show an empty state.
+    if (reportSource === REPORT_SOURCE_KEYS.KEY_REPORTS) {
+      setMultiYearData(null);
+      setYears([]);
+      setError("");
+      setIsLoading(false);
+      setIsDataInitialized(true);
+      return;
     }
 
     setIsLoading(true);
@@ -401,12 +435,34 @@ export default function WorkspaceEbitda() {
         if (ebitdaCacheKey && hasUsableEbitdaData(results)) {
           try { sessionStorage.setItem(ebitdaCacheKey, JSON.stringify({ multiYearData: results, years: availableYears })); } catch { /* quota exceeded */ }
         }
+      } else if (isManualUpload && requestKrVersionId) {
+        // Modern GL/COA-driven Key Reports version — this flow never stores a
+        // raw uploaded P&L document, so read the SAME generated statement the
+        // Financial Reports tab reads instead of getAllManualUploadedReports.
+        const stmtResult = await getFinancialStatements(requestKrVersionId);
+        const yearly = stmtResult?.reports?.profitAndLoss?.yearly || [];
+
+        if (!yearly.length) {
+          throw new Error("No Profit & Loss data found for this Key Report version. Run AI Processing in Key Reports first.");
+        }
+
+        const newData = {};
+        for (const entry of yearly) {
+          if (!entry?.year) continue;
+          newData[entry.year] = extractEbitdaFromKeyReportStatement(entry.statement, entry.periodLabel || String(entry.year));
+        }
+        const newYears = Object.keys(newData).map(Number).sort((a, b) => b - a);
+
+        if (activeSourceRef.current !== requestSource || latestKrVersionRef.current !== requestKrVersionId) return;
+        setYears(newYears);
+        setMultiYearData(newData);
+        if (ebitdaCacheKey && hasUsableEbitdaData(newData)) {
+          try { sessionStorage.setItem(ebitdaCacheKey, JSON.stringify({ multiYearData: newData, years: newYears })); } catch { /* quota exceeded */ }
+        }
       } else if (isManualUpload) {
-        // Fetch ALL uploaded P&L files so every year is represented
-        const params = {
-          clientId,
-          ...(kr.krActive && kr.selectedVersionId ? { keyReportVersionId: kr.selectedVersionId } : {}),
-        };
+        // Legacy standalone Manual Upload connection (not Key-Reports-driven):
+        // fetch ALL uploaded P&L files so every year is represented.
+        const params = { clientId };
         const result = await getAllManualUploadedReports("profit_and_loss", params);
         const files = (result?.files || []).filter((f) => f.data?.rows?.length);
 
@@ -477,7 +533,7 @@ export default function WorkspaceEbitda() {
         // QuickBooks Manual: read all synced P&L files from qb_synced_reports
         const params = {
           clientId,
-          ...(kr.krActive && kr.selectedVersionId ? { keyReportVersionId: kr.selectedVersionId } : {}),
+          ...(requestKrVersionId ? { keyReportVersionId: requestKrVersionId } : {}),
         };
         const result = await getAllQMSUploadedReports("profit_and_loss", params);
         const files = (result?.files || []).filter((f) => f.data?.rows?.length);
@@ -534,7 +590,7 @@ export default function WorkspaceEbitda() {
         }
 
         const newYears = Array.from(yearFileMap.keys()).sort((a, b) => b - a);
-        if (activeSourceRef.current !== requestSource) return;
+        if (activeSourceRef.current !== requestSource || latestKrVersionRef.current !== requestKrVersionId) return;
         setYears(newYears);
         setMultiYearData(newData);
         if (ebitdaCacheKey && hasUsableEbitdaData(newData)) {
@@ -571,20 +627,23 @@ export default function WorkspaceEbitda() {
     } finally {
       if (activeSourceRef.current === requestSource) setIsLoading(false);
     }
-  }, [isManualGl, isManualUpload, isQBManual, clientId, ebitdaCacheKey, accountingMethod, selectedVersion]);
+  }, [isManualGl, isManualUpload, isQBManual, clientId, ebitdaCacheKey, accountingMethod, selectedVersion, krVersionId]);
 
   useEffect(() => {
     handleGenerate(isManualUpload || isQBManual);
   }, [handleGenerate]);
 
-  // When the selected Manual GL version changes, discard any cached result and
-  // re-generate so EBITDA always reflects the chosen version's transactions.
-  const prevVersionRef = useRef(selectedVersion);
+  // When the selected version changes — the Manual GL dataset version, or the
+  // Key Report version id for the manual_upload / QB-manual flows (the modern
+  // GL/COA-driven Key Reports versions) — discard any stale result and
+  // re-generate so EBITDA always reflects the chosen version's data.
+  const versionSignal = isManualGl ? selectedVersion : krVersionId;
+  const prevVersionRef = useRef(versionSignal);
   useEffect(() => {
-    if (!isManualGl) return;
-    if (prevVersionRef.current === selectedVersion) return;
-    prevVersionRef.current = selectedVersion;
-    if (!selectedVersion) return;
+    if (!isManualGl && !krVersionId) return;
+    if (prevVersionRef.current === versionSignal) return;
+    prevVersionRef.current = versionSignal;
+    if (!versionSignal) return;
 
     // Check cache before clearing/loading to minimize UI jumps
     let inCache = false;
@@ -608,7 +667,7 @@ export default function WorkspaceEbitda() {
 
     setIsDataInitialized(false);
     setError("");
-  }, [isManualGl, selectedVersion, ebitdaCacheKey]);
+  }, [isManualGl, versionSignal, krVersionId, ebitdaCacheKey]);
 
   // Load adjustment types for non-ManualGL modes (QB, Manual Upload, QB Manual)
   useEffect(() => {
@@ -1041,8 +1100,8 @@ export default function WorkspaceEbitda() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            {/* Unified Key Reports Version selector is the single source of truth */}
-            <KeyReportVersionSelector clientId={clientId} variant="filter" />
+            {/* Key Reports Version selector — only when Key Reports is the active source */}
+            {krSelected && <KeyReportVersionSelector clientId={clientId} variant="filter" />}
             {/* Refresh button removed */}
           </div>
         </div>

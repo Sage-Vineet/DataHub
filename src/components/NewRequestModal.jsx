@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Loader2, User, X } from 'lucide-react';
+import { AlertTriangle, Loader2, X } from 'lucide-react';
+import AssigneeMultiSelect from './AssigneeMultiSelect';
 
 const CATEGORY_OPTIONS = ['Finance', 'Legal', 'Compliance', 'HR', 'Tax', 'M&A', 'Other'];
 const REQUEST_TYPES = ['Document', 'Information'];
@@ -19,7 +20,7 @@ const DEFAULT_FORM = {
   file: null,
   priority: 'high',
   dueDate: '',
-  assignedTo: '',   // user id of client team member; '' = unassigned
+  assignedToEmails: ['all'],
 };
 
 export default function NewRequestModal({
@@ -229,7 +230,7 @@ export default function NewRequestModal({
                   <div className="space-y-0.5">
                     <p className="text-sm font-bold text-red-700">Critical Priority — Immediate Notification</p>
                     <p className="text-xs text-red-600">
-                      On submission, an immediate reminder will be sent to the client and daily follow-ups will continue until the request is fulfilled. Use only for urgent, time-sensitive documents.
+                      On submission, an immediate reminder will be sent to the client and hourly follow-ups will continue until the request is fulfilled or overdue. Use only for urgent, time-sensitive documents.
                     </p>
                   </div>
                 </div>
@@ -252,23 +253,13 @@ export default function NewRequestModal({
               {/* Assign To — shown only when broker passes clientTeamUsers */}
               {Array.isArray(clientTeamUsers) && clientTeamUsers.length > 0 && (
                 <div className="space-y-1.5">
-                  <label className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide flex items-center gap-1.5">
-                    <User size={12} />
-                    Assign To (Client Team)
-                  </label>
-                  <select
-                    value={form.assignedTo}
-                    onChange={(e) => setForm(s => ({ ...s, assignedTo: e.target.value }))}
-                    className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm"
-                  >
-                    <option value="">— Unassigned (visible to all) —</option>
-                    {clientTeamUsers.map((u) => (
-                      <option key={u.id} value={u.id}>
-                        {u.name}{u.role_label ? ` · ${u.role_label}` : ''}
-                      </option>
-                    ))}
-                  </select>
-                  <p className="text-[11px] text-[#A5A5A5]">Only the selected member will see this request in their portal. Leave blank to make it visible to all client team members.</p>
+                  <label className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Assign To (Client Team)</label>
+                  <AssigneeMultiSelect
+                    users={clientTeamUsers}
+                    value={form.assignedToEmails}
+                    onChange={(assignedToEmails) => setForm(s => ({ ...s, assignedToEmails }))}
+                  />
+                  <p className="text-[11px] text-[#A5A5A5]">All keeps the request visible to every client user. Specific emails make it private to those people.</p>
                 </div>
               )}
 
@@ -278,8 +269,8 @@ export default function NewRequestModal({
                   <div className="flex items-start gap-2 text-xs text-[#6D6E71]">
                     <span className="mt-0.5 px-2 py-0.5 rounded-full bg-red-600 text-white text-[10px] font-bold">Critical</span>
                     <div>
-                      <p className="font-semibold text-[#050505]">Immediate notification + daily follow-ups</p>
-                      <p>Client is notified instantly upon request creation. Reminders repeat every day until fulfilled.</p>
+                      <p className="font-semibold text-[#050505]">Immediate notification + hourly follow-ups</p>
+                      <p>Client is notified instantly upon request creation. Reminders repeat every hour until fulfilled or overdue.</p>
                     </div>
                   </div>
                 )}
@@ -287,8 +278,8 @@ export default function NewRequestModal({
                   <div className="flex items-start gap-2 text-xs text-[#6D6E71]">
                     <span className="mt-0.5 px-2 py-0.5 rounded-full bg-red-100 text-red-600 text-[10px] font-bold">High</span>
                     <div>
-                      <p className="font-semibold text-[#050505]">Send immediate reminder, then daily follow-ups</p>
-                      <p>Urgent cadence for open requests</p>
+                      <p className="font-semibold text-[#050505]">Immediate reminder, then every 24 hours</p>
+                      <p>Urgent cadence for open requests.</p>
                     </div>
                   </div>
                 )}
@@ -296,8 +287,8 @@ export default function NewRequestModal({
                   <div className="flex items-start gap-2 text-xs text-[#6D6E71]">
                     <span className="mt-0.5 px-2 py-0.5 rounded-full bg-orange-100 text-orange-600 text-[10px] font-bold">Medium</span>
                     <div>
-                      <p className="font-semibold text-[#050505]">Send notification every 2 days</p>
-                      <p>Medium urgency (orange badge)</p>
+                      <p className="font-semibold text-[#050505]">Immediate reminder, then every 48 hours</p>
+                      <p>Medium urgency cadence.</p>
                     </div>
                   </div>
                 )}
@@ -305,8 +296,8 @@ export default function NewRequestModal({
                   <div className="flex items-start gap-2 text-xs text-[#6D6E71]">
                     <span className="mt-0.5 px-2 py-0.5 rounded-full bg-green-100 text-green-600 text-[10px] font-bold">Low</span>
                     <div>
-                      <p className="font-semibold text-[#050505]">Send immediate reminder, then weekly follow-ups</p>
-                      <p>Low urgency cadence</p>
+                      <p className="font-semibold text-[#050505]">Immediate reminder, then every 72 hours</p>
+                      <p>Low urgency cadence.</p>
                     </div>
                   </div>
                 )}

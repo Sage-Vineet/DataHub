@@ -9,25 +9,7 @@ const { CLIENT_SUB_ROLES } = require("../constants/roles");
 const CLIENT_SIDE_SUB_ROLES = ['company_owner', 'client_team_member', 'client_accountant'];
 
 let profilePool = null;
-let profileFallbackCooldownUntil = 0;
 let _pgOpenUntil = 0;
-const PROFILE_FALLBACK_COOLDOWN_MS = 60 * 1000;
-
-function isProfileFallbackCoolingDown() {
-  return Date.now() < profileFallbackCooldownUntil;
-}
-
-function markProfileFallbackCooldown(error) {
-  const message = String(error?.message || "").toLowerCase();
-  if (
-    message.includes("timeout") ||
-    message.includes("terminated") ||
-    message.includes("econn") ||
-    message.includes("could not connect")
-  ) {
-    profileFallbackCooldownUntil = Date.now() + PROFILE_FALLBACK_COOLDOWN_MS;
-  }
-}
 
 function getProfilePool() {
   if (!process.env.DATABASE_URL) return null;
@@ -96,7 +78,6 @@ async function getSqlProfileByEmail(email) {
     );
     return rows[0] || {};
   } catch (err) {
-    markProfileFallbackCooldown(err);
     console.warn("Profile SQL fallback read failed:", err.message);
     const isNetworkErr = err.code === "ETIMEDOUT" || err.code === "ECONNREFUSED" ||
       /timeout|ETIMEDOUT|ECONNREFUSED|terminated/i.test(err.message);
@@ -325,7 +306,8 @@ async function attachAssignedCompanies(users) {
     return map;
   }, {});
 
-  // Snapshot direct user_companies assignments before historical data is merged in.
+  // Snapshot direct user_companies assignments. These are access-bearing company
+  // links; historical actor rows below are only metadata and must not grant access.
   // Used to produce direct_company_ids — companies a user is explicitly assigned to —
   // so the Deal Team page can distinguish directly assigned brokers from invite-only ones.
   const directByUserId = Object.fromEntries(
@@ -333,10 +315,6 @@ async function attachAssignedCompanies(users) {
   );
 
   const historicalBrokerCompaniesByUserId = await getHistoricalBrokerCompaniesByUserId(userList);
-  for (const [userId, companies] of Object.entries(historicalBrokerCompaniesByUserId)) {
-    if (!byUserId[userId]) byUserId[userId] = [];
-    byUserId[userId].push(...companies);
-  }
 
   // Batch-fetch contact_email for companies that appear only as user.company_id (no user_companies row)
   // This covers the post-migration case where user_companies is empty but company_id is set
@@ -356,36 +334,16 @@ async function attachAssignedCompanies(users) {
     }
   }
 
-  const enriched = userList.map((user) => {
-    const assignedCompanies = dedupeCompanies(byUserId[user.id] || []);
-    const hasPrimary = user.company_id && assignedCompanies.some((company) => String(company.id) === String(user.company_id));
-    const fallbackCompany = user.company_id
-      ? (fallbackCompanyMap.get(String(user.company_id)) || { id: user.company_id, name: user.company_name })
-      : null;
-    const normalizedCompanies = hasPrimary || !user.company_id
-      ? assignedCompanies
-      : [fallbackCompany, ...assignedCompanies];
-
-    const normalizedEmail = String(user.email || "").trim().toLowerCase();
-    const isSeller = normalizedCompanies.some((company) => (
-      String(company.contact_email || "").trim().toLowerCase() === normalizedEmail
-    ));
-    const effectiveRole = user.role === "client"
-      ? "client"
-      : user.role === "buyer"
-        ? (CLIENT_SIDE_SUB_ROLES.includes(user.sub_role) || isSeller ? "client" : "user")
-        : user.role;
-
-    return {
-      ...user,
-      effective_role: effectiveRole,
-      company_ids: normalizedCompanies.map((company) => company.id).filter(Boolean),
-      // direct_company_ids: only companies from user_companies rows (no historical broker data,
-      // no company_id fallback). Used by the Deal Team page to filter broker visibility.
-      direct_company_ids: dedupeCompanies(directByUserId[user.id] || []).map((c) => c.id).filter(Boolean),
-      assigned_companies: normalizedCompanies,
-    };
-  });
+  const enriched = userList.map((user) => ({
+    ...user,
+    ...buildCompanyAssignmentSnapshot({
+      user,
+      assignedCompanies: byUserId[user.id] || [],
+      directCompanies: directByUserId[user.id] || [],
+      fallbackCompanyMap,
+      historicalCompanies: historicalBrokerCompaniesByUserId[user.id] || [],
+    }),
+  }));
 
   return isSingle ? enriched[0] : enriched;
 }
@@ -398,6 +356,45 @@ function dedupeCompanies(companies) {
     byId.set(String(company.id), { ...existing, ...company });
   }
   return Array.from(byId.values());
+}
+
+function buildCompanyAssignmentSnapshot({
+  user,
+  assignedCompanies = [],
+  directCompanies = [],
+  fallbackCompanyMap = new Map(),
+  historicalCompanies = [],
+}) {
+  const normalizedAssignedCompanies = dedupeCompanies(assignedCompanies);
+  const hasPrimary = user.company_id && normalizedAssignedCompanies.some((company) => String(company.id) === String(user.company_id));
+  const fallbackCompany = user.company_id
+    ? (fallbackCompanyMap.get(String(user.company_id)) || { id: user.company_id, name: user.company_name })
+    : null;
+  const normalizedCompanies = hasPrimary || !user.company_id
+    ? normalizedAssignedCompanies
+    : [fallbackCompany, ...normalizedAssignedCompanies].filter(Boolean);
+  const normalizedHistoricalCompanies = dedupeCompanies(historicalCompanies);
+
+  const normalizedEmail = String(user.email || "").trim().toLowerCase();
+  const isSeller = normalizedCompanies.some((company) => (
+    String(company.contact_email || "").trim().toLowerCase() === normalizedEmail
+  ));
+  const effectiveRole = user.role === "client"
+    ? "client"
+    : user.role === "buyer"
+      ? (CLIENT_SIDE_SUB_ROLES.includes(user.sub_role) || isSeller ? "client" : "user")
+      : user.role;
+
+  return {
+    effective_role: effectiveRole,
+    company_ids: normalizedCompanies.map((company) => company.id).filter(Boolean),
+    // direct_company_ids: only companies from user_companies rows (no historical broker data,
+    // no company_id fallback). Used by the Deal Team page to filter broker visibility.
+    direct_company_ids: dedupeCompanies(directCompanies).map((c) => c.id).filter(Boolean),
+    historical_company_ids: normalizedHistoricalCompanies.map((c) => c.id).filter(Boolean),
+    historical_assigned_companies: normalizedHistoricalCompanies,
+    assigned_companies: normalizedCompanies,
+  };
 }
 
 async function getHistoricalBrokerCompaniesByUserId(userList) {
@@ -479,6 +476,16 @@ function normalizeCompanyIds(companyId, companyIds) {
  * @returns {Array<string>} Unique company IDs
  */
 function getUserCompanyIds(user) {
+  if (Array.isArray(user?.direct_company_ids)) {
+    return Array.from(
+      new Set([
+        ...(user.direct_company_ids || []),
+        user?.company_id,
+        user?.companyId,
+      ].filter(Boolean).map(String)),
+    );
+  }
+
   const ids = [
     ...(user?.company_ids || []),
     ...((user?.assigned_companies || []).map((c) => c.id)),
@@ -779,7 +786,7 @@ async function resolveReplacementUserId(preferredUserId, userToDelete) {
       .order("created_at", { ascending: true });
 
     if (!error && candidates && candidates.length > 0) {
-      const sorted = candidates.sort((a, b) => (a.role === "admin" ? -1 : 1));
+      const sorted = candidates.sort((a) => (a.role === "admin" ? -1 : 1));
       return sorted[0].id;
     }
   }
@@ -792,7 +799,7 @@ async function resolveReplacementUserId(preferredUserId, userToDelete) {
     .order("created_at", { ascending: true });
 
   if (!globalError && globalCandidates && globalCandidates.length > 0) {
-    const sorted = globalCandidates.sort((a, b) => (a.role === "admin" ? -1 : 1));
+    const sorted = globalCandidates.sort((a) => (a.role === "admin" ? -1 : 1));
     return sorted[0].id;
   }
 
@@ -1052,22 +1059,38 @@ async function updateUser(id, userData) {
  * associated with the given company. Used for request-assignment email notifications.
  */
 async function getClientTeamMembersForCompany(companyId) {
+  if (!companyId) return [];
+  const byId = new Map();
+
+  const { data: directUsers } = await supabase
+    .from("users")
+    .select("id, name, email, sub_role")
+    .eq("company_id", companyId)
+    .in("sub_role", CLIENT_SUB_ROLES);
+
+  for (const user of directUsers || []) {
+    if (user?.id && user.email) byId.set(String(user.id), user);
+  }
+
   const { data: links } = await supabase
     .from("user_companies")
     .select("user_id")
     .eq("company_id", companyId);
 
-  if (!links?.length) return [];
+  const userIds = (links || []).map((l) => l.user_id).filter(Boolean);
+  if (userIds.length) {
+    const { data: linkedUsers } = await supabase
+      .from("users")
+      .select("id, name, email, sub_role")
+      .in("id", userIds)
+      .in("sub_role", CLIENT_SUB_ROLES);
 
-  const userIds = links.map((l) => l.user_id).filter(Boolean);
+    for (const user of linkedUsers || []) {
+      if (user?.id && user.email) byId.set(String(user.id), user);
+    }
+  }
 
-  const { data: users } = await supabase
-    .from("users")
-    .select("id, name, email, sub_role")
-    .in("id", userIds)
-    .in("sub_role", CLIENT_SUB_ROLES);
-
-  return (users || []).filter((u) => u.email);
+  return Array.from(byId.values());
 }
 
 module.exports = {
@@ -1075,6 +1098,7 @@ module.exports = {
   userSelect,
   flattenUser,
   attachAssignedCompanies,
+  buildCompanyAssignmentSnapshot,
   normalizeCompanyIds,
   getUserCompanyIds,
   canAccessCompany,

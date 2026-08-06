@@ -26,8 +26,28 @@ const REPORT_CATEGORIES = {
   GENERAL_LEDGER: "general_ledger",
   BANK_STATEMENT: "bank_statement",
   TAX_RETURN: "tax_return",
+  // Optional: a company's own Chart of Accounts workbook (migration 072).
+  // When linked, it becomes that company's highest-priority hierarchy source
+  // (see coaMappingService.createCoaMapper) — above the shared global
+  // reference and above AI category selection.
+  CHART_OF_ACCOUNTS: "chart_of_accounts",
 };
 const VALID_CATEGORIES = new Set(Object.values(REPORT_CATEGORIES));
+
+// Entry table that holds a category's extracted rows, keyed by (version_id,
+// source_file_id). Mirrors each extraction service's `tableName` — kept here
+// too so removeMapping can clean up without loading the extraction services.
+// profit_loss has no entry table (dropped by migration 056; P&L is generated
+// from the General Ledger). chart_of_accounts also has none here on purpose:
+// client_chart_of_accounts is scoped by company_id, not version_id/
+// source_file_id, so unlinking the document doesn't revoke the company's
+// parsed reference — only a fresh upload replaces it (clientCoaImportService).
+const ENTRY_TABLE_BY_CATEGORY = {
+  [REPORT_CATEGORIES.GENERAL_LEDGER]: "general_ledger_entries",
+  [REPORT_CATEGORIES.BALANCE_SHEET]: "balance_sheet_entries",
+  [REPORT_CATEGORIES.BANK_STATEMENT]: "bank_statement_entries",
+  [REPORT_CATEGORIES.TAX_RETURN]: "tax_return_entries",
+};
 
 function normalizeVersion(row) {
   if (!row) return null;
@@ -41,6 +61,13 @@ function normalizeVersion(row) {
     resolvedBatchId: row.resolved_batch_id || null,
     resolvedDatasetVersion: row.resolved_dataset_version || null,
     lastSyncedAt: row.last_synced_at || null,
+    // Migration 086 (coa_approved_at) — null means this version's Chart of
+    // Accounts is still an unpersisted proposal awaiting review; a timestamp
+    // means it was reviewed and Saved/Approved (persistApprovedCoaTree
+    // succeeded). Gates the frontend's PATCH single-account edit and "Open
+    // Reports" action. Exposed here (was previously missing from this
+    // mapper) so those gates are actually checkable client-side.
+    coaApprovedAt: row.coa_approved_at || null,
     metadata: row.metadata || {},
     createdBy: row.created_by || null,
     updatedBy: row.updated_by || null,
@@ -77,7 +104,12 @@ async function listVersions(companyId) {
     .eq("company_id", companyId)
     .order("version_number", { ascending: false });
   if (error) throw error;
-  return (data || []).map(normalizeVersion);
+  return (data || [])
+    .map(normalizeVersion)
+    // QA/perf-testing clones are never real client data — exclude them at the
+    // source so no consumer (Key Reports page, EBITDA, Reports, etc.) ever
+    // has to filter them out client-side.
+    .filter((v) => !String(v.versionName || "").toUpperCase().includes("PERF-TEST"));
 }
 
 async function getVersion(versionId) {
@@ -115,9 +147,9 @@ async function nextVersionNumber(companyId) {
   return (data?.version_number || 0) + 1;
 }
 
-// Create a new version. If copyFromVersionId is supplied (or a prior version
-// exists), its file mappings are copied as a starting point — the user can edit
-// before syncing. The new version is NOT auto-activated (must be synced first).
+// Create a new version. It starts with no file mappings unless an explicit
+// copyFromVersionId is supplied (used by duplicateVersion to clone another
+// version's mappings). The new version is NOT auto-activated (must be synced first).
 async function createVersion(companyId, { versionName, copyFromVersionId } = {}, userId = null) {
   if (!companyId) throw new Error("companyId is required.");
   const versionNumber = await nextVersionNumber(companyId);
@@ -138,14 +170,8 @@ async function createVersion(companyId, { versionName, copyFromVersionId } = {},
   if (error) throw error;
   const version = normalizeVersion(data);
 
-  // Seed mappings from a prior version (explicit, or the most recent other one).
-  let sourceVersionId = copyFromVersionId || null;
-  if (!sourceVersionId) {
-    const others = (await listVersions(companyId)).filter((v) => v.id !== version.id);
-    if (others.length) sourceVersionId = others[0].id; // newest-first
-  }
-  if (sourceVersionId) {
-    const priorMappings = await listMappings(sourceVersionId);
+  if (copyFromVersionId) {
+    const priorMappings = await listMappings(copyFromVersionId);
     for (const m of priorMappings) {
       await addMapping(
         version.id,
@@ -309,6 +335,22 @@ async function removeMapping(mappingId) {
   if (error) throw error;
 
   if (row.document_id) {
+    // Delete this document's already-extracted rows for THIS category so a
+    // future replace/delete doesn't leave stale data mixed into the version's
+    // aggregates (glRowCount, COA generation, Trial Balance, etc. all filter
+    // by version_id only, not by which documents are still mapped).
+    const entryTable = ENTRY_TABLE_BY_CATEGORY[row.report_category];
+    if (entryTable) {
+      const { error: entryErr } = await supabase
+        .from(entryTable)
+        .delete()
+        .eq("version_id", row.version_id)
+        .eq("source_file_id", row.document_id);
+      if (entryErr) {
+        console.warn(`[KeyReports] removeMapping: failed to delete ${entryTable} rows for document ${row.document_id}: ${entryErr.message}`);
+      }
+    }
+
     const { data: remaining } = await supabase
       .from("key_report_file_mappings")
       .select("id")
@@ -355,10 +397,34 @@ async function validateVersion(versionId) {
 // Sync: persist mappings (already persisted), validate, generate backend
 // financial tables, and update sync status. Idempotent + re-syncable.
 // Table generation is delegated to keyReportSyncService (Step 5).
+//
+// NO SYNC LOCKING (removed per explicit product requirement): every call to
+// syncVersion starts its own independent sync immediately — no in-memory
+// Map/Set/mutex, no database lock column, no "already in progress" check of
+// any kind, at any level (version, company, or client). Any number of
+// concurrent syncVersion calls for the same version (or different versions,
+// or different companies) all run in parallel, each with its own Sync ID.
+//
+// KNOWN, ACCEPTED TRADE-OFF (explicitly requested — not an oversight): the
+// lock this replaces (migration 079, sync_locked_at/sync_locked_by, now
+// dropped — see migration 080) existed because two concurrent syncs of the
+// SAME version can each independently run extractAndStore's DELETE-then-
+// INSERT for the same document; if one process's DELETE lands after the
+// other's INSERT has already committed, both processes' inserted rows
+// survive side by side — confirmed live to produce 10,875 duplicated
+// general_ledger_entries rows for one version in a single extraction batch
+// before this lock was introduced. Removing the lock reintroduces that
+// exact possibility for anyone who deliberately runs overlapping syncs of
+// the same version. Database-level transactional integrity (individual
+// statements/writes) is unaffected and unchanged.
+
 async function syncVersion(versionId, userId = null, opts = {}) {
   const version = await getVersion(versionId);
   if (!version) throw new Error("Version not found.");
+  return _executeSync(version, versionId, userId, opts);
+}
 
+async function _executeSync(version, versionId, userId = null, opts = {}) {
   const { data: logRow, error: logErr } = await supabase
     .from("key_report_sync_logs")
     .insert({
@@ -370,21 +436,44 @@ async function syncVersion(versionId, userId = null, opts = {}) {
     .select("*")
     .single();
   if (logErr) throw logErr;
+  // The sync_logs row's own id is already a real, unique per-sync identifier
+  // — reused directly as the Sync Id rather than minting a second, parallel one.
   const logId = logRow.id;
+
+  console.log(
+    "=========================================\n" +
+    "Key Report Sync Started\n" +
+    "=========================================\n\n" +
+    `Version: ${versionId}\n\n` +
+    `Company: ${version.companyId}\n\n` +
+    `Sync Id: ${logId}\n\n` +
+    `Started At: ${logRow.sync_started_at || logRow.created_at}\n\n` +
+    "=========================================",
+  );
 
   try {
     const validation = await validateVersion(versionId);
 
-    // Extract all linked files and persist to entry tables. Validation results
-    // are written internally by the sync service (from entry table row counts).
+    // Extract all linked files (persisted to entry tables -- extraction is
+    // allowed before COA generation) and build the in-memory Proposed COA.
+    // generateCoaProposal ALWAYS halts here (haltReason: 'coa_review_required'
+    // on structural success, or an earlier halt reason if extraction/the
+    // document gate failed) -- it never persists chart_of_accounts, never
+    // links GL/BS, never runs Trial Balance/Reconciliation/Monthly BS/report
+    // snapshots. Those only run after an explicit approveCoa call below.
     const keyReportSyncService = require("./keyReportSyncService");
-    const result = await keyReportSyncService.generateFinancialTables(version, {
+    const result = await keyReportSyncService.generateCoaProposal(version, {
       userId,
       uploadJobId: opts.uploadJobId || null,
     });
 
-    // key_report_versions: mark synced. resolved_batch_id/dataset_version are null
-    // in the new direct-extraction architecture (no Manual GL batch is created).
+    // key_report_versions: mark synced (extraction + proposal generation
+    // completed). resolved_batch_id/dataset_version are null in the new
+    // direct-extraction architecture (no Manual GL batch is created).
+    // coa_approved_at is deliberately NOT touched here -- a fresh sync always
+    // produces a fresh proposal; any PRIOR approval no longer reflects the
+    // current documents and must not be silently carried forward. Clearing it
+    // here (rather than leaving a stale approval) closes that gap.
     await supabase
       .from("key_report_versions")
       .update({
@@ -392,6 +481,7 @@ async function syncVersion(versionId, userId = null, opts = {}) {
         last_synced_at: new Date().toISOString(),
         resolved_batch_id: null,
         resolved_dataset_version: null,
+        coa_approved_at: null,
         updated_at: new Date().toISOString(),
         updated_by: userId,
       })
@@ -400,13 +490,14 @@ async function syncVersion(versionId, userId = null, opts = {}) {
     await supabase
       .from("key_report_sync_logs")
       .update({
-        sync_status: "success",
+        sync_status: result?.summary?.haltReason || "success",
         sync_completed_at: new Date().toISOString(),
         metadata: {
           warnings: validation.warnings,
           years: result?.years || [],
           extractionResults: result?.extractionResults || null,
           totalRowsInserted: result?.summary?.totalRowsInserted || 0,
+          haltReason: result?.summary?.haltReason || null,
         },
       })
       .eq("id", logId);
@@ -439,6 +530,102 @@ async function syncVersion(versionId, userId = null, opts = {}) {
         .eq("id", logId);
     } catch (logUpdateError) {
       console.warn("[KeyReports][Sync] Failed to persist sync error log:", logUpdateError.message);
+    }
+    throw normalizedError;
+  }
+}
+
+/**
+ * approveCoa -- the Chart-of-Accounts Save/Approve action. `approvedTreeNodes`
+ * is the frontend's complete reviewed tree (chartOfAccountsService.
+ * serializeProposedTree's flat wire-node shape). Validates and persists it
+ * (keyReportSyncService.approveAndGenerateReports); ONLY on success does it
+ * continue into linking, hierarchy finalization, Trial Balance,
+ * Reconciliation, Monthly Balance Sheets, and report snapshot generation.
+ * On validation/persistence failure, returns `success: false` with the
+ * violation messages and touches no key_report_versions/report state at all.
+ */
+async function approveCoa(versionId, approvedTreeNodes, userId = null) {
+  const version = await getVersion(versionId);
+  if (!version) throw new Error("Version not found.");
+  if (!Array.isArray(approvedTreeNodes) || !approvedTreeNodes.length) {
+    throw new Error("approvedTreeNodes must be a non-empty array.");
+  }
+
+  const { data: logRow, error: logErr } = await supabase
+    .from("key_report_sync_logs")
+    .insert({
+      version_id: versionId,
+      company_id: version.companyId,
+      sync_status: "started",
+      created_by: userId,
+    })
+    .select("*")
+    .single();
+  if (logErr) throw logErr;
+  const logId = logRow.id;
+
+  try {
+    const keyReportSyncService = require("./keyReportSyncService");
+    const result = await keyReportSyncService.approveAndGenerateReports(version, approvedTreeNodes, { userId });
+    const haltReason = result?.summary?.haltReason || null;
+
+    if (!result?.halted) {
+      // Success: COA persisted, reports generated. Reuses the exact same
+      // "synced" state generateCoaProposal's halt already set -- Approve
+      // does not introduce a second version-status value, only the new
+      // coa_approved_at marker (set inside persistApprovedCoaTree's caller,
+      // approveAndGenerateReports) distinguishes "proposal reviewed and
+      // saved" from "proposal generated, not yet reviewed."
+      await supabase
+        .from("key_report_versions")
+        .update({
+          status: "synced",
+          last_synced_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          updated_by: userId,
+        })
+        .eq("id", versionId);
+    }
+
+    await supabase
+      .from("key_report_sync_logs")
+      .update({
+        sync_status: haltReason || "success",
+        sync_completed_at: new Date().toISOString(),
+        error_message: result?.halted ? result.message : null,
+        metadata: {
+          years: result?.years || [],
+          haltReason,
+          totalRowsInserted: result?.summary?.totalRowsInserted || 0,
+        },
+      })
+      .eq("id", logId);
+
+    const validationResults = await listValidationResults(versionId);
+    return {
+      success: !result?.halted,
+      version: await getVersion(versionId),
+      validationResults,
+      result,
+    };
+  } catch (err) {
+    const normalizedError = normalizeError(err);
+    if (isConnectionError(normalizedError)) {
+      normalizedError.status = 503;
+      normalizedError.retryable = true;
+    }
+    try {
+      await supabase
+        .from("key_report_sync_logs")
+        .update({
+          sync_status: "failed",
+          sync_completed_at: new Date().toISOString(),
+          error_message: normalizedError.message || String(err),
+        })
+        .eq("id", logId);
+    } catch (logUpdateError) {
+      console.warn("[KeyReports][ApproveCoa] Failed to persist sync error log:", logUpdateError.message);
     }
     throw normalizedError;
   }
@@ -506,9 +693,20 @@ async function resolveVersionFor(companyId, { datasetVersion, versionId } = {}) 
     const byId = await getVersion(versionId);
     // Guard against cross-company access — the version must belong to this company.
     if (byId && byId.companyId === companyId) return byId;
-    console.log(
-      `[KeyReports] versionId ${versionId} not found for company ${companyId}; falling back to dataset version / active.`,
+    // CONFIRMED ROOT CAUSE (fixed here): this used to fall through to the
+    // dataset-version / ACTIVE-version branches below, so an EXPLICITLY
+    // requested versionId that failed to resolve (deleted, belongs to another
+    // company, typo'd) silently served a DIFFERENT version's documents and
+    // reports with a 200 and only a console.log. That is cross-version data
+    // leakage from the caller's point of view: they asked for version X and
+    // got version Y with no signal. An explicit request must never be
+    // silently substituted — return null and let the caller 404/409 instead.
+    // The dataset-version and active-version fallbacks below remain intact
+    // for callers that supply NO versionId at all (single-version setups).
+    console.warn(
+      `[KeyReports] versionId ${versionId} did not resolve for company ${companyId} — refusing to substitute a different version.`,
     );
+    return null;
   }
   if (datasetVersion != null && datasetVersion !== "") {
     const pinned = await getVersionByDatasetVersion(companyId, datasetVersion);
@@ -631,16 +829,9 @@ async function getActiveLinkedDocuments(companyId, reportCategory) {
 
 // ---- Extracted data viewer --------------------------------------------------
 
+// NOTE: no `profit_loss` entry — there is no profit_loss_entries table. P&L is
+// generated live from the General Ledger and is not browsable as raw extracted data.
 const ENTRY_TABLE_CONFIG = {
-  profit_loss: {
-    table: 'profit_loss_entries',
-    yearCol: 'fiscal_year',
-    yearIsDate: false,
-    searchCols: ['account_name', 'account_number', 'category'],
-    selectCols: 'id,fiscal_year,account_name,account_number,account_type,category,sub_category,amount,hierarchy_level,is_total,sort_order',
-    orderCol: 'sort_order',
-    orderSecondary: 'id',
-  },
   balance_sheet: {
     table: 'balance_sheet_entries',
     yearCol: 'fiscal_year',
@@ -652,10 +843,13 @@ const ENTRY_TABLE_CONFIG = {
   },
   general_ledger: {
     table: 'general_ledger_entries',
-    yearCol: 'fiscal_year',
-    yearIsDate: false,
-    searchCols: ['account_section', 'distribution_account', 'memo_description', 'split_account', 'transaction_name', 'transaction_num'],
-    selectCols: 'id,row_type,row_number,fiscal_year,transaction_date,account_section,distribution_account,transaction_type,transaction_num,transaction_name,memo_description,split_account,amount,running_balance',
+    // fiscal_year/fiscal_month no longer exist (migration 069 — date_dimension
+    // refactor); transaction_date is always populated (including for
+    // BEGINNING_BALANCE/TOTAL_ROW sentinel dates), so a date-range filter works.
+    yearCol: 'transaction_date',
+    yearIsDate: true,
+    searchCols: ['account_name', 'account_section', 'memo', 'split_account', 'transaction_number'],
+    selectCols: 'id,row_type,row_number,transaction_date,date_id,account_section,account_name,account_number,transaction_type,transaction_number,memo,split_account,vendor,customer,entity_type,amount,debit_amount,credit_amount,running_balance,coa_id',
     orderCol: 'row_number',
     orderSecondary: 'id',
   },
@@ -750,6 +944,7 @@ module.exports = {
   removeMapping,
   validateVersion,
   syncVersion,
+  approveCoa,
   listSyncLogs,
   listValidationResults,
   getActiveResolvedBatch,

@@ -1,11 +1,13 @@
 const jwt = require("jsonwebtoken");
 const asyncHandler = require("../utils");
-const { authenticate, createBrokerAccount } = require("../services/authService");
+const { authenticate, createBrokerAccount, signToken } = require("../services/authService");
 const userService = require("../services/userService");
 const otpService = require("../services/otpService");
-const { sendOtpEmail } = require("../services/emailService");
+const { sendOtpEmail, sendPasswordResetOtpEmail } = require("../services/emailService");
+const { invalidateUserCache } = require("../middleware/auth");
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PASSWORD_RE = { hasLetter: /[A-Za-z]/, hasDigit: /\d/ };
 
 // ── Existing handlers (unchanged) ────────────────────────────────────────────
 
@@ -167,6 +169,146 @@ const verifyVerificationOtp = asyncHandler(async (req, res) => {
   });
 });
 
+// ── Password reset endpoints ─────────────────────────────────────────────────
+
+/**
+ * POST /auth/forgot-password
+ * Body: { email }
+ * Always responds with the same generic success shape, regardless of whether
+ * an account exists for the given email, to avoid leaking account existence.
+ */
+const forgotPassword = asyncHandler(async (req, res) => {
+  const { email } = req.body || {};
+
+  if (!email || !EMAIL_RE.test(String(email).trim())) {
+    return res.status(400).json({ error: "A valid email address is required." });
+  }
+
+  const normalizedEmail = String(email).trim().toLowerCase();
+  const user = await userService.getUserByEmail(normalizedEmail);
+
+  // Always generate/store an OTP so timing and DB work are equalized whether
+  // or not the account exists.
+  const otp = await otpService.sendOtp(normalizedEmail, "password_reset");
+
+  if (user) {
+    const emailResult = await sendPasswordResetOtpEmail(normalizedEmail, otp);
+    if (!emailResult.sent) {
+      console.warn(
+        `[Audit] [Password Reset] Email delivery failed for <${normalizedEmail}>: ` +
+          `${emailResult.reason} ${emailResult.error || ""}`
+      );
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[OTP Service][DEV ONLY] Password reset OTP for <${normalizedEmail}>: ${otp}`);
+      }
+    } else {
+      console.log(
+        `[Audit] [Password Reset] Reset email sent to <${normalizedEmail}> at ${new Date().toISOString()}`
+      );
+    }
+  }
+
+  return res.json({
+    success: true,
+    message: "If an account exists for this email, a reset code has been sent.",
+  });
+});
+
+/**
+ * POST /auth/verify-reset-otp
+ * Body: { email, otp }
+ * Validates the password-reset OTP. On success returns a 15-minute
+ * resetToken JWT that must be included in the subsequent POST /auth/reset-password call.
+ */
+const verifyResetOtp = asyncHandler(async (req, res) => {
+  const { email, otp } = req.body || {};
+
+  if (!email || !otp) {
+    return res.status(400).json({ error: "Email and verification code are required." });
+  }
+
+  const result = await otpService.verifyOtp(
+    String(email).trim().toLowerCase(),
+    String(otp).trim(),
+    "password_reset"
+  );
+
+  console.log(
+    `[Audit] [Password Reset] OTP verified for <${String(email).trim()}> at ${new Date().toISOString()}`
+  );
+
+  return res.json({
+    verified: true,
+    verificationToken: result.verificationToken,
+  });
+});
+
+/**
+ * POST /auth/reset-password
+ * Body: { email, new_password, verification_token }
+ * Requires a valid verification_token (issued by /auth/verify-reset-otp) that
+ * matches the submitted email. On success, updates the password and signs the
+ * user in immediately (same response shape as /auth/login).
+ */
+const resetPassword = asyncHandler(async (req, res) => {
+  const { email, new_password, verification_token } = req.body || {};
+
+  if (!verification_token) {
+    return res.status(403).json({
+      error: "Verification required. Please verify your email address first.",
+    });
+  }
+
+  let decodedToken;
+  try {
+    decodedToken = jwt.verify(verification_token, process.env.JWT_SECRET || "change_me");
+  } catch {
+    return res.status(403).json({
+      error: "Verification token is expired or invalid. Please verify your email again.",
+    });
+  }
+
+  if (decodedToken.purpose !== "password_reset") {
+    return res.status(403).json({ error: "Invalid verification token." });
+  }
+
+  const normalizedEmail = String(email || "").trim().toLowerCase();
+  const tokenEmail = String(decodedToken.email || "").toLowerCase();
+  if (!tokenEmail || tokenEmail !== normalizedEmail) {
+    return res.status(403).json({
+      error: "Verification token does not match the submitted email address.",
+    });
+  }
+
+  const password = String(new_password || "");
+  if (password.length < 8) {
+    return res.status(400).json({ error: "Password must be at least 8 characters." });
+  }
+  if (!PASSWORD_RE.hasLetter.test(password) || !PASSWORD_RE.hasDigit.test(password)) {
+    return res.status(400).json({ error: "Password must include at least one letter and one number." });
+  }
+
+  const user = await userService.getUserByEmail(normalizedEmail);
+  if (!user) {
+    return res.status(400).json({ error: "Account not found." });
+  }
+
+  await userService.updateUser(user.id, { password });
+  invalidateUserCache(user.id);
+
+  const freshUser = await userService.getUserById(user.id);
+  const safeUser = { ...(freshUser || user) };
+  delete safeUser.password_hash;
+
+  const token = signToken(user.id);
+
+  console.log(
+    `[Audit] [Password Reset] Password reset for <${normalizedEmail}> at ${new Date().toISOString()}`
+  );
+
+  return res.json({ token, user: safeUser });
+});
+
 module.exports = {
   login,
   signupBroker,
@@ -174,4 +316,7 @@ module.exports = {
   me,
   sendVerificationOtp,
   verifyVerificationOtp,
+  forgotPassword,
+  verifyResetOtp,
+  resetPassword,
 };

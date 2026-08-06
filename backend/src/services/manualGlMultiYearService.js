@@ -24,6 +24,7 @@ const {
   getLatestUploadSessionVersion,
   findExistingStagedUploadSessionsByYearHash,
 } = require("./manualGlUploadSessionService");
+// Shared with Key Reports so both flows group counterparties identically.
 
 const TABLES = {
   batches: "manual_gl_batches",
@@ -8827,13 +8828,21 @@ function buildVendorAnalysisPayload(transactions = [], filters = {}) {
   const years = new Set();
 
   transactions.forEach((tx) => {
-    const vendorName = tx.vendorName || "No Vendor";
+    // Grouping identity comes from the SHARED normalizer (glEntityNormalization)
+    // so Manual GL and Key Reports collapse the same free-text spellings into the
+    // same counterparty. Previously the raw string was the Map key, so "ACME
+    // Corp" / "Acme  Corp" / "acme corp" rendered as three vendors each holding
+    // a slice of one real total. The key is normalized; the label shown is the
+    // first-seen spelling, so no name is invented and none is lost.
+    const vendorIdentity = resolveEntity(tx.vendorName, ENTITY_KINDS.VENDOR);
+    const vendorKey = vendorIdentity.key;
+    const vendorName = vendorIdentity.display;
     const accountName = tx.accountName || "Uncategorized Account";
     const year = Number(tx.fiscalYear);
     if (year > 0) years.add(year);
 
-    if (!vendorMap.has(vendorName)) {
-      vendorMap.set(vendorName, {
+    if (!vendorMap.has(vendorKey)) {
+      vendorMap.set(vendorKey, {
         vendorName,
         accounts: new Map(),
         yearlyTotals: {},
@@ -8841,7 +8850,7 @@ function buildVendorAnalysisPayload(transactions = [], filters = {}) {
       });
     }
 
-    const vendor = vendorMap.get(vendorName);
+    const vendor = vendorMap.get(vendorKey);
     if (!vendor.accounts.has(accountName)) {
       vendor.accounts.set(accountName, {
         accountName,

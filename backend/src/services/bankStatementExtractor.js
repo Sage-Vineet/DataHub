@@ -1,8 +1,12 @@
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const pdfParse = require("pdf-parse");
 const XLSX = require("xlsx");
+const { getGeminiModels } = require("../config/geminiModels");
 
-const GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"];
+// Dynamically selected via GEMINI_MODELS / GEMINI_MODEL env; this array is the
+// default fallback order (stronger "flash" first for scanned statements) used
+// when no override is configured.
+const GEMINI_MODELS = getGeminiModels(["gemini-2.5-flash", "gemini-2.5-flash-lite"]);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const MONTH_ABBR = {
@@ -477,7 +481,20 @@ IMPORTANT: Files have already passed document reading. Never assume extraction f
 If file exists and text exists, NEVER return [] unless the document is confirmed NOT to be a bank statement.
 
 STEP 1 — DOCUMENT CLASSIFICATION
-Count how many of these keywords appear anywhere in the document:
+1a. EXCLUDE non-bank-statement documents FIRST. Return [] immediately if the document is an
+    accounting / bookkeeping export rather than a statement issued BY a bank. Any ONE of these
+    is enough to reject it — even if it also contains balances and deposits:
+      • Titles or headers such as "RECONCILIATION REPORT", "Reconciled on", "Reconciled by",
+        "Register balance", "Uncleared transactions", "Cleared transactions",
+        "Checks and payments cleared", "Deposits and other credits cleared".
+      • The account is a GENERAL-LEDGER account — a short numeric code (usually 3–4 digits)
+        immediately followed by an account-type word, e.g. "1010 Checking", "1000 Cash",
+        "2010 Accounts Payable". A real bank account number is a LONG digit string (8+ digits)
+        printed near the bank's logo / letterhead, NEVER a 3–4 digit GL code.
+      • A software-generated bookkeeping layout (QuickBooks / Xero) with DATE / TYPE / REF NO. /
+        PAYEE columns instead of a bank's own transaction register.
+    These are internal accounting documents, not bank statements. Do NOT extract them.
+1b. Otherwise, count how many of these keywords appear anywhere in the document:
   "Beginning balance", "Ending balance", "Total credits", "Total debits",
   "Account summary", "Deposits", "Withdrawals", "Account number",
   "Opening balance", "Closing balance", "Statement date", "Transactions"
@@ -509,10 +526,44 @@ EXTRACTION RULES — search for these patterns anywhere in the document:
   Service charges / Fees / Maintenance fee → fees
   Ending balance / Closing balance / New balance / Current balance → endingBalance
   accountName: entity or company name on the statement header (not the bank name)
-  accountNumber: LAST 4 DIGITS ONLY (e.g. 8209360067 → "0067")
+  accountNumber: the COMPLETE bank account number, returned as one contiguous run of digits.
+    • Read it from the account-type / "Account summary" header line printed near the bank's
+      logo (e.g. "BUSINESS VALUE 200 CHECKING 0005240691118" → "0005240691118").
+    • IGNORE any spaces the statement prints between digit groups. Some statements break the
+      number up ("0005240 691118") or repeat it in a barcode strip with a stray gap
+      ("000524069111 8"); every one of these is the SAME number "0005240691118". Never drop,
+      add, duplicate, or reorder a digit.
+    • The number MUST be identical on every page and across every statement of the same account.
+      If pages disagree, trust the one on the Account summary header, not the barcode strip.
+    • If the number is masked (****6067, xxxx-6067, ...6067) return the visible digits.
+    • NEVER return a general-ledger code like "1010 Checking" as an account number (see STEP 1).
   statementStartDate and statementEndDate: MUST be YYYY-MM-DD format
   month: 3-letter abbreviation (Jan, Feb, … Dec) from the statement end date
   year: 4-digit year from the statement end date
+
+CRITICAL — BANK NAME CONSISTENCY (prevents the SAME account splitting into duplicate banks):
+- Identify the institution's name DYNAMICALLY from the statement itself (header, logo, letterhead),
+  then return its PRIMARY, CANONICAL form — spelled the SAME way every time that bank appears, within
+  a file AND across different files. The reconciliation groups statements by bank, so an inconsistent
+  name makes one real account show up as several separate banks.
+- Derive that canonical form by REASONING from these general rules — apply them to ANY bank; do NOT
+  rely on a fixed list of known banks:
+    1. Start from the most prominent institution name printed on the statement.
+    2. Remove trailing legal / entity qualifiers and punctuation noise: ", N.A.", "N.A.", "National
+       Association", "Inc.", "LLC", "L.L.C.", "Ltd.", "Corp.", "Co.", and a trailing generic "Bank"
+       that merely follows the brand. Keep a word like "Bank" ONLY when it is inseparable from the
+       brand (i.e. removing it would change which institution is meant).
+    3. Collapse spacing / punctuation variants of the same brand to one stable form (drop stray
+       periods and extra spaces inside an acronym) and use consistent Title Case, never ALL CAPS.
+    4. Prefer the shortest form that STILL unambiguously identifies the institution.
+  The goal is convergence: every different spelling of ONE institution must reduce to a single
+  canonical string. (Illustrative of the RULE only, not a lookup — a header reading
+  "A.C.M.E. BANK, N.A." and one reading "ACME Bank" must BOTH yield the same canonical "Acme".)
+- Do NOT put the account number, branch, city, or address inside bankName.
+- IDENTITY RULE: an account is identified by its FULL accountNumber. Statements that share the
+  same account number (or the same last 4 digits when the rest is masked) are the SAME account —
+  output the SAME bankName AND the exact SAME accountNumber digits for ALL of them. A single
+  mis-read or transposed digit must NOT make one account look like two.
 
 CRITICAL — BEGINNING vs ENDING BALANCE (most common extraction error):
 - startingBalance and endingBalance are TWO DIFFERENT numbers on the statement.
@@ -540,8 +591,10 @@ function normalizeGeminiStatement(s) {
   const rawBankName = (s.bankName || s.bank_name || "Unknown Bank").replace(/\s*\(\d{4}\)\s*$/, "").trim();
   const accountName = s.accountName || s.account_name || "";
   const rawAcctNum = String(s.accountNumber || s.account_number || "");
-  // Spec: keep last 4 digits only
-  const accountNumber = rawAcctNum.replace(/\D/g, "").slice(-4) || rawAcctNum.slice(-4);
+  // Keep the full digit string (used to heal mis-read last-4s across statements),
+  // plus the last-4 that the rest of the pipeline groups on.
+  const accountNumberFull = rawAcctNum.replace(/\D/g, "");
+  const accountNumber = accountNumberFull.slice(-4) || rawAcctNum.slice(-4);
 
   // Internal grouping key includes last-4 to distinguish multiple accounts at same bank
   const displayBankName = accountNumber
@@ -569,6 +622,7 @@ function normalizeGeminiStatement(s) {
     bank_name_clean: rawBankName,     // "Wells Fargo" — used in API response
     account_name: accountName,
     account_number: accountNumber,    // "0067" — last 4 only
+    account_number_full: accountNumberFull, // "8209360067" — all digits, for identity healing
     period_start: periodStart,
     period_end: periodEnd,
     beginning_balance: beginningBalance,
@@ -593,6 +647,345 @@ async function callGeminiWithContent(contents, modelName, fileName) {
   return parsed;
 }
 
+// ─── AI self-correction (recheck) ─────────────────────────────────────────────
+// A statement is flagged "Needs Review" when its numbers don't satisfy the bank
+// balance equation (beginning + deposits - withdrawals - fees ≈ ending). Rather
+// than surface an unverified row, we ask the AI to re-examine the document with
+// the failing values called out, then adopt the corrected result if — and only
+// if — it now reconciles. This raises report accuracy and drives statuses toward
+// "Verified" without ever fabricating a pass.
+function stmtMatchKey(s) {
+  return `${String(s.account_number || "").toLowerCase()}|${s.period_end || s.period_start || ""}`;
+}
+
+function buildRecheckPrompt(failing) {
+  const lines = failing.map((s, i) => {
+    const computed = (s.beginning_balance + s.deposits - s.withdrawals - s.fees);
+    return `${i + 1}. Bank="${s.bank_name_clean || s.bank_name}", account ending "${s.account_number || "?"}", ` +
+      `period ${s.period_start || "?"} to ${s.period_end || "?"} — extracted: ` +
+      `startingBalance=${s.beginning_balance}, deposits=${s.deposits}, withdrawals=${s.withdrawals}, ` +
+      `fees=${s.fees}, endingBalance=${s.ending_balance}. ` +
+      `This FAILS the check: ${s.beginning_balance} + ${s.deposits} - ${s.withdrawals} - ${s.fees} = ` +
+      `${computed.toFixed(2)}, which does not equal endingBalance ${s.ending_balance}.`;
+  }).join("\n");
+
+  return `${GEMINI_PROMPT}
+
+RECHECK MODE — a previous extraction of the account(s) below FAILED the balance self-check
+(startingBalance + deposits - withdrawals - fees MUST equal endingBalance within $1.00).
+Re-examine the document VERY carefully for these specific accounts and correct whichever value(s)
+were misread. Common causes: swapping startingBalance and endingBalance, missing one or more
+deposits/withdrawals, using a summary total or a running/available balance instead of the true
+period totals, reading the wrong statement period, or transposed digits.
+
+Previously-extracted (incorrect) values:
+${lines}
+
+Return the corrected data for ALL accounts found in the document (not only the failing ones),
+using the exact JSON schema described above. Every returned account MUST satisfy
+startingBalance + deposits - withdrawals - fees = endingBalance (within $1.00).`;
+}
+
+async function recheckNeedsReview(statements, contentPrefix, fileName, modelName) {
+  const failing = statements.filter((s) => s.status === "Needs Review");
+  if (!failing.length) return statements;
+
+  console.log(`[BankPDF] ${failing.length} statement(s) need review in "${fileName}" — running AI recheck (${modelName})...`);
+  try {
+    const parsed = await callGeminiWithContent(
+      [...contentPrefix, { text: buildRecheckPrompt(failing) }],
+      modelName,
+      fileName,
+    );
+    const rechecked = parsed.map(normalizeGeminiStatement);
+    const byKey = new Map(rechecked.map((s) => [stmtMatchKey(s), s]));
+
+    let fixed = 0;
+    const merged = statements.map((s) => {
+      if (s.status !== "Needs Review") return s;
+      const match = byKey.get(stmtMatchKey(s));
+      // Only adopt the recheck when it genuinely reconciles — never mask a real
+      // discrepancy by relabeling.
+      if (match && match.status === "Verified") {
+        fixed++;
+        return match;
+      }
+      return s;
+    });
+    console.log(`[BankPDF] AI recheck reconciled ${fixed}/${failing.length} statement(s) in "${fileName}".`);
+    return merged;
+  } catch (err) {
+    console.warn(`[BankPDF] AI recheck failed for "${fileName}": ${err.message}`);
+    return statements;
+  }
+}
+
+// ─── Account-number double verification ───────────────────────────────────────
+// Bank account numbers are the identity of every row on the reconciliation page
+// and are easily misread by OCR/AI (transposed or wrong digits). We re-read the
+// account number with a dedicated, focused prompt and only accept a CORRECTION
+// when two independent verification reads AGREE with each other (and differ from
+// the first extraction) — i.e. the number must be confirmed twice before we
+// change it. When the first verification already confirms the original, no second
+// call is made.
+
+function cleanBankLabel(name) {
+  return String(name || "")
+    .replace(/\s*\(\d{2,}\)\s*$/, "") // strip trailing " (1234)" account suffix
+    .toLowerCase()
+    .trim();
+}
+
+// Canonical grouping key for a bank account. The account number (last 4 digits)
+// is the reliable, double-verified identity of a bank account, so when it is
+// present we key on it ALONE. The same account then collapses into ONE dropdown
+// entry no matter how differently the AI transcribed the institution name across
+// statements — e.g. "J.P.Morgan (7936)", "J.P. Morgan (7936)", and
+// "JPMorgan Chase Bank, N.A. (7936)" are all account 7936 → one bank. Only when
+// there is NO account number at all do we fall back to the normalized bank name
+// (still case-insensitive, so "Truist" and "TRUIST" share a key).
+function canonicalBankKey(cleanName, last4) {
+  const l4 = String(last4 || "").replace(/\D/g, "").slice(-4);
+  if (l4) return `acct|${l4}`;
+  return `name|${cleanBankLabel(cleanName)}`;
+}
+
+function levenshtein(a, b) {
+  a = String(a); b = String(b);
+  const m = a.length, n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  const dp = Array.from({ length: m + 1 }, (_, i) => i);
+  for (let j = 1; j <= n; j++) {
+    let prev = dp[0];
+    dp[0] = j;
+    for (let i = 1; i <= m; i++) {
+      const tmp = dp[i];
+      dp[i] = a[i - 1] === b[j - 1] ? prev : 1 + Math.min(prev, dp[i - 1], dp[i]);
+      prev = tmp;
+    }
+  }
+  return dp[m];
+}
+
+// Do two account-number readings point at the SAME real account? True when the
+// digit strings are near-identical — same full number give-or-take one mis-read /
+// dropped digit, or one is a masked suffix of the other. Full numbers (8+ digits)
+// are decisive; when only last-4s are available we allow a single-digit difference,
+// which heals AI mis-reads like "1118" vs "9118" without merging genuinely different
+// accounts (their full numbers, or their last-4s, differ by more than one digit).
+function accountNumbersCompatible(fullA, l4A, fullB, l4B) {
+  const fa = String(fullA || "").replace(/\D/g, "");
+  const fb = String(fullB || "").replace(/\D/g, "");
+  if (fa && fb && (fa.length >= 6 || fb.length >= 6)) {
+    if (fa === fb) return true;
+    if (fa.endsWith(fb) || fb.endsWith(fa)) return true;       // masked suffix of the other
+    if (Math.abs(fa.length - fb.length) <= 1 && levenshtein(fa, fb) <= 1) return true;
+    return false;
+  }
+  const a4 = String(l4A || "").replace(/\D/g, "").slice(-4);
+  const b4 = String(l4B || "").replace(/\D/g, "").slice(-4);
+  if (a4 && b4) {
+    if (a4 === b4) return true;
+    if (a4.length === 4 && b4.length === 4 && levenshtein(a4, b4) <= 1) return true;
+  }
+  return false;
+}
+
+// Heal AI account-number mis-reads BEFORE grouping. Within each bank (keyed by the
+// clean institution name) the same real account can be read with a transposed or
+// dropped digit on a few statements — e.g. Truist "1118" on eight statements and
+// "9118" on two, because the number is printed with an odd gap ("000524069111 8").
+// Keying identity on the last-4 alone would then split ONE account into several
+// dropdown entries. Here we take the most common reading per bank as canonical and
+// fold every compatible minority reading (see accountNumbersCompatible) into it, so
+// the account collapses to a single, consistent identity. Non-mutating: returns a
+// new array of (possibly relabelled) statement copies.
+function reconcileAccountIdentities(statements) {
+  if (!statements?.length) return statements;
+  const out = statements.map((s) => ({ ...s }));
+
+  const byBank = new Map();
+  for (const s of out) {
+    const name = cleanBankLabel(s.bank_name_clean || s.bank_name);
+    if (!byBank.has(name)) byBank.set(name, []);
+    byBank.get(name).push(s);
+  }
+
+  for (const group of byBank.values()) {
+    // Tally each distinct last-4, remembering the most complete full number seen.
+    const tally = new Map(); // last4 -> { count, full }
+    for (const s of group) {
+      const l4 = String(s.account_number || "").replace(/\D/g, "").slice(-4);
+      if (!l4) continue;
+      const full = String(s.account_number_full || s.account_number || "").replace(/\D/g, "");
+      const t = tally.get(l4) || { count: 0, full: "" };
+      t.count += 1;
+      if (full.length > t.full.length) t.full = full;
+      tally.set(l4, t);
+    }
+    if (tally.size < 2) continue; // one reading (or none) → nothing to reconcile
+
+    // Order readings by popularity (then completeness); fold each into the most
+    // popular EARLIER reading it is compatible with.
+    const ordered = [...tally.entries()].sort(
+      (a, b) => b[1].count - a[1].count || b[1].full.length - a[1].full.length,
+    );
+    const canonicalFor = new Map(); // last4 -> canonical last4
+    for (const [l4] of ordered) {
+      let mappedTo = l4;
+      for (const [cl4] of ordered) {
+        if (cl4 === l4) break;                       // only fold into a more-popular reading
+        if (canonicalFor.get(cl4) !== cl4) continue; // skip readings that were themselves folded
+        const t = tally.get(l4), ct = tally.get(cl4);
+        if (accountNumbersCompatible(t.full, l4, ct.full, cl4)) { mappedTo = cl4; break; }
+      }
+      canonicalFor.set(l4, mappedTo);
+    }
+
+    for (const s of group) {
+      const l4 = String(s.account_number || "").replace(/\D/g, "").slice(-4);
+      const canon = canonicalFor.get(l4);
+      if (canon && canon !== l4) {
+        const canonFull = tally.get(canon)?.full || canon;
+        const cleanName = String(s.bank_name_clean || s.bank_name || "")
+          .replace(/\s*\(\d{2,}\)\s*$/, "").trim();
+        s.account_number = canon;
+        s.account_number_full = canonFull;
+        s.bank_name = cleanName ? `${cleanName} (${canon})` : s.bank_name;
+      }
+    }
+  }
+  return out;
+}
+
+// When two statements for the same account disagree on the bank-name casing,
+// prefer a properly-cased label ("Truist (9118)") over a shouting all-caps one
+// ("TRUIST (9118)"); otherwise keep the first-seen label.
+function pickBankDisplayLabel(existing, candidate) {
+  if (!existing) return candidate || "";
+  if (!candidate) return existing;
+  const isAllCaps = (s) => /[A-Z]/.test(s) && s === s.toUpperCase();
+  if (isAllCaps(existing) && !isAllCaps(candidate)) return candidate;
+  return existing;
+}
+
+function acctVerifyKey(bankName, period) {
+  return `${cleanBankLabel(bankName)}|${period || ""}`;
+}
+
+function buildAccountNumberVerifyPrompt(statements) {
+  const lines = statements
+    .map((s, i) =>
+      `${i + 1}. Bank="${s.bank_name_clean || s.bank_name}", ` +
+      `statement period ${s.period_start || "?"} to ${s.period_end || "?"}, ` +
+      `previously read account ending "${s.account_number || "?"}".`,
+    )
+    .join("\n");
+
+  return `You are verifying the BANK ACCOUNT NUMBER on a bank statement. Account numbers are
+frequently misread — digits get transposed or confused (0/8, 1/7, 5/6, 3/8). Re-read each
+account number CAREFULLY, digit by digit, from the statement header/account summary.
+
+For each account listed, return the LAST 4 DIGITS exactly as printed. If the number is masked
+(e.g. ****6067, xxxx-6067, ...6067) use the last 4 visible digits. Do NOT guess — if you truly
+cannot read it, return the digits you can see.
+
+Accounts to verify:
+${lines}
+
+Return ONLY a raw JSON array (no markdown, no prose), one object per account:
+[{"bankName":"<bank name>","statementEndDate":"<period end date as printed>","accountNumberLast4":"<4 digits>"}]`;
+}
+
+async function readAccountNumbers(statements, contentPrefix, fileName, modelName) {
+  try {
+    const parsed = await callGeminiWithContent(
+      [...contentPrefix, { text: buildAccountNumberVerifyPrompt(statements) }],
+      modelName,
+      fileName,
+    );
+    if (!Array.isArray(parsed)) return null;
+    const map = new Map();
+    for (const r of parsed) {
+      const last4 = String(r.accountNumberLast4 ?? r.accountNumber ?? "")
+        .replace(/\D/g, "")
+        .slice(-4);
+      if (!last4) continue;
+      const bank = cleanBankLabel(r.bankName);
+      map.set(`${bank}|${r.statementEndDate || ""}`, last4);
+      map.set(`${bank}|`, last4); // bank-only fallback for single-account documents
+    }
+    return map;
+  } catch (err) {
+    console.warn(`[BankPDF] account-number read failed for "${fileName}": ${err.message}`);
+    return null;
+  }
+}
+
+function lookupAcct(map, s) {
+  if (!map) return null;
+  return (
+    map.get(acctVerifyKey(s.bank_name_clean || s.bank_name, s.period_end)) ||
+    map.get(acctVerifyKey(s.bank_name_clean || s.bank_name, s.period_start)) ||
+    map.get(acctVerifyKey(s.bank_name_clean || s.bank_name, "")) ||
+    null
+  );
+}
+
+function applyAccountNumber(s, last4) {
+  const cleanName = String(s.bank_name_clean || s.bank_name || "").replace(/\s*\(\d{2,}\)\s*$/, "").trim();
+  return {
+    ...s,
+    account_number: last4,
+    bank_name: cleanName ? `${cleanName} (${last4})` : s.bank_name,
+  };
+}
+
+async function verifyAccountNumbers(statements, contentPrefix, fileName, modelName) {
+  if (!statements.length) return statements;
+
+  const v1 = await readAccountNumbers(statements, contentPrefix, fileName, modelName);
+  if (!v1) return statements; // verification unavailable → keep original extraction
+
+  // Only pay for a second verification read when the first disagrees with the
+  // original extraction for at least one account.
+  const anyDisagreement = statements.some((s) => {
+    const a = lookupAcct(v1, s);
+    return a && a !== s.account_number;
+  });
+  const v2 = anyDisagreement
+    ? await readAccountNumbers(statements, contentPrefix, fileName, modelName)
+    : null;
+
+  let corrected = 0;
+  const out = statements.map((s) => {
+    const initial = s.account_number || null;
+    const a = lookupAcct(v1, s);
+    const b = lookupAcct(v2, s);
+
+    let winner = initial;
+    if (a && a === initial) {
+      winner = initial; // first verification confirms the original — trusted
+    } else if (a && b && a === b) {
+      winner = a; // both independent verifications agree on a different value
+    } // else: no two-way agreement → keep the original (never guess)
+
+    if (winner && winner !== initial) {
+      corrected += 1;
+      console.warn(
+        `[BankPDF] Account # corrected for "${s.bank_name_clean || s.bank_name}" ` +
+        `(${s.period_end || s.period_start || "?"}): "${initial}" → "${winner}" (confirmed twice)`,
+      );
+      return applyAccountNumber(s, winner);
+    }
+    return s;
+  });
+
+  if (corrected) console.log(`[BankPDF] Account-number verification in "${fileName}": ${corrected} correction(s)`);
+  return out;
+}
+
 async function extractViaGemini(pdfBase64, fileName) {
   let lastError = null;
 
@@ -614,7 +1007,11 @@ async function extractViaGemini(pdfBase64, fileName) {
         }
         const stamped = parsed.map(normalizeGeminiStatement);
         console.log(`[BankPDF] Gemini PDF extracted ${stamped.length} statement(s) from "${fileName}"`);
-        return stamped;
+        const pdfContent = [{ inlineData: { mimeType: "application/pdf", data: pdfBase64 } }];
+        // AI self-correction pass for any statement that failed the balance check.
+        const rechecked = await recheckNeedsReview(stamped, pdfContent, fileName, modelName);
+        // Double-verify each account number before returning.
+        return await verifyAccountNumbers(rechecked, pdfContent, fileName, modelName);
       } catch (err) {
         lastError = err;
         const msg = err.message || String(err);
@@ -660,7 +1057,12 @@ ${rawText.slice(0, 30000)}
       if (parsed.length === 0) return [];
       const stamped = parsed.map(normalizeGeminiStatement);
       console.log(`[BankPDF] Gemini text extracted ${stamped.length} statement(s) from "${fileName}"`);
-      return stamped;
+      const textContent = [{ text: `Source bank statement text:\n---\n${rawText.slice(0, 30000)}\n---` }];
+      // AI self-correction pass — re-reads the same source text for any statement
+      // that failed the balance check.
+      const rechecked = await recheckNeedsReview(stamped, textContent, fileName, modelName);
+      // Double-verify each account number before returning.
+      return await verifyAccountNumbers(rechecked, textContent, fileName, modelName);
     } catch (err) {
       lastError = err;
       const msg = err.message || String(err);
@@ -899,15 +1301,45 @@ async function extractBankStatementsFromExcelBuffer(buffer, fileName) {
 }
 
 // ─── Build response shape ─────────────────────────────────────────────────────
+// Drop phantom "banks" that are really non-bank documents which slipped past the
+// classifier — chiefly QuickBooks/Xero reconciliation reports whose GL account
+// (e.g. "1010 Checking") gets read as a bank with name "Unknown Bank" and a 3-4
+// digit "account number". A genuine bank statement always names its institution and
+// carries a long (8+ digit) account number, so an unnamed bank with a GL-style code
+// is safe to remove — but only when at least one properly-identified bank remains,
+// so we never blank out the dropdown for a lone statement whose name failed to read.
+function dropPhantomBanks(banks) {
+  if (!Array.isArray(banks) || banks.length < 2) return banks;
+  const isUnnamed = (b) => {
+    const n = String(b.bank_name_clean || b.bank_name || "").replace(/\s*\(\d{2,}\)\s*$/, "").trim().toLowerCase();
+    return !n || n === "unknown bank" || n === "unknown";
+  };
+  const kept = banks.filter((b) => !isUnnamed(b));
+  return kept.length ? kept : banks;
+}
+
 function buildBankResponseShape(allStatements) {
   if (!allStatements?.length) return { banks: [], months: [], totals: [] };
 
-  const deduplicated = deduplicateStatements(allStatements);
+  // Heal AI account-number mis-reads first, so a single transposed digit can't split
+  // one account into several dropdown entries; THEN dedup collapses the now-identical
+  // account+period rows that came from different files.
+  const reconciled = reconcileAccountIdentities(allStatements);
+  const deduplicated = deduplicateStatements(reconciled);
   const groupedBanks = {};
   let skippedCount = 0;
 
   for (const stmt of deduplicated) {
-    const bankName = String(stmt.bank_name || "Unknown Bank").trim();
+    const displayName = String(stmt.bank_name || "Unknown Bank").trim();
+    const cleanName =
+      String(stmt.bank_name_clean || "").trim() ||
+      displayName.replace(/\s*\(\d{4}\)\s*$/, "").trim() ||
+      "Unknown Bank";
+    const last4 = String(stmt.account_number || "").replace(/\D/g, "").slice(-4);
+    // Group case-insensitively by clean name + last-4 so the same account never
+    // splits into multiple dropdown entries just because the AI read the bank
+    // name in a different case on different statements.
+    const groupKey = canonicalBankKey(cleanName, last4);
     const monthKey = toMonthKey(stmt.period_end);
 
     // Partial data fallback: if period_end missing, try to derive from period_start or use placeholder
@@ -916,22 +1348,25 @@ function buildBankResponseShape(allStatements) {
       resolvedMonthKey = toMonthKey(stmt.period_start);
     }
     if (!resolvedMonthKey) {
-      console.warn(`[BankShape] Skipping statement with no parseable date: bank="${bankName}" ending=${stmt.ending_balance}`);
+      console.warn(`[BankShape] Skipping statement with no parseable date: bank="${displayName}" ending=${stmt.ending_balance}`);
       skippedCount++;
       continue;
     }
 
-    if (!groupedBanks[bankName]) {
-      groupedBanks[bankName] = {
-        bank_name_clean: stmt.bank_name_clean || bankName.replace(/\s*\(\d{4}\)\s*$/, "").trim(),
+    if (!groupedBanks[groupKey]) {
+      groupedBanks[groupKey] = {
+        display_name: displayName,
+        bank_name_clean: cleanName,
         account_name: stmt.account_name || "",
-        account_number: String(stmt.account_number || "").slice(-4),
+        account_number: last4,
         months: {},
       };
     }
-    const g = groupedBanks[bankName];
+    const g = groupedBanks[groupKey];
+    // Reconcile label casing across statements of the same account.
+    g.display_name = pickBankDisplayLabel(g.display_name, displayName);
     if (!g.account_name && stmt.account_name) g.account_name = stmt.account_name;
-    if (!g.account_number && stmt.account_number) g.account_number = String(stmt.account_number).slice(-4);
+    if (!g.account_number && last4) g.account_number = last4;
 
     const existing = g.months[resolvedMonthKey];
     if (existing) {
@@ -957,13 +1392,10 @@ function buildBankResponseShape(allStatements) {
     console.warn(`[BankShape] All ${skippedCount} statements skipped — no parseable dates. Returning partial.`);
   }
 
-  const allMonthKeys = new Set();
-
-  const banks = Object.entries(groupedBanks).map(([bankKey, bankData]) => {
+  const allBanks = Object.values(groupedBanks).map((bankData) => {
     const months = Object.entries(bankData.months)
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([mk, values]) => {
-        allMonthKeys.add(mk);
         return { ...values, monthKey: mk, displayMonth: toDisplayMonth(mk) };
       });
 
@@ -980,7 +1412,7 @@ function buildBankResponseShape(allStatements) {
     const hasNeedsReview = months.some((m) => m.status === "Needs Review");
 
     return {
-      bank_name: bankKey,                       // "Wells Fargo (0067)" — grouping key + dropdown label
+      bank_name: bankData.display_name,          // "Wells Fargo (0067)" — dropdown label
       bank_name_clean: bankData.bank_name_clean, // "Wells Fargo"
       account_name: bankData.account_name,
       account_number: bankData.account_number,  // "0067" last-4 only
@@ -993,7 +1425,13 @@ function buildBankResponseShape(allStatements) {
     };
   });
 
-  const sortedMonthKeys = Array.from(allMonthKeys).sort();
+  // Remove phantom non-bank documents (e.g. a QuickBooks reconciliation report read
+  // as "Unknown Bank (1010)"), then build month columns from the surviving banks so a
+  // dropped phantom never leaves an empty month column behind.
+  const banks = dropPhantomBanks(allBanks);
+  const keptMonthKeys = new Set();
+  banks.forEach((b) => (b.accounts[0].months || []).forEach((m) => keptMonthKeys.add(m.monthKey)));
+  const sortedMonthKeys = Array.from(keptMonthKeys).sort();
 
   // Spec format: months as display strings ["Jan-2025", "Jan-2026"]
   const months = sortedMonthKeys.map(toDisplayMonth);
@@ -1016,11 +1454,108 @@ function buildBankResponseShape(allStatements) {
   return { banks, months, totals };
 }
 
+// Post-process an already-built bank response shape ({ banks, months, totals })
+// to merge banks that share a canonical identity (same clean name + last-4) but
+// were split into separate entries — e.g. results cached BEFORE case-insensitive
+// grouping existed ("Truist (9118)" vs "TRUIST (9118)"). Applied on read so the
+// dropdown collapses duplicates immediately, without paying for a re-extraction.
+// Idempotent: on freshly-built shapes (already merged by buildBankResponseShape)
+// nothing changes and the original object is returned untouched.
+//
+// Months are unioned rather than summed: deduplicateStatements already guarantees
+// a given account+period lives in only one source bucket, so the same monthKey
+// never legitimately appears under two case-variants of the same account.
+function mergeDuplicateBanksInShape(body) {
+  if (!body || !Array.isArray(body.banks) || body.banks.length < 2) return body;
+
+  const groups = new Map();
+  for (const bank of body.banks) {
+    const cleanName =
+      String(bank.bank_name_clean || "").trim() ||
+      String(bank.bank_name || "").replace(/\s*\(\d{2,}\)\s*$/, "").trim();
+    const last4 = String(bank.account_number || "").replace(/\D/g, "").slice(-4);
+    const key = canonicalBankKey(cleanName, last4);
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        bank_name: bank.bank_name,
+        bank_name_clean: cleanName,
+        account_name: bank.account_name || "",
+        account_number: last4,
+        monthsByKey: new Map(),
+        hasNeedsReview: false,
+      });
+    }
+    const g = groups.get(key);
+    g.bank_name = pickBankDisplayLabel(g.bank_name, bank.bank_name);
+    if (!g.account_name && bank.account_name) g.account_name = bank.account_name;
+    if (!g.account_number && last4) g.account_number = last4;
+
+    for (const acct of bank.accounts || []) {
+      if (acct.status === "Needs Review") g.hasNeedsReview = true;
+      for (const m of acct.months || []) {
+        if (m && m.monthKey && !g.monthsByKey.has(m.monthKey)) g.monthsByKey.set(m.monthKey, m);
+      }
+    }
+  }
+
+  // Leave the body untouched only when there is nothing to do: no canonical-key
+  // duplicates to merge AND no phantom non-bank entry to drop.
+  const phantomPresent = dropPhantomBanks(body.banks).length !== body.banks.length;
+  if (groups.size === body.banks.length && !phantomPresent) return body;
+
+  const allBanks = Array.from(groups.values()).map((g) => {
+    const months = Array.from(g.monthsByKey.values()).sort((a, b) =>
+      String(a.monthKey).localeCompare(String(b.monthKey)),
+    );
+    const totals = months.reduce(
+      (acc, m) => ({
+        startingBalance: acc.startingBalance + (m.startingBalance || 0),
+        deposits: acc.deposits + (m.deposits || 0),
+        withdrawals: acc.withdrawals + (m.withdrawals || 0),
+        endingBalance: acc.endingBalance + (m.endingBalance || 0),
+      }),
+      { startingBalance: 0, deposits: 0, withdrawals: 0, endingBalance: 0 },
+    );
+    return {
+      bank_name: g.bank_name,
+      bank_name_clean: g.bank_name_clean,
+      account_name: g.account_name,
+      account_number: g.account_number,
+      accounts: [{ account_name: "Business Checking", months, totals, status: g.hasNeedsReview ? "Needs Review" : "Verified" }],
+    };
+  });
+
+  const banks = dropPhantomBanks(allBanks);
+
+  // Recompute the top-level month list + per-month totals from the surviving banks.
+  const allMonthKeys = new Set();
+  banks.forEach((b) => (b.accounts[0].months || []).forEach((m) => allMonthKeys.add(m.monthKey)));
+  const sortedMonthKeys = Array.from(allMonthKeys).sort();
+  const months = sortedMonthKeys.map(toDisplayMonth);
+  const totals = sortedMonthKeys.map((mk) => {
+    let startingBalance = 0, deposits = 0, withdrawals = 0, endingBalance = 0;
+    banks.forEach((bank) => {
+      const m = bank.accounts[0].months.find((x) => x.monthKey === mk);
+      if (m) {
+        startingBalance += m.startingBalance || 0;
+        deposits += m.deposits || 0;
+        withdrawals += m.withdrawals || 0;
+        endingBalance += m.endingBalance || 0;
+      }
+    });
+    return { month: toDisplayMonth(mk), monthKey: mk, startingBalance, deposits, withdrawals, endingBalance };
+  });
+
+  return { ...body, banks, months, totals };
+}
+
 module.exports = {
   normalizeBankBinary,
   extractBankStatementsFromPdfBase64,
   extractBankStatementsFromExcelBuffer,
   buildBankResponseShape,
+  mergeDuplicateBanksInShape,
   toMonthKey,
   buildMonthLabel,
   toDisplayMonth,

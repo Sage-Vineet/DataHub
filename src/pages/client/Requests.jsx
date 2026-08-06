@@ -30,7 +30,7 @@ import {
 } from '../../lib/api';
 import { buildFolderMapFromTree } from '../../lib/folderOptions';
 import RequestDocumentPreviewModal from '../../components/RequestDocumentPreviewModal';
-import { CLIENT_SUB_ROLES, ROLE_META, SUB_ROLE, inferSubRole } from '../../lib/roles';
+import { ROLE_META } from '../../lib/roles';
 
 const CATEGORY_META = {
   Finance: { icon: TrendingUp, color: '#476E2C', bg: '#E6F3D3' },
@@ -108,9 +108,10 @@ function normalizePriority(priority) {
 
 function getReminderFrequencyLabel(priority) {
   const p = `${priority ?? ''}`.trim().toLowerCase();
-  if (p === 'critical' || p === 'high') return 'daily';
-  if (p === 'medium') return 'every 2 days';
-  return 'weekly';
+  if (p === 'critical') return 'every hour';
+  if (p === 'high') return 'every 24 hours';
+  if (p === 'medium') return 'every 48 hours';
+  return 'every 72 hours';
 }
 
 function getPriorityMeta(priority) {
@@ -177,6 +178,14 @@ function mapApiRequestToUi(request) {
     subLabel: request.sub_label || '',
     description: request.description || '',
   });
+  const assignedToUserIds = Array.isArray(request.assigned_to_user_ids)
+    ? request.assigned_to_user_ids
+    : Array.isArray(request.assignee_ids)
+    ? request.assignee_ids
+    : request.assigned_to
+    ? [request.assigned_to]
+    : [];
+  const assignedNames = Array.isArray(request.assigned_to_names) ? request.assigned_to_names.filter(Boolean) : [];
   return {
     id: request.id,
     name: request.title || 'Untitled Request',
@@ -194,9 +203,12 @@ function mapApiRequestToUi(request) {
       ? request.created_at.slice(0, 10)
       : formatToday(),
     assignedTo: request.assigned_to || null,
+    assignedToUserIds,
     assignedToDisplay: (() => {
-      if (!request.assigned_to) return 'Unassigned';
-      const name = request.assigned_to_name || request.assigned_to;
+      if (request.assigned_to_display) return request.assigned_to_display;
+      if (assignedNames.length) return assignedNames.join(', ');
+      if (!request.assigned_to) return 'All client team';
+      const name = request.assigned_to_name || request.assigned_to_email || request.assigned_to;
       const roleLabel = request.assigned_to_sub_role ? (ROLE_META[request.assigned_to_sub_role]?.label || '') : '';
       return roleLabel ? `${name} · ${roleLabel}` : name;
     })(),
@@ -640,15 +652,11 @@ export default function ClientRequests() {
       const list = await listCompanyRequests(companyId);
       let mapped = (Array.isArray(list) ? list : []).map(mapApiRequestToUi).filter(Boolean);
 
-      // Isolate requests per client team member.
-      // Company owners see all requests (backward compat).
-      // Client team members / accountants only see:
-      //   • requests explicitly assigned to them, OR
-      //   • requests with no assignee (visible to all).
-      const userSubRole = user?.sub_role || inferSubRole(user);
-      const isTeamMember = userSubRole && userSubRole !== SUB_ROLE.COMPANY_OWNER && CLIENT_SUB_ROLES.includes(userSubRole);
-      if (isTeamMember && user?.id) {
-        mapped = mapped.filter((r) => !r.assignedTo || r.assignedTo === user.id);
+      if (user?.id) {
+        mapped = mapped.filter((r) => {
+          const assigneeIds = Array.isArray(r.assignedToUserIds) ? r.assignedToUserIds.map(String) : [];
+          return assigneeIds.length === 0 || assigneeIds.includes(String(user.id));
+        });
       }
 
       setRequestState(mapped);

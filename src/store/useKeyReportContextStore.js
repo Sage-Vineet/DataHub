@@ -24,8 +24,8 @@ import { REPORT_SOURCE_KEYS } from "../lib/report-source";
 // Derive the flow type for a Key Reports version:
 //   "manual_gl"    — old-style: version has a resolvedBatchId pointing at a Manual GL
 //                    batch; reports still read from manual_gl_staged_transactions.
-//   "manual_upload"— new-style: version syncs directly into the five entry tables
-//                    (profit_loss_entries, balance_sheet_entries, etc.); reports read
+//   "manual_upload"— new-style: version syncs directly into the accounting tables
+//                    (GL, COA, generated Balance Sheets, etc.); reports read
 //                    ONLY from those tables via the /key-reports/versions/:id/reports/*
 //                    endpoints. The presence of GL documents does NOT imply a batch —
 //                    removing glCount from this check stops the report page from
@@ -171,6 +171,25 @@ const INACTIVE_CONTEXT = {
   loading: false,
   loadingDetail: false,
 };
+
+// Returns an INACTIVE Key Reports context regardless of whether versions exist.
+// Consumer pages call this when the active data source is NOT "key_reports", so
+// that a company merely HAVING Key Report versions never overrides the
+// Connections-page selection (QuickBooks / Manual GL / Manual Upload / QB Manual).
+// The version list is preserved only so a page can still show which versions
+// exist; it has no effect on data while the context is masked inactive.
+export function maskKeyReportContext(ctx, active) {
+  if (active) return ctx;
+  // Fully inactive: krActive=false, no selectedVersionId/version, availability
+  // all-enabled, loading settled. This guarantees consumer pages never send a
+  // keyReportVersionId and never take the KR override path when the active data
+  // source is one of the 4 connections.
+  return {
+    ...INACTIVE_CONTEXT,
+    loadedCompanyId: ctx?.loadedCompanyId ?? null,
+    error: null,
+  };
+}
 
 export function selectKeyReportContext(state) {
   const { versions, selectedVersionId, detail } = state;
