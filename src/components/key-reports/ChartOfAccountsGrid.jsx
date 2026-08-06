@@ -933,6 +933,19 @@ export default function ChartOfAccountsGrid({
                 const { row } = item;
                 const isEditing = editingKey === row.key;
                 const levels = row.levels || [];
+                // Level cells repeat the LEAF past the account's real depth, the
+                // same storage/display convention the persisted level_1..15
+                // columns use (levelsToColumns -> padLevelsWithLeafPropagation).
+                // getLevelsArray pads with "" because its output also keys path
+                // identity, so the propagation is applied here, for display only.
+                // `levels` itself is left untouched -- the edit handlers derive
+                // the real category path from it.
+                const displayLevels = (() => {
+                  const real = levels.filter(Boolean);
+                  if (!real.length) return levels;
+                  const leaf = real[real.length - 1];
+                  return LEVEL_INDEXES.map((i) => (i < real.length ? real[i] : leaf));
+                })();
                 const rowRec = row.accountId ? rec.byAccountId.get(row.accountId) : null;
 
                 return (
@@ -1014,7 +1027,7 @@ export default function ChartOfAccountsGrid({
                       <td
                         key={i}
                         className="px-2 py-1.5 text-xs text-text-secondary border-r border-border/30 max-w-[110px]"
-                        title={isEditing ? "" : (levels[i] || "")}
+                        title={isEditing ? "" : (displayLevels[i] || "")}
                       >
                         {isEditing ? (
                           <input
@@ -1027,7 +1040,7 @@ export default function ChartOfAccountsGrid({
                             className="w-full min-w-[80px] rounded border border-primary px-1 py-0.5 text-xs"
                           />
                         ) : (
-                          <span className="block truncate">{levels[i] || ""}</span>
+                          <span className="block truncate">{displayLevels[i] || ""}</span>
                         )}
                       </td>
                     ))}

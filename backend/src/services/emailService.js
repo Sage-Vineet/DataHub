@@ -296,6 +296,59 @@ function _buildOtpText(otp) {
   ].join("\n");
 }
 
+// ── Password reset OTP email templates ────────────────────────────────────────
+
+function _buildResetOtpHtml(otp) {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Password Reset Code</title>
+  <style>
+    body{margin:0;padding:0;background:#f4f6f9;font-family:Arial,Helvetica,sans-serif}
+    .wrap{max-width:480px;margin:40px auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)}
+    .hdr{background:#05164D;padding:28px 40px;text-align:center}
+    .hdr h1{color:#fff;margin:0;font-size:20px;letter-spacing:.5px}
+    .bdy{padding:36px 40px;text-align:center}
+    .lbl{font-size:14px;color:#555;margin-bottom:24px;line-height:1.6}
+    .box{display:inline-block;background:#f0f4ff;border:2px solid #c3d0f0;border-radius:10px;padding:20px 44px;margin-bottom:24px}
+    .otp{font-size:40px;font-weight:800;letter-spacing:12px;color:#05164D;font-family:'Courier New',monospace}
+    .exp{font-size:13px;color:#888;margin-bottom:24px}
+    .wrn{font-size:12px;color:#aaa;border-top:1px solid #f0f0f0;padding-top:20px;line-height:1.6}
+    .ftr{background:#f4f6f9;padding:16px 40px;text-align:center;font-size:12px;color:#aaa}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hdr"><h1>Password Reset</h1></div>
+    <div class="bdy">
+      <p class="lbl">Your M&amp;A Hub password reset code is:</p>
+      <div class="box"><div class="otp">${otp}</div></div>
+      <p class="exp">This code expires in <strong>10 minutes</strong>.</p>
+      <p class="wrn">If you did not request a password reset, please ignore this email — your password will not be changed.<br/>Never share this code with anyone.</p>
+    </div>
+    <div class="ftr">M&amp;A Hub Team &mdash; Automated message, do not reply.</div>
+  </div>
+</body>
+</html>`;
+}
+
+function _buildResetOtpText(otp) {
+  return [
+    "M&A Hub Password Reset Code",
+    "",
+    `Your password reset code is: ${otp}`,
+    "",
+    "This code expires in 10 minutes.",
+    "",
+    "If you did not request a password reset, please ignore this email — your password will not be changed.",
+    "Never share this code with anyone.",
+    "",
+    "M&A Hub Team",
+  ].join("\n");
+}
+
 // ── Welcome email templates ───────────────────────────────────────────────────
 
 function _buildWelcomeHtml(userName, email, password, companyDisplay, loginUrl) {
@@ -382,6 +435,27 @@ async function sendOtpEmail(email, otp) {
     return result;
   } catch (err) {
     console.error(`[Email Service] OTP delivery completely failed for <${email}>: ${err.message}`);
+    return { sent: false, reason: "delivery_failed", error: err.message };
+  }
+}
+
+/**
+ * Sends a 6-digit OTP password reset email.
+ */
+async function sendPasswordResetOtpEmail(email, otp) {
+  console.log(`[Email Service] Sending password reset OTP to <${email}> via Graph API`);
+  console.log(`[Email Service] Graph configured: ${isGraphConfigured()}`);
+
+  try {
+    const result = await _deliver(
+      email,
+      "M&A Hub Password Reset Code",
+      _buildResetOtpHtml(otp),
+      _buildResetOtpText(otp)
+    );
+    return result;
+  } catch (err) {
+    console.error(`[Email Service] Password reset OTP delivery completely failed for <${email}>: ${err.message}`);
     return { sent: false, reason: "delivery_failed", error: err.message };
   }
 }
@@ -634,6 +708,7 @@ async function sendCompanyCreatedEmail({ toName, toEmail, companyName, projectNa
 
 module.exports = {
   sendOtpEmail,
+  sendPasswordResetOtpEmail,
   sendWelcomeEmail,
   sendReminderEmail,
   sendRequestNotificationEmail,

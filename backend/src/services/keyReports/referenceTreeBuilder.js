@@ -118,7 +118,25 @@ function resolveDocumentAncestry(rows) {
     const name = rowName(row);
     if (!name) { out.push(null); continue; }
 
-    const rowScopeKey = `${row.source_file_id ?? ""}::${row.fiscal_year ?? ""}`;
+    // CONFIRMED ROOT CAUSE (fixed here): this key used to include fiscal_year.
+    // Both extractors emit one row PER PERIOD COLUMN -- and that includes the
+    // header/group and total rows, not just the accounts. So on a multi-year
+    // document the key changed on essentially every row and reset the bracketing
+    // stack mid-document, destroying the ancestry of everything after the first
+    // row:
+    //   Income(2023) reset+push, Income(2024) reset+push, Income(2025) reset+push,
+    //   Sales(2023)  reset -> ancestry EMPTY, "Income" gone.
+    // A single-period document has one constant fiscal_year, so it was unaffected
+    // -- which is exactly why this stayed hidden until a genuinely multi-year P&L
+    // was used.
+    //
+    // Bracketing is a property of ONE DOCUMENT read top to bottom, so the scope
+    // is the source document alone. Callers already keep each document's rows
+    // contiguous (see keyReportSyncService's balanceSheetRowsForTree), and the
+    // "only pop when the target is actually open" guard below keeps a repeated
+    // total from draining the stack, so a document that repeats its structure per
+    // period stays correct.
+    const rowScopeKey = `${row.source_file_id ?? ""}`;
     if (rowScopeKey !== scopeKey) { scopeKey = rowScopeKey; scopeStack = []; }
 
     const hasOwnParentPath = Array.isArray(row.parent_path) && row.parent_path.length > 0;
@@ -281,12 +299,50 @@ function buildProfitLossTreeFromData({ reportName, periodKeys, rows }) {
   const existing = unwrapTree(rows);
   if (existing) return existing;
   const root = { name: reportName || "Profit and Loss", nodeType: "REPORT", children: [] };
-  const netIncome = { name: "Net Income", nodeType: "CALCULATED_TOTAL", values: {}, relationship: "ADD", children: [] };
-  const netOperatingIncome = { name: "Net Operating Income", nodeType: "CALCULATED_TOTAL", values: {}, relationship: "ADD", children: [] };
-  const grossProfit = { name: "Gross Profit", nodeType: "CALCULATED_TOTAL", values: {}, relationship: "ADD", children: [] };
-  const netOtherIncome = { name: "Net Other Income", nodeType: "CALCULATED_TOTAL", values: {}, relationship: "ADD", children: [] };
+
+  // ── Roll-up LABELS come from the document ────────────────────────────────
+  // The income statement's roll-up NESTING (bottom line contains operating
+  // result, which contains gross result) is accounting structure, not something
+  // any document states -- those rows are siblings in the file. But their LABELS
+  // are the document's own words, so they are read from its subtotal rows rather
+  // than invented here: a file that says "Net Operating Income" keeps that
+  // wording, one that says "Operating Income" keeps its own, and a file that
+  // names none of them falls back to the role name so the skeleton the report
+  // layer and findFirstProfitAndLossAccount walk always exists.
+  //
+  // Ordering rule is structural, not name-based: an income statement prints its
+  // subtotals innermost-first and the bottom line LAST, so document order maps
+  // to depth. Reversed, the last subtotal is the outermost roll-up.
+  const docSubtotals = [];
+  for (const r of rows || []) {
+    if (String(r?.node_type || "").toLowerCase() !== "subtotal") continue;
+    const nm = rowName(r);
+    if (!nm) continue;
+    if (!docSubtotals.some((x) => normName(x) === normName(nm))) docSubtotals.push(nm);
+  }
+  const outermostFirst = [...docSubtotals].reverse();
+  const calcNode = (name) => ({ name, nodeType: "CALCULATED_TOTAL", values: {}, relationship: "ADD", children: [] });
+  const n = outermostFirst.length;
+  // Three ROLES the section attachment logic below needs: the bottom line, the
+  // operating result (where operating expenses attach) and the gross result
+  // (where revenue/COGS attach). Their LABELS are the document's outermost,
+  // second-innermost and innermost subtotals respectively.
+  const netIncome = calcNode(n > 0 ? outermostFirst[0] : "Net Income");
+  const grossProfit = calcNode(n > 2 ? outermostFirst[n - 1] : "Gross Profit");
+  const netOperatingIncome = calcNode(n > 1 ? outermostFirst[n - 2] : "Net Operating Income");
+  const netOtherIncome = calcNode("Net Other Income");
   root.children.push(netIncome);
-  netIncome.children.push(netOperatingIncome, netOtherIncome);
+  // DEPTH FOLLOWS THE DOCUMENT: any subtotals BETWEEN the bottom line and the
+  // operating result become their own nested levels, so a statement that prints a
+  // pre-tax roll-up gets it as its own level and one that does not simply has a
+  // shallower chain. Nothing here assumes how many levels a company reports.
+  let cursor = netIncome;
+  for (const mid of outermostFirst.slice(1, Math.max(1, n - 2))) {
+    const midNode = calcNode(mid);
+    cursor.children.push(midNode);
+    cursor = midNode;
+  }
+  cursor.children.push(netOperatingIncome, netOtherIncome);
   netOperatingIncome.children.push(grossProfit);
 
   const sectionRoot = (row) => {
