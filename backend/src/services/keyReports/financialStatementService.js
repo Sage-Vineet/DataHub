@@ -1974,9 +1974,33 @@ async function generateMonthlyBs(companyId, versionId, year, allCoa, unmappedSet
   const bsAccounts = allCoa.filter(isBsAccount);
   const bsLeaves = bsAccounts.filter(a => !a.metadata?.is_group);
 
-  // Phase 4: prefer the generated monthly snapshots (authoritative). They provide
-  // one as_of_date per month, which is exactly the month dimension this view wants.
-  const hasGen = await hasGeneratedRows("balance_sheet_entries", versionId, year);
+  // Phase 4's generated monthly snapshots are a DERIVATION -- the ending Balance
+  // Sheet walked backwards through GL activity. They exist so this view has a
+  // month dimension when the uploaded document only states one period.
+  //
+  // CONFIRMED ROOT CAUSE (fixed here): they were preferred unconditionally, so
+  // even a document that states every month of its own was overridden by the
+  // derivation. Confirmed live once the extractor began reading all 12 period
+  // columns: for January the document says Total Assets 293,161.70 while the
+  // GL-derived snapshot said 283,931.50, and Accrued Revenue derived to
+  // -83,830.90 against the document's 44,279.84.
+  //
+  // The uploaded document wins whenever it actually carries a month dimension
+  // of its own (2+ distinct as_of_date). A single-period upload still falls
+  // through to the derivation exactly as before -- that is what it is for.
+  const uploadedDates = await fetchAllRows(() => supabase
+    .from("balance_sheet_entries")
+    .select("as_of_date")
+    .eq("version_id", versionId)
+    .eq("fiscal_year", year)
+    .or("is_generated.is.null,is_generated.eq.false")
+    .order("as_of_date", { ascending: true }));
+  const uploadedMonthCount = new Set((uploadedDates || []).map((r) => r.as_of_date).filter(Boolean)).size;
+  const preferUploaded = uploadedMonthCount >= 2;
+  const hasGen = !preferUploaded && await hasGeneratedRows("balance_sheet_entries", versionId, year);
+  if (preferUploaded) {
+    console.log(`[generateMonthlyBs] version=${versionId} FY${year}: using the uploaded document's own ${uploadedMonthCount} monthly period(s) instead of GL-derived snapshots.`);
+  }
   const allEntries = await fetchAllRows(() => {
     let q = supabase
       .from("balance_sheet_entries")

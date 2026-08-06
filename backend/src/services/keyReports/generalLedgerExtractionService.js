@@ -261,10 +261,33 @@ class GeneralLedgerExtractionService extends ExtractionServiceBase {
       const rawRowJson  = JSON.stringify(row.map((v) => String(v ?? '')));
       const firstCell   = isToStr(row[0]);
       const firstLc     = firstCell.toLowerCase();
+      // CONFIRMED ROOT CAUSE (fixed here): the "Beginning Balance" sentinel was
+      // looked up in column 0 only. A very common export layout indents the
+      // ledger grid by one column -- the ACCOUNT HEADING sits alone in column 0
+      // and every detail row (including the "Beginning Balance" label) starts at
+      // the detected account column. On such a file row[0] is empty for that
+      // row, so the branch below never matched: it fell through to the
+      // transaction branch, had no date and no parsable amount, and was dropped.
+      //
+      // Measured on a real 3-file export: 52 "Beginning Balance" rows in the
+      // workbooks, 0 in the database. That destroyed every opening balance AND
+      // removed the equity accounts entirely -- they carry an opening balance
+      // and no transactions, so with the row gone they produced no GL rows at
+      // all and vanished from the Trial Balance. That is what NO_EQUITY_ACCOUNTS
+      // was reporting.
+      //
+      // Deliberately scoped to THIS lookup. `firstCell` must stay column-0 only:
+      // the ACCOUNT_HEADER branch relies on an outdented heading, and the
+      // "Total for X" rows are genuinely in column 0 (verified 82/82 on that
+      // export). Widening either one would turn ordinary detail rows into bogus
+      // section headers or totals.
+      const labelCell = firstCell
+        || (colMap.account >= 0 ? isToStr(row[colMap.account]) : '');
+      const labelLc    = labelCell.toLowerCase();
       const dateStr     = parseDate(colMap.date >= 0 ? row[colMap.date] : null);
 
       // ── BEGINNING BALANCE ────────────────────────────────────────────────────
-      if (firstLc.includes('beginning balance')) {
+      if (labelLc.includes('beginning balance')) {
         let bal = null;
         for (let c = row.length - 1; c >= 0; c--) {
           const v = parseAmount(row[c]);
@@ -276,8 +299,13 @@ class GeneralLedgerExtractionService extends ExtractionServiceBase {
         const rowYear = findNextTransactionYear(raw, i + 1, colMap.date) ?? currentYear;
         rows.push({
           row_type: 'BEGINNING_BALANCE', row_number: excelRowNum,
-          account_name: firstCell, account_section: currentAccountSection,
-          description: firstCell, running_balance: bal,
+          // The account is the enclosing section heading, never the sentinel
+          // label -- "Beginning Balance" is not an account name, and grouping
+          // the Trial Balance by it would strand every opening balance under a
+          // single bogus account. (Kept as the description for traceability.)
+          account_name: currentAccountSection || labelCell,
+          account_section: currentAccountSection,
+          description: labelCell, running_balance: bal,
           year: rowYear, transaction_date: rowYear ? `${rowYear}-01-01` : null, raw_row_json: rawRowJson,
         });
         continue;

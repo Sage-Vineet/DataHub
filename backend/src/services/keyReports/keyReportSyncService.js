@@ -204,22 +204,64 @@ function uploadedSubtotalsByYear(validRows) {
 // without the underlying data would be exactly the kind of speculative code
 // this reconciliation layer exists to avoid.
 async function calculatedSubtotalsForYear(versionId, year) {
-  const [{ accounts }, typeMap] = await Promise.all([
-    keyReportReportService.aggregateGLByAccount(versionId, year),
-    coaTypeMap(versionId),
-  ]);
+  // CONFIRMED ROOT CAUSE (fixed here): this aggregated the GL BY ACCOUNT NAME
+  // and then typed each bucket through coaTypeMap — a name -> type map built
+  // first-leaf-wins. Two accounts that legitimately share a name therefore
+  // collapsed into ONE bucket carrying ONE type, so the whole combined amount
+  // landed on a single side of Net Income.
+  //
+  // Confirmed live: a P&L lists "Business Process Outsourcing" twice, under
+  // Income (100,800.00) and Cost of goods sold (59,400.00). Both merged and
+  // were typed `income`, so this reported a GL-derived Net Income of
+  // 247,126.88 against the uploaded 128,326.88 — out by 118,800.00 — while the
+  // Trial Balance, for the very same version, computed 128,326.88 correctly.
+  // The difference is that generateTrialBalance resolves each row's account
+  // through its coa_id and only falls back to a name, whereas this path had no
+  // coa_id in it at all.
+  //
+  // The Trial Balance is already the canonical GL-derived statement, is keyed
+  // per account rather than per name (so the two forks are separate rows), and
+  // is written earlier in the same sync. Reading the subtotals from it makes
+  // this reconciliation agree with the Trial Balance BY CONSTRUCTION, instead
+  // of by two independent derivations happening to arrive at the same answer.
+  const tbRows = await fetchAllRows(() => supabase
+    .from('trial_balance_entries')
+    .select('account_type, net_balance')
+    .eq('version_id', versionId)
+    .eq('fiscal_year', year));
+
   let revenue = 0;
   let cogs = 0;
   let operatingExpenses = 0;
-  for (const acc of accounts.values()) {
-    const rawType = String(typeMap.get(normName(acc.name)) || '').toLowerCase();
-    if (rawType === 'cogs') cogs += acc.net;
-    else if (/expense/.test(rawType)) operatingExpenses += acc.net;
-    else if (/income|revenue/.test(rawType)) revenue += acc.net;
-    // Anything else (asset/liability/equity/unclassified) contributes to no
-    // named P&L subtotal — an unclassified account still shows up as its own
-    // missing_in_gl/unknown_account row from accountLevelReconciliationDiff.
+
+  if (tbRows && tbRows.length) {
+    for (const r of tbRows) {
+      const rawType = String(r.account_type || '').toLowerCase();
+      const amount = Number(r.net_balance) || 0;
+      if (rawType === 'cogs') cogs += amount;
+      else if (/expense/.test(rawType)) operatingExpenses += amount;
+      else if (/income|revenue/.test(rawType)) revenue += amount;
+      // Anything else (asset/liability/equity/unclassified) contributes to no
+      // named P&L subtotal — an unclassified account still shows up as its own
+      // missing_in_gl/unknown_account row from accountLevelReconciliationDiff.
+    }
+  } else {
+    // No Trial Balance for this year (it is generated in an earlier phase that
+    // can be skipped or can halt). Fall back to the original name-keyed
+    // aggregation rather than silently reporting every subtotal as zero — it is
+    // exact for every account whose name is unique, which is the vast majority.
+    const [{ accounts }, typeMap] = await Promise.all([
+      keyReportReportService.aggregateGLByAccount(versionId, year),
+      coaTypeMap(versionId),
+    ]);
+    for (const acc of accounts.values()) {
+      const rawType = String(typeMap.get(normName(acc.name)) || '').toLowerCase();
+      if (rawType === 'cogs') cogs += acc.net;
+      else if (/expense/.test(rawType)) operatingExpenses += acc.net;
+      else if (/income|revenue/.test(rawType)) revenue += acc.net;
+    }
   }
+
   const grossProfit = revenue - cogs;
   const netIncome = grossProfit - operatingExpenses;
   return { revenue, cogs, grossProfit, operatingExpenses, netIncome };
@@ -1342,7 +1384,13 @@ async function generateFinancialTables(version, opts = {}) {
     for (const iy of trialBalanceSummary.imbalancedYears) {
       logger.warn(
         `  ✗ Trial Balance FY${iy.year} does not balance: ΔAssets=${iy.assetMovement} ΔLiabilities+Equity=${iy.liabilitiesPlusEquityMovement} ` +
-        `NetIncome=${iy.netIncome} imbalance=${iy.imbalance} — top accounts by movement: ${iy.topAccounts.map((a) => a.accountName).join(', ')}` +
+        `NetIncome=${iy.netIncome} imbalance=${iy.imbalance}` +
+        // Lead with the STRUCTURAL cause when one was identified -- the
+        // largest-movement accounts are usually innocent and naming them first
+        // sends the reader after the wrong thing.
+        (iy.causes?.length
+          ? ` | cause: ${iy.causes.map((c) => c.code + ' — ' + c.detail).join(' | cause: ')}`
+          : ` — top accounts by movement: ${iy.topAccounts.map((a) => a.accountName).join(', ')}`) +
         (iy.unclassifiedAccounts.length ? ` — unclassified (excluded from equation): ${iy.unclassifiedAccounts.join(', ')}` : ''),
       );
     }
@@ -1356,8 +1404,10 @@ async function generateFinancialTables(version, opts = {}) {
         `Trial Balance for ${iy.year} does not balance — the change in Assets (${iy.assetMovement.toLocaleString()}) does not equal ` +
         `the change in Liabilities + Equity plus Net Income (${(iy.liabilitiesPlusEquityMovement + iy.netIncome).toLocaleString()}), ` +
         `a difference of ${Math.abs(iy.imbalance).toLocaleString()}. ` +
-        `This usually indicates a General Ledger parsing issue (a missing offsetting entry, a sign error, a skipped row, or a misclassified account). ` +
-        `Accounts with the largest movement that year: ${iy.topAccounts.map((a) => a.accountName).join(', ')}.` +
+        (iy.causes?.length
+          ? `Identified cause(s): ${iy.causes.map((c) => c.detail).join(' ')}`
+          : `This usually indicates a General Ledger parsing issue (a missing offsetting entry, a sign error, a skipped row, or a misclassified account). `
+            + `Accounts with the largest movement that year: ${iy.topAccounts.map((a) => a.accountName).join(', ')}.`) +
         (iy.unclassifiedAccounts.length ? ` Unclassified accounts excluded from this equation: ${iy.unclassifiedAccounts.join(', ')}.` : ''),
       metadata: { gate: 'trial_balance_imbalance', code: 'TRIAL_BALANCE_IMBALANCE', ...iy },
     })));

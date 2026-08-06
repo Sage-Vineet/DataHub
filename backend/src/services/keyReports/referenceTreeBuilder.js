@@ -252,10 +252,22 @@ function buildBalanceSheetTreeFromData({ reportName, rows }) {
       continue;
     }
     // One tree node per distinct account, first placement wins (see
-    // placedAccounts above). Identity is the normalized account name -- the
-    // same key pickDocHierarchy/normName use to look accounts up, so a name
-    // that would resolve to one COA leaf resolves to one tree node here too.
-    const accountKey = normName(name);
+    // placedAccounts above).
+    // CONFIRMED ROOT CAUSE (fixed here): identity was the normalized account
+    // NAME ALONE, so the SECOND document row sharing a name was skipped and
+    // never became a tree node at all. One real chart legitimately lists
+    // "Business Process Outsourcing" twice -- once under Income and once under
+    // Cost of goods sold -- and they are two different accounts. With only one
+    // node in the tree, buildTreeHierarchyLookup had a single candidate to
+    // offer, so both COA leaves resolved to the SAME ancestry and produced the
+    // identical hierarchy path, which failed persistApprovedCoaTree's
+    // duplicate-leaf-path check and blocked every Save with HTTP 422.
+    //
+    // Identity is now the name PLUS the document ancestry it sits under. A
+    // genuine repeat (same name, same position -- e.g. the same account across
+    // fiscal years) still collapses to one node exactly as before; only rows
+    // the document itself places somewhere different become distinct nodes.
+    const accountKey = `${normName(name)}::${(ancestry || []).map(normName).join(">")}`;
     if (placedAccounts.has(accountKey)) continue;
     placedAccounts.add(accountKey);
     const parent = ensureTotalPath(root, ancestry);
@@ -423,7 +435,21 @@ function buildProfitLossTreeFromData({ reportName, periodKeys, rows }) {
     // a hierarchy level -- the skeleton above already represents these.
     if (String(row?.node_type || "").toLowerCase() === "subtotal") continue;
 
-    const accountKey = normName(name);
+    // CONFIRMED ROOT CAUSE (fixed here): identity was the normalized account
+    // NAME ALONE, so the SECOND document row sharing a name was skipped and
+    // never became a tree node at all. One real chart legitimately lists
+    // "Business Process Outsourcing" twice -- once under Income and once under
+    // Cost of goods sold -- and they are two different accounts. With only one
+    // node in the tree, buildTreeHierarchyLookup had a single candidate to
+    // offer, so both COA leaves resolved to the SAME ancestry and produced the
+    // identical hierarchy path, which failed persistApprovedCoaTree's
+    // duplicate-leaf-path check and blocked every Save with HTTP 422.
+    //
+    // Identity is now the name PLUS the document ancestry it sits under. A
+    // genuine repeat (same name, same position -- e.g. the same account across
+    // fiscal years) still collapses to one node exactly as before; only rows
+    // the document itself places somewhere different become distinct nodes.
+    const accountKey = `${normName(name)}::${normalizedPath(ancestry).map(normName).join(">")}`;
     if (placedAccounts.has(accountKey)) continue;
     placedAccounts.add(accountKey);
 
