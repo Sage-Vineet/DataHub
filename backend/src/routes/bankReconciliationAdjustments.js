@@ -100,9 +100,15 @@ router.get("/bank-reconciliation-addback-items", async (req, res) => {
       return q;
     };
 
+    const isVersionColumnErr = (err) => {
+      if (!err) return false;
+      const str = String(err.message || err.details || err.hint || JSON.stringify(err));
+      return /key_report_version_id/i.test(str) || err.code === "PGRST204" || err.code === "42703";
+    };
+
     let { data, error } = await buildQuery(true);
     // Graceful fallback if migration 066 (key_report_version_id) is not applied.
-    if (error && /key_report_version_id/.test(error.message || "")) {
+    if (error && isVersionColumnErr(error)) {
       ({ data, error } = await buildQuery(false));
     }
     if (error) throw error;
@@ -152,7 +158,7 @@ router.post("/bank-reconciliation-addback-items", async (req, res) => {
 
     let { data, error } = await insertRow(true);
     // Graceful fallback if migration 066 (key_report_version_id) is not applied.
-    if (error && /key_report_version_id/.test(error.message || "")) {
+    if (error && isVersionColumnErr(error)) {
       ({ data, error } = await insertRow(false));
     }
     if (error) throw error;
