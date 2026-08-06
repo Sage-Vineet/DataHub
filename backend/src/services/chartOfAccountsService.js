@@ -120,8 +120,24 @@ function normName(accountName) {
 
 // Stable per-account key: number (if any) + normalized name. Used to merge the
 // same account across regenerations and across BS/P&L/GL sources.
-function accountKey(number, name) {
-  return `${String(number || "").trim().toLowerCase()}::${normName(name)}`;
+//
+// `discriminator` is set ONLY on a leaf that addLeaf deliberately forked because
+// the document places two same-named rows in sections of different account
+// types (see pickBucketTarget). Without it both forks produce the identical key
+// -- confirmed live as "Duplicate node key \"::business process outsourcing\"",
+// which blocked saving the whole Proposed COA tree.
+//
+// It is deliberately OPTIONAL and appended only when present, so every account
+// that was never forked keeps a byte-identical key. That matters: this key is
+// the cross-regeneration merge identity, and changing it for existing accounts
+// would make the next sync insert duplicates instead of updating them. The
+// value is the DOCUMENT's section type, which is stable across regenerations --
+// unlike accountType, which a reclassification or a user edit can legitimately
+// change.
+function accountKey(number, name, discriminator) {
+  const base = `${String(number || "").trim().toLowerCase()}::${normName(name)}`;
+  const d = String(discriminator || "").trim().toLowerCase();
+  return d ? `${base}::${d}` : base;
 }
 
 // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ Metadata row guard ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
@@ -1187,7 +1203,42 @@ function crossStatementViolation(leaf) {
   return hierarchyContradictsClassification(dynamic, leaf.accountType);
 }
 
-function inferAccountTypeFromReferencePath(statementType, path) {
+// Classify ONE P&L hierarchy label on its own -- the P&L counterpart of
+// classifyBsAncestorLabel. Order matters within a single label: "Cost of Sales"
+// must resolve as cost-of-goods BEFORE the bare "sales" test can claim it.
+function classifyPlAncestorLabel(label) {
+  const t = String(label || "").trim().toLowerCase();
+  if (!t) return null;
+  // "cogs", not the coarser "expense": plSectionToType already maps a
+  // cost_of_sales SECTION to cogs, and reporting the coarse side here meant a
+  // COGS account resolved from its ANCESTRY was typed `expense` while the same
+  // account resolved from its section was typed `cogs`. Confirmed live: every
+  // cost-of-goods account came through the ancestry path, so the Trial Balance
+  // held zero cogs rows and Gross Profit collapsed to equal Revenue
+  // (1,469,633.39 instead of the uploaded 866,082.65). Net Income was
+  // unaffected either way — cogs and expense sit on the same side of it, which
+  // is exactly why this stayed invisible until the subtotals were checked.
+  // Both types share PL_EXPENSE_FIXED_PREFIX, so no hierarchy anchor moves.
+  if (t.includes("cost of goods") || t.includes("cost of sales") || t.includes("cogs")) return "cogs";
+  if (t.includes("expense")) return "expense";
+  if (t.includes("income") || t.includes("revenue") || t.includes("sales")) return "income";
+  return null;
+}
+
+/**
+ * @param {string} statementType
+ * @param {string[]} path
+ * @param {{excludeOwnName?: boolean}} [options] - set when `path` ends with the
+ *   account's OWN name (buildLeafHierarchies passes such a path). The other
+ *   callers pass dynamic ANCESTOR labels only, so they must leave it off.
+ */
+function inferAccountTypeFromReferencePath(statementType, path, options) {
+  // A section is a property of where an account SITS, never of what it is
+  // called. When the caller's path ends with the account's own name, drop it
+  // before classifying -- see the P&L branch below for the defect this fixes.
+  const labels = options && options.excludeOwnName
+    ? (path || []).slice(0, -1)
+    : (path || []);
   if (statementType === "balance_sheet") {
     // CONFIRMED ROOT CAUSE (fixed here): the old implementation joined the
     // ENTIRE path into one text blob and checked substrings in a fixed
@@ -1205,16 +1256,37 @@ function inferAccountTypeFromReferencePath(statementType, path) {
     // sitting bare under the umbrella with zero distinguishing branch
     // anywhere in its path), this correctly returns null -- unresolved,
     // never guessed -- rather than defaulting to either type.
-    for (let i = (path || []).length - 1; i >= 0; i--) {
-      const type = classifyBsAncestorLabel(path[i]);
+    for (let i = labels.length - 1; i >= 0; i--) {
+      const type = classifyBsAncestorLabel(labels[i]);
       if (type) return type;
     }
     return null;
   }
   if (statementType === "profit_loss") {
-    const text = (path || []).join(" ").toLowerCase();
-    if (text.includes("expense") || text.includes("cost of goods") || text.includes("cogs")) return "expense";
-    if (text.includes("income") || text.includes("revenue") || text.includes("sales")) return "income";
+    // CONFIRMED ROOT CAUSE (fixed here): this used to join the ENTIRE path into
+    // one text blob and test substrings in a fixed order -- "expense" first,
+    // then "income". Any account whose own NAME happened to contain "expense"
+    // was therefore typed as an expense no matter which section the document
+    // actually put it in, because the blob contained both words and the
+    // expense test ran first.
+    //
+    // Confirmed live: "Reimbursement for 3rd Party Expenses" sits in the
+    // INCOME section of the uploaded P&L (6,196.90) and was typed `expense`.
+    // Its Trial Balance contribution therefore landed on the wrong side of Net
+    // Income twice over -- once by being absent from income, once by being
+    // added to expense -- for a 12,393.80 swing in the accounting equation.
+    //
+    // This is the same defect the balance_sheet branch above already fixes, and
+    // the fix is the same: walk the labels from the NEAREST ancestor toward the
+    // root and classify ONE label at a time, so the account's actual section
+    // decides and the first label that resolves on its own wins. If nothing
+    // resolves this returns null -- unresolved, never guessed -- and the caller
+    // falls back to the section the extractor read from the document itself.
+    for (let i = labels.length - 1; i >= 0; i--) {
+      const type = classifyPlAncestorLabel(labels[i]);
+      if (type) return type;
+    }
+    return null;
   }
   return null;
 }
@@ -1438,7 +1510,7 @@ function buildTreeHierarchyLookup(tree, statementType) {
       // (the extractor reads `section` from the document's own structure) and
       // still mapped through the ONE existing section vocabulary -- no keyword
       // rules, no per-client special cases.
-      const accountType = inferAccountTypeFromReferencePath(statementType, nextPath)
+      const accountType = inferAccountTypeFromReferencePath(statementType, nextPath, { excludeOwnName: true })
         || node.accountType
         || (statementType === "profit_loss"
           ? plSectionToType(node.sourceSection)
@@ -1481,7 +1553,7 @@ function buildTreeHierarchyLookup(tree, statementType) {
       // classification AND the full ancestry document-derived. Registered under
       // both its own name and its total-prefix-stripped name, since
       // ensureTotalPath stores these as "Total for <name>".
-      const structuralType = inferAccountTypeFromReferencePath(statementType, nextPath)
+      const structuralType = inferAccountTypeFromReferencePath(statementType, nextPath, { excludeOwnName: true })
         || node.accountType
         || (statementType === "profit_loss"
           ? plSectionToType(node.sourceSection)
@@ -1530,17 +1602,63 @@ function buildTreeHierarchyLookup(tree, statementType) {
   return lookup;
 }
 
-function selectDeterministicReferenceCandidate(candidates) {
+/**
+ * @param {Array} candidates - every document node registered under one name.
+ * @param {string} [preferAccountType] - when the caller already knows which
+ *   account this is (an addLeaf fork carries the document section it was forked
+ *   on), prefer the candidate the DOCUMENT gave that same type.
+ *
+ * CONFIRMED ROOT CAUSE (fixed here): buildTreeHierarchyLookup already registers
+ * BOTH document nodes when one name appears twice, each with its own accountType
+ * and its own ancestry -- but this picked between them on structural rank and
+ * depth alone. Two leaves forked apart precisely BECAUSE the document puts them
+ * in different sections therefore both received the FIRST node's hierarchy.
+ * Confirmed live: the income and cost-of-goods "Business Process Outsourcing"
+ * accounts both resolved to "... > Income > Company Services > Business Process
+ * Outsourcing", which is wrong for the cost-of-goods one and, being identical,
+ * failed persistApprovedCoaTree's duplicate-leaf-path check and blocked the
+ * whole save.
+ *
+ * Type agreement is checked immediately after structural rank: it is the
+ * document's own section for that very row, so it is the strongest evidence for
+ * telling two same-named ACCOUNT nodes apart -- but it must never promote a
+ * section header over a real account. When the caller has no preference, or no
+ * candidate matches it, the original structural/depth ordering decides exactly
+ * as before.
+ */
+function selectDeterministicReferenceCandidate(candidates, preferAccountType) {
   if (!Array.isArray(candidates)) return candidates || null;
   if (!candidates.length) return null;
+  // The two sides of this comparison come from different vocabularies: a
+  // caller's context.accountType is plSectionToType's output ("cogs"), while a
+  // candidate's was resolved by inferAccountTypeFromReferencePath, which reports
+  // the expense SIDE ("expense"). Compare on the side so the two agree; without
+  // this the preference silently never matches and the ordering below decides.
+  const sideOf = (t) => {
+    const v = String(t || "").trim().toLowerCase();
+    if (v === "cogs" || v === "cost_of_sales") return "expense";
+    if (v === "revenue" || v === "sales") return "income";
+    return v;
+  };
+  const want = sideOf(preferAccountType);
   return candidates.slice().sort((a, b) => {
     // A real posting-account node ALWAYS outranks a structural (section
     // header / total rollup) node of the same name -- the structural entry
     // exists only so a GL account whose name appears in the document solely as
     // a header still resolves from the document instead of falling to AI.
+    // This stays the FIRST test: type agreement must never promote a section
+    // header over a real account (a regression test covers exactly that).
     const aStruct = a.isStructural ? 1 : 0;
     const bStruct = b.isStructural ? 1 : 0;
     if (aStruct !== bStruct) return aStruct - bStruct;
+    // Among candidates of equal structural rank, the document's own section for
+    // this row is the strongest evidence available -- it is what tells the two
+    // same-named forks apart.
+    if (want) {
+      const aWant = sideOf(a.accountType) === want ? 0 : 1;
+      const bWant = sideOf(b.accountType) === want ? 0 : 1;
+      if (aWant !== bWant) return aWant - bWant;
+    }
     const bLevel = b.level || b.levels?.length || 0;
     const aLevel = a.level || a.levels?.length || 0;
     return bLevel - aLevel;
@@ -1622,7 +1740,7 @@ function pickDocHierarchy(accountName, key, glBucketByKey, bsHierarchyByName, pl
 
   // Step 1 -- exact match in the preferred (hinted) statement.
   if (preferred) {
-    const entry = selectDeterministicReferenceCandidate(preferred.get(key));
+    const entry = selectDeterministicReferenceCandidate(preferred.get(key), context.accountType);
     if (entry) {
       if (stats) stats[statementType === "profit_loss" ? "profitLoss" : "balanceSheet"]++;
       return { ...entry, matchType: entry.matchType || "exact" };
@@ -1657,7 +1775,7 @@ function pickDocHierarchy(accountName, key, glBucketByKey, bsHierarchyByName, pl
     : [{ lookup: bsHierarchyByName, st: "balance_sheet" }, { lookup: plHierarchyByName, st: "profit_loss" }];
   for (const { lookup, st } of remaining) {
     if (!lookup) continue;
-    const entry = selectDeterministicReferenceCandidate(lookup.get(key));
+    const entry = selectDeterministicReferenceCandidate(lookup.get(key), context.accountType);
     if (entry) {
       if (stats) stats[st === "profit_loss" ? "profitLoss" : "balanceSheet"]++;
       return { ...entry, matchType: entry.matchType || "exact" };
@@ -2316,6 +2434,51 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
     }
   };
 
+  // ── Account identity when two rows share a name ──────────────────────────
+  // CONFIRMED ROOT CAUSE (fixed below in pickBucketTarget): every branch of
+  // addLeaf resolved a name collision with `bucket[0]`, i.e. identity was the
+  // normalized NAME ALONE. Two genuinely different accounts that happen to
+  // share a leaf name therefore collapsed into one, and because mergeInto only
+  // fills a section when the leaf has none yet ("first occurrence wins"), the
+  // survivor kept the FIRST row's section and silently absorbed the second
+  // row's amounts under the wrong type.
+  //
+  // Confirmed live: "Business Process Outsourcing" exists twice in one uploaded
+  // P&L -- once under Income (100,800.00) and once under Cost of goods sold
+  // (59,400.00). They merged into a single `income` leaf of 160,200.00, moving
+  // 59,400.00 from the expense side to the income side and overstating Net
+  // Income by 118,800.00 in the Trial Balance.
+  //
+  // The name-only rule is still right for the case it was written for -- the
+  // same real account re-appearing from another source or another fiscal year,
+  // with a different or missing account_number -- so it stays the default. A
+  // fork happens ONLY on positive, document-derived evidence: both rows carry a
+  // section and those sections resolve to DIFFERENT account types under the one
+  // existing section vocabulary. No names, no keywords, no per-client rules.
+  const documentSectionType = (bsSection, plSection) => {
+    if (bsSection) {
+      const n = normName(bsSection);
+      if (n.includes("asset")) return "asset";
+      if (n.includes("liab")) return "liability";
+      if (n.includes("equity") || n.includes("capital") || n.includes("owner") || n.includes("member")) return "equity";
+      return null;
+    }
+    if (plSection) return typeFromPlSection(plSection);
+    return null;
+  };
+  // Returns the leaf in `bucket` this row belongs to, or null to start a new
+  // one. A row with no section evidence, or a leaf that has none yet, always
+  // merges -- absence of evidence must never fork a real account in two.
+  const pickBucketTarget = (bucket, bsSection, plSection) => {
+    const incoming = documentSectionType(bsSection, plSection);
+    if (!incoming) return bucket[0] || null;
+    for (const leaf of bucket) {
+      const existing = documentSectionType(leaf.bsSection, leaf.plSection);
+      if (!existing || existing === incoming) return leaf;
+    }
+    return null;
+  };
+
   const addLeaf = (accountName, accountNumber, source, fiscalYear, bsSection, plSection, bsSubSection) => {
     const name = String(accountName || "").trim();
     // isMetadataRow catches only ERP noise (date lines, "Accrual Basis", etc.).
@@ -2354,7 +2517,7 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
       // export, so requiring the numbers to also match here used to fork a
       // second, duplicate leaf for one real account across multi-year
       // uploads instead of merging into the leaf already in this bucket.
-      const target = bucket[0] || null;
+      const target = pickBucketTarget(bucket, bsSection, plSection);
       if (target) {
         mergeInto(target, source, fiscalYear, number, bsSection, plSection, bsSubSection, partitionStatementType);
         return;
@@ -2362,6 +2525,11 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
       const leaf = {
         accountName: name,
         accountNumber: number,
+        // Non-null ONLY when this leaf is a deliberate fork: the bucket already
+        // held a leaf for this name and pickBucketTarget refused it because the
+        // document puts the two rows in sections of different account types.
+        // Feeds accountKey so the two forks get distinct, stable identities.
+        sectionDiscriminator: bucket.length ? documentSectionType(bsSection, plSection) : null,
         accountType: coaMatch.accountType,
         statementType: coaMatch.statementType || (coaMatch.accountType ? statementTypeFor(coaMatch.accountType) : null),
         classificationSource: "client_coa",
@@ -2412,8 +2580,8 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
     });
     if (docHierarchy) {
       const bucket = leavesByName.get(key) || [];
-      // Same name-only identity rule as the client-COA-match branch above.
-      const target = bucket[0] || null;
+      // Same identity rule as the client-COA-match branch above.
+      const target = pickBucketTarget(bucket, bsSection, plSection);
       if (target) {
         mergeInto(target, source, fiscalYear, number, bsSection, plSection, bsSubSection, partitionStatementType);
         return;
@@ -2421,6 +2589,11 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
       const leaf = {
         accountName: name,
         accountNumber: number,
+        // Non-null ONLY when this leaf is a deliberate fork: the bucket already
+        // held a leaf for this name and pickBucketTarget refused it because the
+        // document puts the two rows in sections of different account types.
+        // Feeds accountKey so the two forks get distinct, stable identities.
+        sectionDiscriminator: bucket.length ? documentSectionType(bsSection, plSection) : null,
         accountType: docHierarchy.accountType,
         partitionStatementType: partitionStatementType || null,
         // CONFIRMED ROOT CAUSE (fixed here): partitionStatementType (the GL
@@ -2558,8 +2731,8 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
       Boolean(accountType) && Boolean(aiOwnAccountType) && accountType !== aiOwnAccountType;
 
     const bucket = leavesByName.get(key) || [];
-    // Same name-only identity rule as the two branches above.
-    const target = bucket[0] || null;
+    // Same identity rule as the two branches above.
+    const target = pickBucketTarget(bucket, bsSection, plSection);
     if (target) {
       mergeInto(target, source, fiscalYear, number, bsSection, plSection, bsSubSection);
       return;
@@ -2568,6 +2741,11 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
     const leaf = {
       accountName: name,
       accountNumber: number,
+      // Non-null ONLY when this leaf is a deliberate fork: the bucket already
+      // held a leaf for this name and pickBucketTarget refused it because the
+      // document puts the two rows in sections of different account types.
+      // Feeds accountKey so the two forks get distinct, stable identities.
+      sectionDiscriminator: bucket.length ? documentSectionType(bsSection, plSection) : null,
       accountType,
       partitionStatementType: partitionStatementType || null,
       statementType: partitionStatementType || (accountType ? statementTypeFor(accountType) : null),
@@ -3169,7 +3347,7 @@ function assignSystemIds(leaves, existingByKey) {
   });
   const byKey = new Map();
   for (const leaf of ordered) {
-    const key = accountKey(leaf.accountNumber, leaf.accountName);
+    const key = accountKey(leaf.accountNumber, leaf.accountName, leaf.sectionDiscriminator);
     if (byKey.has(key)) continue;
     const prefix = systemIdPrefix(leaf.accountType);
     const existing = existingByKey.get(key);
@@ -3467,7 +3645,7 @@ function serializeProposedTree(hierarchical, existingByKey = new Map()) {
 
   for (const leaf of hierarchical) {
     const path = (leaf.levels || []).filter(Boolean);
-    const key = accountKey(leaf.accountNumber, leaf.accountName);
+    const key = accountKey(leaf.accountNumber, leaf.accountName, leaf.sectionDiscriminator);
     const systemId = leaf.systemId || systemIdByKey.get(key) || null;
     const parentKey = ensureCategoryChain(leaf);
     nodes.push({
@@ -3477,6 +3655,13 @@ function serializeProposedTree(hierarchical, existingByKey = new Map()) {
       accountId: leaf.accountId || null,
       accountName: leaf.accountName,
       accountNumber: leaf.accountNumber || null,
+      // Carried through the whole propose -> review -> save round trip. Without
+      // it the two forks of a same-named account both compute
+      // accountKey(number, name, undefined) on the way back in, collide in
+      // persistApprovedCoaTree's leavesByKey, and silently merge back into ONE
+      // row -- which is exactly what kept the Trial Balance out by the
+      // cost-of-goods amount even after the fork itself was working.
+      sectionDiscriminator: leaf.sectionDiscriminator || null,
       adjustedName: leaf.displayName && leaf.displayName !== leaf.accountName ? leaf.displayName : null,
       accountType: leaf.accountType,
       statementType: leaf.statementType,
@@ -3541,6 +3726,9 @@ function deserializeApprovedTree(nodes) {
       accountId: n.accountId || null,
       accountName: n.accountName,
       accountNumber: n.accountNumber || null,
+      // See serializeProposedTree: this is what keeps two same-named accounts
+      // apart when persistApprovedCoaTree re-derives their accountKey.
+      sectionDiscriminator: n.sectionDiscriminator || null,
       accountType: n.accountType,
       statementType: n.statementType,
       classificationSource: userEdited ? "USER_EDITED" : (n.classificationSource || null),
@@ -4583,14 +4771,14 @@ async function buildProposedCoaTree(companyId, versionId, batchId, opts = {}) {
   const existingLeavesData = (existingData || []).filter((r) => !r.metadata?.is_group);
   const existingByKey = new Map();
   for (const row of existingLeavesData) {
-    const key = accountKey(row.account_number, row.account_name);
+    const key = accountKey(row.account_number, row.account_name, row.metadata?.section_discriminator);
     if (!existingByKey.has(key)) existingByKey.set(key, row);
   }
 
   const hierarchical = await buildLeafHierarchies(leaves, existingByKey);
   const proposedSystemIdByKey = assignSystemIds(hierarchical, existingByKey);
   for (const leaf of hierarchical) {
-    const key = accountKey(leaf.accountNumber, leaf.accountName);
+    const key = accountKey(leaf.accountNumber, leaf.accountName, leaf.sectionDiscriminator);
     leaf.systemId = proposedSystemIdByKey.get(key) || leaf.systemId || null;
   }
   const sourceCounts = summarizeSourceCounts(hierarchical);
@@ -4784,7 +4972,7 @@ async function persistApprovedCoaTree(companyId, versionId, hierarchical, opts =
 
   const leavesByKey = new Map();
   for (const row of existingLeavesData) {
-    const key = accountKey(row.account_number, row.account_name);
+    const key = accountKey(row.account_number, row.account_name, row.metadata?.section_discriminator);
     if (!leavesByKey.has(key)) leavesByKey.set(key, []);
     leavesByKey.get(key).push(row);
   }
@@ -4809,7 +4997,7 @@ async function persistApprovedCoaTree(companyId, versionId, hierarchical, opts =
   }
   const existingByKey = new Map();
   for (const row of existingLeavesData) {
-    existingByKey.set(accountKey(row.account_number, row.account_name), row);
+    existingByKey.set(accountKey(row.account_number, row.account_name, row.metadata?.section_discriminator), row);
   }
 
   const desiredCats = buildCoaNodeTree(hierarchical);
@@ -4832,7 +5020,7 @@ async function persistApprovedCoaTree(companyId, versionId, hierarchical, opts =
   // alphabetical sort here would silently discard that (Rule 4: never sort
   // accounts alphabetically, preserve GL/statement order).
   for (const leaf of hierarchical) {
-    const key = accountKey(leaf.accountNumber, leaf.accountName);
+    const key = accountKey(leaf.accountNumber, leaf.accountName, leaf.sectionDiscriminator);
     if (seenKeys.has(key)) continue;
     seenKeys.add(key);
 
@@ -4845,6 +5033,9 @@ async function persistApprovedCoaTree(companyId, versionId, hierarchical, opts =
     const normalBal = leaf.mappedNormalBalance || (leaf.accountType ? normalBalanceFor(leaf.accountType) : null);
     const baseMeta = {
       is_group: false,
+      // Set only on a forked leaf (see accountKey/pickBucketTarget); null for
+      // every ordinary account, which keeps their merge key unchanged.
+      section_discriminator: leaf.sectionDiscriminator || null,
       sources: Array.from(leaf.sources),
       fiscal_years: Array.from(leaf.fiscalYears).sort((a, b) => a - b),
       classification_source: leaf.classificationSource || null,
@@ -5129,7 +5320,7 @@ async function persistApprovedCoaTree(companyId, versionId, hierarchical, opts =
       }
       if (ins.error) throw ins.error;
       for (const row of ins.data || []) {
-        insertedByKey.set(accountKey(row.account_number, row.account_name), row.id);
+        insertedByKey.set(accountKey(row.account_number, row.account_name, row.metadata?.section_discriminator), row.id);
         leafRollback.push(() => supabase.from(TABLE_COA).delete().eq("id", row.id));
       }
     }
@@ -5137,7 +5328,7 @@ async function persistApprovedCoaTree(companyId, versionId, hierarchical, opts =
     // 5) Delete leaf rows whose source account disappeared (CASCADE clears their
     //    audit). Category nodes are reconciled separately in persistCoaNodeTree.
     const staleIds = existingLeavesData
-      .filter((row) => !seenKeys.has(accountKey(row.account_number, row.account_name)))
+      .filter((row) => !seenKeys.has(accountKey(row.account_number, row.account_name, row.metadata?.section_discriminator)))
       .map((row) => row.id);
     if (staleIds.length) {
       const staleRowsForRollback = existingLeavesData.filter((row) => staleIds.includes(row.id));
@@ -5550,11 +5741,11 @@ async function validateChartOfAccounts(companyId, versionId) {
 
   const counts = new Map();
   for (const r of leaves) {
-    const k = accountKey(r.account_number, r.account_name);
+    const k = accountKey(r.account_number, r.account_name, r.metadata?.section_discriminator);
     counts.set(k, (counts.get(k) || 0) + 1);
   }
   const duplicates = leaves
-    .filter((r) => counts.get(accountKey(r.account_number, r.account_name)) > 1)
+    .filter((r) => counts.get(accountKey(r.account_number, r.account_name, r.metadata?.section_discriminator)) > 1)
     .map((r) => r.account_name)
     .filter((v, i, a) => a.indexOf(v) === i);
 
@@ -5656,7 +5847,7 @@ async function printCoaValidationBlock(companyId, versionId, plRows = []) {
 
   const nameCounts = new Map();
   for (const r of leaves) {
-    const k = accountKey(r.account_number, r.account_name);
+    const k = accountKey(r.account_number, r.account_name, r.metadata?.section_discriminator);
     nameCounts.set(k, (nameCounts.get(k) || 0) + 1);
   }
   const duplicateAccounts = Array.from(nameCounts.values()).filter((n) => n > 1).length;
@@ -6563,6 +6754,12 @@ function printHierarchySampleVerification(results) {
 }
 
 module.exports = {
+  // Exported for the regression tests that lock down the P&L section-inference
+  // and account-identity fixes; not used elsewhere in production code.
+  inferAccountTypeFromReferencePath,
+  classifyPlAncestorLabel,
+  accountKey,
+  selectDeterministicReferenceCandidate,
   // Classification/hierarchy consistency (exported for unit testing).
   isRealPostingRow,
   statementOfAccountType,

@@ -21,6 +21,7 @@ import sys
 import io
 import re
 import argparse
+import calendar
 from datetime import datetime
 
 try:
@@ -216,6 +217,8 @@ def extract_profit_loss(wb):
     ancestor_stack = []  # list of (indent, label)
 
     for row_idx in range(header_idx + 1, len(rows)):
+        if row_idx == period_header_idx:
+            continue  # the month captions are not an account row
         row = rows[row_idx]
         if not row or all(v is None or str(v).strip() == '' for v in row):
             continue
@@ -322,6 +325,47 @@ def extract_profit_loss(wb):
 
 
 # ── BALANCE SHEET ─────────────────────────────────────────────────────────────
+
+_PERIOD_MONTHS = {
+    'jan': 1, 'january': 1, 'feb': 2, 'february': 2, 'mar': 3, 'march': 3,
+    'apr': 4, 'april': 4, 'may': 5, 'jun': 6, 'june': 6, 'jul': 7, 'july': 7,
+    'aug': 8, 'august': 8, 'sep': 9, 'sept': 9, 'september': 9, 'oct': 10,
+    'october': 10, 'nov': 11, 'november': 11, 'dec': 12, 'december': 12,
+}
+
+
+def parse_period_header(text):
+    """A column header naming ONE reporting period -> (year, month), else None.
+
+    Recognizes the forms a monthly statement column actually uses -- "Jan 2024",
+    "January 2024", "Jan-24", "Jan 31, 2024". A "Total" column, a blank, or any
+    non-period label returns None so it is never mistaken for a period.
+    """
+    t = str(text or '').strip().lower()
+    if not t or 'total' in t:
+        return None
+    name = re.search(r'([a-z]{3,9})', t)
+    month = _PERIOD_MONTHS.get(name.group(1)) if name else None
+    if not month:
+        return None
+    # A 4-digit year wins outright. Matching the first number instead would read
+    # the DAY as the year in the "Jan 31, 2024" form (-> 2031).
+    y4 = re.search(r'(\d{4})', t)
+    if y4:
+        year = int(y4.group(1))
+    else:
+        y2 = re.search(r'[\s\-/.,](\d{2})(?!\d)', t)
+        if not y2:
+            return None
+        year = 2000 + int(y2.group(1))
+    if year < 1900 or year > 2200:
+        return None
+    return (year, month)
+
+
+def month_end_date(year, month):
+    return f'{year:04d}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}'
+
 
 def parse_as_of_date(text):
     m = AS_OF_PATTERN.search(str(text or ''))
@@ -453,6 +497,55 @@ def extract_balance_sheet(wb):
     header_row = rows[header_idx]
     acct_idx   = max(0, find_col(header_row, ACCOUNT_ALIASES))
 
+    # CONFIRMED ROOT CAUSE (fixed here): a Balance Sheet exported with ONE COLUMN
+    # PER MONTH ("Jan 2024" ... "Dec 2024") was collapsed to a single period --
+    # the amount scan below walks right-to-left and stops at the first value, so
+    # only the LAST column survived, under the sheet's single as_of_date.
+    #
+    # Confirmed live on a 12-column export: balance_sheet_entries held exactly
+    # one as_of_date per year ("2024-12-30", "2025-12-30", "2026-07-26"). With no
+    # monthly document data to read, generateMonthlyBs fell through to
+    # GL-derived snapshots for every month, and those do not reconcile to the
+    # document -- January 2024 rendered Total Assets 283,931.50 against the
+    # uploaded 293,161.70, and Accrued Revenue came out NEGATIVE (-83,830.90
+    # against 44,279.84).
+    #
+    # Each period column is now emitted as its own row, dated to that month's
+    # last day. A single-period sheet finds fewer than two period columns and
+    # keeps the original behaviour exactly.
+    # Scanned independently of header_idx rather than off header_row: the
+    # score-based header detector legitimately locks onto the title line ("As of
+    # Dec 31, 2024" scored highest on a real file, putting header_idx two rows
+    # ABOVE the month captions), and re-tuning it would move the data start row
+    # for every statement. The period captions are whichever row yields the most
+    # parseable periods.
+    period_cols = []
+    period_header_idx = None
+    for i in range(min(20, len(rows))):
+        cands = []
+        for c in range(acct_idx + 1, len(rows[i])):
+            parsed = parse_period_header(cell_str(rows[i][c]))
+            if parsed:
+                cands.append((c, parsed[0], parsed[1]))
+        if len(cands) > len(period_cols):
+            period_cols = cands
+            period_header_idx = i
+    is_multi_period = len(period_cols) >= 2
+    # Structural rows (section headers / grouping labels) carry no figures, so
+    # they are emitted ONCE rather than per period. In multi-period mode they
+    # must still be dated to the LAST period, never to the sheet's own as_of
+    # line: that line can fall on a different day (a real file reads "As of Jul
+    # 27, 2026" while its final column is July), which would add a phantom
+    # as_of_date holding nothing but zero-amount structural rows. generateYearlyBs
+    # picks the LATEST as_of_date for the year, so it would have selected that
+    # phantom date and rendered the whole year as zeros.
+    structural_as_of = (
+        month_end_date(period_cols[-1][1], period_cols[-1][2]) if is_multi_period else as_of_date
+    )
+    if is_multi_period:
+        dbg(f'BS multi-period: {len(period_cols)} period column(s) '
+            f'{period_cols[0][1]}-{period_cols[0][2]:02d} .. {period_cols[-1][1]}-{period_cols[-1][2]:02d}')
+
     # Which hierarchy signal this SHEET actually uses — checked once, not per
     # row (see extract_profit_loss's identical check and get_rows_with_indent's
     # doc comment): a QuickBooks-style export encodes nesting via the cell's
@@ -496,11 +589,22 @@ def extract_balance_sheet(wb):
 
         # Walk right-to-left for amount
         amount = None
-        for c in range(len(row) - 1, acct_idx, -1):
-            v = parse_amount(row[c])
-            if v is not None:
-                amount = v
-                break
+        period_amounts = []
+        if is_multi_period:
+            for c, py, pm in period_cols:
+                v = parse_amount(row[c]) if c < len(row) else None
+                if v is not None:
+                    period_amounts.append((py, pm, v))
+            # `amount` still drives the structural branches below: a row with no
+            # value in ANY period is a header/group row, exactly as before.
+            if period_amounts:
+                amount = period_amounts[-1][2]
+        else:
+            for c in range(len(row) - 1, acct_idx, -1):
+                v = parse_amount(row[c])
+                if v is not None:
+                    amount = v
+                    break
 
         # Pure, RECOGNIZED section header row (no amount) — never a postable
         # account: filterRowsBeforeInsertion (extractionService.base.js)
@@ -513,7 +617,7 @@ def extract_balance_sheet(wb):
                 'section':         section_match,
                 'parent_path':     parent_path,
                 'amount':          0,
-                'as_of_date':      as_of_date,
+                'as_of_date':      structural_as_of,
                 'fiscal_year':     fiscal_year,
                 'is_total':        False,
                 'is_section_header': True,
@@ -537,7 +641,7 @@ def extract_balance_sheet(wb):
                 'section':         bs_section_from_ancestry(parent_path) or (infer_bs_header_section(current_section) if current_section else None),
                 'parent_path':     parent_path,
                 'amount':          0,
-                'as_of_date':      as_of_date,
+                'as_of_date':      structural_as_of,
                 'fiscal_year':     fiscal_year,
                 'is_total':        False,
                 'is_section_header': False,
@@ -548,18 +652,28 @@ def extract_balance_sheet(wb):
 
         account_name = raw_name.lstrip()
         is_total = is_total_row(account_name)
-        result.append({
-            'account_name':     account_name,
-            'account_number':   None,
-            'section':          bs_section_from_ancestry(parent_path) or (infer_bs_header_section(current_section) if current_section else infer_bs_header_section(account_name)),
-            'parent_path':      parent_path,
-            'amount':           amount,
-            'as_of_date':       as_of_date,
-            'fiscal_year':      fiscal_year,
-            'is_total':         is_total,
-            'is_section_header': False,
-            'node_type':        'total' if is_total else 'account',
-        })
+        row_section = bs_section_from_ancestry(parent_path) or (infer_bs_header_section(current_section) if current_section else infer_bs_header_section(account_name))
+        # One row per reporting period the document actually states a figure
+        # for. A blank cell is simply not a data point for that month and is
+        # skipped rather than written as a zero.
+        emit_periods = (
+            [(py, pm, v) for py, pm, v in period_amounts]
+            if is_multi_period
+            else [(fiscal_year, None, amount)]
+        )
+        for py, pm, v in emit_periods:
+            result.append({
+                'account_name':     account_name,
+                'account_number':   None,
+                'section':          row_section,
+                'parent_path':      parent_path,
+                'amount':           v,
+                'as_of_date':       month_end_date(py, pm) if pm else as_of_date,
+                'fiscal_year':      py,
+                'is_total':         is_total,
+                'is_section_header': False,
+                'node_type':        'total' if is_total else 'account',
+            })
         # CONFIRMED ROOT CAUSE (fixed here): a leaf/total row — one that carries
         # its own posted amount — must NEVER be pushed onto the ancestor stack.
         # Only a structural header/group row (no amount anywhere on the line,
@@ -667,17 +781,64 @@ def extract_general_ledger(wb):
         first_lc     = first_cell.lower()
         date_str     = parse_date(get(row, 'date'))
 
+        # CONFIRMED ROOT CAUSE (fixed here): the "Beginning Balance" sentinel was
+        # looked up in column 0 only. A very common export layout indents the
+        # ledger grid by one column -- the ACCOUNT HEADING sits alone in column 0
+        # and every detail row (including the "Beginning Balance" label) starts
+        # at the detected account column. On such a file row[0] is empty for that
+        # row, so the branch below never matched: it fell through to the
+        # TRANSACTION branch, had no date, and was silently discarded.
+        #
+        # Measured on a real 3-file export: 52 "Beginning Balance" rows in the
+        # workbooks, 0 reaching the database. That destroyed every opening
+        # balance AND removed the equity accounts entirely -- they carry an
+        # opening balance and no transactions, so with the row gone they produced
+        # no GL rows at all and vanished from the Trial Balance. That is exactly
+        # what the NO_EQUITY_ACCOUNTS warning was reporting.
+        #
+        # Deliberately scoped to THIS lookup. `first_cell` must stay column-0
+        # only: the ACCOUNT_HEADER branch relies on an outdented heading, and the
+        # "Total for X" rows really are in column 0 (verified 82/82 on that
+        # export). Widening either would turn ordinary detail rows into bogus
+        # section headers or totals.
+        label_cell = first_cell or cell_str(get(row, 'account'))
+        label_lc   = label_cell.lower()
+
         # ── BEGINNING BALANCE ─────────────────────────────────────────────────
-        if 'beginning balance' in first_lc:
+        if 'beginning balance' in label_lc:
+            # An opening balance precedes its section's transactions, so
+            # current_fiscal_year is still the PREVIOUS account's year -- and is
+            # None outright for the first account in the file. Look ahead to the
+            # next dated row instead, which is the year this balance opens.
+            bb_year = None
+            for look in rows[header_idx + 1 + offset + 1:]:
+                if not look:
+                    continue
+                d = parse_date(get(look, 'date'))
+                if d:
+                    bb_year = int(d[:4])
+                    break
+            if bb_year is None:
+                bb_year = current_fiscal_year
             result.append({
                 'row_type':        'BEGINNING_BALANCE',
                 'row_number':      excel_row_num,
-                'account_name':    first_cell,
+                # The account is the enclosing section heading, never the
+                # sentinel label -- "Beginning Balance" is not an account name,
+                # and grouping the Trial Balance by it would strand every opening
+                # balance under one bogus account.
+                'account_name':    current_account_section or label_cell,
                 'account_section': current_account_section,
-                'description':     first_cell,
+                'description':     label_cell,
                 'running_balance': last_numeric(row),
-                'fiscal_year':     current_fiscal_year,
-                'transaction_date': None,
+                'fiscal_year':     bb_year,
+                # general_ledger_entries has no fiscal_year column (migration
+                # 069) -- transaction_date IS the year key, and every downstream
+                # read filters on it by date range. Leaving this None would keep
+                # opening balances out of the Trial Balance even though they now
+                # parse correctly. An opening balance is dated to the first
+                # instant of the year it opens.
+                'transaction_date': (f'{bb_year}-01-01' if bb_year else None),
                 'raw_row_json':    raw_row_json,
             })
             continue

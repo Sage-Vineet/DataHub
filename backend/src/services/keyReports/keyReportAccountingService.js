@@ -1190,7 +1190,7 @@ async function fetchGlRowsForYear(companyId, versionId, year) {
   for (let page = 0; page < 1000; page += 1) {
     const { data, error } = await supabase
       .from(TABLE_GL)
-      .select("account_name, account_section, amount, running_balance, row_type, row_number, transaction_date, coa_id")
+      .select("account_name, account_section, amount, debit_amount, credit_amount, running_balance, row_type, row_number, transaction_date, coa_id, split_account")
       .eq("company_id", companyId)
       .eq("version_id", versionId)
       // fiscal_year no longer exists (migration 069) — a plain transaction_date
@@ -1257,11 +1257,43 @@ async function generateTrialBalance(companyId, versionId, gate) {
   const rowsToInsert = [];
   const yearsStored = [];
   const imbalancedYears = [];
+  const debitCreditImbalances = [];
   let fallbackToNameCount = 0;
+
+  // Closing balance of the PRIOR year, per account group key. An account's
+  // opening balance is its own prior-year close -- see the carry-forward note
+  // where it is applied below.
+  let priorClosingByKey = new Map();
+  // Identity of each carried-forward account, so a year with no activity for it
+  // still renders a proper row rather than a bare key.
+  let priorMetaByKey = new Map();
 
   for (let year = startYear; year <= endYear; year += 1) {
     const glRows = await fetchGlRowsForYear(companyId, versionId, year);
     if (!glRows.length) continue;
+
+    // ── Amount-format detection (per year, from the data itself) ────────────
+    // Exports differ: some carry a SIGNED amount, others separate Debit/Credit
+    // columns, others both. Assuming one format silently produced an empty or
+    // half-populated Trial Balance for the others. Confirmed live: one dataset
+    // has debit_amount/credit_amount present on every row but ALL ZERO, so the
+    // signed amount is the only real signal -- while 185 rows carry no amount
+    // at all and were being dropped. Detect which column actually carries
+    // signal, and fall back to the other per row so nothing is discarded.
+    let signedSignal = 0;
+    let dcSignal = 0;
+    for (const r of glRows) {
+      if (Math.abs(Number(r.amount) || 0) >= 0.005) signedSignal += 1;
+      if (Math.abs(Number(r.debit_amount) || 0) >= 0.005 || Math.abs(Number(r.credit_amount) || 0) >= 0.005) dcSignal += 1;
+    }
+    const preferDebitCredit = dcSignal > signedSignal;
+    // Signed movement for one row, from whichever column carries the value.
+    const rowMovement = (r) => {
+      const dc = (Number(r.debit_amount) || 0) - (Number(r.credit_amount) || 0);
+      const signed = Number(r.amount) || 0;
+      if (preferDebitCredit) return Math.abs(dc) >= 0.005 ? dc : signed;
+      return Math.abs(signed) >= 0.005 ? signed : dc;
+    };
 
     // groupKey (coa_id, or "name::"+name as a fallback) → { debits, credits, net, opening }
     const acc = new Map();
@@ -1286,7 +1318,7 @@ async function generateTrialBalance(companyId, versionId, gate) {
         a.opening = Number(r.running_balance) || 0;
         a.hasOpening = true;
       } else if (rowType === "TRANSACTION" || !r.row_type) {
-        const amt = Number(r.amount) || 0;
+        const amt = rowMovement(r);
         if (Math.abs(amt) < 0.005) continue;
         const a = get(key, displayName, accountType, accountNumber);
         a.net += amt;
@@ -1296,9 +1328,36 @@ async function generateTrialBalance(companyId, versionId, gate) {
       // ACCOUNT_HEADER / TOTAL_ROW are ignored.
     }
 
+    // ── Opening balance carry-forward ──────────────────────────────────────
+    // An account's opening balance is its own prior-year CLOSING balance.
+    // Previously opening came only from an explicit BEGINNING_BALANCE row, and
+    // real exports frequently contain none: confirmed live, every version had
+    // ZERO such rows, so opening was 0.00 for FY2023/24/25 and
+    // "Opening + Movement = Ending" was broken for every year after the first.
+    // It also made Scenario 2 (a separate GL file per year) impossible, since a
+    // later year's file has no prior-year context of its own.
+    // An explicit BEGINNING_BALANCE row still wins -- it is the source
+    // document's own statement of the opening position.
+    for (const [key, a] of acc) {
+      if (a.hasOpening) continue;
+      const carried = priorClosingByKey.get(key);
+      if (carried !== undefined) { a.opening = carried; a.carriedForward = true; }
+    }
+    // An account that existed last year but has no activity this year still
+    // carries its balance forward -- dropping it would silently lose it.
+    for (const [key, closing] of priorClosingByKey) {
+      if (acc.has(key) || Math.abs(closing) < 0.005) continue;
+      const prev = priorMetaByKey.get(key);
+      acc.set(key, {
+        debits: 0, credits: 0, net: 0, opening: closing, hasOpening: false, carriedForward: true,
+        accountName: prev?.accountName || key, accountType: prev?.accountType || null,
+        accountNumber: prev?.accountNumber || null,
+      });
+    }
+
     const yearRows = [];
     for (const a of acc.values()) {
-      if (Math.abs(a.debits) < 0.005 && Math.abs(a.credits) < 0.005 && !a.hasOpening) continue;
+      if (Math.abs(a.debits) < 0.005 && Math.abs(a.credits) < 0.005 && !a.hasOpening && !a.carriedForward) continue;
       yearRows.push({
         version_id: versionId,
         company_id: companyId,
@@ -1315,6 +1374,43 @@ async function generateTrialBalance(companyId, versionId, gate) {
     }
     rowsToInsert.push(...yearRows);
     yearsStored.push(year);
+
+    // Seed next year's opening balances from this year's closings.
+    priorClosingByKey = new Map();
+    priorMetaByKey = new Map();
+    for (const [key, a] of acc) {
+      priorClosingByKey.set(key, round2(a.opening + a.net));
+      priorMetaByKey.set(key, { accountName: a.accountName, accountType: a.accountType, accountNumber: a.accountNumber });
+    }
+
+    // ── Debit / credit balance check ───────────────────────────────────────
+    // A Trial Balance is by definition debits == credits. Nothing checked this
+    // before, so an out-of-balance ledger shipped silently: confirmed live,
+    // every year of every version was out by six or seven figures.
+    //
+    // The imbalance is reported, never swallowed. Note WHY it can be non-zero
+    // here: a by-account GL export records one side per transaction and puts
+    // the contra side in split_account rather than as its own row, so such a
+    // ledger is only partially double-sided by construction (confirmed live:
+    // 3,500 of 29,874 rows carry no split at all). That is a property of the
+    // source export, not an arithmetic error, so this reports the condition and
+    // its largest contributors instead of failing the sync.
+    const totalDebits = round2(yearRows.reduce((t, r) => t + r.total_debits, 0));
+    const totalCredits = round2(yearRows.reduce((t, r) => t + r.total_credits, 0));
+    const dcDifference = round2(totalDebits - totalCredits);
+    if (Math.abs(dcDifference) > BALANCE_TOLERANCE) {
+      const contributors = yearRows
+        .slice()
+        .sort((a, b) => Math.abs(b.net_balance) - Math.abs(a.net_balance))
+        .slice(0, 10)
+        .map((r) => ({ accountName: r.account_name, accountType: r.account_type, netBalance: r.net_balance }));
+      debitCreditImbalances.push({ year, totalDebits, totalCredits, difference: dcDifference, contributors });
+      console.warn(
+        `[generateTrialBalance][DEBIT_CREDIT_IMBALANCE] version=${versionId} FY${year} ` +
+        `debits=${totalDebits} credits=${totalCredits} difference=${dcDifference} ` +
+        `accounts=${yearRows.length} topContributors=${contributors.slice(0, 3).map((c) => c.accountName).join(" | ")}`,
+      );
+    }
 
     // Accounting-equation check (see doc comment above for why this replaces
     // a naive debit/credit sum): ΔAssets = ΔLiabilities + ΔEquity + Net Income,
@@ -1351,6 +1447,91 @@ async function generateTrialBalance(companyId, versionId, gate) {
         imbalance,
         topAccounts,
         unclassifiedAccounts,
+        // ── Why it does not balance ────────────────────────────────────────
+        // The generic "top accounts by movement" list names whichever accounts
+        // are largest, which are usually innocent -- confirmed live: a version
+        // whose equation could not close reported "Billing & Collections",
+        // "Management" etc., all ordinary P&L accounts, while the real cause was
+        // that the GL contained NO equity accounts at all. These flags identify
+        // the STRUCTURAL cause so the warning is actionable instead of
+        // misleading. Derived from the data (bucket counts and ledger sums) --
+        // no account names or company rules involved.
+        causes: (() => {
+          const out = [];
+          const countOf = (types) => yearRows.filter((r) => types.includes(r.account_type)).length;
+          const equityCount = countOf(["equity"]);
+          const assetCount = countOf(["asset"]);
+          const liabilityCount = countOf(["liability"]);
+          if (equityCount === 0) {
+            out.push({
+              code: "NO_EQUITY_ACCOUNTS",
+              detail: "The General Ledger contains no equity accounts, so the equation has no ΔEquity term and cannot close. "
+                + "Net Income has nowhere to be carried to. Link a GL that includes the equity/retained-earnings accounts.",
+            });
+          }
+          if (assetCount === 0 || liabilityCount === 0) {
+            out.push({
+              code: "MISSING_BALANCE_SHEET_SIDE",
+              detail: `Only ${assetCount} asset and ${liabilityCount} liability account(s) are present — the ledger appears to cover part of the Balance Sheet only.`,
+            });
+          }
+          // CONFIRMED FALSE POSITIVE (fixed here): this used to flag
+          // ONE_SIDED_LEDGER whenever `sum(net_balance) != 0`. That is exactly
+          // the naive positive-vs-negative total this function's own header
+          // warns about -- `amount` uses the NATURAL-BALANCE convention, where
+          // every account's own increase is stored positive, so the sum is
+          // non-zero on perfectly healthy data by design. Measured on a real
+          // 3-file export it read 2,881,459.88 / 2,831,822.66 / 1,556,043.60
+          // and fired on all three years of a ledger that is in fact fully
+          // double-sided.
+          //
+          // One-sidedness is now decided by EVIDENCE rather than by a sum: a
+          // ledger is one-sided only if the contra account named in
+          // `split_account` has no section of its own in the ledger. On that
+          // same export every split target resolved (0 unresolved of 2,608 /
+          // 3,072 / 2,203), which is the correct verdict -- exports of this
+          // kind list each transaction under every account it touches, so the
+          // contra side is already a real row. Reconstructing contras from
+          // `split_account` here would have double-counted every transaction.
+          //
+          // Split targets are matched on the leaf segment as well as the full
+          // name because the Split column carries a fully qualified
+          // "Parent:Child" path while the section heading carries the leaf.
+          const splitLeaf = (v) => String(v || "").trim().toLowerCase()
+            .replace(/\s+/g, " ").split(":").pop().trim();
+          const splitFull = (v) => String(v || "").trim().toLowerCase().replace(/\s+/g, " ");
+          const ownFull = new Set();
+          const ownLeaf = new Set();
+          for (const r of glRows) {
+            const n = r.account_name;
+            if (!n) continue;
+            ownFull.add(splitFull(n));
+            ownLeaf.add(splitLeaf(n));
+          }
+          const splitRefs = glRows.filter((r) => r.split_account);
+          const unresolvedSplits = splitRefs.filter(
+            (r) => !ownFull.has(splitFull(r.split_account)) && !ownLeaf.has(splitLeaf(r.split_account)),
+          );
+          // Only a material share signals a genuinely one-sided export; a
+          // handful of stragglers is ordinary chart drift, not a format.
+          if (splitRefs.length > 0 && unresolvedSplits.length / splitRefs.length > 0.5) {
+            const sample = [...new Set(unresolvedSplits.map((r) => r.split_account))].slice(0, 5);
+            out.push({
+              code: "ONE_SIDED_LEDGER",
+              detail: `${unresolvedSplits.length} of ${splitRefs.length} transactions name a contra account in `
+                + "split_account that has no rows of its own, so the export records only one side per transaction. "
+                + `Examples: ${sample.join(", ")}.`,
+            });
+          }
+          if (unclassifiedAccounts.length) {
+            out.push({
+              code: "UNCLASSIFIED_ACCOUNTS",
+              detail: `${unclassifiedAccounts.length} account(s) have no account_type and are excluded from every bucket: `
+                + unclassifiedAccounts.slice(0, 8).join(", "),
+            });
+          }
+          return out;
+        })(),
       });
     }
   }
@@ -1363,7 +1544,7 @@ async function generateTrialBalance(companyId, versionId, gate) {
   await supabase.from("trial_balance_entries").delete().eq("version_id", versionId);
   if (rowsToInsert.length) await chunkedInsert("trial_balance_entries", rowsToInsert);
 
-  return { stored: rowsToInsert.length, years: yearsStored, imbalancedYears };
+  return { stored: rowsToInsert.length, years: yearsStored, imbalancedYears, debitCreditImbalances };
 }
 
 // ============================================================================
@@ -1578,6 +1759,39 @@ async function generateReconciliation(companyId, versionId, gate) {
 // confirmed live. Previously that batch's rows were just left unlinked
 // (warned, not retried). Retry with backoff before giving up so a transient
 // network hiccup doesn't silently leave real rows unlinked.
+/**
+ * Split one account's GL rows into `blockCount` contiguous blocks.
+ *
+ * A by-account GL export prints each account as ONE CONTIGUOUS BLOCK of rows,
+ * so two accounts that share a name appear as two blocks separated by every
+ * other account in between. The boundary is therefore the largest jump in
+ * row_number: for N leaves we cut at the N-1 largest gaps, which always yields
+ * at most N blocks with no threshold to tune. `ACCOUNT_HEADER` rows would state
+ * the boundaries outright but general_ledger_entries does not persist them.
+ *
+ * Returns an array of row arrays, in document order.
+ */
+function splitGlRowsIntoBlocks(rows, blockCount) {
+  const ordered = (rows || []).slice().sort((a, b) => (Number(a.row_number) || 0) - (Number(b.row_number) || 0));
+  if (!ordered.length) return [];
+  if (!(blockCount > 1)) return [ordered];
+  const gaps = [];
+  for (let i = 1; i < ordered.length; i += 1) {
+    gaps.push({ at: i, size: (Number(ordered[i].row_number) || 0) - (Number(ordered[i - 1].row_number) || 0) });
+  }
+  // size > 1 only: consecutive rows are one account's own rows, never a boundary.
+  const cuts = new Set(
+    gaps.sort((a, b) => b.size - a.size).slice(0, blockCount - 1).filter((g) => g.size > 1).map((g) => g.at),
+  );
+  const blocks = [[]];
+  let bi = 0;
+  for (let i = 0; i < ordered.length; i += 1) {
+    if (cuts.has(i)) { bi += 1; blocks[bi] = []; }
+    blocks[bi].push(ordered[i]);
+  }
+  return blocks;
+}
+
 function isTransientLinkError(err) {
   const msg = String(err?.message || err || "");
   return msg.includes("AbortError") || msg.includes("aborted") || msg.includes("fetch failed") || msg.includes("ETIMEDOUT") || msg.includes("ECONNRESET");
@@ -1632,7 +1846,7 @@ async function linkGlToCoa(companyId, versionId) {
   // order the DB happened to return.
   const { data: coaRows, error: coaErr } = await supabase
     .from("chart_of_accounts")
-    .select("id, account_name, base_account, adjusted_name, metadata")
+    .select("id, account_name, base_account, adjusted_name, metadata, account_type")
     .eq("version_id", versionId)
     .order("id", { ascending: true });
 
@@ -1688,7 +1902,17 @@ async function linkGlToCoa(companyId, versionId) {
       .select("id, account_name, split_account, coa_id, split_coa_id")
       .eq("company_id", companyId)
       .eq("version_id", versionId)
-      .or("row_type.eq.TRANSACTION,row_type.is.null")
+      // CONFIRMED ROOT CAUSE (fixed here): this excluded BEGINNING_BALANCE
+      // rows, so an opening balance never received a coa_id. generateTrialBalance
+      // groups by `coa_id || "name::"+name`, so the SAME account arrived as two
+      // separate groups -- its opening balance under the name key and its
+      // transactions under the coa_id key. Confirmed live: 52 unlinked rows and
+      // 11 accounts duplicated in a single fiscal year, each appearing once as
+      // [net=0, opening=X] and once as [net=Y, opening=0], which also made
+      // closing_balance (opening + net) wrong for every one of them.
+      // BEGINNING_BALANCE rows carry no split_account, so only the coa_id side
+      // of the pass below ever applies to them.
+      .or("row_type.eq.TRANSACTION,row_type.eq.BEGINNING_BALANCE,row_type.is.null")
       .or("coa_id.is.null,split_coa_id.is.null")
       .gt("id", lastId)
       .order("id", { ascending: true })
@@ -1740,8 +1964,101 @@ async function linkGlToCoa(companyId, versionId) {
     if (glRows.length < PAGE) break;
   }
 
-  console.log(`[linkGlToCoa] versionId=${versionId}: linked=${linked} skipped=${skipped} splitLinked=${splitLinked} splitSkipped=${splitSkipped}`);
-  return { linked, skipped, splitLinked, splitSkipped };
+  // ── Same-named accounts: give each GL BLOCK its own COA leaf ──────────────
+  // CONFIRMED ROOT CAUSE (fixed here): the lookup above is name -> FIRST leaf,
+  // so when one name legitimately belongs to two different accounts every GL
+  // row for both collapsed onto whichever leaf sorted first, and the Trial
+  // Balance counted the whole lot under that leaf's type.
+  //
+  // Confirmed live: a P&L lists "Business Process Outsourcing" twice -- under
+  // Income (100,800.00) and under Cost of goods sold (59,400.00). All 118 GL
+  // rows linked to the income leaf, so 59,400.00 of cost of goods was counted
+  // as revenue and the accounting equation was out by exactly 118,800.00
+  // (59,400 missing from expenses AND 59,400 added to income) in two of the
+  // three fiscal years.
+  //
+  // A by-account GL export prints each account as ONE CONTIGUOUS BLOCK of rows,
+  // so two accounts sharing a name appear as two blocks separated by every
+  // other account in between. The block boundary is therefore the largest jump
+  // in row_number -- no threshold to tune, and no dependence on ACCOUNT_HEADER
+  // rows, which this table does not persist. For a name with N leaves we cut at
+  // the N-1 largest gaps, which always yields exactly N blocks.
+  //
+  // Blocks are then paired with leaves in statement order, which is the order a
+  // by-account export itself uses (assets, liabilities, equity, income, cost of
+  // goods, expenses) -- the same GL-ordering property the retained-earnings
+  // boundary heuristic already relies on. row_number is per source file, so
+  // every file is split independently.
+  const leavesByNameAll = new Map();
+  for (const row of coaRows) {
+    if (row.metadata?.is_group) continue;
+    for (const field of [row.account_name, row.base_account, row.adjusted_name]) {
+      const k = norm(field);
+      if (!k) continue;
+      const arr = leavesByNameAll.get(k) || [];
+      if (!arr.some((x) => x.id === row.id)) arr.push({ id: row.id, accountType: row.account_type });
+      leavesByNameAll.set(k, arr);
+    }
+  }
+  const ambiguous = [...leavesByNameAll.entries()].filter(([, arr]) => arr.length > 1);
+  let disambiguated = 0;
+  if (ambiguous.length) {
+    // Statement order of a by-account export. Unknown types sort last so they
+    // never displace a typed leaf.
+    const RANK = { asset: 1, liability: 2, equity: 3, income: 4, revenue: 4, cogs: 5, expense: 6 };
+    const rankOf = (t) => RANK[String(t || "").toLowerCase()] ?? 99;
+
+    for (const [name, leavesRaw] of ambiguous) {
+      const leaves = leavesRaw.slice().sort((a, b) => (rankOf(a.accountType) - rankOf(b.accountType)) || String(a.id).localeCompare(String(b.id)));
+      const { data: rows, error } = await supabase
+        .from(TABLE_GL)
+        .select("id, row_number, source_file_id")
+        .eq("company_id", companyId)
+        .eq("version_id", versionId)
+        .ilike("account_name", name)
+        .order("row_number", { ascending: true });
+      if (error || !rows?.length) continue;
+
+      const byFile = new Map();
+      for (const r of rows) {
+        const k = String(r.source_file_id || "");
+        if (!byFile.has(k)) byFile.set(k, []);
+        byFile.get(k).push(r);
+      }
+
+      const assignment = new Map(); // coaId -> [glId]
+      for (const fileRows of byFile.values()) {
+        const blocks = splitGlRowsIntoBlocks(fileRows, leaves.length);
+        blocks.forEach((block, blockIdx) => {
+          // More blocks than leaves can only happen if a file really does split
+          // one account further; clamp so no row is left unlinked.
+          const leaf = leaves[Math.min(blockIdx, leaves.length - 1)];
+          const list = assignment.get(leaf.id) || [];
+          for (const r of block) list.push(r.id);
+          assignment.set(leaf.id, list);
+        });
+      }
+
+      for (const [coaId, ids] of assignment) {
+        // Same batching + transient-retry policy as the main link pass above.
+        const CHUNK = 500;
+        for (let i = 0; i < ids.length; i += CHUNK) {
+          const chunk = ids.slice(i, i + CHUNK);
+          const ok = await updateBatchWithRetry(
+            TABLE_GL, { coa_id: coaId }, chunk, `[linkGlToCoa] disambiguate "${name}"`,
+          );
+          if (ok) disambiguated += chunk.length;
+        }
+      }
+      console.log(
+        `[linkGlToCoa] "${name}" resolves to ${leaves.length} COA leaves `
+        + `(${leaves.map((l) => l.accountType || "?").join(", ")}) — split ${rows.length} GL row(s) by document block.`,
+      );
+    }
+  }
+
+  console.log(`[linkGlToCoa] versionId=${versionId}: linked=${linked} skipped=${skipped} splitLinked=${splitLinked} splitSkipped=${splitSkipped} disambiguated=${disambiguated}`);
+  return { linked, skipped, splitLinked, splitSkipped, disambiguated };
 }
 
 // Mirrors linkGlToCoa exactly, for balance_sheet_entries.coa_id — populates
@@ -1828,6 +2145,8 @@ async function linkBsToCoa(companyId, versionId) {
 }
 
 module.exports = {
+  // Exported for the regression tests covering same-named GL accounts.
+  splitGlRowsIntoBlocks,
   classifyWorkflowDocuments,
   generateTrialBalance,
   generateMonthlyBalanceSheets,
