@@ -76,11 +76,95 @@ const NEEDS_MAPPING_SECTION = {
 // systemId + acctNum + acctName + acctIdName + stmt + 15 levels + path + method + adjustedName + actions
 const TOTAL_COLS = 5 + MAX_LEVELS + 4;
 
+// ── Auto-scroll while dragging: pure helpers (no component state) ───────────
+const AUTO_SCROLL_EDGE_PX = 50; // matches the spec's "~50px of the top/bottom"
+const AUTO_SCROLL_MAX_SPEED = 16; // px per animation frame at the very edge (~960px/s @60fps)
+
+// The nearest ancestor (starting at `el` itself) that actually scrolls
+// vertically — i.e. has overflow-y auto/scroll AND overflowed content.
+// Deliberately stops at <body>/<html> without ever returning them: per the
+// spec, auto-scroll must never move the whole page/browser window, only
+// whichever inner pane the COA table happens to live in.
+function findVerticalScrollAncestor(el) {
+  let node = el;
+  while (node && node !== document.body && node !== document.documentElement) {
+    const style = window.getComputedStyle(node);
+    const canScrollY = (style.overflowY === "auto" || style.overflowY === "scroll")
+      && node.scrollHeight > node.clientHeight + 1;
+    if (canScrollY) return node;
+    node = node.parentElement;
+  }
+  return null;
+}
+
+// How fast (px/frame, signed) to scroll given the cursor's Y and the
+// container's current bounding rect. 0 outside both edge zones. Speed ramps
+// linearly from 0 at the zone's outer boundary up to AUTO_SCROLL_MAX_SPEED
+// right at the container edge, so it starts smoothly rather than snapping to
+// full speed the instant the cursor crosses into the zone.
+function computeAutoScrollSpeed(pointerY, rect) {
+  const distFromTop = pointerY - rect.top;
+  if (distFromTop >= 0 && distFromTop < AUTO_SCROLL_EDGE_PX) {
+    return -AUTO_SCROLL_MAX_SPEED * ((AUTO_SCROLL_EDGE_PX - distFromTop) / AUTO_SCROLL_EDGE_PX);
+  }
+  const distFromBottom = rect.bottom - pointerY;
+  if (distFromBottom >= 0 && distFromBottom < AUTO_SCROLL_EDGE_PX) {
+    return AUTO_SCROLL_MAX_SPEED * ((AUTO_SCROLL_EDGE_PX - distFromBottom) / AUTO_SCROLL_EDGE_PX);
+  }
+  return 0;
+}
+
+// The rAF loop body, run once per frame for a drag's whole lifetime. A plain
+// module-level function (not a component closure) taking its refs as
+// parameters — reads only ref.current on each call, so it never goes stale and
+// never needs restarting per dragover event, which is what keeps the scroll
+// smooth (one continuous rAF chain) and immediately responsive to leaving the
+// edge zone (every frame re-evaluates the current cursor position from
+// scratch). `frameRef` is both read (for the recursive call) and written here.
+function runAutoScrollFrame(pointerYRef, scrollElRef, frameRef) {
+  const scrollEl = scrollElRef.current;
+  const pointerY = pointerYRef.current;
+  if (scrollEl && pointerY != null) {
+    const speed = computeAutoScrollSpeed(pointerY, scrollEl.getBoundingClientRect());
+    if (speed !== 0) scrollEl.scrollTop += speed;
+  }
+  frameRef.current = requestAnimationFrame(() => runAutoScrollFrame(pointerYRef, scrollElRef, frameRef));
+}
+
 // ── Display-only hierarchy normalization ─────────────────────────────────────
 // PRESENTATION ONLY. Nothing below writes to a node, a level field, or the API —
 // it reads the ancestry the backend already sent (walkAncestry over parentKey, via
-// getLevelsArray) and decides how to DRAW it. No classification, no name
-// heuristics, no hardcoded section/subsection names.
+// getLevelsArray) and decides how to DRAW it. No classification, no hardcoded
+// section/subsection names — ONE deliberate exception, see
+// CALCULATED_STATEMENT_ROW_LABELS immediately below.
+
+// A QuickBooks-style Chart of Accounts encodes these four P&L calculated rows
+// as real category LEVELS (e.g. "... > Net Income > Net Other Income >
+// Net Operating Income > Gross Profit > Income > Company Services > Billing &
+// Collections"), so they are genuine nodes in the parentKey tree this file
+// walks — not a display bug in buildSubGroupItems itself. They are NOT a
+// leading anchor common to every account in a sub-group (an account below the
+// "Other Income" line, e.g. "Other income", skips both "Net Operating Income"
+// and "Gross Profit" entirely), so commonPrefixLength below does not catch
+// them, and they render as their own category header rows — confirmed live:
+// "Net Operating Income" and "Gross Profit" each showing up as a header above
+// "Income" > the real accounts.
+//
+// These are calculated STATEMENT rows, never real hierarchy categories — the
+// same treatment financialStatementService.js's PL_CALCULATED_ROW_NAMES
+// already gives them for the Profit & Loss report view. There is no
+// structural flag distinguishing them from a genuine category (confirmed live
+// against chart_of_accounts: both persist as ordinary `metadata.is_group`
+// rows, byte-for-byte the same shape as "Charges" or "Insurance") — so name
+// matching is the only way to identify them, same reasoning as the backend's
+// comment on that constant. This never removes an account: only a CONTAINER
+// category header is skipped; its children still render, one level shallower.
+const CALCULATED_STATEMENT_ROW_LABELS = new Set([
+  "gross profit", "net operating income", "operating income",
+  "net other income", "net income", "net loss", "pretax income",
+]);
+const isCalculatedStatementRowLabel = (label) =>
+  CALCULATED_STATEMENT_ROW_LABELS.has(String(label || "").trim().toLowerCase());
 
 /** Length of the longest leading run of labels every chain shares. */
 function commonPrefixLength(chains) {
@@ -158,10 +242,13 @@ function buildSubGroupItems(rows, section, sg, nodesByKey, childrenByParentKey) 
     for (const n of children) {
       if (n.nodeType === "ACCOUNT" || !included.has(n.key)) continue;
       const label = displayName(n);
-      // Hidden either because it is part of the shared anchor, or because it just
-      // repeats its parent's label (the backend's anchors legitimately do, e.g.
-      // Total Assets twice) — a storage convention, not real hierarchy.
-      const hidden = remainingHidden > 0 || label === parentLabel;
+      // Hidden because it is part of the shared anchor, because it just repeats
+      // its parent's label (the backend's anchors legitimately do, e.g. Total
+      // Assets twice — a storage convention, not real hierarchy), or because
+      // it's a calculated P&L statement row (Gross Profit, Net Operating
+      // Income, …) that only ever appears as a real category LEVEL in the
+      // data — see CALCULATED_STATEMENT_ROW_LABELS above for why.
+      const hidden = remainingHidden > 0 || label === parentLabel || isCalculatedStatementRowLabel(label);
       if (!hidden) {
         items.push({ kind: "category", section, sg, label, depth, key: `cat-${sg.key}-${n.key}` });
       }
@@ -235,6 +322,21 @@ export default function ChartOfAccountsGrid({
   // affordance.
   const [dragKey, setDragKey] = useState(null);
   const [dropKey, setDropKey] = useState(null);
+
+  // ── Auto-scroll while dragging ──────────────────────────────────────────
+  // Pure UX addition: the table can be far taller than the viewport, so
+  // dragging a row toward the top/bottom edge of whatever container actually
+  // scrolls it (the app's scrollable content pane, not the row list itself —
+  // this table has no scroll region of its own) must scroll that container,
+  // the same way a file manager auto-scrolls while dragging a file toward the
+  // edge of a long list. Everything below is additive to the existing native
+  // HTML5 DnD handlers (onRowDragStart/onRowDragOver/onRowDrop/clearDrag) —
+  // none of their drop-target logic is touched, so preventDefault/dropEffect
+  // continue to be governed solely by isValidDropTarget as before.
+  const tableWrapRef = useRef(null);
+  const dragPointerYRef = useRef(null); // latest cursor Y while a drag is over the table; null when not
+  const autoScrollElRef = useRef(null); // the scrollable ancestor found for the CURRENT drag
+  const autoScrollFrameRef = useRef(null); // requestAnimationFrame id, or null when not running
 
   const loadedNodesRef = useRef([]);
   // Read via a ref so the load effect can depend on a stable `proposalToken`
@@ -500,6 +602,29 @@ export default function ChartOfAccountsGrid({
   // badge, live validation and the Save button state for free.
   const canReorder = mode === "proposal";
 
+  const stopAutoScroll = useCallback(() => {
+    if (autoScrollFrameRef.current != null) {
+      cancelAnimationFrame(autoScrollFrameRef.current);
+      autoScrollFrameRef.current = null;
+    }
+    dragPointerYRef.current = null;
+    autoScrollElRef.current = null;
+  }, []);
+
+  // Resolved once per drag (not per frame/event) — the scrollable ancestor
+  // doesn't move mid-drag, and re-walking the DOM on every dragover would be
+  // wasted work on a table with hundreds/thousands of rows.
+  const startAutoScroll = useCallback(() => {
+    autoScrollElRef.current = tableWrapRef.current
+      ? findVerticalScrollAncestor(tableWrapRef.current)
+      : null;
+    if (autoScrollElRef.current && autoScrollFrameRef.current == null) {
+      autoScrollFrameRef.current = requestAnimationFrame(
+        () => runAutoScrollFrame(dragPointerYRef, autoScrollElRef, autoScrollFrameRef),
+      );
+    }
+  }, []);
+
   const onRowDragStart = (row) => (e) => {
     if (!canReorder) return;
     cancelEdit();
@@ -507,9 +632,41 @@ export default function ChartOfAccountsGrid({
     e.dataTransfer.effectAllowed = "move";
     // Some browsers require data to be set for a drag to start at all.
     try { e.dataTransfer.setData("text/plain", row.key); } catch { /* non-fatal */ }
+    startAutoScroll();
   };
 
-  const clearDrag = () => { setDragKey(null); setDropKey(null); };
+  // Passive position tracking for auto-scroll only — never calls
+  // preventDefault/stopPropagation, so the existing per-row onRowDragOver
+  // (which alone controls dropEffect/isValidDropTarget) is completely
+  // unaffected. Attached to the table's wrapper div, so it fires for every
+  // dragover anywhere over the table (native dragover bubbles).
+  const onTableDragOver = (e) => { dragPointerYRef.current = e.clientY; };
+  // Cursor left the table entirely (not just moved to a sibling row inside
+  // it — dragleave fires on every such transition too, hence the `contains`
+  // check) — stop using a now-meaningless stale position.
+  const onTableDragLeave = (e) => {
+    if (!tableWrapRef.current?.contains(e.relatedTarget)) dragPointerYRef.current = null;
+  };
+
+  const clearDrag = useCallback(() => {
+    setDragKey(null);
+    setDropKey(null);
+    stopAutoScroll();
+  }, [stopAutoScroll]);
+
+  // Safety net: native `dragend` always fires on the source row when the drag
+  // ends normally, but if anything ever prevents that (row unmounted mid-drag,
+  // Esc pressed, etc.) this guarantees the rAF loop still stops rather than
+  // scrolling forever. Registered once for the component's lifetime.
+  useEffect(() => {
+    window.addEventListener("dragend", clearDrag);
+    window.addEventListener("drop", clearDrag);
+    return () => {
+      window.removeEventListener("dragend", clearDrag);
+      window.removeEventListener("drop", clearDrag);
+      stopAutoScroll();
+    };
+  }, [clearDrag, stopAutoScroll]);
 
   const isValidDropTarget = (row) => Boolean(
     canReorder && dragKey && row.key !== dragKey && row.nodeType === "ACCOUNT",
@@ -853,7 +1010,12 @@ export default function ChartOfAccountsGrid({
             : "Upload financial statements and run Generate to build the Chart of Accounts."}
         </p>
       ) : (
-        <div className="overflow-x-auto">
+        <div
+          ref={tableWrapRef}
+          className="overflow-x-auto"
+          onDragOver={onTableDragOver}
+          onDragLeave={onTableDragLeave}
+        >
           <table className="min-w-max w-full border-collapse text-sm">
             {/* ── Column headers — dark teal matching the Excel ─────────────── */}
             <thead>

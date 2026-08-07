@@ -27,7 +27,10 @@ const MONTHS_SHORT = [
 // rows would still be missing even against a fully fixed backend. Bump the
 // suffix whenever the payload shape changes -- old keys are simply never read
 // again (sessionStorage dies with the tab, so no cleanup is needed).
-const FINANCIALS_STORAGE_PREFIX = "datahub-key-reports-financials-v2";
+// v3: the Profit & Loss now renders from statement.statementBlocks. A cached v2
+// payload predates that field, so a tab holding one would render an empty P&L
+// for its whole session against a fully correct backend.
+const FINANCIALS_STORAGE_PREFIX = "datahub-key-reports-financials-v3";
 
 function financialsKey(clientId, versionId) {
   return `${FINANCIALS_STORAGE_PREFIX}:${clientId || "default"}:${versionId}`;
@@ -105,11 +108,103 @@ function hierarchySectionNode(id, name, entries, colKey, pickHierarchy, totalNam
   return { id, name, type: "header", amounts: {}, children };
 }
 
+// ── Profit & Loss ────────────────────────────────────────────────────────────
+//
+// A Profit & Loss is a SEQUENCE OF BLOCKS separated by calculated rows, not one
+// recursive tree:
+//
+//   Income                 → Total Income
+//   Cost of Goods Sold     → Total Cost of Goods Sold
+//   GROSS PROFIT
+//   Operating Expenses     → Total Operating Expenses
+//   NET OPERATING INCOME
+//   Other Income           → Total Other Income
+//   Other Expenses         → Total Other Expenses
+//   NET OTHER INCOME
+//   NET INCOME
+//
+// The four capitalised rows are CALCULATED STATEMENT ROWS. They are emitted as
+// flat rows with no `children`, which is what makes them non-expandable in
+// QBRow and stops them ever becoming a parent of an account. Each appears
+// exactly once, at a fixed position.
+//
+// Every figure here — including the four calculated rows — is read straight off
+// `statement.statementBlocks`, computed once in the backend's buildPlStatement.
+// This function performs no accounting arithmetic.
+//
+// Blocks are described declaratively so order and labelling live in one place.
+const PL_BLOCK_SEQUENCE = [
+  { id: "pl-income", key: "income", fallbackLabel: "Income" },
+  { id: "pl-cogs", key: "costOfSales", fallbackLabel: "Cost of Goods Sold" },
+  { id: "pl-gp", calcRow: "grossProfit", label: "Gross Profit" },
+  { id: "pl-opex", key: "operatingExpenses", fallbackLabel: "Operating Expenses" },
+  { id: "pl-noi", calcRow: "netOperatingIncome", label: "Net Operating Income" },
+  { id: "pl-oth-inc", key: "otherIncome", fallbackLabel: "Other Income" },
+  { id: "pl-oth-exp", key: "otherExpenses", fallbackLabel: "Other Expenses" },
+  { id: "pl-noi-other", calcRow: "netOtherIncome", label: "Net Other Income" },
+  { id: "pl-ni", calcRow: "netIncome", label: "Net Income" },
+];
+
+const blocksOf = (statement) => statement?.statementBlocks || null;
+
+// The section heading comes from the backend block's own label, which is the
+// client's own document wording ("Income", "Cost of Goods Sold", "Expenses").
+// Periods agree on it; the first period that carries one wins.
+function blockLabel(entries, key, fallback) {
+  for (const e of entries) {
+    const label = blocksOf(e.statement)?.[key]?.label;
+    if (label) return label;
+  }
+  return fallback;
+}
+
+// A block renders only when it actually has accounts. An empty Other Income /
+// Other Expenses block is omitted entirely rather than printed as a heading
+// with a zero total — but a block that has accounts summing to zero is kept,
+// because the accounts themselves are real.
+function blockHasContent(entries, key) {
+  return entries.some((e) => {
+    const b = blocksOf(e.statement)?.[key];
+    return Boolean(b?.hierarchy?.length) || Math.abs(Number(b?.total) || 0) >= 0.005;
+  });
+}
+
 function buildProfitAndLoss(entries, cols) {
   const colKey = (i) => cols[i].key;
   const per = (pick) => entries.map((e, i) => ({ colKey: colKey(i), value: pick(e.statement || {}) }));
   const entityIndex = buildEntityIndex(entries, cols);
 
+  // A payload predating statementBlocks (an older cached response) still has to
+  // render something rather than an empty statement — fall back to the previous
+  // section-per-hierarchy layout for it.
+  if (!entries.some((e) => blocksOf(e.statement))) {
+    return buildProfitAndLossLegacy(entries, cols, colKey, per, entityIndex);
+  }
+
+  const rows = [];
+  for (const spec of PL_BLOCK_SEQUENCE) {
+    if (spec.calcRow) {
+      // Flat, childless, non-expandable — never a container for accounts.
+      rows.push(totalRow(spec.id, spec.label, per((s) => blocksOf(s)?.[spec.calcRow])));
+      continue;
+    }
+    if (!blockHasContent(entries, spec.key)) continue;
+    const label = blockLabel(entries, spec.key, spec.fallbackLabel);
+    rows.push(hierarchySectionNode(
+      spec.id, label, entries, colKey,
+      (s) => blocksOf(s)?.[spec.key]?.hierarchy,
+      `Total ${label}`,
+      per((s) => blocksOf(s)?.[spec.key]?.total),
+      entityIndex,
+    ));
+  }
+
+  return { rows, columns: { yearCols: cols } };
+}
+
+// Pre-statementBlocks layout, kept only for cached payloads produced by an
+// older backend. New responses never reach this.
+function buildProfitAndLossLegacy(entries, cols, colKey, per, entityIndex) {
   const revenue = hierarchySectionNode(
     "pl-rev", "Revenue", entries, colKey,
     (s) => s.revenue?.hierarchy,

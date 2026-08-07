@@ -398,6 +398,123 @@ function plSectionLabelFor(nodes, byId, fallback) {
   return best || fallback;
 }
 
+// ─── Profit & Loss statement blocks ──────────────────────────────────────────
+//
+// A real Profit & Loss is a SEQUENCE of blocks separated by calculated rows:
+//
+//   Income → Total Income → Cost of Goods Sold → Total Cost of Goods Sold →
+//   GROSS PROFIT → Operating Expenses → Total Operating Expenses →
+//   NET OPERATING INCOME → Other Income → Other Expenses →
+//   NET OTHER INCOME → NET INCOME
+//
+// The four capitalised rows are CALCULATED STATEMENT ROWS, not hierarchy nodes:
+// they are never a parent of an account, never expandable, and appear exactly
+// once each.
+//
+// The problem this solves: a QuickBooks-style Chart of Accounts encodes those
+// same four labels as real category LEVELS, so every P&L account's
+// hierarchy_path runs through them —
+//
+//   … > Net Income > Net Other Income > Net Operating Income > Gross Profit >
+//       Income > Company Services > Billing & Collections
+//
+// Rendering that path literally makes "Net Income" the grandparent of Revenue,
+// with a "Total Net Income" subtotal at every level. This module strips that
+// spine for presentation ONLY. Nothing about COA generation, levels generation,
+// classification or the hierarchy itself changes — the same chart_of_accounts
+// rows and the same buildDynamicHierarchy tree are used; the calculated levels
+// are simply not rendered as containers.
+//
+// Identified by NAME deliberately, and only here. These rows are persisted as
+// ordinary `metadata.is_group` chart_of_accounts rows, indistinguishable in
+// shape from a genuine category group like "Charges" or "Insurance" (verified
+// against live data) — there is no structural flag to read. Keeping the
+// vocabulary in the statement-presentation layer is why chartOfAccountsService
+// and keyReportSyncService remain free of any such name branch, which
+// chartOfAccountsService.calculatedRows.test.js asserts.
+const PL_CALCULATED_ROW_NAMES = new Set([
+  "gross profit",
+  "net operating income",
+  "operating income",
+  "net other income",
+  "net income",
+  "net loss",
+  "pretax income",
+]);
+
+const normLabel = (v) => String(v || "").trim().toLowerCase();
+const isCalculatedRowLabel = (name) => PL_CALCULATED_ROW_NAMES.has(normLabel(name));
+
+// The collapsed category chain for one COA leaf, straight from hierarchy_path
+// (the unpadded real path — see buildDynamicHierarchy for why level_1..15 is
+// not used).
+function collapsedPathOf(node) {
+  const raw = (node.hierarchy_path ? String(node.hierarchy_path).split(" > ") : []).filter(Boolean);
+  return collapseConsecutive(raw).map(normLabel);
+}
+
+// Does this account sit BELOW the statement's "other income / other expense"
+// line rather than in the operating section?
+//
+// Read from the account's own COA path: the operating branch runs through
+// "Net Operating Income", the other-income branch does not. An account whose
+// path contains NEITHER marker (a Chart of Accounts with no calculated-row
+// spine at all — the common case for a hand-built COA) is treated as operating,
+// so such a client renders exactly as it does today with an empty other block.
+function isOtherBlockAccount(node) {
+  const path = collapsedPathOf(node);
+  if (path.includes("net operating income")) return false;
+  return path.includes("net other income");
+}
+
+// Drop calculated-row containers from a built hierarchy, promoting their
+// children into their place. Only CONTAINER nodes are ever dropped — a real
+// posting account that happens to be named e.g. "Net Income" is a leaf and is
+// always kept, so no account can be lost by this transform.
+function stripCalculatedRowContainers(nodes) {
+  const out = [];
+  for (const node of nodes || []) {
+    if (node.type === "container" && isCalculatedRowLabel(node.name)) {
+      out.push(...stripCalculatedRowContainers(node.children));
+      continue;
+    }
+    out.push(node.children?.length
+      ? { ...node, children: stripCalculatedRowContainers(node.children) }
+      : node);
+  }
+  return out;
+}
+
+/**
+ * One rendered block of the statement: a section heading, the hierarchy BELOW
+ * that heading, and the block's own total. `total` is the sum of the block's
+ * own leaves — never read from a document summary row, and never re-derived by
+ * the renderer.
+ *
+ * Once the calculated-row spine is stripped, a section's own name is normally
+ * left standing as the single remaining root ("Income", "Cost of Goods Sold",
+ * "Expenses" — the document's real wording). That root IS the section heading,
+ * so it is unwrapped: its name becomes the block label and its children become
+ * the block hierarchy. This keeps the section from rendering twice ("Income"
+ * nested inside a hardcoded "Revenue") and means the heading always uses the
+ * client's own vocabulary rather than an invented one.
+ *
+ * `fallbackLabel` is used only when the block does NOT reduce to a single
+ * container root — e.g. accounts that hang directly off the other-income line
+ * with no section node of their own.
+ */
+function plBlock(fallbackLabel, accounts, toLeaf) {
+  const built = buildDynamicHierarchy(accounts, PL_ANCHOR_DEPTH);
+  const roots = stripCalculatedRowContainers(built.tree);
+  const soleContainer = roots.length === 1 && roots[0].type === "container" ? roots[0] : null;
+  return {
+    label: soleContainer ? soleContainer.name : fallbackLabel,
+    hierarchy: soleContainer ? (soleContainer.children || []) : roots,
+    accounts: accounts.map(toLeaf),
+    total: safeNum(accounts.reduce((s, n) => s + safeNum(n.displayAmount), 0)),
+  };
+}
+
 /**
  * Build P&L statement from the rolled-up tree.
  *
@@ -471,6 +588,48 @@ function buildPlStatement(leaves, byId) {
   logHierarchyRenderVerification("Profit & Loss Cost of Sales", cogsHierarchyResult.verification);
   logHierarchyRenderVerification("Profit & Loss Operating Expenses", expenseHierarchyResult.verification);
 
+  // ── Statement blocks (additive; nothing above is altered) ──────────────────
+  // Every field returned below this point is NEW. revenue/costOfSales/
+  // operatingExpenses/grossProfit/operatingIncome/pretaxIncome/netIncome keep
+  // their existing meaning and values byte-for-byte, because QoE, EBITDA, KPI
+  // and CIM autofill all read them (keyReportReportService.js, ebitdaService,
+  // cimFinancialAutofillService) and must keep working unchanged.
+  //
+  // The difference between the two: the legacy `grossProfit` is
+  // (all income − all COGS) with Other Income folded into income, whereas
+  // `statementBlocks.grossProfit` excludes the other-income/other-expense block
+  // — which is what a real statement shows, and what the client's own exported
+  // Profit & Loss reconciles to. Both are correct for their own consumer; they
+  // are deliberately not merged here.
+  const operatingOf = (nodes) => nodes.filter((n) => !isOtherBlockAccount(n));
+  const otherOf = (nodes) => nodes.filter((n) => isOtherBlockAccount(n));
+
+  const incomeBlock = plBlock(incomeSectionLabel, operatingOf(income), toLeaf);
+  const cogsBlock = plBlock(cogsSectionLabel, operatingOf(cogs), toLeaf);
+  const opexBlock = plBlock(expenseSectionLabel, operatingOf(expense), toLeaf);
+  // COGS below the other-income line is vanishingly rare but must not vanish:
+  // fold it into Other Expenses rather than dropping it.
+  const otherIncomeBlock = plBlock("Other Income", otherOf(income), toLeaf);
+  const otherExpenseBlock = plBlock("Other Expenses", [...otherOf(expense), ...otherOf(cogs)], toLeaf);
+
+  const blockGrossProfit = safeNum(incomeBlock.total - cogsBlock.total);
+  const blockNetOperatingIncome = safeNum(blockGrossProfit - opexBlock.total);
+  const blockNetOtherIncome = safeNum(otherIncomeBlock.total - otherExpenseBlock.total);
+  const blockNetIncome = safeNum(blockNetOperatingIncome + blockNetOtherIncome);
+
+  // Regrouping accounts between blocks must never change the bottom line. If it
+  // does, an account was double-counted or dropped — say so loudly rather than
+  // shipping a statement that silently disagrees with every other report.
+  if (Math.abs(blockNetIncome - netIncome) > 0.01) {
+    console.warn(
+      `[FinStmt][PL] statement-block Net Income ${blockNetIncome.toFixed(2)} does not reconcile with ` +
+      `the statement's own Net Income ${netIncome.toFixed(2)} (difference ` +
+      `${(blockNetIncome - netIncome).toFixed(2)}). The operating/other split is derived from each ` +
+      `account's chart_of_accounts hierarchy_path; an account reaching neither block, or both, is the ` +
+      `usual cause.`,
+    );
+  }
+
   return {
     revenue: {
       label: incomeSectionLabel,
@@ -494,6 +653,21 @@ function buildPlStatement(leaves, byId) {
     operatingIncome,
     pretaxIncome: operatingIncome,
     netIncome,
+    // The statement as a real accounting document reads it: five account blocks
+    // in presentation order, separated by four calculated rows that appear
+    // exactly once each and are never hierarchy nodes. The renderer walks this
+    // and nothing else; it performs no accounting arithmetic of its own.
+    statementBlocks: {
+      income: incomeBlock,
+      costOfSales: cogsBlock,
+      grossProfit: blockGrossProfit,
+      operatingExpenses: opexBlock,
+      netOperatingIncome: blockNetOperatingIncome,
+      otherIncome: otherIncomeBlock,
+      otherExpenses: otherExpenseBlock,
+      netOtherIncome: blockNetOtherIncome,
+      netIncome: blockNetIncome,
+    },
   };
 }
 
@@ -1394,6 +1568,23 @@ async function generateMonthlyPlFromYearly(versionId, year, yearlyStatement) {
   const scaleAccounts = (accounts, ratio) =>
     (accounts || []).map(a => ({ ...a, amount: round2(safeNum(a.amount) * ratio) }));
 
+  // Scale a statement block, hierarchy included. This fallback prorates a
+  // YEARLY statement, so the block's shape is already correct — only the
+  // amounts move. Without this the monthly view would lose the statement
+  // blocks entirely and render empty sections.
+  const scaleHierarchy = (nodes, ratio) =>
+    (nodes || []).map((n) => ({
+      ...n,
+      amount: round2(safeNum(n.amount) * ratio),
+      ...(n.children?.length ? { children: scaleHierarchy(n.children, ratio) } : {}),
+    }));
+  const scaleBlock = (block, ratio) => ({
+    label: block?.label,
+    hierarchy: scaleHierarchy(block?.hierarchy, ratio),
+    accounts: scaleAccounts(block?.accounts, ratio),
+    total: round2(safeNum(block?.total) * ratio),
+  });
+
   const scaleStmt = (stmt, ratio) => {
     const revenue = {
       label: stmt.revenue?.label,
@@ -1416,6 +1607,7 @@ async function generateMonthlyPlFromYearly(versionId, year, yearlyStatement) {
     }
     const totalExpenses = round2(safeNum(stmt.operatingExpenses?.total) * ratio);
     const operatingIncome = round2(safeNum(stmt.operatingIncome) * ratio);
+    const sb = stmt.statementBlocks;
     return {
       revenue,
       costOfSales,
@@ -1424,6 +1616,19 @@ async function generateMonthlyPlFromYearly(versionId, year, yearlyStatement) {
       operatingIncome,
       pretaxIncome: operatingIncome,
       netIncome: operatingIncome,
+      ...(sb ? {
+        statementBlocks: {
+          income: scaleBlock(sb.income, ratio),
+          costOfSales: scaleBlock(sb.costOfSales, ratio),
+          grossProfit: round2(safeNum(sb.grossProfit) * ratio),
+          operatingExpenses: scaleBlock(sb.operatingExpenses, ratio),
+          netOperatingIncome: round2(safeNum(sb.netOperatingIncome) * ratio),
+          otherIncome: scaleBlock(sb.otherIncome, ratio),
+          otherExpenses: scaleBlock(sb.otherExpenses, ratio),
+          netOtherIncome: round2(safeNum(sb.netOtherIncome) * ratio),
+          netIncome: round2(safeNum(sb.netIncome) * ratio),
+        },
+      } : {}),
     };
   };
 
@@ -2421,7 +2626,11 @@ const FIN_STMT_CACHE_TYPE = "kr_financial_statements_v1";
 // can never satisfy the check). This is enforced by the predicate rather than by
 // remembering to rename FIN_STMT_CACHE_TYPE -- the previous mechanism relied on a
 // comment, and that is precisely what was missed.
-const FIN_STMT_PAYLOAD_VERSION = 3;
+// 4: added statement.statementBlocks (the Profit & Loss rendered as real
+// statement blocks separated by calculated rows). A cached v3 payload has no
+// such field, so the P&L would render empty until the next sync — bump so those
+// entries are ignored rather than served.
+const FIN_STMT_PAYLOAD_VERSION = 4;
 
 /**
  * Is a cached financial-statements row safe to serve?

@@ -216,9 +216,13 @@ def extract_profit_loss(wb):
     # same stack discipline used in extract_balance_sheet.
     ancestor_stack = []  # list of (indent, label)
 
+    # No period-caption guard here, unlike extract_balance_sheet: this function
+    # reads its period columns straight off header_row itself
+    # (extract_year_cols_from_header above), so the captions ARE the header row
+    # and the loop below — which starts at header_idx + 1 — can never reach
+    # them. The balance-sheet extractor scans for its caption row separately and
+    # does need the guard; see period_header_idx there.
     for row_idx in range(header_idx + 1, len(rows)):
-        if row_idx == period_header_idx:
-            continue  # the month captions are not an account row
         row = rows[row_idx]
         if not row or all(v is None or str(v).strip() == '' for v in row):
             continue
@@ -568,6 +572,16 @@ def extract_balance_sheet(wb):
     ancestor_stack = []  # list of (indent, label)
 
     for row_idx in range(header_idx + 1, len(rows)):
+        # The month captions ("Jan 2024", "Feb 2024", ...) are not an account
+        # row. They can legitimately fall BELOW header_idx — the score-based
+        # detector locks onto the title line on real files, putting header_idx
+        # above the captions (see period_header_idx's comment above) — so this
+        # loop can and does reach them. Most exports leave the caption row's
+        # account column blank, which the empty-name check below already drops,
+        # but one that labels it (e.g. "Account") would otherwise be emitted as
+        # a phantom account carrying every period's header text.
+        if row_idx == period_header_idx:
+            continue
         row = rows[row_idx]
         if not row or all(v is None or str(v).strip() == '' for v in row):
             continue
