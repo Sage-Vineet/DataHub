@@ -3,6 +3,14 @@ const { Pool } = require("pg");
 const asyncHandler = require("../utils");
 const { buildUploadContentUrl } = require("../utils/uploadStorage");
 const permissionService = require("../services/permissionService");
+const { buildSslOptions } = require("../db/pgPool");
+const {
+  validateUpload,
+  UploadRejected,
+  contentDisposition,
+} = require("../security/fileUpload");
+const securityEvents = require("../services/securityEventService");
+const { config } = require("../config/env");
 
 // Supabase Storage bucket for file uploads (create this bucket in your Supabase project)
 const STORAGE_BUCKET = process.env.STORAGE_BUCKET || "documents";
@@ -15,7 +23,7 @@ function getPool() {
   if (!_pool) {
     _pool = new Pool({
       connectionString: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: false },
+      ssl: buildSslOptions(process.env.DATABASE_URL),
       max: 5,
       connectionTimeoutMillis: 2000,
       idleTimeoutMillis: 10000,
@@ -109,16 +117,66 @@ async function downloadFromStorage(storagePath) {
   }
 }
 
+/**
+ * Storage prefixes a client may write into.
+ *
+ * WHY an allowlist: the prefix arrived from a client header and was
+ * concatenated straight into the object path, so `x-upload-prefix: ../../public`
+ * wrote outside the intended folder. A closed set removes the traversal
+ * primitive entirely rather than trying to filter it.
+ */
+const ALLOWED_UPLOAD_PREFIXES = new Set([
+  "uploads",
+  "documents",
+  "reports",
+  "statements",
+  "avatars",
+  "attachments",
+]);
+
 const createUpload = asyncHandler(async (req, res) => {
   const fileNameHeader = req.headers["x-file-name"];
-  const fileName = typeof fileNameHeader === "string" ? fileNameHeader.trim() : "";
-  const contentType = (req.headers["content-type"] || "application/octet-stream").split(";")[0].trim();
+  const rawFileName = typeof fileNameHeader === "string" ? fileNameHeader.trim() : "";
+  const declaredType = (req.headers["content-type"] || "application/octet-stream")
+    .split(";")[0]
+    .trim();
   const prefixHeader = req.headers["x-upload-prefix"];
-  const prefix = typeof prefixHeader === "string" ? prefixHeader.trim() : "uploads";
+  const requestedPrefix = typeof prefixHeader === "string" ? prefixHeader.trim() : "uploads";
   const body = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || "");
 
-  if (!fileName) return res.status(400).json({ error: "x-file-name header is required" });
+  if (!rawFileName) return res.status(400).json({ error: "x-file-name header is required" });
   if (!body.length) return res.status(400).json({ error: "Upload body is required" });
+
+  const prefix = ALLOWED_UPLOAD_PREFIXES.has(requestedPrefix) ? requestedPrefix : "uploads";
+
+  // ── Validate before anything touches storage or the database ──────────────
+  // Checks extension, declared MIME, magic bytes, size, executable signatures
+  // and embedded active content (macros, PDF JavaScript, OLE objects), and
+  // returns a random stored name so the client-supplied one never reaches a
+  // filesystem path or object key.
+  let validated;
+  try {
+    validated = validateUpload(
+      { buffer: body, originalname: rawFileName, mimetype: declaredType },
+      { maxBytes: config.UPLOAD_MAX_BYTES }
+    );
+  } catch (error) {
+    if (error instanceof UploadRejected) {
+      await securityEvents.record({
+        eventType: "upload_rejected",
+        severity: securityEvents.SEVERITY.WARNING,
+        ...securityEvents.fromRequest(req),
+        metadata: { rejectedBy: error.code, sizeBytes: body.length },
+      });
+      return res.status(400).json({ error: error.message, code: error.code });
+    }
+    throw error;
+  }
+
+  // The display name is retained for the UI but stripped of path components and
+  // control characters; it is never used to build a path.
+  const fileName = String(rawFileName).split(/[/\\]/).pop().slice(0, 255);
+  const contentType = validated.mimeType;
 
   const uploadedBy = req.user?.id || null;
   const useLargeStorage = body.length > STORAGE_THRESHOLD_BYTES;
@@ -126,9 +184,8 @@ const createUpload = asyncHandler(async (req, res) => {
   // For large files, try Supabase Storage first
   let storagePath = null;
   if (useLargeStorage) {
-    const ext = fileName.includes(".") ? fileName.split(".").pop().toLowerCase() : "bin";
-    const uniqueName = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
-    const candidate = `${prefix}/${uniqueName}`;
+    // storedName is a UUID plus the validated extension — no attacker input.
+    const candidate = `${prefix}/${validated.storedName}`;
     storagePath = await uploadToStorage(body, candidate, contentType);
     if (!storagePath) {
       // Storage not available — enforce a hard limit to prevent broken bytea inserts
@@ -242,17 +299,40 @@ const getUploadContent = asyncHandler(async (req, res) => {
     const linkedCompanyIds = Array.from(new Set((documentRows || []).map((row) => row.company_id).filter(Boolean)));
     if (linkedCompanyIds.length) {
       const allowed = linkedCompanyIds.some((companyId) => permissionService.canAccessCompany(req.user, companyId));
-      if (!allowed) return res.status(403).json({ error: "You do not have permission to access the documents for this company." });
-    } else if (upload.uploaded_by && String(upload.uploaded_by) !== String(req.user?.id)) {
-      return res.status(403).json({ error: "You do not have permission to download this file." });
+      if (!allowed) return res.status(403).json({ error: "Access denied", code: "FORBIDDEN" });
+    } else if (String(upload.uploaded_by || "") !== String(req.user?.id || "")) {
+      // Fail CLOSED on an orphaned upload. The previous condition was
+      // `upload.uploaded_by && ...`, so a row with a NULL uploader — which is
+      // what a failed or partial insert leaves behind — was downloadable by
+      // any authenticated user regardless of tenant.
+      return res.status(403).json({ error: "Access denied", code: "FORBIDDEN" });
     }
   }
 
   const fileName = upload.file_name || "download";
-  const encodedName = encodeURIComponent(fileName).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  const storedType = String(upload.content_type || "").toLowerCase();
 
-  res.setHeader("Content-Type", upload.content_type || "application/octet-stream");
-  res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodedName}`);
+  /**
+   * Types safe to render in the browser. Everything else downloads.
+   *
+   * WHY: `inline` on an arbitrary stored content type lets a file uploaded as
+   * `text/html` or `image/svg+xml` execute script in the API's origin. The API
+   * origin holds no cookies a script could steal today, but it is a needless
+   * foothold — and `nosniff` plus a narrow allowlist costs nothing.
+   */
+  const INLINE_SAFE = new Set(["application/pdf", "image/png", "image/jpeg", "image/webp", "image/gif"]);
+  const isInlineSafe = INLINE_SAFE.has(storedType);
+
+  res.setHeader("Content-Type", isInlineSafe ? storedType : "application/octet-stream");
+  res.setHeader(
+    "Content-Disposition",
+    isInlineSafe
+      ? `inline; filename*=UTF-8''${encodeURIComponent(fileName)}`
+      : contentDisposition(fileName)
+  );
+  // Belt and braces against content sniffing overriding the type above.
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
 
   // Serve from Supabase Storage if available
   if (upload.storage_path) {

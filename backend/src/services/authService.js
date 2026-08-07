@@ -1,37 +1,41 @@
-const jwt = require("jsonwebtoken");
-const bcrypt = require("bcryptjs");
 const { Pool } = require("pg");
 const { supabase } = require("../db");
+const { config } = require("../config/env");
+const logger = require("../security/logger");
+const {
+  hashPassword,
+  verifyPassword,
+  validatePassword,
+  burnPasswordTiming,
+} = require("../security/passwordPolicy");
+const sessionService = require("./sessionService");
+const accountLockout = require("./accountLockoutService");
+const securityEvents = require("./securityEventService");
 
 let _authPool = null;
 function getAuthPool() {
-  if (!process.env.DATABASE_URL) return null;
+  if (!config.DATABASE_URL) return null;
   if (!_authPool) {
+    const isLocal = /localhost|127\.0\.0\.1/.test(config.DATABASE_URL);
     _authPool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: false },
+      connectionString: config.DATABASE_URL,
+      // Certificate verification is enabled in production. `rejectUnauthorized:
+      // false` accepts ANY certificate, which reduces TLS to obfuscation and
+      // leaves the connection open to an active man-in-the-middle — the whole
+      // point of TLS to a managed database is authenticating the server.
+      ssl: isLocal ? false : { rejectUnauthorized: config.DATABASE_SSL_REJECT_UNAUTHORIZED },
       max: 5,
       connectionTimeoutMillis: 10000,
       idleTimeoutMillis: 30000,
     });
-    _authPool.on("error", () => { });
+    _authPool.on("error", (error) => {
+      logger.error("auth_pool_error", { name: error.name });
+    });
   }
   return _authPool;
 }
 const { attachAssignedCompanies, flattenUser, getUserByEmail, getUserById } = require("./userService");
-const { CLIENT_STATIC_PASSWORD } = require("../config/demoUsers");
 const { invalidateUserCache } = require("../middleware/auth");
-
-/**
- * Signs a JWT token for a user
- * @param {string} userId - User ID
- * @returns {string} Signed token
- */
-function signToken(userId) {
-  return jwt.sign({ sub: userId }, process.env.JWT_SECRET || "change_me", {
-    expiresIn: process.env.JWT_EXPIRES_IN || "7d",
-  });
-}
 
 function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
@@ -120,125 +124,301 @@ async function ensureDefaultFolders(companyId, createdBy) {
   if (insertError) console.error("❌ Error creating default folders:", insertError.message);
 }
 
+/** Thrown for every authentication failure — the caller must not distinguish. */
+class AuthenticationError extends Error {
+  constructor(code = "INVALID_CREDENTIALS", { status = 401, retryAfter = null } = {}) {
+    super("Invalid credentials");
+    this.name = "AuthenticationError";
+    this.code = code;
+    this.status = status;
+    this.retryAfter = retryAfter;
+  }
+}
+
 /**
- * Validates user credentials against stored database users.
- * @param {string} email - User email
- * @param {string} password - User password
- * @returns {Promise<Object>} { user, token }
+ * Reads a user's stored password hash, preferring whatever the user service
+ * already loaded and falling back to a direct query.
  */
-async function authenticate(email, password) {
+async function loadPasswordHash(user) {
+  if (user.password_hash) return user.password_hash;
+
+  if (supabase) {
+    const { data } = await supabase
+      .from("users")
+      .select("password_hash")
+      .eq("id", user.id)
+      .maybeSingle();
+    if (data?.password_hash) return data.password_hash;
+  }
+
+  const pool = getAuthPool();
+  if (pool) {
+    try {
+      // Parameterised — the id is never interpolated into the SQL text.
+      const { rows } = await pool.query(
+        "SELECT password_hash FROM users WHERE id = $1 LIMIT 1",
+        [user.id]
+      );
+      return rows[0]?.password_hash || null;
+    } catch (error) {
+      logger.error("password_hash_lookup_failed", { name: error.name });
+    }
+  }
+  return null;
+}
+
+/**
+ * Recovers a client/buyer account's company association when a migration left
+ * `company_id` null. Unchanged in behaviour; extracted for clarity.
+ */
+async function reconcileClientCompany(user, normalizedEmail, { seedFolders = false } = {}) {
+  let resolvedCompanyId = user.company_id;
+
+  if (!resolvedCompanyId && supabase) {
+    const { data: matched } = await supabase
+      .from("companies")
+      .select("id")
+      .ilike("contact_email", normalizedEmail)
+      .maybeSingle();
+    if (matched?.id) {
+      resolvedCompanyId = matched.id;
+      await supabase.from("users").update({ company_id: resolvedCompanyId }).eq("id", user.id);
+    }
+  }
+
+  if (resolvedCompanyId) {
+    await syncUserCompanyAssignment(user.id, resolvedCompanyId);
+    if (seedFolders) await ensureDefaultFolders(resolvedCompanyId, user.id);
+  }
+}
+
+/**
+ * Authenticates a user and establishes a session.
+ *
+ * SECURITY CHANGES from the previous implementation:
+ *
+ *   1. The plaintext comparison is gone. The old code ran
+ *      `ok = rawPassword === storedPassword` whenever the stored value was not
+ *      a bcrypt hash, so any account whose row held a plaintext password (seed
+ *      data, a migration artefact, a manual insert) authenticated on a string
+ *      match. `verifyPassword` now fails closed on any non-bcrypt value.
+ *
+ *   2. The shared static password is gone. Every client/buyer account could
+ *      previously authenticate with CLIENT_STATIC_PASSWORD, which defaulted to
+ *      "123456" when the env var was unset — one guess for every customer
+ *      account in the system.
+ *
+ *   3. Failed attempts are counted and the account is locked temporarily.
+ *
+ *   4. Timing is equalised: a request for a non-existent account performs the
+ *      same bcrypt work as a real one, so response latency does not reveal
+ *      which addresses are registered.
+ *
+ *   5. A short-lived access token plus a revocable refresh token replace the
+ *      previous single 7-day token that could not be invalidated.
+ *
+ * @returns {Promise<{user: object, accessToken: string, refreshToken: string, expiresIn: number}>}
+ */
+async function authenticate(email, password, context = {}) {
+  const { ipHash = null, userAgent = null } = context;
   const normalizedEmail = normalizeEmail(email);
   const rawPassword = String(password || "");
-  if (!normalizedEmail || !rawPassword) throw new Error("Invalid credentials");
+
+  if (!normalizedEmail || !rawPassword) {
+    await burnPasswordTiming();
+    throw new AuthenticationError();
+  }
+
+  // ── Lockout check comes first ─────────────────────────────────────────────
+  const lock = await accountLockout.getLockStatus(normalizedEmail);
+  if (lock.locked) {
+    await securityEvents.record({
+      eventType: "login_blocked_locked_account",
+      severity: securityEvents.SEVERITY.WARNING,
+      email: normalizedEmail,
+      ipHash,
+      userAgent,
+      metadata: { retryAfter: lock.retryAfterSeconds },
+    });
+    throw new AuthenticationError("ACCOUNT_LOCKED", {
+      status: 429,
+      retryAfter: lock.retryAfterSeconds,
+    });
+  }
 
   const user = await getUserByEmail(normalizedEmail);
-  if (!user || String(user.status || "").toLowerCase() === "inactive") {
-    throw new Error("Invalid credentials");
+
+  // Unknown account: burn equivalent bcrypt time, record the attempt, and
+  // return the same error a wrong password produces.
+  if (!user) {
+    await burnPasswordTiming();
+    await accountLockout.recordFailure(normalizedEmail, {
+      ipHash,
+      userAgent,
+      kind: "unknown_account",
+    });
+    throw new AuthenticationError();
   }
 
-  let freshUser = user;
+  if (String(user.status || "").toLowerCase() === "inactive") {
+    await burnPasswordTiming();
+    await accountLockout.recordFailure(normalizedEmail, {
+      ipHash,
+      userAgent,
+      userId: user.id,
+      kind: "inactive_account",
+    });
+    throw new AuthenticationError();
+  }
+
+  const storedHash = await loadPasswordHash(user);
+  const passwordMatches = await verifyPassword(rawPassword, storedHash);
+
+  if (!passwordMatches) {
+    const failure = await accountLockout.recordFailure(normalizedEmail, {
+      ipHash,
+      userAgent,
+      userId: user.id,
+      kind: storedHash ? "bad_password" : "no_credential",
+    });
+    await securityEvents.record({
+      eventType: "login_failed",
+      severity: securityEvents.SEVERITY.WARNING,
+      userId: user.id,
+      email: normalizedEmail,
+      ipHash,
+      userAgent,
+      metadata: { attemptCount: failure.failedCount },
+    });
+    if (failure.locked) {
+      throw new AuthenticationError("ACCOUNT_LOCKED", {
+        status: 429,
+        retryAfter: failure.retryAfterSeconds,
+      });
+    }
+    throw new AuthenticationError();
+  }
+
+  // ── Authenticated ─────────────────────────────────────────────────────────
+  await accountLockout.recordSuccess(normalizedEmail, { userId: user.id, ipHash });
 
   const isClientUser = user.role === "buyer" || user.role === "client";
-
-  if (isClientUser && rawPassword === CLIENT_STATIC_PASSWORD) {
-    // Static-password path: sync company assignment then re-fetch.
-    // If company_id is missing (orphaned post-migration account), try to recover
-    // it by matching the user's email against companies.contact_email.
-    let resolvedCompanyId = user.company_id;
-    if (!resolvedCompanyId) {
-      const { data: matched } = await supabase
-        .from("companies")
-        .select("id")
-        .ilike("contact_email", normalizedEmail)
-        .maybeSingle();
-      if (matched?.id) {
-        resolvedCompanyId = matched.id;
-        await supabase.from("users").update({ company_id: resolvedCompanyId }).eq("id", user.id);
-      }
-    }
-    if (resolvedCompanyId) {
-      await syncUserCompanyAssignment(user.id, resolvedCompanyId);
-      await ensureDefaultFolders(resolvedCompanyId, user.id);
-    }
-  } else {
-    // Standard credential check for all other users / passwords.
-    // password_hash is already present when the Postgres fallback was used
-    // inside getUserByEmail. Only query Supabase when it's absent, and fall
-    // back to a direct Postgres query if Supabase is unavailable.
-    let storedPassword = user.password_hash || null;
-
-    if (!storedPassword) {
-      const { data: authData } = await supabase
-        .from("users")
-        .select("password_hash")
-        .eq("id", user.id)
-        .single();
-      storedPassword = authData?.password_hash || null;
-    }
-
-    if (!storedPassword) {
-      const pool = getAuthPool();
-      if (pool) {
-        try {
-          const { rows } = await pool.query(
-            "SELECT password_hash FROM users WHERE id = $1 LIMIT 1",
-            [user.id],
-          );
-          storedPassword = rows[0]?.password_hash || null;
-        } catch { /* ignore — will throw Invalid credentials below */ }
-      }
-    }
-
-    let ok = storedPassword ? rawPassword === storedPassword : false;
-
-    if (storedPassword && /^\$2[aby]\$/.test(storedPassword)) {
-      try {
-        ok = await bcrypt.compare(rawPassword, storedPassword);
-      } catch {
-        ok = false;
-      }
-    }
-
-    if (!ok) throw new Error("Invalid credentials");
-
-    // For client/buyer users with a custom password, still sync the company
-    // association so user_companies is populated after a DB migration
-    // that left the join table empty. Also recover company_id via email if missing.
-    if (isClientUser) {
-      let resolvedCompanyId = user.company_id;
-      if (!resolvedCompanyId) {
-        const { data: matched } = await supabase
-          .from("companies")
-          .select("id")
-          .ilike("contact_email", normalizedEmail)
-          .maybeSingle();
-        if (matched?.id) {
-          resolvedCompanyId = matched.id;
-          await supabase.from("users").update({ company_id: resolvedCompanyId }).eq("id", user.id);
-        }
-      }
-      if (resolvedCompanyId) {
-        await syncUserCompanyAssignment(user.id, resolvedCompanyId);
-      }
-    }
-  }
-
-  // Always re-fetch client/buyer users so the response and the 60-second
-  // cache both contain the correct effective_role and company_ids.
   if (isClientUser) {
-    freshUser = (await getUserById(user.id)) || user;
+    await reconcileClientCompany(user, normalizedEmail, { seedFolders: true });
   }
 
-  // Clear any stale cached user so requireAuth fetches fresh data on the next request.
-  invalidateUserCache(freshUser.id);
+  invalidateUserCache(user.id);
+  const freshUser = (await getUserById(user.id)) || user;
 
-  const token = signToken(freshUser.id);
+  // Establish the server-side session. With SINGLE_DEVICE_LOGIN enabled this
+  // revokes every other live session for the user first.
+  const session = await sessionService.createSession(freshUser, { ipHash, userAgent });
 
-  // Final cleanup of user object for response
-  const safeUser = { ...freshUser };
-  delete safeUser.password_hash;
+  if (supabase) {
+    await supabase
+      .from("users")
+      .update({ last_login_at: new Date().toISOString() })
+      .eq("id", freshUser.id);
+  }
 
-  return { user: safeUser, token };
+  await securityEvents.record({
+    eventType: "login_succeeded",
+    userId: freshUser.id,
+    email: normalizedEmail,
+    ipHash,
+    userAgent,
+    metadata: { sessionId: session.sessionId, role: freshUser.role },
+  });
+
+  const safeUser = toSafeUser(freshUser);
+
+  return {
+    user: safeUser,
+    accessToken: session.accessToken,
+    refreshToken: session.refreshToken,
+    expiresIn: session.accessTokenExpiresIn,
+    mustChangePassword: Boolean(freshUser.must_change_password),
+  };
+}
+
+/** Strips every credential-bearing field before a user object leaves the server. */
+function toSafeUser(user) {
+  if (!user) return null;
+  const safe = { ...user };
+  delete safe.password_hash;
+  delete safe.password;
+  delete safe.token_version;
+  return safe;
+}
+
+/**
+ * Changes a user's password and invalidates every existing session.
+ *
+ * WHY sessions die on password change: the usual reason a user changes their
+ * password is that they believe it is compromised. Leaving the attacker's
+ * existing session alive defeats the entire point of the change.
+ */
+async function changePassword(userId, { currentPassword, newPassword }, context = {}) {
+  const user = await getUserById(userId);
+  if (!user) throw new AuthenticationError();
+
+  const storedHash = await loadPasswordHash(user);
+  const matches = await verifyPassword(currentPassword, storedHash);
+  if (!matches) {
+    await securityEvents.record({
+      eventType: "password_change_failed",
+      severity: securityEvents.SEVERITY.WARNING,
+      userId,
+      ...context,
+      metadata: { reason: "wrong_current_password" },
+    });
+    throw new AuthenticationError();
+  }
+
+  const policy = validatePassword(newPassword, { email: user.email, name: user.name });
+  if (!policy.valid) {
+    const error = new Error(policy.errors[0]);
+    error.status = 400;
+    error.expose = true;
+    error.details = policy.errors;
+    throw error;
+  }
+
+  // Reusing the current password is not a change.
+  if (await verifyPassword(newPassword, storedHash)) {
+    const error = new Error("New password must differ from the current password.");
+    error.status = 400;
+    error.expose = true;
+    throw error;
+  }
+
+  const passwordHash = await hashPassword(newPassword);
+  const { error: updateError } = await supabase
+    .from("users")
+    .update({
+      password_hash: passwordHash,
+      password_changed_at: new Date().toISOString(),
+      must_change_password: false,
+      // Bumping token_version invalidates every outstanding access token
+      // immediately, without waiting for its 15-minute expiry.
+      token_version: (user.token_version ?? 0) + 1,
+    })
+    .eq("id", userId);
+
+  if (updateError) throw updateError;
+
+  invalidateUserCache(userId);
+  const revoked = await sessionService.revokeAllUserSessions(userId, "password_change");
+
+  await securityEvents.record({
+    eventType: "password_changed",
+    severity: securityEvents.SEVERITY.WARNING,
+    userId,
+    ...context,
+    metadata: { revokedCount: revoked },
+  });
+
+  return { revokedSessions: revoked };
 }
 
 async function createBrokerAccount(payload = {}) {
@@ -258,14 +438,14 @@ async function createBrokerAccount(payload = {}) {
     error.status = 400;
     throw error;
   }
-  if (!password || password.length < 8) {
-    const error = new Error("Password must be at least 8 characters.");
+  // Full policy: 12+ chars, all four character classes, not a common password,
+  // and not derived from the account's own name or email.
+  const policy = validatePassword(password, { email, name });
+  if (!policy.valid) {
+    const error = new Error(policy.errors[0]);
     error.status = 400;
-    throw error;
-  }
-  if (!/[A-Za-z]/.test(password) || !/\d/.test(password)) {
-    const error = new Error("Password must include at least one letter and one number.");
-    error.status = 400;
+    error.expose = true;
+    error.details = policy.errors;
     throw error;
   }
   if (!isValidPhone(phone)) {
@@ -281,7 +461,9 @@ async function createBrokerAccount(payload = {}) {
     throw error;
   }
 
-  const passwordHash = await bcrypt.hash(password, 10);
+  // Work factor comes from config (>= 12), not a hardcoded 10. Each extra
+  // round doubles the cost of an offline cracking attempt against a stolen hash.
+  const passwordHash = await hashPassword(password);
   const { data: created, error } = await supabase
     .from("users")
     .insert({
@@ -292,6 +474,7 @@ async function createBrokerAccount(payload = {}) {
       role: "broker",
       company_id: null,
       status: "active",
+      password_changed_at: new Date().toISOString(),
     })
     .select(`
       id, name, email, phone, role, company_id, status, created_at, updated_at,
@@ -314,14 +497,79 @@ async function createBrokerAccount(payload = {}) {
     ...created,
     broker_company: brokerCompany || null,
   }));
-  const token = signToken(user.id);
 
-  return { user, token };
+  const session = await sessionService.createSession(user, {
+    ipHash: payload.ipHash || null,
+    userAgent: payload.userAgent || null,
+  });
+
+  await securityEvents.record({
+    eventType: "account_created",
+    userId: user.id,
+    email,
+    ipHash: payload.ipHash || null,
+    metadata: { role: "broker" },
+  });
+
+  return {
+    user: toSafeUser(user),
+    accessToken: session.accessToken,
+    refreshToken: session.refreshToken,
+    expiresIn: session.accessTokenExpiresIn,
+  };
+}
+
+/**
+ * Sets a user's password without knowing the current one — the completion step
+ * of a verified password-reset flow. Callers MUST have already verified an
+ * action token bound to this email.
+ */
+async function resetPasswordForUser(user, newPassword, context = {}) {
+  const policy = validatePassword(newPassword, { email: user.email, name: user.name });
+  if (!policy.valid) {
+    const error = new Error(policy.errors[0]);
+    error.status = 400;
+    error.expose = true;
+    error.details = policy.errors;
+    throw error;
+  }
+
+  const passwordHash = await hashPassword(newPassword);
+  const { error: updateError } = await supabase
+    .from("users")
+    .update({
+      password_hash: passwordHash,
+      password_changed_at: new Date().toISOString(),
+      must_change_password: false,
+      token_version: (user.token_version ?? 0) + 1,
+    })
+    .eq("id", user.id);
+
+  if (updateError) throw updateError;
+
+  invalidateUserCache(user.id);
+  // Every session dies: a reset is the standard response to a suspected
+  // compromise, so any session an attacker holds must go with it.
+  const revoked = await sessionService.revokeAllUserSessions(user.id, "password_change");
+
+  await securityEvents.record({
+    eventType: "password_reset_completed",
+    severity: securityEvents.SEVERITY.WARNING,
+    userId: user.id,
+    email: user.email,
+    ...context,
+    metadata: { revokedCount: revoked },
+  });
+
+  return { revokedSessions: revoked };
 }
 
 module.exports = {
+  AuthenticationError,
   authenticate,
   createBrokerAccount,
-  signToken,
-  ensureDefaultFolders
+  changePassword,
+  resetPasswordForUser,
+  toSafeUser,
+  ensureDefaultFolders,
 };

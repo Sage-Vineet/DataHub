@@ -178,61 +178,137 @@ async function _deliver(to, subject, html, text) {
 
 // ── Graph health check (called at server startup) ─────────────────────────────
 
-async function checkEmailHealth() {
-  console.log("[EMAIL HEALTH CHECK] Starting...");
-  console.log(`[EMAIL HEALTH CHECK] Graph configured: ${isGraphConfigured()}`);
-
-  if (!isGraphConfigured()) {
-    console.error(
-      "[EMAIL HEALTH CHECK] FAILED — Missing one or more Graph env vars:\n" +
-      "  GRAPH_TENANT_ID, GRAPH_CLIENT_ID, GRAPH_CLIENT_SECRET, GRAPH_SENDER_EMAIL"
-    );
-    return false;
-  }
-
+/**
+ * Reads the granted application permissions out of an app-only access token.
+ *
+ * A client_credentials token is a JWT whose `roles` claim lists exactly the
+ * application permissions that have been admin-consented. Signature
+ * verification is unnecessary here: we obtained this token ourselves, over TLS,
+ * directly from login.microsoftonline.com, and we are reading it only to report
+ * our own configuration — not to make an authorization decision.
+ */
+function _grantedRoles(accessToken) {
   try {
-    const token = await _getAccessToken();
-    if (!token) throw new Error("Empty token returned");
-    console.log("[EMAIL HEALTH CHECK] SUCCESS — Graph access token obtained");
-
-    // Verify the sender mailbox is accessible
-    await new Promise((resolve, reject) => {
-      const sender = _senderEmail();
-      const req = https.request(
-        {
-          hostname: "graph.microsoft.com",
-          path:     `/v1.0/users/${encodeURIComponent(sender)}/mailboxSettings`,
-          method:   "GET",
-          headers:  { Authorization: `Bearer ${token}` },
-        },
-        (res) => {
-          let data = "";
-          res.on("data", (c) => (data += c));
-          res.on("end", () => {
-            if (res.statusCode === 200) {
-              console.log(`[EMAIL HEALTH CHECK] SUCCESS — Sender mailbox <${sender}> accessible`);
-              resolve();
-            } else {
-              reject(new Error(`Mailbox check HTTP ${res.statusCode}: ${data.slice(0, 200)}`));
-            }
-          });
-        }
-      );
-      req.on("error", reject);
-      req.end();
-    });
-
-    return true;
-  } catch (err) {
-    console.error(`[EMAIL HEALTH CHECK] FAILED — ${err.message}`);
-    if (err.message.includes("Forbidden") || err.message.includes("403")) {
-      console.error(
-        "[EMAIL HEALTH CHECK] Likely cause: Mail.Send permission not granted or admin consent missing.\n" +
-        "  Fix: Azure Portal → App registrations → API permissions → Mail.Send → Grant admin consent"
-      );
-    }
-    return false;
+    const payload = String(accessToken).split(".")[1];
+    if (!payload) return [];
+    const json = Buffer.from(
+      payload.replace(/-/g, "+").replace(/_/g, "/"),
+      "base64"
+    ).toString("utf8");
+    const claims = JSON.parse(json);
+    return Array.isArray(claims.roles) ? claims.roles : [];
+  } catch {
+    return [];
   }
+}
+
+/** The single application permission required to send mail as a fixed sender. */
+const REQUIRED_GRAPH_ROLE = "Mail.Send";
+
+/**
+ * Graph health check, called at server startup.
+ *
+ * ── Why this was rewritten ──────────────────────────────────────────────────
+ * The previous check probed `GET /users/{sender}/mailboxSettings`. That
+ * endpoint requires the `MailboxSettings.Read` application permission, which
+ * this service does not need and should not hold — sending mail requires only
+ * `Mail.Send`. So the health check demanded broader access than the feature it
+ * was checking, and a tenant correctly granted just `Mail.Send` would still see
+ * a 403 and conclude email was broken.
+ *
+ * It now inspects the `roles` claim on the token instead. That needs no Graph
+ * permission at all, cannot 403, and reports precisely which permission is
+ * missing rather than guessing from an HTTP status.
+ *
+ * @returns {Promise<{ok: boolean, code?: string, reason?: string, detail?: string, roles?: string[]}>}
+ */
+async function checkEmailHealth() {
+  if (!isGraphConfigured()) {
+    const missing = [
+      ["GRAPH_TENANT_ID", process.env.GRAPH_TENANT_ID],
+      ["GRAPH_CLIENT_ID", process.env.GRAPH_CLIENT_ID],
+      ["GRAPH_CLIENT_SECRET", process.env.GRAPH_CLIENT_SECRET],
+      ["GRAPH_SENDER_EMAIL", process.env.GRAPH_SENDER_EMAIL],
+    ]
+      .filter(([, value]) => !value)
+      .map(([key]) => key);
+
+    return {
+      ok: false,
+      code: "GRAPH_NOT_CONFIGURED",
+      reason: `Microsoft Graph is not configured — missing ${missing.join(", ")}.`,
+    };
+  }
+
+  let token;
+  try {
+    token = await _getAccessToken();
+    if (!token) throw new Error("empty token returned");
+  } catch (error) {
+    return {
+      ok: false,
+      code: "GRAPH_AUTH_FAILED",
+      reason: `Could not obtain a Graph access token: ${error.message}`,
+    };
+  }
+
+  const roles = _grantedRoles(token);
+
+  // ── Why a missing `roles` claim is NOT treated as a failure ────────────────
+  //
+  // Send capability can be granted three different ways, and only the first
+  // shows up in the token:
+  //
+  //   1. Graph APPLICATION permission Mail.Send + admin consent
+  //      → appears in the `roles` claim.
+  //   2. Exchange Online RBAC for Applications
+  //      → enforced at Exchange; the token carries NO `roles` entry.
+  //   3. A directory role assignment
+  //      → appears in `wids`, not `roles`.
+  //
+  // This tenant uses (2) or (3): the token has no `roles` claim at all, yet
+  // POST /users/{sender}/sendMail returns 202 Accepted and mail is delivered.
+  //
+  // An earlier version of this check failed startup whenever `roles` was empty.
+  // That was wrong — it reported a broken mail pipeline for a tenant whose mail
+  // pipeline works, which is worse than no check at all: it trains people to
+  // ignore the startup report.
+  //
+  // The only definitive test of send capability is to send, and doing that on
+  // every boot would emit junk mail. So: token acquisition is the hard
+  // requirement, and permission provenance is reported as information.
+  // Use `npm run verify:graph -- --send you@example.com` to prove delivery.
+
+  if (roles.includes(REQUIRED_GRAPH_ROLE)) {
+    return {
+      ok: true,
+      code: "GRAPH_OK",
+      detail: `Mail.Send granted via Graph app permission · sender ${_senderEmail()}`,
+      roles,
+    };
+  }
+
+  if (roles.length > 0) {
+    // Roles exist but Mail.Send is not among them. Still not fatal — Exchange
+    // RBAC may supply it — but worth surfacing, since it is unusual.
+    return {
+      ok: true,
+      code: "GRAPH_OK_UNVERIFIED",
+      detail:
+        `token OK · Mail.Send not in token roles (${roles.join(", ")}); ` +
+        "may be granted via Exchange RBAC",
+      roles,
+    };
+  }
+
+  return {
+    ok: true,
+    code: "GRAPH_OK_UNVERIFIED",
+    detail:
+      `token OK · sender ${_senderEmail()} · permissions granted outside the ` +
+      "token (Exchange RBAC or directory role) — run `npm run verify:graph -- --send` to confirm delivery",
+    roles,
+  };
 }
 
 // ── HTML helpers ──────────────────────────────────────────────────────────────

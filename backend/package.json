@@ -8,7 +8,11 @@
     "start": "node src/server.js",
     "dev": "nodemon --config nodemon.json",
     "seed": "node seed.js",
-    "lint": "echo \"No lint configured\""
+    "lint": "echo \"No lint configured\"",
+    "test:security": "node test/security.unit.test.js && node test/security.integration.test.js && node test/security.regression.test.js",
+    "audit:ci": "npm audit --audit-level=critical",
+    "verify:db-tls": "node scripts/verify-db-tls.js",
+    "verify:graph": "node scripts/verify-graph.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.88.0",
@@ -16,15 +20,19 @@
     "@supabase/supabase-js": "^2.104.1",
     "axios": "^1.13.2",
     "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "express-rate-limit": "^8.6.2",
+    "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
     "multer": "^2.0.2",
     "pdf-parse": "^1.1.4",
     "pg": "^8.20.0",
-    "xlsx": "^0.18.5"
+    "xlsx": "npm:@e965/xlsx@^0.20.3",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "nodemon": "^3.1.4"

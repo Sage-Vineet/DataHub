@@ -1,7 +1,8 @@
 const { supabase } = require("../db");
 const { Pool } = require("pg");
-const bcrypt = require("bcryptjs");
-const CLIENT_STATIC_PASSWORD = process.env.CLIENT_STATIC_PASSWORD || "123456";
+const { hashPassword, generateStrongPassword } = require("../security/passwordPolicy");
+const logger = require("../security/logger");
+const { buildSslOptions } = require("../db/pgPool");
 const PROFIT_METRIC_VALUES = Object.freeze({
   ADJUSTED_EBITDA: "adjusted_ebitda",
   SDE: "sde",
@@ -21,7 +22,7 @@ function getPool() {
   if (!_pool) {
     _pool = new Pool({
       connectionString: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: false },
+      ssl: buildSslOptions(process.env.DATABASE_URL),
       max: 5,
       connectionTimeoutMillis: 3000,
       idleTimeoutMillis: 10000,
@@ -284,8 +285,16 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
     return existingUser.id;
   }
 
-  // Create new buyer — Supabase first, Postgres fallback
-  const passwordHash = await bcrypt.hash(CLIENT_STATIC_PASSWORD, 10);
+  // Create new buyer — Supabase first, Postgres fallback.
+  //
+  // SECURITY: this previously hashed CLIENT_STATIC_PASSWORD, a single shared
+  // secret defaulting to "123456", for every client account in the system —
+  // one guess compromised every customer. Each account now gets an
+  // independent random password that is never transmitted or logged. The
+  // account is unusable until the holder completes the password-reset flow
+  // against their verified email address, which is the only way in.
+  const provisionalPassword = generateStrongPassword(24);
+  const passwordHash = await hashPassword(provisionalPassword);
 
   const { data: createdUser, error: insertError } = await supabase
     .from("users")
@@ -293,6 +302,7 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
       name: company.contact_name, email: normalizedEmail,
       phone: company.contact_phone || null, password_hash: passwordHash,
       role: "buyer", sub_role: "company_owner", company_id: company.id, status: "active",
+      must_change_password: true,
     })
     .select("id")
     .single();
@@ -305,17 +315,17 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
     if (pool) {
       try {
         const { rows } = await pool.query(
-          `INSERT INTO users (name, email, phone, password_hash, role, sub_role, company_id, status)
-           VALUES ($1, $2, $3, $4, 'buyer', 'company_owner', $5, 'active') RETURNING id`,
+          `INSERT INTO users (name, email, phone, password_hash, role, sub_role, company_id, status, must_change_password)
+           VALUES ($1, $2, $3, $4, 'buyer', 'company_owner', $5, 'active', true) RETURNING id`,
           [company.contact_name, normalizedEmail, company.contact_phone || null, passwordHash, company.id],
         );
         userId = rows[0]?.id || null;
       } catch (pgErr) {
-        console.error("❌ Error creating company representative (pg):", pgErr.message);
+        logger.error("company_rep_create_failed_pg", { name: pgErr.name });
         return null;
       }
     } else {
-      console.error("❌ Error creating company representative:", insertError.message);
+      logger.error("company_rep_create_failed", { code: insertError.code });
       return null;
     }
   }

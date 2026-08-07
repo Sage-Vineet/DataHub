@@ -2,14 +2,16 @@
 
 const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
 const { supabase } = require("../db");
+const { signActionToken } = require("../security/tokens");
+const logger = require("../security/logger");
+const { config } = require("../config/env");
 
 const OTP_EXPIRY_MS = 10 * 60 * 1000;  // 10 minutes
 const MAX_ATTEMPTS = 5;
 const MAX_RESENDS = 3;
 const RESEND_WINDOW_MS = 10 * 60 * 1000;  // per 10-minute window
-const VERIFICATION_TOKEN_TTL = "15m";
+const VERIFICATION_TOKEN_TTL_SECONDS = 15 * 60;
 
 // ── In-memory fallback ────────────────────────────────────────────────────────
 // Used automatically when the email_verifications Supabase table doesn't exist
@@ -212,10 +214,14 @@ async function sendOtp(email, purpose = "email_verification") {
   }
 
   const otp = generateOtp();
-  const otpHash = await bcrypt.hash(otp, 10);
+  // Hashed at the configured work factor. Note that a 6-digit OTP has only
+  // 10^6 candidates, so hashing alone does not make a leaked table safe — the
+  // real protections are the 10-minute expiry and the 5-attempt cap below.
+  const otpHash = await bcrypt.hash(otp, config.BCRYPT_ROUNDS);
   await _storeOtp(normalized, purpose, otpHash, count + 1);
 
-  console.log(`[OTP Service] OTP created for <${normalized}> purpose=${purpose} (send #${count + 1})`);
+  // The OTP itself is never logged — it is a live credential until verified.
+  logger.info("otp_created", { purpose, attemptCount: count + 1 });
   return otp;
 }
 
@@ -267,13 +273,16 @@ async function verifyOtp(email, otp, purpose = "email_verification") {
 
   await _markVerified(record.id, normalized, purpose);
 
-  const verificationToken = jwt.sign(
-    { purpose, email: normalized },
-    process.env.JWT_SECRET || "change_me",
-    { expiresIn: VERIFICATION_TOKEN_TTL }
-  );
+  // Issued through the central token service: pinned algorithm, validated
+  // secret (no "change_me" fallback), and an explicit `typ` claim so a
+  // verification token can never be replayed as an access or refresh token.
+  const verificationToken = signActionToken({
+    purpose,
+    email: normalized,
+    ttlSeconds: VERIFICATION_TOKEN_TTL_SECONDS,
+  });
 
-  console.log(`[OTP Service] Email <${normalized}> verified successfully (purpose=${purpose})`);
+  logger.info("otp_verified", { purpose });
   return { verified: true, verificationToken };
 }
 

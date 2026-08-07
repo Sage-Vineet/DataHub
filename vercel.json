@@ -1,0 +1,61 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "framework": "vite",
+
+  "//": "SPA fallback. Every unknown path serves index.html so client-side routing works; Vercel never lists a directory.",
+  "rewrites": [{ "source": "/((?!assets/).*)", "destination": "/index.html" }],
+
+  "//cleanUrls": "Prevents /some/path/ from resolving to a directory index.",
+  "cleanUrls": true,
+  "trailingSlash": false,
+
+  "headers": [
+    {
+      "//": "Security headers for every document response served by Vercel. The API sets its own, stricter, set — see backend/src/middleware/securityHeaders.js.",
+      "source": "/(.*)",
+      "headers": [
+        {
+          "//": "CSP for the SPA. 'unsafe-inline' is present for style-src only because Tailwind's runtime and React inline styles require it; script-src has NO unsafe-inline or unsafe-eval, which is what actually blocks injected script. connect-src must list your API origin.",
+          "key": "Content-Security-Policy",
+          "value": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://*.onrender.com https://*.supabase.co; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests"
+        },
+        {
+          "//": "Two years, all subdomains, preload-eligible. After the first HTTPS response the browser refuses plain HTTP to this host entirely.",
+          "key": "Strict-Transport-Security",
+          "value": "max-age=63072000; includeSubDomains; preload"
+        },
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "X-Frame-Options", "value": "DENY" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+        {
+          "key": "Permissions-Policy",
+          "value": "accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), usb=(), xr-spatial-tracking=()"
+        },
+        { "key": "Cross-Origin-Opener-Policy", "value": "same-origin" },
+        { "key": "Cross-Origin-Resource-Policy", "value": "same-origin" },
+        { "key": "X-DNS-Prefetch-Control", "value": "off" },
+        {
+          "//": "Removes Vercel's framework fingerprint header.",
+          "key": "X-Powered-By",
+          "value": ""
+        }
+      ]
+    },
+    {
+      "//": "Content-hashed asset filenames are safe to cache forever.",
+      "source": "/assets/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
+      ]
+    },
+    {
+      "//": "index.html must never be cached, or a deploy will not reach users and a revoked build stays live.",
+      "source": "/index.html",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, must-revalidate" }
+      ]
+    }
+  ]
+}

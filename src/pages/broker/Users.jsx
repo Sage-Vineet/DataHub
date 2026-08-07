@@ -420,7 +420,7 @@ function UserFormModal({ initial, companies, roleOptions, dbRole, onSave, onClos
     if (!isValidEmail(form.email)) return 'Valid email is required.';
     if (!form.companyIds?.length) return 'Assign at least one company.';
     if (!form.sub_role) return 'Role is required.';
-    if (!isEdit && (!form.password.trim() || form.password.length < 8)) return 'Password must be at least 8 characters.';
+    if (!isEdit && (!form.password.trim() || form.password.length < 5 || form.password.length > 72)) return 'Password must be between 5 and 72 characters.';
     if (showTeamMembers) {
       for (const m of teamMembers) {
         if (!m.name?.trim()) return 'Team member name is required.';

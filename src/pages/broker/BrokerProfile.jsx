@@ -220,7 +220,7 @@ function PasswordModal({ user, onClose, onSuccess }) {
     setError('');
     if (!form.current.trim()) return setError('Please enter your current password.');
     if (!form.next.trim()) return setError('Please enter a new password.');
-    if (form.next.length < 8) return setError('New password must be at least 8 characters.');
+    if (form.next.length < 5 || form.next.length > 72) return setError('New password must be between 5 and 72 characters.');
     if (!/[A-Za-z]/.test(form.next) || !/\d/.test(form.next)) {
       return setError('Password must include at least one letter and one number.');
     }

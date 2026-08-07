@@ -2,12 +2,13 @@ const { supabase } = require("../db");
 const { Pool } = require("pg");
 const userService = require("./userService");
 const { resolveReminderFrequencyDays } = require("../utils/requestReminders");
+const { buildSslOptions } = require("../db/pgPool");
 
 let _pool = null;
 function getPool() {
   if (!process.env.DATABASE_URL) return null;
   if (!_pool) {
-    _pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 5, connectionTimeoutMillis: 2000, idleTimeoutMillis: 10000 });
+    _pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: buildSslOptions(process.env.DATABASE_URL), max: 5, connectionTimeoutMillis: 2000, idleTimeoutMillis: 10000 });
     _pool.on("error", (err) => console.error("[requestService] pg pool error:", err.message));
   }
   return _pool;

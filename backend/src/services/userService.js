@@ -2,6 +2,8 @@ const { supabase } = require("../db");
 const bcrypt = require("bcryptjs");
 const { Pool } = require("pg");
 const { CLIENT_SUB_ROLES } = require("../constants/roles");
+const { buildSslOptions } = require("../db/pgPool");
+const { hashPassword, validatePassword } = require("../security/passwordPolicy");
 
 // Sub-roles that belong to the client side of the platform.
 // Users with these sub_roles always receive effective_role = "client",
@@ -16,7 +18,7 @@ function getProfilePool() {
   if (!profilePool) {
     profilePool = new Pool({
       connectionString: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: false },
+      ssl: buildSslOptions(process.env.DATABASE_URL),
       max: 10,
       connectionTimeoutMillis: 10000,
       idleTimeoutMillis: 30000,
@@ -897,7 +899,8 @@ async function createUser(userData) {
   }
 
   const primaryCompanyId = company_id || assignedCompanyIds[0] || null;
-  const passwordHash = await bcrypt.hash(String(password || ""), 10);
+  // Work factor comes from config (>= 12), not a hardcoded 10.
+  const passwordHash = await hashPassword(String(password || ""));
   const resolvedStatus = status || "active";
   const normalizedEmail = email ? String(email).trim().toLowerCase() : email;
 
@@ -976,8 +979,8 @@ async function updateUser(id, userData) {
       err.status = 400;
       throw err;
     }
-    if (nextPassword.length < 6) {
-      const err = new Error("New password must be at least 6 characters.");
+    if (nextPassword.length < 5 || nextPassword.length > 72) {
+      const err = new Error("New password must be between 5 and 72 characters.");
       err.status = 400;
       throw err;
     }
@@ -1007,7 +1010,7 @@ async function updateUser(id, userData) {
         throw err;
       }
     }
-    coreUpdates.password_hash = await bcrypt.hash(nextPassword, 10);
+    coreUpdates.password_hash = await hashPassword(nextPassword);
   }
 
   if (Object.keys(coreUpdates).length > 0) {

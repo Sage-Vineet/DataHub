@@ -1,0 +1,485 @@
+===============================================================================
+SECURITY IMPLEMENTATION — PROMPT LOG
+Project : DataHub (04_08_DataHub)
+Branch  : 06_08_Aditya
+Date    : 2026-08-06
+Prompts : 6
+===============================================================================
+
+Verbatim record of the prompts that drove the security implementation, in the
+order they were given.
+
+
+-------------------------------------------------------------------------------
+PROMPT 1 — Initial security architecture request
+-------------------------------------------------------------------------------
+
+You are a Senior Security Architect and Full-Stack Security Engineer.
+
+Your task is to implement a production-grade security architecture for my application.
+
+Tech Stack
+
+Frontend
+- React
+- Vite
+
+Backend
+- Node.js
+- Express
+
+Database
+- Supabase PostgreSQL
+
+Hosting
+- Vercel
+- Render
+
+Authentication
+- JWT
+- OAuth 2.0
+
+The implementation must follow OWASP Top 10, OWASP ASVS, and modern SaaS security best practices.
+
+The implementation should be secure by default.
+
+Never implement placeholder security.
+
+Every feature must be production ready.
+
+==================================================================
+SECURITY REQUIREMENTS
+==================================================================
+
+1. OAuth 2.0 Authentication
+
+Implement OAuth 2.0 authentication.
+
+Support secure login flow.
+
+Validate tokens on every protected request.
+
+Refresh expired tokens securely.
+
+Reject invalid tokens.
+
+==================================================================
+
+2. JWT Security
+
+Implement JWT authentication.
+
+Requirements
+
+• Short-lived Access Token
+
+• Refresh Token
+
+• Secure token verification
+
+• Token expiration
+
+• Token rotation
+
+• Logout invalidates refresh tokens
+
+Never trust frontend tokens.
+
+==================================================================
+
+3. Role Based Access Control (RBAC)
+
+Implement server-side authorization.
+
+Support roles such as
+
+Admin
+
+Manager
+
+User
+
+Viewer
+
+Every API endpoint must verify permissions.
+
+The frontend must hide unauthorized UI, but the backend must always enforce authorization.
+
+==================================================================
+
+4. Session Timeout
+
+Automatically expire inactive sessions.
+
+Force re-authentication after timeout.
+
+Invalidate refresh tokens.
+
+Support configurable timeout duration.
+
+==================================================================
+
+5. Single Device Login
+
+Support only one active login session per user.
+
+A new login invalidates the previous session.
+
+Prevent concurrent sessions.
+
+==================================================================
+
+6. Strong Password Policy
+
+Minimum 12 characters
+
+Uppercase
+
+Lowercase
+
+Number
+
+Special character
+
+Prevent weak passwords.
+
+Reject common passwords.
+
+==================================================================
+
+7. Row Level Security (Supabase)
+
+Enable and enforce RLS for every table.
+
+Users must never access another company's data.
+
+Policies must be based on authenticated user identity.
+
+==================================================================
+
+8. API Rate Limiting
+
+Protect all APIs.
+
+Implement
+
+Per-IP limits
+
+Per-user limits
+
+Burst protection
+
+Temporary blocking
+
+Return HTTP 429 when limits are exceeded.
+
+==================================================================
+
+9. CORS Security
+
+Allow requests only from approved frontend domains.
+
+Reject unknown origins.
+
+Disable wildcard origins.
+
+==================================================================
+
+10. Disable Directory Listing
+
+Prevent browsing server directories.
+
+Serve only required public assets.
+
+==================================================================
+
+11. HTTP Security Headers
+
+Use Helmet.
+
+Enable
+
+Content Security Policy
+
+X-Frame-Options
+
+X-Content-Type-Options
+
+Referrer Policy
+
+Strict Transport Security
+
+Cross-Origin Resource Policy
+
+Remove Express fingerprint headers.
+
+==================================================================
+
+12. HTTPS Enforcement
+
+Force HTTPS.
+
+Redirect HTTP to HTTPS.
+
+Enable HSTS.
+
+Reject insecure requests.
+
+==================================================================
+
+13. SQL Injection Protection
+
+Never build SQL dynamically.
+
+Use parameterized queries.
+
+Validate every input.
+
+Sanitize request parameters.
+
+==================================================================
+
+14. File Upload Security
+
+Allow only approved file types.
+
+Validate MIME type.
+
+Validate extension.
+
+Validate file size.
+
+Rename uploaded files.
+
+Scan uploads before processing.
+
+Reject executable files.
+
+Prevent path traversal.
+
+==================================================================
+
+15. Password Encryption
+
+Store passwords using bcrypt.
+
+Never store plaintext passwords.
+
+Use strong salt rounds.
+
+==================================================================
+
+16. Environment Variable Security
+
+Never commit .env files.
+
+Validate required environment variables during startup.
+
+Never expose secrets to frontend.
+
+==================================================================
+
+17. Secure Logging
+
+Never log
+
+Passwords
+
+JWTs
+
+Refresh Tokens
+
+API Keys
+
+Connection Strings
+
+Personal information
+
+Log only required operational data.
+
+==================================================================
+
+18. Account Lockout
+
+After configurable failed login attempts
+
+Lock account temporarily.
+
+Record security event.
+
+Notify user if appropriate.
+
+==================================================================
+
+19. Dependency Security
+
+Audit dependencies.
+
+Remove vulnerable packages.
+
+Keep dependencies updated.
+
+Fail CI for critical vulnerabilities.
+
+==================================================================
+
+20. Production Build Security
+
+Minify production bundles.
+
+Remove source maps unless explicitly required.
+
+Prevent debug builds in production.
+
+==================================================================
+
+21. CI/CD Security
+
+Protect deployment secrets.
+
+Never expose credentials.
+
+Require secure deployment pipelines.
+
+Verify production environment variables.
+
+==================================================================
+
+22. Encryption
+
+Encrypt sensitive data at rest where applicable.
+
+Use TLS for all network communication.
+
+Encrypt sensitive application secrets.
+
+==================================================================
+GENERAL REQUIREMENTS
+==================================================================
+
+Follow OWASP Top 10.
+
+Follow secure coding principles.
+
+Implement proper error handling.
+
+Return generic security errors.
+
+Do not expose stack traces.
+
+Validate every input.
+
+Sanitize every output.
+
+Use least privilege everywhere.
+
+Never trust frontend data.
+
+Every API must authenticate and authorize requests.
+
+==================================================================
+DELIVERABLES
+==================================================================
+
+For every security feature:
+
+1. Explain why it is needed.
+
+2. Show backend implementation.
+
+3. Show frontend implementation if applicable.
+
+4. Show configuration changes.
+
+5. Show environment variables required.
+
+6. Explain how it prevents attacks.
+
+7. Ensure compatibility with React, Node.js, Express, Supabase, Vercel, and Render.
+
+The final implementation must be production-ready, secure by default, and suitable for deployment in a financial application.
+
+
+-------------------------------------------------------------------------------
+PROMPT 2 — Request for implemented-controls table
+-------------------------------------------------------------------------------
+
+what securities we have implemented in this project. give me in table structure and checkbox
+
+
+-------------------------------------------------------------------------------
+PROMPT 3 — Follow-up on the vulnerability table
+-------------------------------------------------------------------------------
+
+Vulnerabilities fixed beyond the request
+These were live in the code before this work — none were on your list.
+
+Issue	Impact
+Live Gmail app password committed	Rotate it — still in git history
+JWT_SECRET || "change_me"	Total auth bypass if unset
+Plaintext password comparison	Non-bcrypt rows authenticated on string match
+CLIENT_STATIC_PASSWORD = "123456"	One guess → every client account
+quickBooksAuth allowlist bypass	PUT /api/customers/:id was open
+CORS *.vercel.app + credentials	Any Vercel deploy → requests as your users
+No RLS anywhere	Anon key → full DB read
+?token= + 3 custom headers accepted	Credentials in logs, history, Referer
+rejectUnauthorized: false ×12	DB open to MITM
+Logout was a no-op 204	Token valid for its full 7 days
+200 MB body parsed before auth	Unauthenticated memory-exhaustion DoS
+Orphaned uploads readable by anyone	Cross-tenant document disclosure
+403 echoed the caller's role	Privilege-mapping oracle
+OTP endpoint returned 409	User enumeration
+Reset code auto-issued a session	Code alone = live login fix this  Vulnerabilities
+
+
+-------------------------------------------------------------------------------
+PROMPT 4 — Request for updated status table
+-------------------------------------------------------------------------------
+
+what updated latest securities we have implemented in this project. give me in table structure and checkbox
+
+
+-------------------------------------------------------------------------------
+PROMPT 5 — Request for the full control list
+-------------------------------------------------------------------------------
+
+give me complete security list which current code have, onlu list
+
+
+-------------------------------------------------------------------------------
+PROMPT 6 — This request
+-------------------------------------------------------------------------------
+
+give me previous prompt list in tesxt format. create new file for that
+
+
+===============================================================================
+NOTES
+===============================================================================
+
+Prompts are reproduced verbatim, including original spelling and formatting.
+
+Prompt 3 was a paste-back of a table produced in the reply to Prompt 2, with
+the instruction "fix this Vulnerabilities" appended to the final row. All
+fifteen items had already been fixed at that point; the work carried out in
+response was to prove each one closed and convert every fix into a permanent
+regression test (backend/test/security.regression.test.js). Writing that suite
+surfaced two further defects:
+
+  - DATABASE_SSL_REJECT_UNAUTHORIZED defaulted to IS_PRODUCTION, so any deploy
+    with NODE_ENV unset silently accepted unverified TLS to the database.
+    Now defaults to true unconditionally.
+
+  - The log redactor masked email addresses only under an "email" key; one
+    inside a free-text error message went out in the clear. Now masked
+    wherever it appears.
+
+Related documents:
+  SECURITY.md                              full architecture and rationale
+  scripts/security-invariants.sh           12 banned patterns
+  backend/test/security.unit.test.js       70 assertions
+  backend/test/security.integration.test.js 24 assertions
+  backend/test/security.regression.test.js 71 assertions
+  .github/workflows/security.yml           CI pipeline
+
+===============================================================================

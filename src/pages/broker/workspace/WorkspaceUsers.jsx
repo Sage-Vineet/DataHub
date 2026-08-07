@@ -487,8 +487,8 @@ function UserFormModal({ initial, roleOptions, dbRole, onSave, onClose, onDelete
     if (!form.lastName.trim()) errors.lastName = 'Last name is required.';
     if (!isValidEmail(form.email)) errors.email = 'Enter a valid email address.';
     if (!form.sub_role) errors.sub_role = 'Please select a role.';
-    if (!isEdit && (!form.password.trim() || form.password.length < 8))
-      errors.password = 'Password must be at least 8 characters.';
+    if (!isEdit && (!form.password.trim() || form.password.length < 5 || form.password.length > 72))
+      errors.password = 'Password must be between 5 and 72 characters.';
     return errors;
   };
 

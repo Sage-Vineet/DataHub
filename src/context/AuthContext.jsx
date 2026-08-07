@@ -1,11 +1,24 @@
-import { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
-import { brokerSignupRequest, loginRequest, logoutRequest, meRequest, resetPasswordRequest, setStoredToken, getStoredToken } from '../lib/api';
+import { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import {
+  brokerSignupRequest,
+  loginRequest,
+  logoutRequest,
+  meRequest,
+  resetPasswordRequest,
+  setStoredToken,
+  getStoredToken,
+  refreshAccessToken,
+} from '../lib/api';
 import {
   startSession,
   clearSession,
   isSessionExpired,
-  getSessionExpiry,
+  getExpiryReason,
+  getMsUntilExpiry,
   setSessionExpiredHandler,
+  applyServerSessionConfig,
+  watchActivity,
+  recordActivity,
 } from '../lib/session';
 
 const AuthContext = createContext(null);
@@ -82,61 +95,161 @@ function normalizeUser(userData) {
   };
 }
 
+/** Human-readable reason shown on the login screen after an automatic logout. */
+const EXPIRY_MESSAGES = {
+  idle: 'You were signed out after a period of inactivity.',
+  absolute: 'Your session reached its maximum length. Please sign in again.',
+  expired: 'Your session expired. Please sign in again.',
+  revoked: 'You were signed out because your account was signed in on another device.',
+};
+
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
+  const [permissions, setPermissions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  // Holds the id of the one-shot expiry setTimeout so we can cancel it on logout.
   const expiryTimerRef = useRef(null);
+  const refreshTimerRef = useRef(null);
 
-  // Synchronous logout path used when the session clock runs out.
-  // Does NOT make a network call — there is no need to inform the server.
-  // setUser / setStoredToken / setError are stable React setState functions.
-  const expireSession = useCallback(() => {
+  const clearTimers = useCallback(() => {
     if (expiryTimerRef.current) {
       clearTimeout(expiryTimerRef.current);
       expiryTimerRef.current = null;
     }
-    clearSession();
-    setStoredToken(null);
-    setUser(null);
-    setError('');
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    if (refreshTimerRef.current) {
+      clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = null;
+    }
+  }, []);
 
-  // Arms a one-shot timer that fires exactly at the stored expiry timestamp.
-  // "Continuously running timers" (setInterval) are intentionally not used.
+  /**
+   * Local teardown when the session ends. No network call — by this point the
+   * server has already revoked the session, or the client has decided the
+   * window closed. Either way the refresh cookie is dead or about to be.
+   */
+  const expireSession = useCallback(
+    (reason = 'expired') => {
+      clearTimers();
+      clearSession();
+      setStoredToken(null);
+      setUser(null);
+      setPermissions([]);
+      setError(EXPIRY_MESSAGES[reason] || EXPIRY_MESSAGES.expired);
+    },
+    [clearTimers]
+  );
+
+  /**
+   * Proactively renews the access token shortly before it expires, so the user
+   * never sees a request fail. Belt-and-braces: api.js also refreshes
+   * reactively on a 401 with code TOKEN_EXPIRED.
+   *
+   * The reschedule is reached through a ref rather than by the callback naming
+   * itself. A useCallback cannot reference its own binding from inside its body
+   * — that binding is still in its temporal dead zone while the callback is
+   * being created — so the recursive call would throw at the first renewal.
+   */
+  const proactiveRefreshRef = useRef(null);
+
+  const scheduleProactiveRefresh = useCallback(
+    (expiresInSeconds) => {
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = null;
+
+      if (!Number.isFinite(expiresInSeconds)) return;
+      // Renew at 75% of the lifetime, with a 30s floor.
+      const delayMs = Math.max(30_000, expiresInSeconds * 1000 * 0.75);
+
+      refreshTimerRef.current = setTimeout(async () => {
+        // Do not renew a session the user has walked away from — that would
+        // keep an idle session alive forever, defeating the idle timeout.
+        if (isSessionExpired()) {
+          expireSession(getExpiryReason() === 'idle' ? 'idle' : 'expired');
+          return;
+        }
+        try {
+          await refreshAccessToken();
+          proactiveRefreshRef.current?.(expiresInSeconds);
+        } catch {
+          expireSession('revoked');
+        }
+      }, delayMs);
+    },
+    [expireSession]
+  );
+
+  // Keep the ref pointing at the current callback so the timer above always
+  // reschedules through the latest closure.
+  useEffect(() => {
+    proactiveRefreshRef.current = scheduleProactiveRefresh;
+  }, [scheduleProactiveRefresh]);
+
+  /** One-shot timer that fires exactly when the idle or absolute window closes. */
   const scheduleExpiryLogout = useCallback(() => {
     if (expiryTimerRef.current) clearTimeout(expiryTimerRef.current);
     expiryTimerRef.current = null;
-    const expiry = getSessionExpiry();
-    if (!expiry) return;
-    const delay = expiry - Date.now();
-    if (delay <= 0) {
-      expireSession();
+
+    const remaining = getMsUntilExpiry();
+    if (remaining === null) return;
+    if (remaining <= 0) {
+      expireSession(getExpiryReason() === 'idle' ? 'idle' : 'absolute');
       return;
     }
-    expiryTimerRef.current = setTimeout(expireSession, delay);
+    expiryTimerRef.current = setTimeout(() => {
+      expireSession(getExpiryReason() === 'idle' ? 'idle' : 'absolute');
+    }, remaining);
   }, [expireSession]);
 
-  // Register expireSession as the callback invoked by the API interceptor when
-  // it detects an expired session on a mid-flight authenticated request.
+  // The API layer calls this when it detects an expired or revoked session
+  // mid-request, so the UI reacts immediately rather than on the next timer tick.
   useEffect(() => {
     setSessionExpiredHandler(expireSession);
     return () => setSessionExpiredHandler(null);
   }, [expireSession]);
 
-  // On tab/window focus: immediately check whether the session has expired while
-  // the app was in the background (covers Scenario B from the spec).
+  // ── Idle tracking ──────────────────────────────────────────────────────────
+  // User activity slides the idle window and re-arms the logout timer. Throttled
+  // to one write per 30s inside watchActivity.
+  useEffect(() => {
+    if (!user) return undefined;
+    const unwatch = watchActivity(() => {
+      scheduleExpiryLogout();
+    });
+    return unwatch;
+  }, [user, scheduleExpiryLogout]);
+
+  // Returning to a backgrounded tab: timers may have been throttled or the
+  // machine may have slept, so re-evaluate immediately.
   useEffect(() => {
     const handleVisibility = () => {
-      if (document.visibilityState === 'visible' && getStoredToken()) {
-        if (isSessionExpired()) expireSession();
+      if (document.visibilityState !== 'visible' || !getStoredToken()) return;
+      if (isSessionExpired()) {
+        expireSession(getExpiryReason() === 'idle' ? 'idle' : 'absolute');
+      } else {
+        recordActivity();
+        scheduleExpiryLogout();
       }
     };
     document.addEventListener('visibilitychange', handleVisibility);
     return () => document.removeEventListener('visibilitychange', handleVisibility);
-  }, [expireSession]);
+  }, [expireSession, scheduleExpiryLogout]);
+
+  // Cross-tab logout: when another tab clears the token, this tab follows.
+  // Without this, signing out in one tab leaves the others apparently signed in.
+  useEffect(() => {
+    const handleStorage = (event) => {
+      if (event.key === 'leo-auth-token' && !event.newValue) {
+        clearTimers();
+        setUser(null);
+        setPermissions([]);
+      }
+    };
+    window.addEventListener('storage', handleStorage);
+    return () => window.removeEventListener('storage', handleStorage);
+  }, [clearTimers]);
+
+  useEffect(() => clearTimers, [clearTimers]);
 
   // Keepalive: ping the backend every 14 minutes so Render (free tier) never
   // spins down the server. Fires immediately on mount to wake the server as
@@ -225,8 +338,14 @@ export function AuthProvider({ children }) {
           setStoredToken(null);
           setUser(null);
         } else {
+          // Adopt the server's configured timeouts so the client never enforces
+          // a longer window than the server actually honours.
+          applyServerSessionConfig(payload?.session);
           setUser(normalizeUser(userData));
-          scheduleExpiryLogout(); // re-arm timer after browser refresh
+          setPermissions(payload?.permissions || []);
+          recordActivity();
+          scheduleExpiryLogout();
+          scheduleProactiveRefresh(payload?.session?.accessTokenTtlSeconds);
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -236,7 +355,11 @@ export function AuthProvider({ children }) {
     checkAuth();
 
     return () => { cancelled = true; };
-  }, []); // expireSession and scheduleExpiryLogout are stable (useCallback [])
+    // Deliberately runs once, on mount. This is the initial session restore
+    // after a page load; re-running it when a callback identity changes would
+    // re-issue /auth/me and re-arm the timers on every render cycle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const login = async (email, password) => {
     try {
@@ -251,14 +374,24 @@ export function AuthProvider({ children }) {
       }
 
       setStoredToken(token);
-      startSession();           // record login time, calculate 8-hour expiry
+      applyServerSessionConfig(response?.session);
+      startSession();
       const normalizedUser = normalizeUser(userData);
       setUser(normalizedUser);
-      scheduleExpiryLogout();   // arm one-shot timer for automatic logout
+      setPermissions(response?.permissions || []);
+      scheduleExpiryLogout();
+      scheduleProactiveRefresh(response?.expiresIn);
 
       return normalizedUser;
     } catch (backendError) {
-      setError(backendError?.message || 'Invalid email or password.');
+      // Surface the lockout countdown; keep everything else generic so the
+      // form never distinguishes "unknown account" from "wrong password".
+      if (backendError?.code === 'ACCOUNT_LOCKED') {
+        const minutes = Math.ceil((backendError.retryAfter || 900) / 60);
+        setError(`Too many failed attempts. Try again in about ${minutes} minute${minutes === 1 ? '' : 's'}.`);
+      } else {
+        setError(backendError?.message || 'Invalid email or password.');
+      }
       return false;
     } finally {
       setLoading(false);
@@ -280,35 +413,41 @@ export function AuthProvider({ children }) {
       startSession();
       const normalizedUser = normalizeUser(userData);
       setUser(normalizedUser);
+      setPermissions(response?.permissions || []);
       scheduleExpiryLogout();
+      scheduleProactiveRefresh(response?.expiresIn);
       return normalizedUser;
     } catch (signupError) {
       setError(signupError?.message || 'Unable to create broker account.');
+      // Password policy failures come back with a details array; surface them
+      // all so the user can fix every problem in one go.
+      if (signupError?.payload?.details) {
+        setError(signupError.payload.details.join(' '));
+      }
       return false;
     } finally {
       setLoading(false);
     }
   };
 
+  /**
+   * Completes a password reset. The server no longer returns a session here —
+   * possession of a reset code should not by itself produce a logged-in
+   * session. The caller must redirect to the login screen.
+   */
   const resetPassword = async (payload) => {
     try {
       setError('');
       const response = await resetPasswordRequest(payload);
-      const token = extractToken(response);
-      const userData = unwrapUser(response);
-
-      if (!token || !userData) {
-        throw new Error('Invalid reset password response');
-      }
-
-      setStoredToken(token);
-      startSession();
-      const normalizedUser = normalizeUser(userData);
-      setUser(normalizedUser);
-      scheduleExpiryLogout();
-      return normalizedUser;
+      // Any session that existed is now revoked server-side.
+      clearSession();
+      setStoredToken(null);
+      setUser(null);
+      setPermissions([]);
+      return { success: true, message: response?.message || 'Password updated. Please sign in.' };
     } catch (resetError) {
-      setError(resetError?.message || 'Unable to reset password.');
+      const details = resetError?.payload?.details;
+      setError(details ? details.join(' ') : resetError?.message || 'Unable to reset password.');
       return false;
     } finally {
       setLoading(false);
@@ -322,10 +461,14 @@ export function AuthProvider({ children }) {
       if (userData) {
         const normalized = normalizeUser(userData);
         setUser(normalized);
+        setPermissions(payload?.permissions || []);
         return normalized;
       }
     } catch (err) {
-      console.log('Failed to refresh user:', err.message);
+      if (err?.status !== 401) {
+        // 401 is handled by the session-expired path; anything else is noise.
+        console.warn('Failed to refresh user');
+      }
     }
     return null;
   };
@@ -333,34 +476,56 @@ export function AuthProvider({ children }) {
   const logout = async () => {
     const token = getStoredToken();
 
-    // Cancel the one-shot expiry timer so it doesn't fire after an explicit logout.
-    if (expiryTimerRef.current) {
-      clearTimeout(expiryTimerRef.current);
-      expiryTimerRef.current = null;
-    }
-
-    // Clear session timestamps from localStorage.
+    clearTimers();
     clearSession();
 
-    // Optimistically clear local auth so signout feels instant.
+    // Optimistic local clear so sign-out feels instant.
     setUser(null);
+    setPermissions([]);
     setError('');
     setStoredToken(null);
 
     try {
       if (token) {
+        // The server revokes the session row and clears the refresh cookie.
+        // Unlike the previous implementation this genuinely invalidates the
+        // credential rather than only forgetting it client-side.
         await logoutRequest({ token });
       }
-    } catch (err) {
-      console.log('Logout request failed:', err.message);
+    } catch {
+      // A failed logout call still leaves the client signed out. The session
+      // will expire server-side on its idle timeout.
     }
   };
 
-  return (
-    <AuthContext.Provider value={{ user, login, signupBroker, resetPassword, logout, error, setError, loading, refreshUser }}>
-      {children}
-    </AuthContext.Provider>
+  /** Capability check mirroring the server's RBAC matrix. UI gating only. */
+  const can = useCallback(
+    (permission) => permissions.includes(permission),
+    [permissions]
   );
+
+  const value = useMemo(
+    () => ({
+      user,
+      permissions,
+      can,
+      login,
+      signupBroker,
+      resetPassword,
+      logout,
+      error,
+      setError,
+      loading,
+      refreshUser,
+    }),
+    // login/signupBroker/resetPassword/logout/refreshUser are recreated each
+    // render by design; including them would defeat the memo, and consumers
+    // call them rather than compare them.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [user, permissions, can, error, loading]
+  );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 // eslint-disable-next-line react-refresh/only-export-components

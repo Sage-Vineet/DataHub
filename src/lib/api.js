@@ -1,4 +1,4 @@
-import { isSessionExpired, triggerSessionExpired } from './session';
+import { isSessionExpired, triggerSessionExpired, getExpiryReason } from './session';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000').replace(/\/$/, '');
 const TOKEN_KEY = 'leo-auth-token';
@@ -98,35 +98,97 @@ function resolveClientIdFromLocation() {
   return null;
 }
 
+/**
+ * Access token storage.
+ *
+ * The ACCESS token lives in memory first and localStorage second. In-memory is
+ * the copy that is actually used; localStorage exists only so a page refresh
+ * does not force a re-login, and it holds a credential that expires in 15
+ * minutes rather than the previous 7 days.
+ *
+ * The REFRESH token is never stored here at all — it is an HttpOnly cookie set
+ * by the server and is unreadable from JavaScript, so XSS cannot steal the
+ * long-lived credential.
+ */
+let inMemoryToken = null;
+
 export function getStoredToken() {
-  return localStorage.getItem(TOKEN_KEY) || localStorage.getItem(LEGACY_TOKEN_KEY);
+  if (inMemoryToken) return inMemoryToken;
+  try {
+    inMemoryToken = localStorage.getItem(TOKEN_KEY) || localStorage.getItem(LEGACY_TOKEN_KEY);
+  } catch {
+    inMemoryToken = null;
+  }
+  return inMemoryToken;
 }
 
 export function setStoredToken(token) {
-  if (token) {
-    localStorage.setItem(TOKEN_KEY, token);
+  inMemoryToken = token || null;
+  try {
+    if (token) {
+      localStorage.setItem(TOKEN_KEY, token);
+      localStorage.removeItem(LEGACY_TOKEN_KEY);
+      return;
+    }
+    localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(LEGACY_TOKEN_KEY);
-    return;
+  } catch {
+    /* storage unavailable — the in-memory copy still works for this tab */
   }
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(LEGACY_TOKEN_KEY);
 }
 
+// ── Silent refresh ───────────────────────────────────────────────────────────
+/**
+ * Exchanges the HttpOnly refresh cookie for a fresh access token.
+ *
+ * A single in-flight promise is shared by all callers. Without this, ten
+ * concurrent requests hitting a just-expired token would fire ten refreshes;
+ * the server rotates on each one, so nine would present an already-rotated
+ * token and be treated as a stolen-token replay — killing the session.
+ */
+let refreshInFlight = null;
 
-async function request(path, options = {}) {
-  const token = options.token ?? getStoredToken();
+async function refreshAccessToken() {
+  if (refreshInFlight) return refreshInFlight;
 
-  // Reject every authenticated request once the 8-hour session window has closed.
-  // triggerSessionExpired() notifies AuthContext synchronously so the UI redirects
-  // to /login. The thrown error propagates up to the calling component.
-  if (token && isSessionExpired()) {
-    triggerSessionExpired();
-    const err = new Error('Session expired. Please log in again.');
-    err.status = 401;
-    err.sessionExpired = true;
-    throw err;
+  refreshInFlight = (async () => {
+    const response = await fetch(buildUrl('/auth/refresh'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // `include` is required for the HttpOnly refresh cookie to be sent
+      // cross-origin (Vercel frontend → Render API).
+      credentials: 'include',
+      body: JSON.stringify({}),
+      cache: 'no-store',
+    });
+
+    if (!response.ok) {
+      const error = new Error('Session expired');
+      error.status = response.status;
+      throw error;
+    }
+
+    const data = await response.json();
+    const token = data?.accessToken || data?.token;
+    if (!token) throw new Error('Refresh returned no token');
+
+    setStoredToken(token);
+    return { token, user: data?.user, permissions: data?.permissions };
+  })();
+
+  try {
+    return await refreshInFlight;
+  } finally {
+    refreshInFlight = null;
   }
+}
 
+export { refreshAccessToken };
+
+/** Response codes that mean "the token is stale but the session may be alive". */
+const REFRESHABLE_CODES = new Set(['TOKEN_EXPIRED', 'TOKEN_STALE']);
+
+async function performFetch(path, options, token) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
   const headers = {
     ...(options.body ? { 'Content-Type': 'application/json' } : {}),
@@ -136,16 +198,76 @@ async function request(path, options = {}) {
   };
 
   if (token) {
+    // Authorization header only. Query-string tokens leak into server access
+    // logs, browser history and the Referer sent to third-party origins; the
+    // server no longer accepts them.
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const response = await fetch(buildUrl(path), {
+  return fetch(buildUrl(path), {
     method: options.method || 'GET',
     headers,
     body: options.body ? JSON.stringify(options.body) : undefined,
     cache: 'no-store',
-    credentials: options.credentials || 'omit',
+    // `include` so the refresh cookie rides along on /auth calls.
+    credentials: options.credentials || 'include',
   });
+}
+
+async function request(path, options = {}) {
+  let token = options.token ?? getStoredToken();
+
+  // Local idle/absolute check. Cheap, and avoids a pointless round-trip when
+  // the client already knows the window has closed. The server enforces the
+  // real deadline regardless of what this says.
+  if (token && isSessionExpired()) {
+    const reason = getExpiryReason();
+    triggerSessionExpired(reason === 'idle' ? 'idle' : 'expired');
+    const err = new Error('Session expired. Please log in again.');
+    err.status = 401;
+    err.sessionExpired = true;
+    throw err;
+  }
+
+  let response = await performFetch(path, options, token);
+
+  // ── Silent refresh on an expired access token ─────────────────────────────
+  const isRefreshCall = path.startsWith('/auth/refresh');
+  if (response.status === 401 && token && !isRefreshCall && !options._retried) {
+    const peek = await response
+      .clone()
+      .json()
+      .catch(() => null);
+
+    if (REFRESHABLE_CODES.has(peek?.code)) {
+      try {
+        const refreshed = await refreshAccessToken();
+        token = refreshed.token;
+        // Replay the original request exactly once with the new token.
+        response = await performFetch(path, { ...options, _retried: true }, token);
+      } catch {
+        setStoredToken(null);
+        triggerSessionExpired('revoked');
+        const err = new Error('Session expired. Please log in again.');
+        err.status = 401;
+        err.sessionExpired = true;
+        throw err;
+      }
+    } else if (peek?.code === 'SESSION_REVOKED' || peek?.code === 'SESSION_EXPIRED') {
+      // Revoked server-side: another device signed in (single-device login),
+      // an admin killed the session, or the password changed.
+      setStoredToken(null);
+      triggerSessionExpired(peek.code === 'SESSION_EXPIRED' ? 'idle' : 'revoked');
+      const err = new Error(
+        peek.code === 'SESSION_REVOKED'
+          ? 'You were signed out because your account was used on another device.'
+          : 'Session expired. Please log in again.'
+      );
+      err.status = 401;
+      err.sessionExpired = true;
+      throw err;
+    }
+  }
 
   if (response.status === 204) {
     return null;
@@ -156,6 +278,10 @@ async function request(path, options = {}) {
   if (!response.ok) {
     const error = new Error(data?.error || data?.message || 'Request failed');
     error.status = response.status;
+    error.code = data?.code;
+    if (response.status === 429) {
+      error.retryAfter = Number(response.headers.get('Retry-After')) || data?.retryAfter || null;
+    }
     if (data && typeof data === 'object') {
       error.payload = data;
     }

@@ -3,6 +3,7 @@
 const { supabase } = require("../db");
 const { Pool } = require("pg");
 const { BROKER_SUB_ROLES, CLIENT_SUB_ROLES, BUYER_SUB_ROLES, MSG_GROUP_TYPE } = require("../constants/roles");
+const { buildSslOptions } = require("../db/pgPool");
 
 let _pool = null;
 function getPool() {
@@ -10,7 +11,7 @@ function getPool() {
   if (!_pool) {
     _pool = new Pool({
       connectionString: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: false },
+      ssl: buildSslOptions(process.env.DATABASE_URL),
       max: 5,
       connectionTimeoutMillis: 10000,
     });

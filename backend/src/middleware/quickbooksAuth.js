@@ -155,24 +155,114 @@ function isQuickBooksRoute(pathname = "") {
   return qbPaths.some(p => normalizedPath.startsWith(p) || pathname.startsWith(p));
 }
 
-function quickBooksAuth(req, res, next) {
-  if (!isQuickBooksRoute(req.path)) {
-    return next();
-  }
+/**
+ * Routes served by the financial routers that legitimately need no
+ * authentication. This is an explicit, closed list — everything else is
+ * authenticated.
+ *
+ * `/api/auth/callback` is the QuickBooks OAuth 2.0 redirect URI. Intuit calls it
+ * directly with no bearer token, so it cannot require one; it is protected
+ * instead by the signed `state` parameter, which the handler must verify to bind
+ * the callback to the session that started the flow. That check lives in
+ * routes/quickbooks/token.js.
+ */
+const UNAUTHENTICATED_PATHS = new Set(["/api/auth/callback"]);
 
-  const prefixRegex = /^\/companies\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
-  const match = req.url.match(prefixRegex);
+const COMPANY_PREFIX_RE =
+  /^\/companies\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+
+/**
+ * Rewrites `/companies/<uuid>/balance-sheet` to `/balance-sheet`, stashing the
+ * company id on the request. Mounted once, ahead of the financial routers.
+ */
+function extractCompanyPrefix(req, _res, next) {
+  const match = req.url.match(COMPANY_PREFIX_RE);
   if (match) {
     req.clientId = match[1];
-    req.url = req.url.replace(prefixRegex, "");
-    if (req.url === "") req.url = "/";
+    req.url = req.url.replace(COMPANY_PREFIX_RE, "");
+    if (req.url === "" || req.url.startsWith("?")) req.url = `/${req.url}`;
   }
+  return next();
+}
 
-  return requireAuth(req, res, () => checkQBAuth(req, res, next));
+/**
+ * Decides whether a given router owns the incoming request.
+ *
+ * WHY this is derived from the router's own stack rather than a hand-written
+ * path list: the previous implementation gated authentication on a hardcoded
+ * array of path prefixes, and every route added to these routers without a
+ * matching array entry became a publicly accessible endpoint. `PUT
+ * /api/customers/:id` was live and unauthenticated for exactly that reason.
+ * Reading the registered layers means a new route is covered automatically.
+ *
+ * Fails safe: anything it cannot positively classify is treated as owned, which
+ * results in authentication being required (worst case: a 401 instead of a 404).
+ */
+function routerOwnsRequest(router, req) {
+  const stack = router?.stack;
+  if (!Array.isArray(stack)) return true;
+
+  const method = req.method.toLowerCase();
+  for (const layer of stack) {
+    if (!layer.route) {
+      // A non-route layer (router.use) can match anything — assume ownership.
+      return true;
+    }
+    let matched = false;
+    try {
+      matched = layer.match(req.path);
+    } catch {
+      return true;
+    }
+    if (!matched) continue;
+    const methods = layer.route.methods || {};
+    if (methods[method] || methods.all || method === "options") return true;
+  }
+  return false;
+}
+
+/**
+ * Authentication gate for the QuickBooks / financial routers — default deny.
+ *
+ * Every request these routers will handle is authenticated, unless its path is
+ * on the explicit UNAUTHENTICATED_PATHS list. `isQuickBooksRoute` survives only
+ * to decide whether the QuickBooks *connection* context needs loading, which is
+ * a functional concern rather than a security one.
+ *
+ * @param {import('express').Router} router the router this guard protects
+ */
+function guardFinancialRouter(router) {
+  return function quickBooksRouteGuard(req, res, next) {
+    // Not ours — hand straight on so unrelated routes are unaffected.
+    if (!routerOwnsRequest(router, req)) return next();
+
+    if (UNAUTHENTICATED_PATHS.has(req.path)) return next();
+
+    return requireAuth(req, res, (err) => {
+      if (err) return next(err);
+      if (!isQuickBooksRoute(req.path)) return next();
+      return checkQBAuth(req, res, next);
+    });
+  };
+}
+
+/**
+ * Standalone guard for callers that mount a single financial route directly.
+ * Authenticates unconditionally (minus the OAuth callback).
+ */
+function quickBooksAuth(req, res, next) {
+  if (UNAUTHENTICATED_PATHS.has(req.path)) return next();
+  return requireAuth(req, res, (err) => {
+    if (err) return next(err);
+    if (!isQuickBooksRoute(req.path)) return next();
+    return checkQBAuth(req, res, next);
+  });
 }
 
 module.exports = {
   quickBooksAuth,
+  guardFinancialRouter,
+  extractCompanyPrefix,
   checkQBAuth,
-  isQuickBooksRoute
+  isQuickBooksRoute,
 };

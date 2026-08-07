@@ -1,5 +1,6 @@
 const { supabase } = require("../db");
 const { Pool } = require("pg");
+const { buildSslOptions } = require("../db/pgPool");
 
 let _pool = null;
 function getPool() {
@@ -7,7 +8,7 @@ function getPool() {
   if (!_pool) {
     _pool = new Pool({
       connectionString: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: false },
+      ssl: buildSslOptions(process.env.DATABASE_URL),
       max: 5,
       connectionTimeoutMillis: 2000,
       idleTimeoutMillis: 10000,

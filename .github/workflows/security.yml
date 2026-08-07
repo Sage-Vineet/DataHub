@@ -1,0 +1,199 @@
+name: Security
+
+# WHY this runs on pull_request as well as push: a vulnerability caught after
+# merge is already in the default branch and, on a continuous-deploy setup, may
+# already be in production. The gate has to sit before the merge.
+on:
+  push:
+    branches: [main, data_room]
+  pull_request:
+  schedule:
+    # Weekly. New advisories are published against code that has not changed,
+    # so a build-triggered scan alone will miss them indefinitely.
+    - cron: "0 6 * * 1"
+
+# Least privilege: the default token is read-only unless a job asks for more.
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Dependency vulnerabilities ─────────────────────────────────────────────
+  audit:
+    name: npm audit (${{ matrix.workspace }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - workspace: frontend
+            path: .
+          - workspace: backend
+            path: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ${{ matrix.path }}/package-lock.json
+
+      - name: Install
+        working-directory: ${{ matrix.path }}
+        # `npm ci` installs exactly the lockfile. `npm install` could silently
+        # resolve a different — possibly compromised — version at build time.
+        run: npm ci --ignore-scripts
+
+      - name: Fail on critical vulnerabilities
+        working-directory: ${{ matrix.path }}
+        run: npm audit --audit-level=critical
+
+      - name: Report high vulnerabilities (non-blocking)
+        working-directory: ${{ matrix.path }}
+        continue-on-error: true
+        run: npm audit --audit-level=high
+
+  # ── Secret scanning ────────────────────────────────────────────────────────
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history. A secret removed in the tip commit is still live in
+          # history and still needs rotating.
+          fetch-depth: 0
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Refuse committed .env files
+        run: |
+          set -euo pipefail
+          # `.env.example` is expected; a real `.env` never is.
+          if git ls-files | grep -E '(^|/)\.env($|\.[^e])' ; then
+            echo "::error::A .env file is tracked by git. Remove it, rotate every credential it held, and purge it from history."
+            exit 1
+          fi
+          echo "No tracked .env files."
+
+
+  # ── Static analysis ────────────────────────────────────────────────────────
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          queries: security-and-quality
+      - uses: github/codeql-action/analyze@v3
+
+  # ── Project-specific invariants ────────────────────────────────────────────
+  invariants:
+    name: Security invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - run: npm ci --ignore-scripts
+        working-directory: backend
+
+      - name: Security invariants
+        # Patterns that must never reappear. Each corresponds to a real
+        # vulnerability fixed in this codebase. The same script runs locally:
+        #   bash scripts/security-invariants.sh
+        run: bash scripts/security-invariants.sh
+
+      - name: Vulnerability regression suite
+        # One test per vulnerability found in this codebase. Each would have
+        # passed before its fix, so a failure here means a regression.
+        working-directory: backend
+        run: npm run test:security
+
+      - name: Boot the server with a production-shaped environment
+        working-directory: backend
+        env:
+          NODE_ENV: production
+          JWT_SECRET: ci-only-access-secret-with-sufficient-entropy-000
+          JWT_REFRESH_SECRET: ci-only-refresh-secret-with-sufficient-entropy-1
+          CORS_ALLOWED_ORIGINS: https://example.com
+          SUPABASE_URL: https://example.supabase.co
+          SUPABASE_SERVICE_ROLE_KEY: ci-placeholder
+        run: |
+          set -euo pipefail
+          # Validates that env checks pass and the whole middleware chain builds.
+          node -e "require('./src/config/env').assertEnvironment(); require('./src/app'); console.log('boot OK');"
+
+      - name: Env validation rejects a weak secret
+        working-directory: backend
+        env:
+          NODE_ENV: production
+          JWT_SECRET: change_me
+          JWT_REFRESH_SECRET: ci-only-refresh-secret-with-sufficient-entropy-1
+          CORS_ALLOWED_ORIGINS: https://example.com
+          SUPABASE_URL: https://example.supabase.co
+          SUPABASE_SERVICE_ROLE_KEY: ci-placeholder
+        run: |
+          set -euo pipefail
+          if node -e "require('./src/config/env').assertEnvironment()" 2>/dev/null; then
+            echo "::error::Startup accepted a placeholder JWT_SECRET."
+            exit 1
+          fi
+          echo "Weak secrets are correctly rejected."
+
+  # ── Build must not emit source maps ────────────────────────────────────────
+  build:
+    name: Production build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+        env:
+          NODE_ENV: production
+
+      - name: No source maps in the production bundle
+        run: |
+          set -euo pipefail
+          if find dist -name '*.map' -print -quit | grep -q .; then
+            echo "::error::Source maps present in dist/. They expose original source and internal paths."
+            exit 1
+          fi
+          if grep -rl 'sourceMappingURL' dist --include='*.js' 2>/dev/null | head -1 | grep -q .; then
+            echo "::error::A sourceMappingURL reference survived the production build."
+            exit 1
+          fi
+          echo "No source maps."
+
+      - name: No secrets inlined into the bundle
+        run: |
+          set -euo pipefail
+          # Vite inlines every VITE_* variable. Anything secret-shaped in the
+          # output is public.
+          if grep -rnE 'service_role|SUPABASE_SERVICE_ROLE|-----BEGIN|sk-ant-|AIza[A-Za-z0-9_-]{20,}' \
+             dist --include='*.js' 2>/dev/null | head -5 | grep -q .; then
+            echo "::error::Secret-shaped material found in the client bundle."
+            exit 1
+          fi
+          echo "Bundle is clean."
