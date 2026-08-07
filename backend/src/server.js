@@ -154,8 +154,12 @@ async function ensureBankReconAddbackItemsTable() {
       );
       ALTER TABLE bank_reconciliation_addback_items
         ADD COLUMN IF NOT EXISTS report_source text NOT NULL DEFAULT 'quickbooks_online';
+      ALTER TABLE bank_reconciliation_addback_items
+        ADD COLUMN IF NOT EXISTS key_report_version_id uuid;
       CREATE INDEX IF NOT EXISTS idx_brai_company_source_section
         ON bank_reconciliation_addback_items(company_id, report_source, section);
+      CREATE INDEX IF NOT EXISTS idx_bank_recon_addback_kr_version
+        ON bank_reconciliation_addback_items(company_id, report_source, key_report_version_id);
     `);
     console.log("[Startup] bank_reconciliation_addback_items table ready");
   } catch (err) {

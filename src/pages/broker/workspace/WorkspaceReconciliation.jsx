@@ -78,10 +78,14 @@ function matchBsBank(queryName, bankAccounts) {
   const qFour = _bsLastFour(queryName);
   const qNorm = _bsNormName(queryName);
   if (qFour) {
-    const byFour = bankAccounts.filter((b) => b.accountNumber === qFour);
+    const byFour = bankAccounts.filter(
+      (b) =>
+        b.accountNumber === qFour ||
+        _bsLastFour(b.name) === qFour ||
+        _bsNormName(b.name).includes(qFour),
+    );
     if (byFour.length === 1) return byFour[0];
     if (byFour.length > 1) {
-      // disambiguate by name among candidates sharing the same account number
       const nameHit = byFour.find(
         (b) =>
           _bsNormName(b.name) === qNorm ||
@@ -108,9 +112,17 @@ function matchBsBank(queryName, bankAccounts) {
     (b) => _bsNormName(b.name).includes(qNorm) || qNorm.includes(_bsNormName(b.name)),
   );
   if (contains) return contains;
-  // Stop-word aware word overlap: generic banking words (e.g. "bank") must not
-  // decide a match when a more specific identifier (e.g. "needham") is present.
-  // Numeric tokens (account number digits embedded in display names) are excluded.
+
+  // Name without numbers match (e.g. "Truist" from "Truist (1118)")
+  const qTextOnly = qNorm.replace(/\d+/g, "").trim();
+  if (qTextOnly.length > 2) {
+    const textMatch = bankAccounts.find((b) => {
+      const bTextOnly = _bsNormName(b.name).replace(/\d+/g, "").trim();
+      return bTextOnly.length > 2 && (bTextOnly.includes(qTextOnly) || qTextOnly.includes(bTextOnly));
+    });
+    if (textMatch) return textMatch;
+  }
+
   const BS_STOP = new Set(["bank", "banks", "banking", "financial", "corp", "inc",
     "llc", "ltd", "national", "savings", "credit", "union", "trust", "services",
     "group", "company"]);
@@ -119,7 +131,6 @@ function matchBsBank(queryName, bankAccounts) {
   const qAll = allW(qNorm);
   const qSig = sigW(qNorm);
   if (qAll.length) {
-    // First pass — only significant (non-stop, non-numeric) words
     if (qSig.length) {
       let best = 0, bestMatch = null;
       for (const b of bankAccounts) {
@@ -130,7 +141,6 @@ function matchBsBank(queryName, bankAccounts) {
       }
       if (bestMatch && best > 0) return bestMatch;
     }
-    // Second pass — all non-numeric words (fallback when no significant hit)
     let best = 0, bestMatch = null;
     for (const b of bankAccounts) {
       const bWords = allW(_bsNormName(b.name));
@@ -140,6 +150,10 @@ function matchBsBank(queryName, bankAccounts) {
     }
     if (bestMatch) return bestMatch;
   }
+
+  // Single bank account fallback — if there is only 1 bank account in Balance Sheet, use it!
+  if (bankAccounts.length === 1) return bankAccounts[0];
+
   return null;
 }
 
@@ -231,6 +245,29 @@ const computePlFinancialsFromFs = (resp) => {
 // match the bank data's monthKey. Each entry keeps the { name, accountNumber }
 // shape matchBsBank() expects (plus a monthAmounts map) so the SAME matcher maps
 // a bank statement to its account. Returns null when no monthly BS is available.
+const _collectBsLeafAccounts = (node, out = [], visited = new Set()) => {
+  if (!node || typeof node !== "object" || visited.has(node)) return out;
+  visited.add(node);
+  if (Array.isArray(node)) {
+    for (const item of node) _collectBsLeafAccounts(item, out, visited);
+    return out;
+  }
+  if (node.accounts && Array.isArray(node.accounts)) {
+    for (const acc of node.accounts) _collectBsLeafAccounts(acc, out, visited);
+  }
+  if (node.children && Array.isArray(node.children)) {
+    for (const child of node.children) _collectBsLeafAccounts(child, out, visited);
+  }
+  if (node.groups && typeof node.groups === "object") {
+    for (const g of Object.values(node.groups)) _collectBsLeafAccounts(g, out, visited);
+  }
+  const name = node.adjustedName || node.name;
+  if (name && Number.isFinite(Number(node.amount))) {
+    out.push(node);
+  }
+  return out;
+};
+
 const computeBsBankBalancesByMonthFromFs = (resp) => {
   const monthly = resp?.reports?.balanceSheet?.monthly || [];
   const byId = new Map();
@@ -243,26 +280,23 @@ const computeBsBankBalancesByMonthFromFs = (resp) => {
     const monthKey = `${year}-${String(monthNum).padStart(2, "0")}`;
     if (latestYear == null || year > latestYear) latestYear = year;
 
-    const groups = e?.statement?.assets?.currentAssets?.groups || {};
-    for (const g of Object.values(groups)) {
-      for (const acc of g?.accounts || []) {
-        const name = acc?.adjustedName || acc?.name;
-        if (!name) continue;
-        const idKey = acc?.systemId || acc?.accountNumber || name;
-        let rec = byId.get(idKey);
-        if (!rec) {
-          rec = {
-            name,
-            // Prefer a 4-digit run in the name (what matchBsBank keys on); fall
-            // back to the stored account number so the number path can still fire.
-            accountNumber: _bsLastFour(name) || String(acc?.accountNumber || ""),
-            monthAmounts: {},
-          };
-          byId.set(idKey, rec);
-        }
-        const val = Number(acc?.amount);
-        if (Number.isFinite(val)) rec.monthAmounts[monthKey] = val;
+    const assetsNode = e?.statement?.assets;
+    const accounts = _collectBsLeafAccounts(assetsNode?.currentAssets || assetsNode?.hierarchy || assetsNode);
+    for (const acc of accounts) {
+      const name = acc?.adjustedName || acc?.name;
+      if (!name) continue;
+      const idKey = acc?.systemId || acc?.accountNumber || name;
+      let rec = byId.get(idKey);
+      if (!rec) {
+        rec = {
+          name,
+          accountNumber: _bsLastFour(name) || String(acc?.accountNumber || ""),
+          monthAmounts: {},
+        };
+        byId.set(idKey, rec);
       }
+      const val = Number(acc?.amount);
+      if (Number.isFinite(val)) rec.monthAmounts[monthKey] = val;
     }
   }
 
@@ -1518,13 +1552,14 @@ export default function WorkspaceReconciliation() {
     const restoredSource = normalizeReportSourceKey(
       nextState?.selectedReportSource || REPORT_SOURCE_KEYS.QUICKBOOKS,
     );
-    // Always discard stored bank data — getReportSources will confirm the real source
-    // and the unified loader will fetch fresh data from the correct endpoint.
     setExtractedBankPdfData(null);
     setExtractedBankPdfFetchStatus({ status: "idle", message: "" });
     setExtractedBankPdfError("");
-    setSelectedReportSourceState(restoredSource);
-  }, [clientId]);
+    const activeSource =
+      kr.krActive && kr.effectiveSource ? kr.effectiveSource : restoredSource;
+    setSelectedReportSourceState(activeSource);
+    setIsSourceConfirmedByServer(true);
+  }, [clientId, kr.krActive, kr.effectiveSource]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1589,8 +1624,24 @@ export default function WorkspaceReconciliation() {
 
   // Persist the extracted Bank Reconciliation data for the current slot so
   // returning to this version + connection mode restores the table instantly.
+  //
+  // Guards against a slot switch (connection mode and/or Key Report Version
+  // change): the fields below still hold the OUTGOING slot's values for one
+  // extra render — the effect that clears them for the new slot runs later,
+  // as its own useEffect — so if this effect wrote on that same render it
+  // would leak the old slot's data into the new slot's cache entry. The
+  // unified bank-data loader then finds that cache entry "already populated"
+  // and skips fetching, leaving the new version's table stuck on stale data
+  // until a hard refresh. Skipping the write for exactly one render after the
+  // slot key changes closes that race.
+  const reconSlotKeyRef = useRef(`${selectedReportSource}::${reconDataVersion}`);
   useEffect(() => {
     if (!clientId || !selectedReportSource) return;
+    const slotKey = `${selectedReportSource}::${reconDataVersion}`;
+    if (reconSlotKeyRef.current !== slotKey) {
+      reconSlotKeyRef.current = slotKey;
+      return;
+    }
     // Merge with the already-cached slot. On remount every data field is briefly
     // null (fresh useState) BEFORE the restore effect / loader repopulate it, and
     // this effect fires first — writing raw nulls here would WIPE the cache, so
@@ -2025,7 +2076,7 @@ export default function WorkspaceReconciliation() {
       : "";
     fetch(
       `${BANK_RECON_ADDBACK_ITEMS_ENDPOINT}?clientId=${clientId}&reportSource=${encodeURIComponent(selectedReportSource)}${versionParam}`,
-      { headers: getHeaders() },
+      { cache: "no-store", headers: getHeaders() },
     )
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
@@ -2140,16 +2191,6 @@ export default function WorkspaceReconciliation() {
     //                     previously-viewed slot left on screen. Without force,
     //                     switching to a version that has no bank statements would
     //                     keep displaying the old version's rows.
-    const manualSource =
-      selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ||
-      selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL ||
-      selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
-    if (manualSource) {
-      const slot = getStoredReconData(clientId, selectedReportSource, reconDataVersion);
-      if (slot && (slot.extractedBankPdfData || slot.bsBankBalances || slot.plFinancials)) {
-        return;
-      }
-    }
     const loadOpts = { force: true };
 
     if (selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) {
@@ -3197,22 +3238,25 @@ export default function WorkspaceReconciliation() {
   // Returns { forMonth(monthKey), ttm(ttmRows) } so the on-screen table and the
   // Excel / PDF exports all compute the row identically.
   const makePerBalanceSheetResolver = (bankName) => {
-    const monthlyAmounts =
-      matchBsBank(bankName, bsMonthlyBalances?.bankAccounts)?.monthAmounts || null;
+    const monthlyMatch = matchBsBank(bankName, bsMonthlyBalances?.bankAccounts);
+    const monthlyAmounts = monthlyMatch?.monthAmounts || null;
     const pointMatch = matchBsBank(bankName, bsBankBalances?.bankAccounts);
     const pointBalance = pointMatch != null ? pointMatch.amount : null;
     const yearEndKey = bsBankBalances?.year != null ? `${bsBankBalances.year}-12` : null;
+
+    const sortedKeys = monthlyAmounts ? Object.keys(monthlyAmounts).sort() : [];
+    const latestMonthlyVal = sortedKeys.length > 0 ? monthlyAmounts[sortedKeys[sortedKeys.length - 1]] : null;
+
     return {
       forMonth: (monthKey) => {
         if (monthlyAmounts && monthlyAmounts[monthKey] != null) return monthlyAmounts[monthKey];
-        return pointBalance != null && monthKey === yearEndKey ? pointBalance : null;
+        if (pointBalance != null && monthKey === yearEndKey) return pointBalance;
+        if (latestMonthlyVal != null) return latestMonthlyVal;
+        return pointBalance != null ? pointBalance : null;
       },
-      // TTM "Per Balance Sheet" is a point-in-time figure — never a sum. Use the
-      // most recent month in the TTM window that has a book balance (monthly BS),
-      // else the single year-end snapshot.
       ttm: (ttmRows) =>
         monthlyAmounts
-          ? ([...ttmRows].reverse().find((r) => r.perBalanceSheet != null)?.perBalanceSheet ?? null)
+          ? ([...ttmRows].reverse().find((r) => r.perBalanceSheet != null)?.perBalanceSheet ?? latestMonthlyVal ?? pointBalance)
           : pointBalance,
     };
   };
