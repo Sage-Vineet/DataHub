@@ -1782,6 +1782,20 @@ export function getKeyReportAvailablePeriods(versionId) {
   return request(`/key-reports/versions/${versionId}/available-periods`);
 }
 
+// Vendor reference data for a Key Reports version, read straight from
+// general_ledger_entries (see backend keyReportVendorService). Powers the EBITDA
+// adjustment editor's Vendor Scope control, which previously had no Key Reports
+// source at all and always showed "No vendors found".
+//   account — restrict to the vendors that posted to one account
+//   field   — "vendor" (default) or "customer"
+export function getKeyReportVendors(versionId, { account, field } = {}) {
+  const params = new URLSearchParams();
+  if (account) params.set("account", account);
+  if (field) params.set("field", field);
+  const qs = params.toString();
+  return request(`/key-reports/versions/${versionId}/vendors${qs ? `?${qs}` : ""}`);
+}
+
 export function listFolderAccess(folderId) {
   return request(`/folders/${folderId}/access`).then(ensureArray);
 }

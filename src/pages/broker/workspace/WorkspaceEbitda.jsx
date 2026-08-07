@@ -27,6 +27,7 @@ import {
 import {
   loadAdjustmentWorkspaceData,
   loadVendorReferenceData,
+  loadKeyReportVendorReferenceData,
 } from "../../../services/ebitdaAdjustmentService";
 import { getProfitMetricConfig } from "../../../lib/profitMetric";
 import { REPORT_SOURCE_KEYS, normalizeReportSourceKey } from "../../../lib/report-source";
@@ -190,6 +191,11 @@ export default function WorkspaceEbitda() {
   const [manualGlAdjustments, setManualGlAdjustments] = useState([]);
   const [manualGlAdjustmentTypes, setManualGlAdjustmentTypes] = useState([]);
   const [manualGlReferenceIndex, setManualGlReferenceIndex] = useState(null);
+  // Vendor/account reference for a KEY REPORTS version, read from
+  // general_ledger_entries. Separate state from manualGlReferenceIndex because
+  // the two come from different sources and must never be conflated -- see the
+  // loader effect below for the defect this fixes.
+  const [keyReportReferenceIndex, setKeyReportReferenceIndex] = useState(null);
   const [manualGlAdjustmentError, setManualGlAdjustmentError] = useState("");
   const [isSavingAdjustment, setIsSavingAdjustment] = useState(false);
   const profitMetricConfig = useMemo(() => getProfitMetricConfig(company), [company]);
@@ -314,17 +320,25 @@ export default function WorkspaceEbitda() {
     );
   }, [multiYearData, years]);
 
+  // The reference index for whichever source is actually selected. Manual GL
+  // keeps its existing index; Key Reports now has one of its own (previously it
+  // had none at all, which is why its Vendor Scope dropdown was always empty).
+  const activeReferenceIndex = useMemo(
+    () => (isManualGl ? manualGlReferenceIndex : keyReportReferenceIndex),
+    [isManualGl, manualGlReferenceIndex, keyReportReferenceIndex],
+  );
+
   const adjustmentAccountOptions = useMemo(() => {
-    return manualGlReferenceIndex?.accountOptions?.length
-      ? manualGlReferenceIndex.accountOptions
+    return activeReferenceIndex?.accountOptions?.length
+      ? activeReferenceIndex.accountOptions
       : plAccountOptions;
-  }, [manualGlReferenceIndex, plAccountOptions]);
+  }, [activeReferenceIndex, plAccountOptions]);
 
   const adjustmentVendorOptions = useMemo(() => {
-    return manualGlReferenceIndex?.vendorOptions?.length
-      ? manualGlReferenceIndex.vendorOptions
+    return activeReferenceIndex?.vendorOptions?.length
+      ? activeReferenceIndex.vendorOptions
       : [];
-  }, [manualGlReferenceIndex]);
+  }, [activeReferenceIndex]);
 
   const fallbackAdjustmentLookup = useCallback(
     (year, label) => getValueFromPL(year, label),
@@ -676,6 +690,38 @@ export default function WorkspaceEbitda() {
       setManualGlAdjustmentTypes(Array.isArray(types) ? types : []);
     }).catch(() => setManualGlAdjustmentTypes([]));
   }, [isManualGl, clientId]);
+
+  // ── Key Reports vendor reference ────────────────────────────────────────
+  // CONFIRMED ROOT CAUSE (fixed by this effect): the ONLY vendor loader on this
+  // page was the Manual GL one below, and it returns early unless
+  // `isManualGl` -- so on a Key Reports version no vendor request was ever
+  // issued, `vendorOptions` stayed `[]`, and the Vendor Scope dropdown always
+  // rendered its empty-state placeholder ("No vendors found"). The vendors were
+  // in the database the whole time: the Key Reports extraction writes them to
+  // general_ledger_entries.vendor (verified live: 165 distinct vendors across 61
+  // accounts on one version), but nothing on this page ever read that table.
+  //
+  // This is a separate source, not a reuse of the Manual GL implementation --
+  // loadKeyReportVendorReferenceData calls the Key Reports vendors endpoint,
+  // which reads general_ledger_entries directly. No manual_gl table, staging
+  // table, cached list or legacy vendor API is touched.
+  useEffect(() => {
+    let cancelled = false;
+    // Deferred rather than called synchronously in the effect body, matching the
+    // pattern used elsewhere in this codebase, so switching source doesn't
+    // trigger a cascading render.
+    const commit = (value) => {
+      queueMicrotask(() => { if (!cancelled) setKeyReportReferenceIndex(value); });
+    };
+    if (isManualGl || !krVersionId) {
+      commit(null);
+      return () => { cancelled = true; };
+    }
+    loadKeyReportVendorReferenceData({ versionId: krVersionId })
+      .then((reference) => commit(reference || null))
+      .catch(() => commit(null));
+    return () => { cancelled = true; };
+  }, [isManualGl, krVersionId]);
 
   useEffect(() => {
     if (!isManualGl) {
@@ -1274,6 +1320,7 @@ export default function WorkspaceEbitda() {
                         typeOptions={manualGlAdjustmentTypes}
                         accountOptions={adjustmentAccountOptions}
                         vendorOptions={adjustmentVendorOptions}
+                        vendorsByAccount={keyReportReferenceIndex?.vendorsByAccount || null}
                         referenceIndex={null}
                         fallbackLookup={fallbackAdjustmentLookup}
                         baseEbitdaByYear={baseEbitdaByYear}

@@ -5,6 +5,7 @@ import {
   deleteEbitdaAdjustment,
   addEbitdaAdjustmentComment,
   getManualStagedProfitLossVendorDetail,
+  getKeyReportVendors,
 } from "../lib/api";
 
 const FALLBACK_ADJUSTMENT_TYPES = Object.freeze([
@@ -843,6 +844,94 @@ export async function loadAdjustmentWorkspaceData(options = {}) {
 export async function loadVendorReferenceData(options = {}) {
   const payload = await getManualStagedProfitLossVendorDetail(options);
   return buildVendorReferenceIndex(payload);
+}
+
+/**
+ * Vendor reference index for a KEY REPORTS version.
+ *
+ * CONFIRMED ROOT CAUSE this fixes: the EBITDA page's Vendor Scope control took
+ * its vendors exclusively from loadVendorReferenceData above, which reads the
+ * MANUAL GL UPLOAD staging tables. A Key Reports version has no rows there, and
+ * WorkspaceEbitda additionally skipped the call entirely unless the source was
+ * Manual GL -- so `vendorOptions` was always `[]` and the dropdown always read
+ * "No vendors found", even though the Key Reports extraction had already
+ * populated general_ledger_entries.vendor (verified live: 165 distinct vendors
+ * across 61 accounts on one version).
+ *
+ * This is a SEPARATE path, not a reuse of the manual one: it calls the Key
+ * Reports vendors endpoint, which reads general_ledger_entries directly. It only
+ * shares the RETURN SHAPE ({ accountOptions, vendorOptions, accountMap,
+ * vendorMap, years }) because AddbackEditorModal and EbitdaAdjustmentsPanel
+ * already consume exactly that shape -- so no component changes are needed and
+ * the control behaves identically whichever source is selected.
+ *
+ * No EBITDA calculation reads any of this; it populates the editor's pickers only.
+ */
+export async function loadKeyReportVendorReferenceData({ versionId, account } = {}) {
+  if (!versionId) return null;
+  const payload = await getKeyReportVendors(versionId, account ? { account } : {});
+
+  const accountMap = new Map();
+  const vendorMap = new Map();
+  const years = new Set(toArray(payload?.years).map(Number).filter(Number.isFinite));
+
+  // The endpoint returns each account with the vendor names that posted to it,
+  // which is precisely what the editor uses to narrow the dropdown to the
+  // account an adjustment is linked to.
+  for (const account of toArray(payload?.accounts)) {
+    const accountName = normalizeText(account.label || account.accountName || "");
+    if (!accountName) continue;
+    accountMap.set(accountName, {
+      accountName,
+      accountId: "",
+      total: Number(account.total) || 0,
+      yearlyTotals: { ...(account.yearlyTotals || {}) },
+      monthlyTotals: {},
+      transactions: [],
+      // Keyed by vendor name — AddbackEditorModal reads `accountEntry.vendors.keys()`.
+      vendors: new Map(toArray(account.vendors).map((v) => [normalizeText(v), { vendorName: normalizeText(v) }])),
+    });
+  }
+
+  for (const vendor of toArray(payload?.vendors)) {
+    const vendorName = normalizeText(vendor.label || vendor.vendorName || "");
+    if (!vendorName) continue;
+    vendorMap.set(vendorName, {
+      vendorName,
+      total: Number(vendor.total) || 0,
+      yearlyTotals: { ...(vendor.yearlyTotals || {}) },
+      accounts: new Map(toArray(vendor.accounts).map((a) => [normalizeText(a), { accountName: normalizeText(a) }])),
+    });
+  }
+
+  return {
+    years: Array.from(years).sort((a, b) => b - a),
+    accountMap,
+    vendorMap,
+    // Account -> the vendor names that posted to it. Passed to the editor as its
+    // OWN prop rather than through `referenceIndex`, deliberately: applyReference
+    // Values treats a non-null referenceIndex as a source of TRANSACTIONS and
+    // rebuilds each year's value from them (see its `transactions.length` branch),
+    // so routing this through that prop could change adjustment values. This
+    // index carries no transactions and must never influence a calculation — it
+    // exists purely to narrow the Vendor Scope dropdown.
+    vendorsByAccount: new Map(
+      [...accountMap.entries()].map(([name, entry]) => [name, [...entry.vendors.keys()]]),
+    ),
+    // Server already ordered these (largest exposure first, then alphabetical)
+    // and guaranteed distinct, non-empty names — preserved verbatim.
+    accountOptions: toArray(payload?.accounts).map((a) => ({
+      label: normalizeText(a.label || ""),
+      accountId: "",
+      total: Number(a.total) || 0,
+      yearlyTotals: { ...(a.yearlyTotals || {}) },
+    })).filter((a) => a.label),
+    vendorOptions: toArray(payload?.vendors).map((v) => ({
+      label: normalizeText(v.label || ""),
+      total: Number(v.total) || 0,
+      yearlyTotals: { ...(v.yearlyTotals || {}) },
+    })).filter((v) => v.label),
+  };
 }
 
 export {

@@ -7,6 +7,7 @@ const fileReferenceService = require("../services/fileReferenceService");
 const userPreferenceService = require("../services/userPreferenceService");
 const chartOfAccountsService = require("../services/chartOfAccountsService");
 const keyReportReportService = require("../services/keyReports/keyReportReportService");
+const keyReportVendorService = require("../services/keyReports/keyReportVendorService");
 const { generateFinancialStatements, getAvailablePeriods } = require("../services/keyReports/financialStatementService");
 const { exportKeyReportData } = require("../services/keyReports/keyReportExportService");
 const { normalizeError, isConnectionError } = require("../utils/dbErrorHandler");
@@ -859,6 +860,36 @@ router.get("/key-reports/versions/:versionId/reports/general-ledger", async (req
     return res.json({ success: true, ...result });
   } catch (error) {
     return handleError(res, error, "GET reports/general-ledger");
+  }
+});
+
+// Vendor reference data for the EBITDA adjustment editor's Vendor Scope
+// control. Reads general_ledger_entries directly (see keyReportVendorService) --
+// the EBITDA page previously sourced this from the Manual GL Upload staging
+// tables, which a Key Reports version has no rows in, so the dropdown always
+// showed "No vendors found".
+//
+// ?account=<name>  restricts to the vendors that posted to one account.
+// ?field=customer  returns customers instead (same shape; the column exists and
+//                  is populated by the same extraction pass).
+// Deliberately NOT gated behind requireApprovedCoa: vendors come from the raw
+// GL, not from a generated report, so they are available as soon as the GL is
+// extracted -- which is exactly when the adjustment editor needs them.
+router.get("/key-reports/versions/:versionId/vendors", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    // keyReportService.getVersion returns a camelCase view (companyId), not the
+    // raw row — using version.company_id here would silently pass undefined and
+    // return an empty vendor list.
+    const result = await keyReportVendorService.getVendorReference(
+      version.companyId,
+      version.id,
+      { accountName: req.query.account || null, field: req.query.field || "vendor" },
+    );
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return handleError(res, error, "GET vendors");
   }
 });
 
