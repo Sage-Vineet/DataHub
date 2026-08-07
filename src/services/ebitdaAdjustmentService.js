@@ -5,6 +5,7 @@ import {
   deleteEbitdaAdjustment,
   addEbitdaAdjustmentComment,
   getManualStagedProfitLossVendorDetail,
+  getKeyReportVendors,
 } from "../lib/api";
 
 const FALLBACK_ADJUSTMENT_TYPES = Object.freeze([
@@ -502,8 +503,28 @@ function buildYearValueFromTransactions(transactions, year) {
   };
 }
 
+// The account this row's values should be looked up under. MUST match
+// getReferenceTransactions' resolution above -- the two are the same concept
+// (which account is this adjustment linked to?) and had drifted apart.
+//
+// CONFIRMED ROOT CAUSE this fixes: buildFallbackYearValue used to resolve
+//   row.label || row.accountName || ""
+// and an adjustment draft (see buildAdjustmentDraft) has NEITHER field -- it
+// carries `name`, `linkedAccountName` and `linkedAccountId`. So the key was
+// ALWAYS "", WorkspaceEbitda's getValueFromPL returns null immediately for a
+// falsy label, apiValue came out 0, and the modal's Auto column rendered "-".
+// The computed value never depended on the selected account at all, which is
+// precisely why changing the Account dropdown appeared to do nothing.
+//
+// Only the Key Reports path was affected: Manual GL supplies a referenceIndex,
+// so it takes the getReferenceTransactions branch and never reaches here.
+function resolveLinkedAccountName(row) {
+  return normalizeText(row?.accountName || row?.linkedAccountName || row?.label || "");
+}
+
 function buildFallbackYearValue(row, year, fallbackLookup) {
-  const fallback = typeof fallbackLookup === "function" ? fallbackLookup(year, row.label || row.accountName || "") : null;
+  const accountName = resolveLinkedAccountName(row);
+  const fallback = typeof fallbackLookup === "function" ? fallbackLookup(year, accountName) : null;
   const numeric = toAbsoluteNumber(fallback, 0);
   const startMonth = Number(row.allocationStartMonth ?? row.monthStart ?? row.metadata?.startMonth ?? 1);
   const endMonth = Number(row.allocationEndMonth ?? row.monthEnd ?? row.metadata?.endMonth ?? 12);
@@ -534,12 +555,31 @@ export function applyReferenceValues(row, years = [], { referenceIndex = null, f
   const selectedYears = Array.isArray(years) ? years.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0) : [];
   const transactions = referenceIndex ? getReferenceTransactions(referenceIndex, next) : [];
 
+  // Did the linked account change since these values were last computed? The
+  // row records the account its stored values belong to, so this is answered
+  // from the data itself rather than needing the caller to say so.
+  //
+  // CONFIRMED ROOT CAUSE this addresses (the second of two): the month-level
+  // values below are deliberately preserved across a recompute, so a user's
+  // per-month fine-tuning is not wiped every time the row is touched -- and the
+  // YEAR TOTAL is derived from them whenever they exist. Correct while the row
+  // stays on one account; wrong the moment the account changes, because it pins
+  // the row to the PREVIOUS account's figures. Retaining them was hiding the
+  // refresh even after the lookup-key defect above was fixed.
+  //
+  // Only the AUTO-COMPUTED side is reset. Overrides are untouched — see below.
+  const resolvedAccountName = resolveLinkedAccountName(next);
+  const accountChanged = normalizeText(next.valuesAccountName ?? resolvedAccountName) !== resolvedAccountName;
+  next.valuesAccountName = resolvedAccountName;
+
   next.values = next.values && typeof next.values === "object" ? clone(next.values) : {};
   selectedYears.forEach((year) => {
     const yearKey = String(year);
     const current = next.values[yearKey] || {};
     const existingOverride = current.overrideValue ?? current.userValue ?? null;
-    const existingMonthly = current.monthlyValues || current.monthValues || current.months || {};
+    const existingMonthly = accountChanged
+      ? {}
+      : (current.monthlyValues || current.monthValues || current.months || {});
     const computed = transactions.length
       ? buildYearValueFromTransactions(transactions, year)
       : buildFallbackYearValue(next, year, fallbackLookup);
@@ -843,6 +883,94 @@ export async function loadAdjustmentWorkspaceData(options = {}) {
 export async function loadVendorReferenceData(options = {}) {
   const payload = await getManualStagedProfitLossVendorDetail(options);
   return buildVendorReferenceIndex(payload);
+}
+
+/**
+ * Vendor reference index for a KEY REPORTS version.
+ *
+ * CONFIRMED ROOT CAUSE this fixes: the EBITDA page's Vendor Scope control took
+ * its vendors exclusively from loadVendorReferenceData above, which reads the
+ * MANUAL GL UPLOAD staging tables. A Key Reports version has no rows there, and
+ * WorkspaceEbitda additionally skipped the call entirely unless the source was
+ * Manual GL -- so `vendorOptions` was always `[]` and the dropdown always read
+ * "No vendors found", even though the Key Reports extraction had already
+ * populated general_ledger_entries.vendor (verified live: 165 distinct vendors
+ * across 61 accounts on one version).
+ *
+ * This is a SEPARATE path, not a reuse of the manual one: it calls the Key
+ * Reports vendors endpoint, which reads general_ledger_entries directly. It only
+ * shares the RETURN SHAPE ({ accountOptions, vendorOptions, accountMap,
+ * vendorMap, years }) because AddbackEditorModal and EbitdaAdjustmentsPanel
+ * already consume exactly that shape -- so no component changes are needed and
+ * the control behaves identically whichever source is selected.
+ *
+ * No EBITDA calculation reads any of this; it populates the editor's pickers only.
+ */
+export async function loadKeyReportVendorReferenceData({ versionId, account } = {}) {
+  if (!versionId) return null;
+  const payload = await getKeyReportVendors(versionId, account ? { account } : {});
+
+  const accountMap = new Map();
+  const vendorMap = new Map();
+  const years = new Set(toArray(payload?.years).map(Number).filter(Number.isFinite));
+
+  // The endpoint returns each account with the vendor names that posted to it,
+  // which is precisely what the editor uses to narrow the dropdown to the
+  // account an adjustment is linked to.
+  for (const account of toArray(payload?.accounts)) {
+    const accountName = normalizeText(account.label || account.accountName || "");
+    if (!accountName) continue;
+    accountMap.set(accountName, {
+      accountName,
+      accountId: "",
+      total: Number(account.total) || 0,
+      yearlyTotals: { ...(account.yearlyTotals || {}) },
+      monthlyTotals: {},
+      transactions: [],
+      // Keyed by vendor name — AddbackEditorModal reads `accountEntry.vendors.keys()`.
+      vendors: new Map(toArray(account.vendors).map((v) => [normalizeText(v), { vendorName: normalizeText(v) }])),
+    });
+  }
+
+  for (const vendor of toArray(payload?.vendors)) {
+    const vendorName = normalizeText(vendor.label || vendor.vendorName || "");
+    if (!vendorName) continue;
+    vendorMap.set(vendorName, {
+      vendorName,
+      total: Number(vendor.total) || 0,
+      yearlyTotals: { ...(vendor.yearlyTotals || {}) },
+      accounts: new Map(toArray(vendor.accounts).map((a) => [normalizeText(a), { accountName: normalizeText(a) }])),
+    });
+  }
+
+  return {
+    years: Array.from(years).sort((a, b) => b - a),
+    accountMap,
+    vendorMap,
+    // Account -> the vendor names that posted to it. Passed to the editor as its
+    // OWN prop rather than through `referenceIndex`, deliberately: applyReference
+    // Values treats a non-null referenceIndex as a source of TRANSACTIONS and
+    // rebuilds each year's value from them (see its `transactions.length` branch),
+    // so routing this through that prop could change adjustment values. This
+    // index carries no transactions and must never influence a calculation — it
+    // exists purely to narrow the Vendor Scope dropdown.
+    vendorsByAccount: new Map(
+      [...accountMap.entries()].map(([name, entry]) => [name, [...entry.vendors.keys()]]),
+    ),
+    // Server already ordered these (largest exposure first, then alphabetical)
+    // and guaranteed distinct, non-empty names — preserved verbatim.
+    accountOptions: toArray(payload?.accounts).map((a) => ({
+      label: normalizeText(a.label || ""),
+      accountId: "",
+      total: Number(a.total) || 0,
+      yearlyTotals: { ...(a.yearlyTotals || {}) },
+    })).filter((a) => a.label),
+    vendorOptions: toArray(payload?.vendors).map((v) => ({
+      label: normalizeText(v.label || ""),
+      total: Number(v.total) || 0,
+      yearlyTotals: { ...(v.yearlyTotals || {}) },
+    })).filter((v) => v.label),
+  };
 }
 
 export {

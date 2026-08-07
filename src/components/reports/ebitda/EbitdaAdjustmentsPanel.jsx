@@ -121,6 +121,7 @@ export default function EbitdaAdjustmentsPanel({
   typeOptions = [],
   accountOptions = [],
   vendorOptions = [],
+  vendorsByAccount = null,
   referenceIndex = null,
   fallbackLookup = null,
   baseEbitdaByYear = {},
@@ -609,6 +610,7 @@ export default function EbitdaAdjustmentsPanel({
         typeOptions={typeOptions}
         accountOptions={resolvedAccountOptions}
         vendorOptions={resolvedVendorOptions}
+        vendorsByAccount={vendorsByAccount}
         referenceIndex={referenceIndex}
         fallbackLookup={fallbackLookup}
         isSaving={isSaving}
