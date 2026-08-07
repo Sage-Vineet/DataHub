@@ -3,6 +3,7 @@ import * as XLSX from "xlsx";
 import {
   RefreshCw, Loader2, Table2, Check, X, Pencil, RotateCcw, Search, Undo2, Redo2, Download,
   FolderInput, GitMerge, Sparkles, Save, AlertTriangle, GripVertical,
+  ChevronRight, ChevronDown, ChevronsDown, ChevronsUp, FolderPlus, Trash2, ListChecks, ArrowRightLeft,
 } from "lucide-react";
 import {
   getChartOfAccounts, regenerateChartOfAccounts, resetChartOfAccount, resetChartOfAccounts,
@@ -11,11 +12,14 @@ import { approveCoa } from "../../lib/keyReportGeneration";
 import {
   buildIndexes, getLevelsArray, getHierarchyPathLabel, listCategoryNodes,
   applyAccountEdit, mergeCategory, validateTree, summarizeClassification,
-  moveAccountToParent,
+  moveAccountToParent, renameNode, moveNode, createCategory, deleteCategory,
+  getSubtreeKeys, getRootAnchorKey, getMoveTargetsForCategory, diffCoaTrees,
   CLASSIFICATION_SOURCE_LABELS, MAX_HIERARCHY_LEVELS, displayName,
 } from "../../lib/coaTree";
 import { clearCachedFinancials } from "../../lib/keyReportFinancials";
 import { useHierarchyRecommendations } from "../../hooks/useHierarchyRecommendations";
+import RecommendedChangesPanel from "./RecommendedChangesPanel";
+import Modal from "../common/Modal";
 
 const STATEMENT_LABELS = { balance_sheet: "Balance Sheet", profit_loss: "P&L" };
 const METHOD_LABELS = {
@@ -75,6 +79,37 @@ const NEEDS_MAPPING_SECTION = {
 // Total column count (must stay in sync with the <thead> below)
 // systemId + acctNum + acctName + acctIdName + stmt + 15 levels + path + method + adjustedName + actions
 const TOTAL_COLS = 5 + MAX_LEVELS + 4;
+
+// ── Frozen leading columns ───────────────────────────────────────────────────
+// Sticky-LEFT columns inside the existing single overflow-x-auto table — no
+// two-table restructure needed (that trick, used by FrozenPaneTable, exists
+// solely to fix sticky-TOP header rows inside a scrolling div; sticky-left
+// columns have no such conflict, and this exact `sticky left-0 z-10/20
+// bg-<color> border-r-2 shadow-...` convention is already proven in
+// ManualProfitLossSummary.jsx). Three sticky columns, not four: the drag
+// handle is already rendered inline inside the System ID cell (see the
+// GripVertical usage below), not a separate column — freezing System ID
+// freezes the handle with it.
+const STICKY_COL_1_WIDTH = 110; // System ID (+ drag handle)
+const STICKY_COL_2_WIDTH = 120; // Account Number
+const STICKY_LEFT_1 = 0;
+const STICKY_LEFT_2 = STICKY_COL_1_WIDTH;
+const STICKY_LEFT_3 = STICKY_COL_1_WIDTH + STICKY_COL_2_WIDTH; // Account Name — last frozen column, natural width
+const HEADER_BG = "#1B3A5C";
+const EMPTY_COA_DIFF = { moved: [], created: [], deleted: [], renamed: [], movedCategories: [] };
+// A sticky cell paints independently of its row's box once repositioned, so it
+// needs its OWN background rather than inheriting the <tr>'s — approximating
+// the row's two dynamic tint states (edited / drop-target) with the same
+// primary color this file already hardcodes for the drop-target outline
+// (line ~1128's outline-[#8BC53D]), so the frozen columns stay visually
+// consistent with the rest of the row during drag-and-drop. Plain :hover
+// tinting is intentionally not replicated on frozen cells — a cosmetic-only
+// gap common to frozen-column grids, not a functional one.
+function getStickyRowBg(row, { isDropTarget }) {
+  if (isDropTarget) return "rgba(139,197,61,0.1)";
+  if (row.userEdited) return "rgba(139,197,61,0.05)";
+  return "#ffffff";
+}
 
 // ── Auto-scroll while dragging: pure helpers (no component state) ───────────
 const AUTO_SCROLL_EDGE_PX = 50; // matches the spec's "~50px of the top/bottom"
@@ -207,7 +242,7 @@ function commonPrefixLength(chains) {
  * Within a category, direct accounts are listed before sub-categories — how a
  * financial statement reads.
  */
-function buildSubGroupItems(rows, section, sg, nodesByKey, childrenByParentKey) {
+function buildSubGroupItems(rows, section, sg, nodesByKey, childrenByParentKey, collapsedKeys = null) {
   if (!rows.length) return [];
   const rowByKey = new Map(rows.map((r) => [r.key, r]));
 
@@ -232,6 +267,12 @@ function buildSubGroupItems(rows, section, sg, nodesByKey, childrenByParentKey) 
 
   const items = [];
   const walk = (parentKey, depth, remainingHidden) => {
+    // Collapse guard: suppresses only the recursive DESCENT into a collapsed
+    // category's children — never the category's own header row, which the
+    // parent call already pushed before recursing here. Real (persisted)
+    // keys only, so collapse state (keyed by the real node key, not the
+    // synthetic display id below) survives a rename/move of the category.
+    if (parentKey && collapsedKeys?.has(parentKey)) return;
     const children = childrenByParentKey.get(parentKey) || [];
     for (const n of children) {
       if (n.nodeType !== "ACCOUNT") continue;
@@ -250,7 +291,15 @@ function buildSubGroupItems(rows, section, sg, nodesByKey, childrenByParentKey) 
       // data — see CALCULATED_STATEMENT_ROW_LABELS above for why.
       const hidden = remainingHidden > 0 || label === parentLabel || isCalculatedStatementRowLabel(label);
       if (!hidden) {
-        items.push({ kind: "category", section, sg, label, depth, key: `cat-${sg.key}-${n.key}` });
+        // `node`/`hasChildren` expose the REAL tree node (never duplicated
+        // fields) so the chevron/DnD/create-rename-delete-move actions can
+        // act on n.key/n.accountType/n.statementType directly, and so a
+        // collapsed empty category correctly renders no chevron at all.
+        items.push({
+          kind: "category", section, sg, label, depth,
+          key: `cat-${sg.key}-${n.key}`, node: n,
+          hasChildren: (childrenByParentKey.get(n.key) || []).length > 0,
+        });
       }
       walk(n.key, hidden ? depth : depth + 1, Math.max(0, remainingHidden - 1));
     }
@@ -315,6 +364,34 @@ export default function ChartOfAccountsGrid({
   const [mappingCategoryPath, setMappingCategoryPath] = useState("");
   const [mappingBaseName, setMappingBaseName] = useState("");
   const [mergeEditor, setMergeEditor] = useState(null); // { categoryKey, categoryPathArr, value }
+
+  // ── Collapse/expand tree state ──────────────────────────────────────────
+  // Keyed by the REAL CATEGORY node key (n.key), never the synthetic
+  // per-render `cat-${sg.key}-${n.key}` display id — the real key is stable
+  // across a rename/move of the category; the synthetic one is not (it
+  // encodes which sub-group the category currently renders under).
+  const [collapsedKeys, setCollapsedKeys] = useState(() => new Set());
+  const toggleCollapsed = (key) => {
+    setCollapsedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+  const collapseAll = () => {
+    setCollapsedKeys(new Set(nodes.filter((n) => n.nodeType === "CATEGORY").map((n) => n.key)));
+  };
+  const expandAll = () => setCollapsedKeys(new Set());
+
+  // ── Category create/rename/move — one shared inline-editor state,
+  // analogous to the existing mergeEditor/mappingKey pattern above. ────────
+  // mode: "create" (new child under parentKey) | "rename" (targetKey) | "move" (targetKey)
+  const [categoryEditor, setCategoryEditor] = useState(null);
+  const closeCategoryEditor = () => setCategoryEditor(null);
+
+  // ── Save preview (diff before Save) ─────────────────────────────────────
+  const [showSavePreview, setShowSavePreview] = useState(false);
+  const [showRecPanel, setShowRecPanel] = useState(false);
 
   // Drag-and-drop reclassification. Native HTML5 DnD (the pattern already used
   // by FileExplorer) — no new dependency. `dragKey` is the account being
@@ -471,6 +548,33 @@ export default function ChartOfAccountsGrid({
     }
   };
 
+  // ── Save preview (diff before Save) ─────────────────────────────────────
+  // loadedNodesRef.current is already exactly "the originally-loaded tree" —
+  // set once when the version loads (or on Regenerate/a prior Save/Reset),
+  // never touched by an edit. No new capture mechanism needed. Computed in an
+  // effect rather than a render-time useMemo: reading a ref's `.current`
+  // during render is unsound (react-hooks/refs) even when memoized, since a
+  // ref mutation itself never triggers the re-render that would recompute it.
+  const [saveDiff, setSaveDiff] = useState(EMPTY_COA_DIFF);
+  useEffect(() => {
+    setSaveDiff(diffCoaTrees(loadedNodesRef.current, nodes));
+  }, [nodes]);
+  const saveDiffIsEmpty = !saveDiff.moved.length && !saveDiff.created.length
+    && !saveDiff.deleted.length && !saveDiff.renamed.length && !saveDiff.movedCategories.length;
+
+  const requestSave = () => {
+    if (saveDiffIsEmpty) { handleSave(); return; }
+    setShowSavePreview(true);
+  };
+  const confirmSaveFromPreview = () => {
+    setShowSavePreview(false);
+    handleSave();
+  };
+  const discardFromPreview = () => {
+    setShowSavePreview(false);
+    discardDraft();
+  };
+
   // ── Regenerate the PROPOSAL only (no persistence) ───────────────────────
   const handleRegenerate = async () => {
     if (!versionId) return;
@@ -625,13 +729,19 @@ export default function ChartOfAccountsGrid({
     }
   }, []);
 
+  // `row` is either an ACCOUNT row object (real key at `row.key`) or a
+  // CATEGORY item from buildSubGroupItems (real key at `row.node.key` —
+  // `row.key` on a category item is the synthetic per-render display id,
+  // `cat-${sg.key}-${n.key}`, never the real node).
   const onRowDragStart = (row) => (e) => {
     if (!canReorder) return;
+    const realKey = row.nodeType === "ACCOUNT" ? row.key : row.node?.key;
+    if (!realKey) return;
     cancelEdit();
-    setDragKey(row.key);
+    setDragKey(realKey);
     e.dataTransfer.effectAllowed = "move";
     // Some browsers require data to be set for a drag to start at all.
-    try { e.dataTransfer.setData("text/plain", row.key); } catch { /* non-fatal */ }
+    try { e.dataTransfer.setData("text/plain", realKey); } catch { /* non-fatal */ }
     startAutoScroll();
   };
 
@@ -668,35 +778,87 @@ export default function ChartOfAccountsGrid({
     };
   }, [clearDrag, stopAutoScroll]);
 
-  const isValidDropTarget = (row) => Boolean(
-    canReorder && dragKey && row.key !== dragKey && row.nodeType === "ACCOUNT",
-  );
+  // Generalized target shape: either an ACCOUNT row (unchanged existing
+  // target — `row.nodeType === "ACCOUNT"`) or a CATEGORY item from
+  // buildSubGroupItems (`row.kind === "category"`, real node at `row.node`).
+  // `dragKey` may now hold either kind's real key; its nodeType is resolved
+  // live from `nodesByKey` at drop time rather than tracked as separate
+  // state, since the tree itself is always the source of truth for it.
+  const isValidDropTarget = (target) => {
+    if (!canReorder || !dragKey) return false;
+    const draggedNode = nodesByKey.get(dragKey);
+    if (!draggedNode) return false;
+
+    if (target?.nodeType === "ACCOUNT") {
+      // Existing behavior, unchanged: an account can be dropped onto another
+      // account (never a category dragging onto an account — that pairing is
+      // handled by the category-onto-category branch below, or is simply
+      // not a valid pairing).
+      return draggedNode.nodeType === "ACCOUNT" && target.key !== dragKey;
+    }
+    if (target?.kind === "category" && target.node) {
+      const targetKey = target.node.key;
+      if (targetKey === dragKey) return false;
+      if (draggedNode.nodeType === "ACCOUNT") return true; // account -> category: always valid, matches account-onto-account semantics
+      // category -> category: same root GAAP anchor only (never invent a
+      // recursive reclassification of every descendant leaf), and never
+      // into its own subtree (would create a cycle).
+      const subtree = getSubtreeKeys(childrenByParentKey, dragKey);
+      if (subtree.has(targetKey)) return false;
+      const draggedAnchor = getRootAnchorKey(nodesByKey, dragKey);
+      const targetAnchor = getRootAnchorKey(nodesByKey, targetKey);
+      return !draggedAnchor || draggedAnchor === targetAnchor;
+    }
+    return false;
+  };
 
   const onRowDragOver = (row) => (e) => {
     if (!isValidDropTarget(row)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
-    if (dropKey !== row.key) setDropKey(row.key);
+    const targetKey = row.nodeType === "ACCOUNT" ? row.key : row.node?.key;
+    if (dropKey !== targetKey) setDropKey(targetKey);
   };
 
   const onRowDrop = (row) => (e) => {
     if (!isValidDropTarget(row)) return;
     e.preventDefault();
     const movedKey = dragKey;
-    const moved = accountRows.find((r) => r.key === movedKey);
+    const draggedNode = nodesByKey.get(movedKey);
     clearDrag();
-    if (!moved) return;
-    // A drop onto a sibling already under the same parent is a no-op -- don't
-    // dirty the tree or burn an undo step for it.
-    const sameParent = (moved.parentKey || null) === (row.parentKey || null);
-    const sameType = moved.accountType === row.accountType;
-    if (sameParent && sameType) return;
-    commit(moveAccountToParent(nodes, movedKey, row.parentKey || null, {
-      accountType: row.accountType,
-      statementType: row.statementType,
-    }));
-    const dest = row.hierarchyPath || row.name;
-    notify?.(`Moved "${moved.name}" to ${dest}. Review and Save to apply.`, "success");
+    if (!draggedNode) return;
+
+    if (draggedNode.nodeType === "ACCOUNT") {
+      const moved = accountRows.find((r) => r.key === movedKey);
+      if (!moved) return;
+      const targetParentKey = row.nodeType === "ACCOUNT" ? (row.parentKey || null) : row.node.key;
+      const targetType = row.nodeType === "ACCOUNT" ? row.accountType : row.node.accountType;
+      const targetStatement = row.nodeType === "ACCOUNT" ? row.statementType : row.node.statementType;
+      // A drop onto a sibling already under the same parent is a no-op -- don't
+      // dirty the tree or burn an undo step for it.
+      const sameParent = (moved.parentKey || null) === targetParentKey;
+      const sameType = moved.accountType === targetType;
+      if (sameParent && sameType) return;
+      commit(moveAccountToParent(nodes, movedKey, targetParentKey, {
+        accountType: targetType,
+        statementType: targetStatement,
+      }));
+      const dest = row.nodeType === "ACCOUNT" ? (row.hierarchyPath || row.name) : row.label;
+      notify?.(`Moved "${moved.name}" to ${dest}. Review and Save to apply.`, "success");
+      return;
+    }
+
+    // CATEGORY -> CATEGORY: a reparent, not a merge — the dragged category
+    // and its whole subtree survive under the new parent (moveNode only ever
+    // touches the dragged node's own parentKey; every descendant keeps
+    // pointing at IT, so they move for free). Distinct from mergeCategory,
+    // which instead deletes the source and repoints only its DIRECT members.
+    if (row.kind === "category" && row.node) {
+      const targetKey = row.node.key;
+      if ((draggedNode.parentKey || null) === targetKey) return; // no-op
+      commit(moveNode(nodes, movedKey, targetKey));
+      notify?.(`Moved "${displayName(draggedNode)}" under "${row.label}". Review and Save to apply.`, "success");
+    }
   };
 
   // ── Merge this account's category into another existing (or new) category ──
@@ -712,6 +874,83 @@ export default function ChartOfAccountsGrid({
     if (!mergeEditor.categoryKey) { notify?.("This account has no category to merge.", "error"); return; }
     commit(mergeCategory(nodes, mergeEditor.categoryKey, targetArr));
     closeMergeEditor();
+  };
+
+  // ── Category create / rename / delete / move (structured, no free-text
+  // path typing) ───────────────────────────────────────────────────────────
+  // Renders in BOTH mode==="proposal" and mode==="approved" — matching the
+  // existing precedent that the per-account Pencil/GitMerge/FolderInput
+  // actions already render in both modes today (only native drag-and-drop is
+  // proposal-only, via canReorder). This is not a new restriction.
+  const openCreateCategory = (parentKey) => {
+    cancelEdit();
+    setCategoryEditor({ mode: "create", parentKey, value: "" });
+  };
+  const openRenameCategory = (node) => {
+    cancelEdit();
+    setCategoryEditor({ mode: "rename", targetKey: node.key, value: displayName(node) });
+  };
+  const openMoveCategory = (node) => {
+    cancelEdit();
+    setCategoryEditor({ mode: "move", targetKey: node.key, value: "" });
+  };
+  const submitCategoryEditor = () => {
+    if (!categoryEditor) return;
+    const trimmed = categoryEditor.value.trim();
+
+    if (categoryEditor.mode === "create") {
+      if (!trimmed) { notify?.("Enter a name for the new parent category.", "error"); return; }
+      const parentNode = categoryEditor.parentKey ? nodesByKey.get(categoryEditor.parentKey) : null;
+      const result = createCategory(nodes, {
+        parentKey: categoryEditor.parentKey || null,
+        label: trimmed,
+        accountType: parentNode?.accountType,
+        statementType: parentNode?.statementType,
+      });
+      if (result.error) {
+        notify?.(`Couldn't create "${trimmed}" — ${result.error === "PARENT_IS_LEAF" ? "that location is a posting account, not a category" : "invalid location"}.`, "error");
+        return;
+      }
+      commit(result.nodes);
+      notify?.(
+        result.created
+          ? `Created "${trimmed}". It won't be saved until it contains at least one account.`
+          : `"${trimmed}" already exists at that location.`,
+        "success",
+      );
+      closeCategoryEditor();
+      return;
+    }
+
+    if (categoryEditor.mode === "rename") {
+      if (!trimmed) { notify?.("Enter a name.", "error"); return; }
+      commit(renameNode(nodes, categoryEditor.targetKey, trimmed));
+      closeCategoryEditor();
+      return;
+    }
+
+    if (categoryEditor.mode === "move") {
+      const targetNode = nodesByKey.get(categoryEditor.targetKey);
+      const targets = targetNode ? getMoveTargetsForCategory(nodes, targetNode) : [];
+      const target = targets.find((c) => c.path === trimmed || c.node.key === trimmed);
+      if (!target) { notify?.("Pick a destination category from the list.", "error"); return; }
+      commit(moveNode(nodes, categoryEditor.targetKey, target.node.key));
+      notify?.(`Moved under "${target.path}". Review and Save to apply.`, "success");
+      closeCategoryEditor();
+    }
+  };
+  const handleDeleteCategory = (node) => {
+    const result = deleteCategory(nodes, node.key);
+    if (result.error === "HAS_CHILDREN") {
+      // Shouldn't be reachable — the Trash2 icon only renders when
+      // !hasChildren — but defensive, and points at the right tool instead
+      // of failing silently.
+      notify?.(`"${displayName(node)}" still has content — use Merge instead of Delete.`, "error");
+      return;
+    }
+    if (result.error) { notify?.("Couldn't delete that category.", "error"); return; }
+    commit(result.nodes);
+    notify?.(`Deleted empty category "${displayName(node)}".`, "success");
   };
 
   // ── Manual mapping for a needs_mapping account ────────────────────────────
@@ -830,14 +1069,35 @@ export default function ChartOfAccountsGrid({
         // Nest the accounts under the category headers the backend's own
         // ancestry already describes, instead of listing them flat. Presentation
         // only — see buildSubGroupItems.
-        for (const item of buildSubGroupItems(rows, section, sg, nodesByKey, childrenByParentKey)) items.push(item);
+        for (const item of buildSubGroupItems(rows, section, sg, nodesByKey, childrenByParentKey, collapsedKeys)) items.push(item);
         if (rows.length === 0) {
           items.push({ kind: "empty", section, sg });
         }
       }
     }
     return items;
-  }, [groupedData, search]);
+  }, [groupedData, search, nodesByKey, childrenByParentKey, collapsedKeys]);
+
+  const pendingRecCount = useMemo(
+    () => rec.recommendations.filter((r) => r.status === "pending").length,
+    [rec.recommendations],
+  );
+
+  // Root anchor key per sub-group, used only to enable/disable that
+  // sub-group's "create category here" button — a company with zero
+  // accounts of a given type has no anchor node yet to attach a new
+  // category to. Derived from the unfiltered account rows (not
+  // filteredRows) so an active search never hides this control.
+  const subGroupAnchorKey = useMemo(() => {
+    const out = {};
+    for (const sec of [...SECTION_DEFS, NEEDS_MAPPING_SECTION]) {
+      for (const sg of sec.subGroups) {
+        const row = accountRows.find((r) => sg.types.has(r.accountType));
+        out[sg.key] = row ? getRootAnchorKey(nodesByKey, row.key) : null;
+      }
+    }
+    return out;
+  }, [accountRows, nodesByKey]);
 
   const saveLabel = mode === "proposal" ? "Approve & Generate Reports" : "Save Changes";
   const isEmpty = !loading && accountRows.length === 0;
@@ -873,6 +1133,16 @@ export default function ChartOfAccountsGrid({
               {counts.needsMappingCount} need{counts.needsMappingCount === 1 ? "s" : ""} mapping
             </span>
           )}
+          {pendingRecCount > 0 && (
+            <button
+              onClick={() => setShowRecPanel(true)}
+              title="Review AI hierarchy suggestions"
+              className="flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary hover:bg-primary/20"
+            >
+              <Sparkles size={11} />
+              Review Recommendations ({pendingRecCount})
+            </button>
+          )}
           {pendingCount > 0 && (
             <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">
               {pendingCount} unsaved edit{pendingCount === 1 ? "" : "s"}
@@ -889,6 +1159,20 @@ export default function ChartOfAccountsGrid({
               className="w-56 rounded-lg border border-border py-1.5 pl-8 pr-2 text-sm"
             />
           </div>
+          <button
+            onClick={collapseAll}
+            title="Collapse all categories"
+            className="flex items-center gap-1 rounded-lg border border-border px-2 py-1.5 text-xs font-semibold text-text-primary hover:bg-bg-page"
+          >
+            <ChevronsUp size={13} /> Collapse All
+          </button>
+          <button
+            onClick={expandAll}
+            title="Expand all categories"
+            className="flex items-center gap-1 rounded-lg border border-border px-2 py-1.5 text-xs font-semibold text-text-primary hover:bg-bg-page"
+          >
+            <ChevronsDown size={13} /> Expand All
+          </button>
           <button
             onClick={undo}
             disabled={!history.length}
@@ -944,7 +1228,7 @@ export default function ChartOfAccountsGrid({
             Regenerate
           </button>
           <button
-            onClick={handleSave}
+            onClick={requestSave}
             disabled={saving || !accountCount || !draftValidation.valid}
             title={!draftValidation.valid ? "Fix the issues below before saving" : saveLabel}
             className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
@@ -1021,9 +1305,24 @@ export default function ChartOfAccountsGrid({
             <thead>
               <tr className="text-left text-[11px] font-bold uppercase tracking-wider text-white"
                   style={{ backgroundColor: "#1B3A5C" }}>
-                <th className="whitespace-nowrap px-3 py-2.5 border-r border-white/10">System ID</th>
-                <th className="whitespace-nowrap px-3 py-2.5 border-r border-white/10">Account Number</th>
-                <th className="whitespace-nowrap px-3 py-2.5 border-r border-white/10 min-w-[180px]">Account Name</th>
+                <th
+                  className="sticky whitespace-nowrap px-3 py-2.5 border-r border-white/10 z-20"
+                  style={{ left: STICKY_LEFT_1, width: STICKY_COL_1_WIDTH, backgroundColor: HEADER_BG }}
+                >
+                  System ID
+                </th>
+                <th
+                  className="sticky whitespace-nowrap px-3 py-2.5 border-r border-white/10 z-20"
+                  style={{ left: STICKY_LEFT_2, width: STICKY_COL_2_WIDTH, backgroundColor: HEADER_BG }}
+                >
+                  Account Number
+                </th>
+                <th
+                  className="sticky whitespace-nowrap px-3 py-2.5 border-r-2 border-border/50 z-20 min-w-[180px] shadow-[2px_0_4px_-2px_rgba(0,0,0,0.15)]"
+                  style={{ left: STICKY_LEFT_3, backgroundColor: HEADER_BG }}
+                >
+                  Account Name
+                </th>
                 <th className="whitespace-nowrap px-3 py-2.5 border-r border-white/10">Statement Type</th>
                 {LEVEL_INDEXES.map((i) => (
                   <th key={i} className="whitespace-nowrap px-2 py-2.5 border-r border-white/10 min-w-[90px]">
@@ -1055,13 +1354,63 @@ export default function ChartOfAccountsGrid({
                 }
 
                 if (item.kind === "subGroup") {
+                  const anchorKey = subGroupAnchorKey[item.sg.key];
+                  const isCreatingAtAnchor = categoryEditor?.mode === "create" && categoryEditor.parentKey === anchorKey;
                   return (
-                    <tr key={`sg-${item.sg.key}`} style={{ backgroundColor: "#2C4D7A" }}>
+                    <Fragment key={`sg-${item.sg.key}`}>
+                    <tr style={{ backgroundColor: "#2C4D7A" }}>
                       <td colSpan={TOTAL_COLS} className="px-6 py-2 text-xs font-bold text-white">
-                        {item.sg.label}
-                        <span className="ml-2 text-white/40 font-normal">({item.count})</span>
+                        <div className="flex items-center justify-between">
+                          <span>
+                            {item.sg.label}
+                            <span className="ml-2 text-white/40 font-normal">({item.count})</span>
+                          </span>
+                          {anchorKey && (
+                            <button
+                              onClick={() => (isCreatingAtAnchor ? closeCategoryEditor() : openCreateCategory(anchorKey))}
+                              title={`Create a category under ${item.sg.label}`}
+                              className="flex items-center gap-1 rounded p-1 text-white/70 hover:bg-white/10 hover:text-white"
+                            >
+                              <FolderPlus size={13} />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
+                    {isCreatingAtAnchor && (
+                      <tr className="bg-primary/5 border-b border-border/40">
+                        <td colSpan={TOTAL_COLS} className="px-4 py-3">
+                          <div className="flex flex-wrap items-end gap-3">
+                            <div className="flex flex-col gap-1">
+                              <label className="text-[10px] font-semibold uppercase tracking-wide text-text-muted">
+                                New category under {item.sg.label}
+                              </label>
+                              <input
+                                autoFocus
+                                value={categoryEditor.value}
+                                onChange={(e) => setCategoryEditor((c) => ({ ...c, value: e.target.value }))}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") submitCategoryEditor();
+                                  if (e.key === "Escape") closeCategoryEditor();
+                                }}
+                                placeholder="Category name"
+                                className="w-[320px] rounded border border-primary px-2 py-1.5 text-xs"
+                              />
+                            </div>
+                            <button onClick={submitCategoryEditor} className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90">
+                              <Check size={13} /> Create
+                            </button>
+                            <button onClick={closeCategoryEditor} className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-text-primary hover:bg-white">
+                              <X size={13} /> Cancel
+                            </button>
+                          </div>
+                          <p className="mt-2 text-[11px] text-text-muted">
+                            Won't be saved until it contains at least one account.
+                          </p>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   );
                 }
 
@@ -1079,16 +1428,159 @@ export default function ChartOfAccountsGrid({
                 // account: it deliberately carries no system id, account number,
                 // statement badge, level cells or row actions.
                 if (item.kind === "category") {
+                  const catNode = item.node;
+                  const isCollapsed = collapsedKeys.has(catNode.key);
+                  const isDropTargetCat = dropKey === catNode.key && dragKey !== catNode.key;
+                  const catBg = isDropTargetCat ? "rgba(139,197,61,0.1)" : "#f9fafb";
+                  const isRenamingThis = categoryEditor?.mode === "rename" && categoryEditor.targetKey === catNode.key;
+                  const isMovingThis = categoryEditor?.mode === "move" && categoryEditor.targetKey === catNode.key;
+                  const isCreatingChildHere = categoryEditor?.mode === "create" && categoryEditor.parentKey === catNode.key;
+                  const moveTargets = isMovingThis ? getMoveTargetsForCategory(nodes, catNode) : [];
+
                   return (
-                    <tr key={item.key} className="border-b border-border/40 bg-gray-50">
+                    <Fragment key={item.key}>
+                    <tr
+                      draggable={canReorder}
+                      onDragStart={onRowDragStart(item)}
+                      onDragEnd={clearDrag}
+                      onDragOver={onRowDragOver(item)}
+                      onDragLeave={() => { if (dropKey === catNode.key) setDropKey(null); }}
+                      onDrop={onRowDrop(item)}
+                      className={`border-b border-border/40 transition-colors ${canReorder ? "cursor-grab" : ""} ${
+                        dragKey === catNode.key ? "opacity-40" : ""
+                      } ${isDropTargetCat ? "outline outline-2 -outline-offset-2 outline-[#8BC53D]" : ""}`}
+                    >
                       <td
-                        colSpan={TOTAL_COLS}
-                        className="py-1.5 text-[12px] font-semibold text-text-secondary"
-                        style={{ paddingLeft: `${32 + item.depth * 16}px`, paddingRight: "12px" }}
+                        className="sticky z-10 py-1.5 border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]"
+                        style={{ left: STICKY_LEFT_1, width: STICKY_LEFT_3, backgroundColor: catBg }}
                       >
-                        {item.label}
+                        <div className="flex items-center gap-1 min-w-0" style={{ paddingLeft: `${32 + item.depth * 16}px`, paddingRight: "8px" }}>
+                          {item.hasChildren ? (
+                            <button
+                              onClick={() => toggleCollapsed(catNode.key)}
+                              title={isCollapsed ? "Expand" : "Collapse"}
+                              className="shrink-0 rounded p-0.5 text-text-muted hover:bg-white/60"
+                            >
+                              {isCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                            </button>
+                          ) : (
+                            <span className="inline-block w-[18px] shrink-0" />
+                          )}
+                          <span className="truncate text-[12px] font-semibold text-text-secondary" title={item.label}>
+                            {item.label}
+                          </span>
+                        </div>
+                      </td>
+                      <td colSpan={TOTAL_COLS - 1} className="py-1.5 px-3" style={{ backgroundColor: catBg }}>
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            onClick={() => (isCreatingChildHere ? closeCategoryEditor() : openCreateCategory(catNode.key))}
+                            title="Create a sub-category here"
+                            className="rounded p-1 text-text-muted hover:bg-white/80 hover:text-primary"
+                          >
+                            <FolderPlus size={12} />
+                          </button>
+                          <button
+                            onClick={() => (isRenamingThis ? closeCategoryEditor() : openRenameCategory(catNode))}
+                            title="Rename this category"
+                            className="rounded p-1 text-text-muted hover:bg-white/80 hover:text-text-primary"
+                          >
+                            <Pencil size={12} />
+                          </button>
+                          <button
+                            onClick={() => (isMovingThis ? closeCategoryEditor() : openMoveCategory(catNode))}
+                            title="Move this category elsewhere"
+                            className="rounded p-1 text-text-muted hover:bg-white/80 hover:text-primary"
+                          >
+                            <ArrowRightLeft size={12} />
+                          </button>
+                          {!item.hasChildren && (
+                            <button
+                              onClick={() => handleDeleteCategory(catNode)}
+                              title="Delete this empty category"
+                              className="rounded p-1 text-text-muted hover:bg-white/80 hover:text-red-600"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
+
+                    {(isCreatingChildHere || isRenamingThis) && (
+                      <tr className="bg-primary/5 border-b border-border/40">
+                        <td colSpan={TOTAL_COLS} className="px-4 py-3">
+                          <div className="flex flex-wrap items-end gap-3">
+                            <div className="flex flex-col gap-1">
+                              <label className="text-[10px] font-semibold uppercase tracking-wide text-text-muted">
+                                {isCreatingChildHere ? `New sub-category under "${item.label}"` : `Rename "${item.label}" to`}
+                              </label>
+                              <input
+                                autoFocus
+                                value={categoryEditor.value}
+                                onChange={(e) => setCategoryEditor((c) => ({ ...c, value: e.target.value }))}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") submitCategoryEditor();
+                                  if (e.key === "Escape") closeCategoryEditor();
+                                }}
+                                placeholder="Category name"
+                                className="w-[320px] rounded border border-primary px-2 py-1.5 text-xs"
+                              />
+                            </div>
+                            <button onClick={submitCategoryEditor} className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90">
+                              <Check size={13} /> {isCreatingChildHere ? "Create" : "Rename"}
+                            </button>
+                            <button onClick={closeCategoryEditor} className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-text-primary hover:bg-white">
+                              <X size={13} /> Cancel
+                            </button>
+                          </div>
+                          {isCreatingChildHere && (
+                            <p className="mt-2 text-[11px] text-text-muted">
+                              Won't be saved until it contains at least one account.
+                            </p>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+
+                    {isMovingThis && (
+                      <tr className="bg-primary/5 border-b border-border/40">
+                        <td colSpan={TOTAL_COLS} className="px-4 py-3">
+                          <div className="flex flex-wrap items-end gap-3">
+                            <div className="flex flex-col gap-1">
+                              <label className="text-[10px] font-semibold uppercase tracking-wide text-text-muted">
+                                Move "{item.label}" under
+                              </label>
+                              <input
+                                autoFocus
+                                list={`coa-cat-move-options-${catNode.key}`}
+                                value={categoryEditor.value}
+                                onChange={(e) => setCategoryEditor((c) => ({ ...c, value: e.target.value }))}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") submitCategoryEditor();
+                                  if (e.key === "Escape") closeCategoryEditor();
+                                }}
+                                placeholder="Pick a destination category"
+                                className="w-[420px] rounded border border-primary px-2 py-1.5 text-xs"
+                              />
+                              <datalist id={`coa-cat-move-options-${catNode.key}`}>
+                                {moveTargets.map((c) => <option key={c.node.key} value={c.path} />)}
+                              </datalist>
+                            </div>
+                            <button onClick={submitCategoryEditor} className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90">
+                              <Check size={13} /> Move
+                            </button>
+                            <button onClick={closeCategoryEditor} className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-text-primary hover:bg-white">
+                              <X size={13} /> Cancel
+                            </button>
+                          </div>
+                          <p className="mt-2 text-[11px] text-text-muted">
+                            Only same-statement destinations are listed — moving across Balance Sheet/P&L isn't supported here.
+                          </p>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   );
                 }
 
@@ -1129,7 +1621,14 @@ export default function ChartOfAccountsGrid({
                         : ""
                     }`}
                   >
-                    <td className="whitespace-nowrap px-3 py-1.5 font-mono text-xs font-semibold text-text-muted border-r border-border/30">
+                    <td
+                      className="sticky whitespace-nowrap px-3 py-1.5 font-mono text-xs font-semibold text-text-muted border-r border-border/30 z-10"
+                      style={{
+                        left: STICKY_LEFT_1,
+                        width: STICKY_COL_1_WIDTH,
+                        backgroundColor: getStickyRowBg(row, { isDropTarget: dropKey === row.key && dragKey !== row.key }),
+                      }}
+                    >
                       {canReorder && (
                         <GripVertical
                           className="mr-1 inline h-3 w-3 align-[-2px] text-text-muted/50"
@@ -1139,15 +1638,26 @@ export default function ChartOfAccountsGrid({
                       {row.systemId || "—"}
                     </td>
 
-                    <td className="whitespace-nowrap px-3 py-1.5 font-mono text-xs text-text-muted border-r border-border/30">
+                    <td
+                      className="sticky whitespace-nowrap px-3 py-1.5 font-mono text-xs text-text-muted border-r border-border/30 z-10"
+                      style={{
+                        left: STICKY_LEFT_2,
+                        width: STICKY_COL_2_WIDTH,
+                        backgroundColor: getStickyRowBg(row, { isDropTarget: dropKey === row.key && dragKey !== row.key }),
+                      }}
+                    >
                       {row.accountNumber || ""}
                     </td>
 
                     {/* Indented to sit under its category header. Indentation only —
                         every existing cell, badge and action below is untouched. */}
                     <td
-                      className="whitespace-nowrap px-3 py-1.5 border-r border-border/30"
-                      style={item.depth ? { paddingLeft: `${12 + item.depth * 16}px` } : undefined}
+                      className="sticky whitespace-nowrap px-3 py-1.5 border-r-2 border-border/50 z-10 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]"
+                      style={{
+                        left: STICKY_LEFT_3,
+                        backgroundColor: getStickyRowBg(row, { isDropTarget: dropKey === row.key && dragKey !== row.key }),
+                        ...(item.depth ? { paddingLeft: `${12 + item.depth * 16}px` } : {}),
+                      }}
                     >
                       <span className="text-text-primary text-[13px]" title={row.accountName}>
                         {row.accountName}
@@ -1380,6 +1890,92 @@ export default function ChartOfAccountsGrid({
           </table>
         </div>
       )}
+
+      <RecommendedChangesPanel isOpen={showRecPanel} onClose={() => setShowRecPanel(false)} rec={rec} />
+
+      <Modal isOpen={showSavePreview} onClose={() => setShowSavePreview(false)} title="Review changes before saving" size="lg">
+        <div className="space-y-4">
+          {saveDiff.created.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-text-primary">New categories ({saveDiff.created.length})</p>
+              <ul className="mt-1 space-y-1">
+                {saveDiff.created.map((c) => (
+                  <li key={c.key} className="text-xs text-text-muted">
+                    {c.path}
+                    {!c.hasDescendantAccount && (
+                      <span className="ml-1.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
+                        won't be saved — empty, add an account first
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {saveDiff.deleted.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-text-primary">Deleted categories ({saveDiff.deleted.length})</p>
+              <ul className="mt-1 space-y-1">
+                {saveDiff.deleted.map((c) => <li key={c.key} className="text-xs text-text-muted">{c.path}</li>)}
+              </ul>
+            </div>
+          )}
+          {saveDiff.renamed.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-text-primary">Renamed categories ({saveDiff.renamed.length})</p>
+              <ul className="mt-1 space-y-1">
+                {saveDiff.renamed.map((c) => (
+                  <li key={c.key} className="text-xs text-text-muted">
+                    "{c.from}" → "{c.to}" <span className="text-text-muted/70">({c.path})</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {saveDiff.movedCategories.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-text-primary">Moved categories ({saveDiff.movedCategories.length})</p>
+              <ul className="mt-1 space-y-1">
+                {saveDiff.movedCategories.map((c) => (
+                  <li key={c.key} className="text-xs text-text-muted">
+                    "{c.label}": {c.fromParentPath} → {c.toParentPath}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {saveDiff.moved.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-text-primary">Moved accounts ({saveDiff.moved.length})</p>
+              <ul className="mt-1 space-y-1">
+                {saveDiff.moved.map((a) => (
+                  <li key={a.key} className="text-xs text-text-muted">
+                    <span className="font-medium text-text-primary">{a.name}</span>: {a.fromPath} → {a.toPath}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {saveDiffIsEmpty && <p className="text-sm text-text-muted">No hierarchy changes to review.</p>}
+
+          <div className="flex items-center justify-end gap-2 border-t border-border pt-3">
+            <button
+              onClick={discardFromPreview}
+              className="rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-text-primary hover:bg-bg-page"
+            >
+              Discard all changes
+            </button>
+            <button
+              onClick={confirmSaveFromPreview}
+              disabled={saving}
+              className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+            >
+              {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+              Confirm & Save
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

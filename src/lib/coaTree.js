@@ -335,6 +335,186 @@ export function validateTree(nodes) {
   return { valid: violations.length === 0, violations };
 }
 
+/**
+ * A node's key plus every descendant's key (BFS via childrenByParentKey).
+ * Shared primitive for cycle-prevention (a node can never move under its own
+ * descendant) and "does this category have any children at all" checks.
+ */
+export function getSubtreeKeys(childrenByParentKey, rootKey) {
+  const out = new Set([rootKey]);
+  const queue = [rootKey];
+  while (queue.length) {
+    const key = queue.shift();
+    for (const child of childrenByParentKey.get(key) || []) {
+      if (!out.has(child.key)) { out.add(child.key); queue.push(child.key); }
+    }
+  }
+  return out;
+}
+
+/**
+ * Create a genuinely EMPTY category — no account underneath it yet — as a
+ * child of `parentKey`. Deliberately delegates to the existing
+ * resolveOrCreateCategoryChain rather than inventing a separate key scheme:
+ * the new category's full path is [parent's own ancestor labels..., label],
+ * so reusing that function's exact keying (`client-cat::<path>`) makes a
+ * collision with an existing category structurally impossible — the same
+ * path always resolves to the same node, which is correct dedup, not a bug.
+ *
+ * accountType/statementType are inherited from the parent node when not
+ * explicitly passed, since every leaf under this category will eventually
+ * need to resolve to ONE type for the server's anchor-consistency check, and
+ * a bare "create a folder" action should never ask the user to make a
+ * classification decision.
+ *
+ * NOTE (frontend-only limitation, by design — see the Save-preview UI):
+ * buildCoaNodeTree on the backend derives every category exclusively from
+ * submitted ACCOUNT leaves' paths. A category with zero descendant accounts
+ * is therefore NOT persisted by a Save — it exists in this editor's draft
+ * until the user adds at least one account under it.
+ *
+ * @returns {{ nodes: node[], categoryKey: string|null, created: boolean, error: null|"EMPTY_LABEL"|"INVALID_PARENT"|"PARENT_IS_LEAF" }}
+ */
+export function createCategory(nodes, { parentKey = null, label, accountType, statementType } = {}) {
+  const trimmed = String(label || "").trim();
+  if (!trimmed) return { nodes: nodes || [], categoryKey: null, created: false, error: "EMPTY_LABEL" };
+
+  const { nodesByKey } = buildIndexes(nodes);
+  let parentLabels = [];
+  let inheritedType = accountType;
+  let inheritedStatement = statementType;
+  if (parentKey) {
+    const { chain, error } = walkAncestry(nodesByKey, parentKey);
+    if (error) return { nodes: nodes || [], categoryKey: null, created: false, error: "INVALID_PARENT" };
+    const parentNode = nodesByKey.get(parentKey);
+    if (parentNode?.nodeType === "ACCOUNT") {
+      return { nodes: nodes || [], categoryKey: null, created: false, error: "PARENT_IS_LEAF" };
+    }
+    parentLabels = chain.map(displayName);
+    inheritedType = inheritedType || parentNode?.accountType;
+    inheritedStatement = inheritedStatement || parentNode?.statementType;
+  }
+
+  const pathArr = [...parentLabels, trimmed];
+  const existingKeys = new Set((nodes || []).map((n) => n.key));
+  const { nodes: next, categoryKey } = resolveOrCreateCategoryChain(nodes, pathArr, {
+    accountType: inheritedType, statementType: inheritedStatement,
+  });
+  return { nodes: next, categoryKey, created: Boolean(categoryKey) && !existingKeys.has(categoryKey), error: null };
+}
+
+/**
+ * Delete an EMPTY category (zero children of either type) — pure, returns a
+ * NEW array on success or the ORIGINAL array reference on failure. Refuses
+ * (rather than cascading) when the category still has content: mergeCategory
+ * is the existing tool for "delete with contents," and silently discarding
+ * real accounts here would be exactly the kind of data loss this whole
+ * redesign exists to prevent.
+ *
+ * @returns {{ nodes: node[], error: null|"NOT_FOUND"|"NOT_A_CATEGORY"|"HAS_CHILDREN" }}
+ */
+export function deleteCategory(nodes, key) {
+  const list = nodes || [];
+  const target = list.find((n) => n.key === key);
+  if (!target) return { nodes: list, error: "NOT_FOUND" };
+  if (target.nodeType !== "CATEGORY") return { nodes: list, error: "NOT_A_CATEGORY" };
+  if (list.some((n) => n.parentKey === key)) return { nodes: list, error: "HAS_CHILDREN" };
+  return { nodes: list.filter((n) => n.key !== key), error: null };
+}
+
+/** Category nodes a given CATEGORY node could legally move under — same
+ * root-anchor restriction as getMoveTargetsForAccount (a category can never
+ * cross from one fixed GAAP anchor to another — that would require rewriting
+ * every descendant leaf's accountType/statementType recursively, which is a
+ * classification decision, not a hierarchy edit), PLUS excludes the
+ * category's own entire subtree (never move a node under its own descendant —
+ * that would create a cycle) and itself. */
+export function getMoveTargetsForCategory(nodes, categoryNode) {
+  const { nodesByKey, childrenByParentKey } = buildIndexes(nodes);
+  const currentAnchor = getRootAnchorKey(nodesByKey, categoryNode.parentKey || categoryNode.key);
+  const excluded = getSubtreeKeys(childrenByParentKey, categoryNode.key);
+  return listCategoryNodes(nodes).filter(({ node }) => {
+    if (excluded.has(node.key)) return false;
+    const anchor = getRootAnchorKey(nodesByKey, node.key);
+    return !currentAnchor || anchor === currentAnchor;
+  });
+}
+
+/**
+ * Diff two node-array snapshots of the same tree (the originally-loaded tree
+ * vs. the current in-memory draft) for a Save-preview screen. Built entirely
+ * from primitives already in this file — no new lookup machinery.
+ *
+ * FIVE buckets, not four: a pure category reparent (drag "Administrative"
+ * under a different same-anchor category) changes no ACCOUNT's own parentKey,
+ * so without `movedCategories` a whole-subtree move would show as ZERO
+ * changes anywhere else in the diff — which would make the preview dishonest
+ * about exactly the kind of edit this redesign adds.
+ *
+ * @returns {{
+ *   moved:          Array<{key, name, fromPath, toPath}>,               // ACCOUNT nodes whose parentKey changed
+ *   created:        Array<{key, label, path, hasDescendantAccount}>,    // CATEGORY nodes only in `currentNodes`
+ *   deleted:        Array<{key, label, path}>,                         // CATEGORY nodes only in `originalNodes`
+ *   renamed:        Array<{key, from, to, path}>,                      // CATEGORY nodes whose label changed
+ *   movedCategories: Array<{key, label, fromParentPath, toParentPath}>, // CATEGORY nodes whose OWN parentKey changed
+ * }}
+ */
+export function diffCoaTrees(originalNodes, currentNodes) {
+  const before = originalNodes || [];
+  const after = currentNodes || [];
+  const { nodesByKey: beforeByKey } = buildIndexes(before);
+  const { nodesByKey: afterByKey, childrenByParentKey: afterChildren } = buildIndexes(after);
+  const beforeKeys = new Set(before.map((n) => n.key));
+  const afterKeys = new Set(after.map((n) => n.key));
+
+  const moved = [];
+  const renamed = [];
+  const movedCategories = [];
+  for (const n of after) {
+    const prev = beforeByKey.get(n.key);
+    if (!prev) continue; // handled by created/below
+    if (n.nodeType === "ACCOUNT" && (prev.parentKey || null) !== (n.parentKey || null)) {
+      moved.push({
+        key: n.key,
+        name: displayName(n),
+        fromPath: getHierarchyPathLabel(beforeByKey, n.key),
+        toPath: getHierarchyPathLabel(afterByKey, n.key),
+      });
+    }
+    if (n.nodeType === "CATEGORY") {
+      const prevLabel = displayName(prev);
+      const nowLabel = displayName(n);
+      if (prevLabel !== nowLabel) {
+        renamed.push({ key: n.key, from: prevLabel, to: nowLabel, path: getHierarchyPathLabel(afterByKey, n.key) });
+      }
+      if ((prev.parentKey || null) !== (n.parentKey || null)) {
+        movedCategories.push({
+          key: n.key,
+          label: nowLabel,
+          fromParentPath: prev.parentKey ? getHierarchyPathLabel(beforeByKey, prev.parentKey) : "(root)",
+          toParentPath: n.parentKey ? getHierarchyPathLabel(afterByKey, n.parentKey) : "(root)",
+        });
+      }
+    }
+  }
+
+  const created = after
+    .filter((n) => n.nodeType === "CATEGORY" && !beforeKeys.has(n.key))
+    .map((n) => ({
+      key: n.key,
+      label: displayName(n),
+      path: getHierarchyPathLabel(afterByKey, n.key),
+      hasDescendantAccount: [...getSubtreeKeys(afterChildren, n.key)]
+        .some((k) => afterByKey.get(k)?.nodeType === "ACCOUNT"),
+    }));
+
+  const deleted = before
+    .filter((n) => n.nodeType === "CATEGORY" && !afterKeys.has(n.key))
+    .map((n) => ({ key: n.key, label: displayName(n), path: getHierarchyPathLabel(beforeByKey, n.key) }));
+
+  return { moved, created, deleted, renamed, movedCategories };
+}
+
 /** Summary counts for the toolbar badges / toasts — prefers the backend's own
  * matchSummary (proposal / regenerate response) when supplied, otherwise
  * derives the same two numbers from each ACCOUNT node's classificationSource
