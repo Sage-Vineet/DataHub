@@ -711,7 +711,15 @@ async function generateMonthlyBalanceSheets(companyId, versionId, gate) {
 
   const allRows = [];
   let sort = 0;
-  const monthEndCutoff = gate?.glEndDate || monthEndDate(endYear, 12);
+  // Month granularity, for the same reason as the reverse engine's cutoffMonth
+  // (see its comment for the confirmed defect). The GL's last transaction date
+  // is almost never a calendar month-end, so a day-granularity compare against
+  // monthEndDate() dropped the GL's own final, partial month. Going forward
+  // that only ever COST a snapshot — the month's activity is added inside the
+  // loop body, after this check, so earlier months were never contaminated the
+  // way the reverse engine's were — but it still meant the most recent
+  // month-end Balance Sheet was silently never produced.
+  const cutoffMonth = String(gate?.glEndDate || monthEndDate(endYear, 12)).slice(0, 7);
   const yearsStored = [];
   const failedMonths = [];
 
@@ -743,7 +751,7 @@ async function generateMonthlyBalanceSheets(companyId, versionId, gate) {
     if (byMonth && byMonth.size) {
       for (let m = 1; m <= 12; m++) {
         const asOf = monthEndDate(year, m);
-        if (asOf > monthEndCutoff) break; // don't fabricate months past the last GL activity
+        if (asOf.slice(0, 7) > cutoffMonth) break; // don't fabricate months past the last GL activity
         const mData = byMonth.get(m);
         if (mData) {
           for (const [key, acc] of mData.bsMap) addRun(running, key, acc.net, acc.type, acc.name);
@@ -768,7 +776,7 @@ async function generateMonthlyBalanceSheets(companyId, versionId, gate) {
         }
       } catch (_e) { /* leave running unchanged */ }
       const asOf = monthEndDate(year, 12);
-      if (asOf <= monthEndCutoff) {
+      if (asOf.slice(0, 7) <= cutoffMonth) {
         const { rows, nextSort } = snapshotRows({
           versionId, companyId, year, asOfDate: asOf, running, cumulativeNetIncome, sortStart: sort, netIncomeCoaId: niCoaId,
         });
@@ -977,11 +985,41 @@ async function generateMonthlyBalanceSheetsReverse(companyId, versionId, gate, o
   let sort = 0;
   const yearsStored = [];
   const failedMonths = [];
-  // Upper bound only — mirrors the forward engine's monthEndCutoff exactly,
-  // so a month after the GL's last real activity is never fabricated (this
-  // matters for endYear when the Ending BS's date equals the last GL month,
-  // which the guard above already enforces).
-  const monthEndCutoff = gate?.glEndDate || monthEndDate(endYear, 12);
+  // Upper bound, compared at MONTH granularity — never at day granularity.
+  //
+  // CONFIRMED ROOT CAUSE (fixed here). This used to be the raw `gate.glEndDate`
+  // (the GL's last TRANSACTION date, e.g. 2026-07-24) compared against a
+  // calendar month-END (2026-07-31). The GL's final month is partial by
+  // definition — the last transaction almost never lands on the 31st — so
+  // `monthEndDate(endYear, lastMonth) > glEndDate` was true for that month and
+  // the loop below `continue`d past it. That `continue` skipped BOTH halves of
+  // the iteration: the snapshot AND the un-subtraction of that month's GL
+  // activity. So the final month's movement was never unwound, and every
+  // single earlier snapshot — all the way back through every prior year —
+  // carried a CONSTANT per-account offset equal to that unwound-nothing month.
+  //
+  // Measured live (version 6f2cbcab, Sage Healthy, GL ending 2026-07-24 with an
+  // uploaded Ending BS dated 2026-07-31): the generated sheet was off from the
+  // uploaded document by exactly July-2026's GL movement in EVERY month of
+  // 2024, 2025 and 2026 — Accrued Revenue -128,110.74, A/R +64,411.80,
+  // Payments to deposit +45,787.04, KeyBank +10,881.70, Mercury Credit Card
+  // +2,988.79, Mercury Checking -2,200.00, Accrued Expenses -4,950.00, and
+  // Retained Earnings -7,268.99 (= July's net income, folded into RE by the
+  // residual step below). Accounts with no July activity matched to the cent,
+  // which is what pins the cause to this single skipped month.
+  //
+  // It also silently dropped the one month that is GROUND TRUTH: the uploaded
+  // Ending BS's own month-end (2026-07-31) was never emitted at all.
+  //
+  // Assets = Liabilities + Equity still held in every month (a skipped month's
+  // movement is itself a balanced set of journal entries), which is precisely
+  // why assertMonthBalances never flagged any of this.
+  //
+  // The Ending-BS date guard above already enforces that the uploaded Ending BS
+  // is IN the GL's final month, so that month-end is a real, anchored month —
+  // it must be emitted and unwound like any other. Comparing "YYYY-MM" makes
+  // that true while still refusing to fabricate months after it.
+  const cutoffMonth = String(gate?.glEndDate || monthEndDate(endYear, 12)).slice(0, 7);
 
   for (let year = endYear; year >= startYear; year--) {
     const byMonth = await aggregateGLForBSByMonth(versionId, year);
@@ -1026,7 +1064,10 @@ async function generateMonthlyBalanceSheetsReverse(companyId, versionId, gate, o
       // unchanged, exactly like the forward loop's `if (mData) {...}` no-op.
       for (let m = 12; m >= 1; m--) {
         const asOf = monthEndDate(year, m);
-        if (asOf > monthEndCutoff) continue; // never fabricate past the last real GL activity
+        // Month granularity — see cutoffMonth. A day-granularity compare here
+        // skipped the GL's own final (partial) month, which silently left that
+        // month's activity un-unwound in every earlier snapshot.
+        if (asOf.slice(0, 7) > cutoffMonth) continue; // never fabricate past the last real GL activity
         // `running` + `cumulativeNetIncome` right now represent END of month m
         // — snapshot BEFORE subtracting.
         const { rows, nextSort } = snapshotRows({
@@ -1050,7 +1091,7 @@ async function generateMonthlyBalanceSheetsReverse(companyId, versionId, gate, o
       let agg = null;
       try { agg = await aggregateGLForBS(versionId, year); } catch (_e) { /* leave running unchanged */ }
       const asOf = monthEndDate(year, 12);
-      if (asOf <= monthEndCutoff) {
+      if (asOf.slice(0, 7) <= cutoffMonth) {
         const { rows, nextSort } = snapshotRows({
           versionId, companyId, year, asOfDate: asOf, running, cumulativeNetIncome, sortStart: sort, netIncomeCoaId: niCoaId,
         });
