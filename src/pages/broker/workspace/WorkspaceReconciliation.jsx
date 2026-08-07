@@ -55,6 +55,7 @@ const API_BASE_URL =
 const QB_BANK_ACTIVITY_ENDPOINT = `${API_BASE_URL}/qb-bank-activity`;
 const QB_BANK_ACTIVITY_SAVED_ENDPOINT = `${API_BASE_URL}/qb-bank-activity/saved`;
 const QB_ONE_BANK_ACTIVITY_ENDPOINT = `${API_BASE_URL}/qb-one-bank-activity`;
+const QB_ACTIVITY_REVIEW_ENDPOINT = `${API_BASE_URL}/qb-activity-review`;
 const EXTRACT_BANK_PDF_RECORDS_ENDPOINT = `${API_BASE_URL}/extract-bank-pdf-records`;
 const QMS_BANK_DATA_ENDPOINT = `${API_BASE_URL}/manual-report-uploads/qms-bank-data`;
 const MANUAL_BANK_DATA_ENDPOINT = `${API_BASE_URL}/manual-upload/bank-data`;
@@ -1496,14 +1497,7 @@ export default function WorkspaceReconciliation() {
     () => {
       const token = getStoredToken();
       return {
-        ...(token
-          ? {
-            Authorization: `Bearer ${token}`,
-            "X-Access-Token": token,
-            "X-Auth-Token": token,
-            "X-Token": token,
-          }
-          : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(clientId ? { "X-Client-Id": clientId } : {}),
       };
     },
@@ -1760,6 +1754,22 @@ export default function WorkspaceReconciliation() {
         status: "success",
         message: `Fetched ${data?.months?.length ?? 0} month(s) across ${data?.accounts?.length ?? 0} account(s). Last synced: ${new Date(now).toLocaleString()}.`,
       });
+
+      // Per-account "Changes in Assets/Liabilities/Long-Term Assets/Long-Term
+      // Liabilities" rows. Reshaped server-side from QuickBooks' own monthly
+      // Balance Sheet + P&L into the same shape Key Reports mode produces, so
+      // the existing computeActivityReviewFromFs() handles both unchanged.
+      // Non-fatal: the rest of the table already loaded above.
+      try {
+        const arResp = await fetch(`${QB_ACTIVITY_REVIEW_ENDPOINT}?${params}`, {
+          cache: "no-store",
+          headers: getHeaders(),
+        });
+        const arData = await arResp.json();
+        setActivityReview(arResp.ok ? computeActivityReviewFromFs(arData) : null);
+      } catch {
+        setActivityReview(null);
+      }
     } catch (e) {
       setBankActivityError(getErrMsg(e));
       setBankActivityFetchStatus({ status: "error", message: getErrMsg(e) });
@@ -2615,11 +2625,9 @@ export default function WorkspaceReconciliation() {
     return { rows: withDerived, ttm };
   };
 
-  const visibleBalanceAccounts = selectedBalanceBankId
-    ? qbBankActivity?.accounts?.filter(
-      (account) => account.accountId === selectedBalanceBankId,
-    ) || []
-    : qbBankActivity?.accounts || [];
+  // Every account stacks below one another now that the Bank Account dropdown
+  // is commented out — no more filtering down to a single selected account.
+  const visibleBalanceAccounts = qbBankActivity?.accounts || [];
   const allBankMonthlyMaps =
     qbBankActivity?.accounts?.map((account) =>
       Object.fromEntries((account.monthlyData || []).map((row) => [row.month, row])),
@@ -4433,8 +4441,9 @@ export default function WorkspaceReconciliation() {
                   returning to this page keeps the data intact without a refetch. */}
               {/* Key Reports Version selector — only when Key Reports is the active source */}
               {krSelected && <KeyReportVersionSelector clientId={clientId} variant="filter" />}
-              {/* Bank Account dropdown — temporarily hidden in Key Reports mode:
-                  all banks are stacked below one another instead of filtering to one. */}
+              {/* Bank Account dropdown — commented out: every bank account now
+                  stacks below one another instead of filtering to one (same
+                  pattern Key Reports mode already used for Manual GL banks).
               {!krSelected && (
               <div className="min-w-[280px]">
                 <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
@@ -4475,6 +4484,7 @@ export default function WorkspaceReconciliation() {
                 )}
               </div>
               )}
+              */}
               {/* Export dropdown */}
               <div className="relative">
                 <button
@@ -4520,20 +4530,13 @@ export default function WorkspaceReconciliation() {
                 <span>Loading bank reconciliation data from backend...</span>
               </div>
             ) : extractedBankPdfData ? (
-              // Key Reports mode: dropdown is hidden, so render every bank stacked
-              // below one another instead of only the selected one.
-              krSelected ? (
-                (extractedBankPdfData.banks || []).map((bank, i) => (
-                  <div key={bank?.bankName || i}>
-                    {renderManualBalanceAccountTable(bank)}
-                  </div>
-                ))
-              ) : (
-                renderManualBalanceAccountTable(
-                  extractedBankPdfData.banks.find((b) => b.bankName === selectedManualBankName) ||
-                  extractedBankPdfData.banks[0],
-                )
-              )
+              // Dropdown is hidden, so every bank stacks below one another
+              // instead of filtering down to only the selected one.
+              (extractedBankPdfData.banks || []).map((bank, i) => (
+                <div key={bank?.bankName || i}>
+                  {renderManualBalanceAccountTable(bank)}
+                </div>
+              ))
             ) : extractedBankPdfFetchStatus.status === "success" ? (
               // Fetched successfully but active source has no bank statement files
               <div className="rounded-2xl border border-dashed border-border bg-bg-page/40 p-6 text-[14px] text-text-muted">

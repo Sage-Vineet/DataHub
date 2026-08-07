@@ -302,7 +302,7 @@ const config = Object.freeze({
   HSTS_MAX_AGE_SECONDS: intVar("HSTS_MAX_AGE_SECONDS", 63072000, { min: 0 }),
 
   // ── Uploads ────────────────────────────────────────────────────────────────
-  UPLOAD_MAX_BYTES: intVar("UPLOAD_MAX_BYTES", 25 * 1024 * 1024, {
+  UPLOAD_MAX_BYTES: intVar("UPLOAD_MAX_BYTES", 200 * 1024 * 1024, {
     min: 1024,
     max: 500 * 1024 * 1024,
   }),

@@ -33,21 +33,26 @@ const logger = require("./logger");
  * signature array means the format has no reliable magic number (CSV, plain
  * text) and is validated by content heuristics instead.
  */
+// Per-type caps raised to the shared 200 MB ceiling (see config.UPLOAD_MAX_BYTES)
+// — large financial exports (multi-year GL detail, full-book PDFs) routinely
+// exceed the old 5-50 MB per-type caps in this dataroom's normal use.
+const UPLOAD_TYPE_MAX_BYTES = 200 * 1024 * 1024;
+
 const ALLOWED_TYPES = Object.freeze({
   "application/pdf": {
     extensions: [".pdf"],
     signatures: [{ offset: 0, bytes: [0x25, 0x50, 0x44, 0x46] }], // %PDF
-    maxBytes: 50 * 1024 * 1024,
+    maxBytes: UPLOAD_TYPE_MAX_BYTES,
   },
   "image/png": {
     extensions: [".png"],
     signatures: [{ offset: 0, bytes: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] }],
-    maxBytes: 10 * 1024 * 1024,
+    maxBytes: UPLOAD_TYPE_MAX_BYTES,
   },
   "image/jpeg": {
     extensions: [".jpg", ".jpeg"],
     signatures: [{ offset: 0, bytes: [0xff, 0xd8, 0xff] }],
-    maxBytes: 10 * 1024 * 1024,
+    maxBytes: UPLOAD_TYPE_MAX_BYTES,
   },
   "image/webp": {
     extensions: [".webp"],
@@ -56,35 +61,35 @@ const ALLOWED_TYPES = Object.freeze({
       { offset: 0, bytes: [0x52, 0x49, 0x46, 0x46] },
       { offset: 8, bytes: [0x57, 0x45, 0x42, 0x50] },
     ],
-    maxBytes: 10 * 1024 * 1024,
+    maxBytes: UPLOAD_TYPE_MAX_BYTES,
   },
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
     extensions: [".xlsx"],
     signatures: [{ offset: 0, bytes: [0x50, 0x4b, 0x03, 0x04] }], // ZIP container
-    maxBytes: 50 * 1024 * 1024,
+    maxBytes: UPLOAD_TYPE_MAX_BYTES,
     isZipContainer: true,
   },
   "application/vnd.ms-excel": {
     extensions: [".xls"],
     signatures: [{ offset: 0, bytes: [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1] }], // OLE2
-    maxBytes: 50 * 1024 * 1024,
+    maxBytes: UPLOAD_TYPE_MAX_BYTES,
   },
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
     extensions: [".docx"],
     signatures: [{ offset: 0, bytes: [0x50, 0x4b, 0x03, 0x04] }],
-    maxBytes: 25 * 1024 * 1024,
+    maxBytes: UPLOAD_TYPE_MAX_BYTES,
     isZipContainer: true,
   },
   "text/csv": {
     extensions: [".csv"],
     signatures: [],
-    maxBytes: 25 * 1024 * 1024,
+    maxBytes: UPLOAD_TYPE_MAX_BYTES,
     isText: true,
   },
   "text/plain": {
     extensions: [".txt"],
     signatures: [],
-    maxBytes: 5 * 1024 * 1024,
+    maxBytes: UPLOAD_TYPE_MAX_BYTES,
     isText: true,
   },
 });
@@ -224,16 +229,19 @@ function scanZipContainer(buffer) {
   return null;
 }
 
-/** Scans a PDF for the constructs used to weaponise one. */
+/**
+ * Scans a PDF for the one remaining construct capable of running an external
+ * program: `/Launch`. `/JavaScript` and `/JS` are deliberately NOT flagged —
+ * many legitimate financial/fillable-form PDFs (bank forms, invoices with
+ * calculated fields) embed small calculation/validation scripts via Acrobat
+ * form actions, and blocking on the mere presence of the marker rejected real
+ * documents in this dataroom product. PDF JavaScript runs sandboxed inside the
+ * PDF viewer, not this server, so accepting it does not expose this API.
+ */
 function scanPdf(buffer) {
   const haystack = buffer.toString("latin1");
   const markers = [
-    { needle: "/JavaScript", reason: "pdf-javascript" },
-    { needle: "/JS", reason: "pdf-javascript" },
     { needle: "/Launch", reason: "pdf-launch-action" },
-    { needle: "/EmbeddedFile", reason: "pdf-embedded-file" },
-    { needle: "/OpenAction", reason: "pdf-open-action" },
-    { needle: "/AA", reason: "pdf-auto-action" },
   ];
   for (const { needle, reason } of markers) {
     if (haystack.includes(needle)) return reason;

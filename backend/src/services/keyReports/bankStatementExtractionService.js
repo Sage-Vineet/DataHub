@@ -20,8 +20,10 @@ const ExtractionServiceBase = require('./extractionService.base');
 const {
   extractBankStatementsFromPdfBase64,
   extractBankStatementsFromExcelBuffer,
+  extractBankStatementsFromExcelViaGemini,
 } = require('../bankStatementExtractor');
-const { extractWithPython } = require('./pythonBridge');
+// NOTE: pythonBridge is deliberately NOT imported here. Bank statements are read
+// by Gemini; `extract_excel.py` is no longer part of this document type's path.
 
 function isoDateToMonthStart(dateStr) {
   if (!dateStr) return null;
@@ -164,31 +166,70 @@ class BankStatementExtractionService extends ExtractionServiceBase {
   }
 
   // ── Excel: Python primary, legacy extractor fallback ───────────────────────
+  /**
+   * Reads a bank statement spreadsheet.
+   *
+   * GEMINI IS THE READER. Bank statements — like tax returns — are interpreted
+   * by the Gemini API, not by the Python extractor or the header-matching JS
+   * parser. Both of those were rule-based: `extract_excel.py` and
+   * `detectColumnMap()` recognise a fixed vocabulary of column headings, so any
+   * layout nobody anticipated (merged headers, a preamble block above the
+   * table, signed single-amount columns, several accounts stacked in one sheet)
+   * was silently mis-parsed or dropped. Gemini reads the sheet as a document
+   * and applies the same prompt, balance self-correction and account-number
+   * verification as the PDF path, so a statement yields identical structured
+   * output whether it arrives as PDF or XLSX.
+   *
+   * The deterministic parser is retained ONLY as a last resort for when Gemini
+   * is unreachable or unconfigured — losing an upload entirely because a
+   * third-party API had a bad minute would be worse than a degraded parse. It
+   * never runs while Gemini is working, and it logs loudly when it does.
+   */
   async _extractFromExcel(fileBuffer, fileName) {
-    // Python returns flat transaction rows directly — no statementsToRows needed
+    let geminiError = null;
+
     try {
-      this.logger.log(`Trying Python extraction for bank Excel "${fileName}"`);
-      const result = await extractWithPython('extract_excel.py', fileBuffer, {
-        type: 'bank_statement',
-        filename: fileName,
-      });
-      if (result.rows && result.rows.length > 0) {
-        this.logger.log(`Python extracted ${result.rows.length} bank rows from "${fileName}"`);
-        const detectedYears = [...new Set(result.rows.map((r) => r.statement_year).filter(Boolean))].sort((a, b) => a - b);
-        return { rows: result.rows, detectedYears };
+      const statements = await extractBankStatementsFromExcelViaGemini(fileBuffer, fileName);
+
+      if (statements && statements.length > 0) {
+        const rows = statementsToRows(statements);
+        this.logger.log(
+          `Gemini read ${statements.length} statement(s) → ${rows.length} rows from "${fileName}"`
+        );
+        if (rows.length > 0) {
+          const detectedYears = [
+            ...new Set(rows.map((r) => r.statement_year).filter(Boolean)),
+          ].sort((a, b) => a - b);
+          return { rows, detectedYears };
+        }
+        this.logger.warn(`Gemini returned statements with no parseable dates for "${fileName}"`);
+      } else {
+        this.logger.warn(`Gemini found no bank statements in "${fileName}"`);
       }
-      this.logger.warn(`Python returned 0 rows for bank Excel "${fileName}", falling back`);
     } catch (err) {
-      this.logger.warn(`Python bank extraction failed for "${fileName}", falling back: ${err.message}`);
+      geminiError = err;
+      this.logger.warn(`Gemini extraction failed for "${fileName}": ${err.message}`);
     }
 
-    // JS fallback via bankStatementExtractor
+    // ── Last-resort deterministic fallback ────────────────────────────────
+    this.logger.warn(
+      `Falling back to the rule-based Excel parser for "${fileName}" — ` +
+        `Gemini did not return usable data${geminiError ? ` (${geminiError.message})` : ''}. ` +
+        'Column-heading matching is far less tolerant of unusual layouts; ' +
+        'check GEMINI_API_KEY and the extraction logs.'
+    );
+
     const statements = await extractBankStatementsFromExcelBuffer(fileBuffer, fileName);
-    this.logger.log(`Legacy Excel parser returned ${statements.length} statement(s)`);
-    if (!statements || statements.length === 0) throw new Error('No bank statements found in Excel file');
+    if (!statements || statements.length === 0) {
+      throw new Error(
+        geminiError
+          ? `Could not read bank statements from "${fileName}" (Gemini: ${geminiError.message})`
+          : `No bank statements found in "${fileName}"`
+      );
+    }
 
     const rows = statementsToRows(statements);
-    this.logger.log(`Converted ${statements.length} statement(s) → ${rows.length} rows`);
+    this.logger.log(`Fallback parser produced ${rows.length} rows from "${fileName}"`);
     if (rows.length === 0) throw new Error('Bank statements had no parseable date data');
 
     const detectedYears = [...new Set(rows.map((r) => r.statement_year).filter(Boolean))].sort((a, b) => a - b);

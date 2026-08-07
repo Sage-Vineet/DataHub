@@ -56,14 +56,14 @@ export default defineConfig(({ mode }) => {
       // Loopback only. `host: true` exposes your working tree — including any
       // VITE_* values inlined into the bundle — to everyone on the local
       // network, café and conference Wi-Fi included.
-      host: '127.0.0.1',
+      host: 'localhost',
       // Stops the dev server's file-serving endpoint being used to read
       // arbitrary files from the developer's machine.
       fs: { strict: true, allow: ['.'] },
     },
 
     preview: {
-      host: '127.0.0.1',
+      host: 'localhost',
       headers: {
         'X-Content-Type-Options': 'nosniff',
         'X-Frame-Options': 'DENY',

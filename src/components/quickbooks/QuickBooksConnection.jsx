@@ -202,7 +202,7 @@ export default function QuickBooksConnection({
   }, [fetchStatus, isSourceActive, location.search, onConnectionStateChange, showToast]);
 
   // ── Actions ──
-  const handleConnect = () => {
+  const handleConnect = async () => {
     if (!isSourceActive) {
       if (typeof onRequireSourceSwitch === "function") {
         onRequireSourceSwitch();
@@ -214,7 +214,15 @@ export default function QuickBooksConnection({
       });
       return;
     }
-    connectQuickbooks(location.pathname, company?.id);
+    try {
+      await connectQuickbooks(location.pathname, company?.id);
+    } catch (error) {
+      showToast({
+        type: "error",
+        title: "Unable to Connect",
+        message: error?.message || "Could not start the QuickBooks connection. Please try again.",
+      });
+    }
   };
 
   const handleDisconnect = async () => {

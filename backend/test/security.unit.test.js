@@ -156,8 +156,19 @@ const ta = async (name, fn) => {
     try { fu.validateUpload({ buffer: Buffer.from("<svg onload=alert(1)>"), originalname: "x.svg" }); return "accepted!"; }
     catch (e) { return e.code === "FORBIDDEN_EXTENSION" || e.code; }
   });
-  t("CRITICAL: PDF with /JavaScript rejected", () => {
-    const evil = Buffer.concat([Buffer.from("%PDF-1.7\n/JavaScript (app.alert(1))\n"), Buffer.alloc(100, 0x20)]);
+  // PDF /JavaScript is intentionally permitted (product decision, 2026-08-07):
+  // legitimate fillable-form PDFs (bank forms, invoices with calculated fields)
+  // routinely embed small calculation/validation scripts via Acrobat form
+  // actions, and blocking on the marker's mere presence rejected real
+  // documents in this dataroom product. PDF JS runs sandboxed inside the PDF
+  // viewer, not this server, so accepting it does not expose this API.
+  t("PDF with /JavaScript is accepted (sandboxed in the viewer, not this API)", () => {
+    const benign = Buffer.concat([Buffer.from("%PDF-1.7\n/JavaScript (app.alert(1))\n"), Buffer.alloc(100, 0x20)]);
+    const r = fu.validateUpload({ buffer: benign, originalname: "x.pdf", mimetype: "application/pdf" });
+    return r.mimeType === "application/pdf";
+  });
+  t("CRITICAL: PDF with /Launch (external program) still rejected", () => {
+    const evil = Buffer.concat([Buffer.from("%PDF-1.7\n/Launch (cmd.exe)\n"), Buffer.alloc(100, 0x20)]);
     try { fu.validateUpload({ buffer: evil, originalname: "x.pdf", mimetype: "application/pdf" }); return "accepted!"; }
     catch (e) { return e.code === "ACTIVE_CONTENT" || e.code; }
   });

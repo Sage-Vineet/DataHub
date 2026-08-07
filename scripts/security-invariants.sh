@@ -127,6 +127,23 @@ hits=$(git ls-files 2>/dev/null | grep -E '(^|/)\.env($|\.[^e])' || true)
 report "no .env file tracked by git" \
        "Remove it, rotate every credential it held, and purge it from history." "$hits"
 
+# ── 13. Tax returns and bank statements are read by Gemini only ─────────────
+# These two document types must be interpreted by the Gemini API. Routing them
+# to a second model or to a rule-based extractor means the same document yields
+# different structured output depending on which entry point received it.
+hits=$(grep -rn "@anthropic-ai/sdk\|anthropic\.messages\|ANTHROPIC_MODEL" \
+        "$SRC" --include='*.js' 2>/dev/null | strip_comments)
+report "no Anthropic client in document extraction" \
+       "Tax returns and bank statements are read by Gemini. Use the helpers in services/bankStatementExtractor.js or services/geminiFinancialParser.js." \
+       "$hits"
+
+hits=$(grep -n "extractWithPython" \
+        "$SRC/services/keyReports/bankStatementExtractionService.js" \
+        "$SRC/services/keyReports/taxReturnExtractionService.js" 2>/dev/null | strip_comments)
+report "bank statement / tax return do not use the Python extractor" \
+       "extract_excel.py is rule-based and mis-parses unanticipated layouts. Both types go through Gemini." \
+       "$hits"
+
 echo
 if [ "$FAILED" -ne 0 ]; then
   echo "Security invariants FAILED. See SECURITY.md for the rationale behind each."

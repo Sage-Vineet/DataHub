@@ -402,13 +402,13 @@ export default function ManualFolderReportsUpload({
       setSyncProgress("Reading all files…");
       setManualUploadProgress({ totalFiles: 0, processedFiles: 0, currentFile: "", currentStep: "Starting...", percentage: 0, active: true });
 
-      // Poll for live progress every second while sync runs
+      // Poll for live progress every 10 seconds while sync runs
       syncPollRef.current = setInterval(async () => {
         try {
           const prog = await getManualUploadProgress({ clientId: companyId });
           if (prog) setManualUploadProgress(prog);
         } catch { /* ignore poll errors */ }
-      }, 1000);
+      }, 10000);
 
       const result = await syncManualUploadSource({ clientId: companyId });
 

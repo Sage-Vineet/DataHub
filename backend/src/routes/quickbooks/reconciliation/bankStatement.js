@@ -5,13 +5,17 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { supabase } = require("../../../db");
-const Anthropic = require("@anthropic-ai/sdk");
-const anthropicApiKey = (process.env.ANTHROPIC_API_KEY || "").trim();
-const client = anthropicApiKey
-  ? new Anthropic({ apiKey: anthropicApiKey })
-  : null;
-const ANTHROPIC_MODEL =
-  process.env.ANTHROPIC_MODEL || "claude-sonnet-4-20250514";
+const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { getGeminiModels } = require("../../../config/geminiModels");
+
+// Bank statements are read by GEMINI. This route previously called Anthropic
+// Claude, which meant the same document type was interpreted by two different
+// models depending on which entry point received it — different prompts,
+// different output quirks, two API keys and two vendor bills for one job.
+const geminiApiKey = (process.env.GEMINI_API_KEY || "").trim();
+const genAI = geminiApiKey ? new GoogleGenerativeAI(geminiApiKey) : null;
+const GEMINI_MODELS = getGeminiModels(["gemini-2.5-flash", "gemini-2.5-flash-lite"]);
+
 const upload = multer({ dest: path.join(os.tmpdir(), "leo-bank-statement-uploads") });
 
 const cleanupFile = (filePath) => {
@@ -246,36 +250,65 @@ const parseLocalStatement = (userMessage = "") => {
   return transactions;
 };
 
-const parseAnthropicTransactions = async (systemPrompt, userMessage) => {
-  if (!client) {
+/**
+ * Reads bank statement text with Gemini and returns a transaction array.
+ *
+ * Tries each configured model in order, so a single model being unavailable or
+ * rate-limited does not fail the request. `parseLocalStatement` remains as a
+ * last resort for when Gemini is unconfigured or every model fails — the same
+ * posture as the key-report Excel path.
+ */
+const parseGeminiTransactions = async (systemPrompt, userMessage) => {
+  if (!genAI) {
+    console.warn("[BankStatement] GEMINI_API_KEY not set — using the local text parser");
     return parseLocalStatement(userMessage);
   }
 
-  try {
-    const msg = await client.messages.create({
-      model: ANTHROPIC_MODEL,
-      max_tokens: 8192,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userMessage }],
-    });
-    const text = msg.content
-      .filter((b) => b.type === "text")
-      .map((b) => b.text)
-      .join("");
-    const cleaned = text.replace(/^```(?:json)?\s*|```\s*$/gm, "").trim();
-    const parsed = JSON.parse(cleaned);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (error) {
-    const message = String(error?.message || error || "");
-    if (
-      /could not resolve authentication method|api key|auth token|not configured|invalid authentication/i.test(
-        message,
-      )
-    ) {
-      return parseLocalStatement(userMessage);
+  const instruction =
+    `${systemPrompt || "Extract every bank transaction from the text below."}\n\n` +
+    "Respond with a JSON array only — no prose, no markdown fences. Each element: " +
+    '{"date":"YYYY-MM-DD","name":"description","amount":number}. ' +
+    "Use a negative amount for withdrawals/debits and a positive amount for " +
+    "deposits/credits. Omit any row you cannot date.";
+
+  let lastError = null;
+
+  for (const modelName of GEMINI_MODELS) {
+    try {
+      const model = genAI.getGenerativeModel({
+        model: modelName,
+        generationConfig: {
+          temperature: 0,
+          // Ask the API itself for JSON rather than trusting the model to obey
+          // a formatting instruction — removes the whole class of "model
+          // wrapped it in prose" parse failures.
+          responseMimeType: "application/json",
+        },
+      });
+
+      const result = await model.generateContent(`${instruction}\n\n---\n${userMessage}\n---`);
+      const text = result.response.text();
+      const cleaned = String(text).replace(/^```(?:json)?\s*|```\s*$/gm, "").trim();
+      const parsed = JSON.parse(cleaned);
+
+      if (Array.isArray(parsed)) return parsed;
+      // Some responses wrap the array, e.g. { transactions: [...] }.
+      if (parsed && Array.isArray(parsed.transactions)) return parsed.transactions;
+      return [];
+    } catch (error) {
+      lastError = error;
+      const message = String(error?.message || error || "");
+      console.warn(`[BankStatement] Gemini ${modelName} failed: ${message.slice(0, 160)}`);
+      // A missing model is permanent for this key — stop trying the rest.
+      if (/404|not found/i.test(message)) break;
     }
-    throw error;
   }
+
+  console.warn(
+    `[BankStatement] All Gemini models failed (${lastError?.message || "unknown"}) — ` +
+      "using the local text parser"
+  );
+  return parseLocalStatement(userMessage);
 };
 
 const normalizeTransactionRow = (row = {}) => {
@@ -611,7 +644,7 @@ router.post(
 router.post("/parse-bank-statement", async (req, res) => {
   try {
     const { systemPrompt, userMessage } = req.body;
-    const transactions = await parseAnthropicTransactions(
+    const transactions = await parseGeminiTransactions(
       systemPrompt,
       userMessage,
     );

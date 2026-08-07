@@ -1300,6 +1300,60 @@ async function extractBankStatementsFromExcelBuffer(buffer, fileName) {
   return extractBankStatementsFromExcel(buffer, fileName);
 }
 
+/**
+ * Renders a workbook as plain text so Gemini can read it the same way it reads
+ * a PDF's text layer.
+ *
+ * Every sheet is emitted as CSV under a `### <sheet name>` heading. Sheet names
+ * matter — banks routinely put the account number, period, or institution in
+ * the tab name rather than in a cell — so dropping them loses data the model
+ * needs. Blank sheets are skipped to keep the prompt small.
+ */
+function workbookToText(buffer, fileName) {
+  const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true });
+  const parts = [];
+
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    if (!sheet) continue;
+    const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false, rawNumbers: false });
+    if (!csv.trim()) continue;
+    parts.push(`### Sheet: ${sheetName}\n${csv}`);
+  }
+
+  if (parts.length === 0) return "";
+  return `Workbook: ${fileName}\n\n${parts.join("\n\n")}`;
+}
+
+/**
+ * Reads a bank statement spreadsheet with GEMINI rather than a deterministic
+ * column-mapping parser.
+ *
+ * WHY: `extractBankStatementsFromExcel` matches column headers against a fixed
+ * vocabulary (DATE_COL_NAMES, DEBIT_COL_NAMES, …). That works only for layouts
+ * anticipated in advance, and real bank exports vary enormously — merged header
+ * rows, a preamble block above the table, debits and credits in one signed
+ * column, per-account sections stacked in a single sheet, non-English labels.
+ * Anything unanticipated is silently mis-parsed or dropped.
+ *
+ * Gemini reads the sheet as a document, so it handles those layouts without a
+ * new rule per bank, and it reuses exactly the same prompt, balance
+ * self-correction, and account-number verification passes as the PDF path —
+ * meaning a statement produces the same structured output regardless of whether
+ * it arrived as PDF or XLSX.
+ *
+ * @returns {Promise<Array>} statements, or [] when Gemini cannot read the file
+ */
+async function extractBankStatementsFromExcelViaGemini(buffer, fileName = "bank_statement.xlsx") {
+  const text = workbookToText(buffer, fileName);
+  if (!text.trim()) {
+    console.warn(`[BankExcel] "${fileName}" contained no readable cells`);
+    return [];
+  }
+  console.log(`[BankExcel] Reading "${fileName}" via Gemini (${text.length} chars of sheet text)`);
+  return extractViaGeminiText(text, fileName);
+}
+
 // ─── Build response shape ─────────────────────────────────────────────────────
 // Drop phantom "banks" that are really non-bank documents which slipped past the
 // classifier — chiefly QuickBooks/Xero reconciliation reports whose GL account
@@ -1554,6 +1608,9 @@ module.exports = {
   normalizeBankBinary,
   extractBankStatementsFromPdfBase64,
   extractBankStatementsFromExcelBuffer,
+  extractBankStatementsFromExcelViaGemini,
+  extractViaGeminiText,
+  workbookToText,
   buildBankResponseShape,
   mergeDuplicateBanksInShape,
   toMonthKey,

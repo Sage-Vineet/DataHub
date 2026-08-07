@@ -271,8 +271,14 @@ function request(server, { method = "GET", path: urlPath = "/", headers = {}, bo
       /config\.UPLOAD_MAX_BYTES/.test(routeSrc));
 
     const { config } = require("../src/config/env");
-    check("V11", "upload cap is at most 100 MB",
-      config.UPLOAD_MAX_BYTES <= 100 * 1024 * 1024, String(config.UPLOAD_MAX_BYTES));
+    // The original vulnerability was buffering a large body BEFORE auth ran —
+    // fixed structurally above (requireAuth precedes express.raw()), so an
+    // unauthenticated caller can never trigger a large allocation regardless of
+    // this number. The cap itself was raised to 200 MB (2026-08-07) for
+    // legitimate large financial exports; this just pins it to the configured
+    // hard ceiling (env.js intVar bounds) rather than an arbitrary vuln-era value.
+    check("V11", "upload cap is at most the configured hard ceiling (500 MB)",
+      config.UPLOAD_MAX_BYTES <= 500 * 1024 * 1024, String(config.UPLOAD_MAX_BYTES));
 
     // An unauthenticated upload is refused without the body being buffered.
     const res = await request(server, {

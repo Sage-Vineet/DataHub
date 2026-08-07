@@ -1126,6 +1126,262 @@ function walkBSRows(rows, monthlyBalances, month, bankAccounts) {
   }
 }
 
+// ── Activity Review (per-account Balance Sheet movement) for QuickBooks Online ─
+//
+// Key Reports mode gets its "Changes in Assets / Liabilities / Long-Term Assets
+// / Long-Term Liabilities" rows from computeActivityReviewFromFs() in
+// WorkspaceReconciliation.jsx, fed by a generated financial-statements payload
+// shaped as { reports: { balanceSheet: { monthly: [{year, monthNumber,
+// statement}] }, profitAndLoss: { monthly: [...] } } }. QuickBooks Online has no
+// such generated version — instead, QBO's OWN BalanceSheet/ProfitAndLoss
+// reports (fetched with summarize_column_by=Month) already group every account
+// into standard sections. Reshaping those sections into the identical payload
+// shape lets the frontend reuse computeActivityReviewFromFs() unchanged — only
+// the data source differs, not the shape or the classification rules.
+//
+// Only "Bank Accounts" (excluded — it IS the cash being reconciled) and
+// "Accounts Receivable" (routes to the Deposits side, enables the AR-retention
+// split) need an explicit reportTag. Every other account is left untagged and
+// defaults to the Withdrawals side, exactly like the Manual-GL engine — see
+// _sectionForLeaf / _SECTION_BY_REPORT_TAG in WorkspaceReconciliation.jsx.
+const BS_SECTION_BUCKETS = [
+  { re: /^bank\s+accounts?$/i,                   bucketKey: "currentAssets",      reportTag: "cash" },
+  { re: /^accounts?\s+receivable/i,               bucketKey: "currentAssets",      reportTag: "accounts_receivable" },
+  { re: /^other\s+current\s+assets?$/i,           bucketKey: "currentAssets",      reportTag: null },
+  { re: /^fixed\s+assets?$/i,                     bucketKey: "fixedAssets",        reportTag: null },
+  { re: /^other\s+assets?$/i,                     bucketKey: "otherAssets",        reportTag: null },
+  { re: /^accounts?\s+payable/i,                  bucketKey: "currentLiabilities", reportTag: null },
+  { re: /^credit\s+cards?$/i,                     bucketKey: "currentLiabilities", reportTag: null },
+  { re: /^other\s+current\s+liabilit(?:y|ies)$/i, bucketKey: "currentLiabilities", reportTag: null },
+  { re: /^long[\s-]?term\s+liabilit(?:y|ies)$/i,  bucketKey: "longTermLiabilities", reportTag: null },
+];
+const BS_SKIP_SECTION_RE = /^equity$/i;
+
+function parseColDataAmounts(colData) {
+  const values = {};
+  (colData || []).forEach((cell, idx) => {
+    if (idx === 0) return;
+    const raw = cell?.value;
+    if (raw == null || raw === "") return;
+    const num = parseFloat(String(raw).replace(/,/g, ""));
+    if (!Number.isNaN(num)) values[idx] = num;
+  });
+  return values;
+}
+
+/**
+ * Walks a live QuickBooks BalanceSheet report (summarize_column_by=Month) and
+ * appends { bucketKey, reportTag, systemId, name, valuesByCol } to `leaves` for
+ * every account line item, classified by whichever known QBO section (see
+ * BS_SECTION_BUCKETS) contains it — at any depth, since QBO's exact nesting
+ * varies by company report settings.
+ */
+function collectBsLeaves(rows, ctx, leaves) {
+  if (!Array.isArray(rows)) return;
+  for (const row of rows) {
+    if (row.type === "Section") {
+      const label = String(row.Header?.ColData?.[0]?.value || "").trim();
+      if (BS_SKIP_SECTION_RE.test(label)) continue;
+      const matched = BS_SECTION_BUCKETS.find((b) => b.re.test(label));
+      const nextCtx = matched ? { bucketKey: matched.bucketKey, reportTag: matched.reportTag } : ctx;
+      const nested = row.Rows?.Row;
+      if (nested) collectBsLeaves(Array.isArray(nested) ? nested : [nested], nextCtx, leaves);
+      continue;
+    }
+    if (row.type === "Data" && row.ColData && ctx) {
+      const name = String(row.ColData[0]?.value || "").trim();
+      if (!name) continue;
+      leaves.push({
+        bucketKey: ctx.bucketKey,
+        reportTag: ctx.reportTag,
+        systemId: row.ColData[0]?.id || null,
+        name,
+        valuesByCol: parseColDataAmounts(row.ColData),
+      });
+    }
+  }
+}
+
+// Every expense line item under the P&L's "Expenses" section, flattened.
+// computeActivityReviewFromFs() classifies depreciation / amortization / bad
+// debt purely by ACCOUNT NAME (see _depAmortKind / _isBadDebt) — no reportTag
+// needed here, so this only needs name + per-month amounts.
+function collectPlExpenseLeaves(rows, insideExpenses, leaves) {
+  if (!Array.isArray(rows)) return;
+  for (const row of rows) {
+    if (row.type === "Section") {
+      const label = String(row.Header?.ColData?.[0]?.value || "").trim();
+      const isExpenses = insideExpenses || /^(operating\s+)?expenses?$/i.test(label);
+      const nested = row.Rows?.Row;
+      if (nested) collectPlExpenseLeaves(Array.isArray(nested) ? nested : [nested], isExpenses, leaves);
+      continue;
+    }
+    if (row.type === "Data" && row.ColData && insideExpenses) {
+      const name = String(row.ColData[0]?.value || "").trim();
+      if (!name) continue;
+      leaves.push({ name, valuesByCol: parseColDataAmounts(row.ColData) });
+    }
+  }
+}
+
+function buildColMonthMap(columns) {
+  const map = {};
+  (columns || []).forEach((col, idx) => {
+    if (idx === 0) return;
+    const title = String(col.ColTitle || "").trim();
+    if (/^total$/i.test(title)) return;
+    const parsed = parsePLColTitle(title);
+    if (parsed) map[idx] = parsed;
+  });
+  return map;
+}
+
+const BS_BUCKET_PATH = {
+  currentAssets: ["assets", "currentAssets"],
+  fixedAssets: ["assets", "fixedAssets"],
+  otherAssets: ["assets", "otherAssets"],
+  currentLiabilities: ["liabilities", "currentLiabilities"],
+  longTermLiabilities: ["liabilities", "longTermLiabilities"],
+};
+const BS_BUCKET_LABEL = {
+  currentAssets: "Current Assets",
+  fixedAssets: "Fixed Assets",
+  otherAssets: "Other Assets",
+  currentLiabilities: "Current Liabilities",
+  longTermLiabilities: "Long-Term Liabilities",
+};
+
+function emptyBsStatement() {
+  const mkBucket = (bucketKey) => ({ groups: { all: { label: BS_BUCKET_LABEL[bucketKey], accounts: [] } } });
+  return {
+    assets: {
+      currentAssets: mkBucket("currentAssets"),
+      fixedAssets: mkBucket("fixedAssets"),
+      otherAssets: mkBucket("otherAssets"),
+    },
+    liabilities: {
+      currentLiabilities: mkBucket("currentLiabilities"),
+      longTermLiabilities: mkBucket("longTermLiabilities"),
+    },
+  };
+}
+
+/**
+ * Reshapes a live QuickBooks BalanceSheet + ProfitAndLoss (both fetched with
+ * summarize_column_by=Month) into { balanceSheetMonthly, profitAndLossMonthly },
+ * the exact `reports.balanceSheet.monthly` / `reports.profitAndLoss.monthly`
+ * shape computeActivityReviewFromFs() (WorkspaceReconciliation.jsx) consumes.
+ */
+function buildActivityReviewMonthlyStatements(bsReport, plReport) {
+  const bsColMonthMap = buildColMonthMap(bsReport?.Columns?.Column);
+  const bsLeaves = [];
+  collectBsLeaves(bsReport?.Rows?.Row, null, bsLeaves);
+
+  const plColMonthMap = buildColMonthMap(plReport?.Columns?.Column);
+  const plLeaves = [];
+  collectPlExpenseLeaves(plReport?.Rows?.Row, false, plLeaves);
+
+  const balanceSheetMonthly = Object.entries(bsColMonthMap).map(([colIdx, monthKey]) => {
+    const [year, monthNumber] = monthKey.split("-").map(Number);
+    const statement = emptyBsStatement();
+    for (const leaf of bsLeaves) {
+      const amount = leaf.valuesByCol[colIdx];
+      if (amount === undefined || !leaf.bucketKey) continue;
+      const [section, bucketKey] = BS_BUCKET_PATH[leaf.bucketKey];
+      statement[section][bucketKey].groups.all.accounts.push({
+        systemId: leaf.systemId,
+        accountNumber: null,
+        name: leaf.name,
+        adjustedName: leaf.name,
+        amount,
+        reportTag: leaf.reportTag || null,
+      });
+    }
+    return { year, monthNumber, statement };
+  }).sort((a, b) => (a.year - b.year) || (a.monthNumber - b.monthNumber));
+
+  const profitAndLossMonthly = Object.entries(plColMonthMap).map(([colIdx, monthKey]) => {
+    const [year, monthNumber] = monthKey.split("-").map(Number);
+    const accounts = [];
+    for (const leaf of plLeaves) {
+      const amount = leaf.valuesByCol[colIdx];
+      if (amount === undefined) continue;
+      accounts.push({ systemId: null, accountNumber: null, name: leaf.name, adjustedName: leaf.name, amount, reportTag: null });
+    }
+    return {
+      year, monthNumber,
+      statement: { operatingExpenses: { groups: { all: { label: "Expenses", accounts } } } },
+    };
+  }).sort((a, b) => (a.year - b.year) || (a.monthNumber - b.monthNumber));
+
+  return { balanceSheetMonthly, profitAndLossMonthly };
+}
+
+// GET /qb-activity-review — per-account Balance Sheet movement for the Activity
+// Review table's "Changes in Assets / Liabilities / Long-Term Assets / Long-Term
+// Liabilities" rows, sourced from live QuickBooks data. Shaped identically to
+// GET /key-reports/versions/:id/reports/financial-statements so the frontend's
+// existing computeActivityReviewFromFs() needs no changes.
+router.get("/qb-activity-review", async (req, res) => {
+  const { start_date, end_date } = req.query;
+  const accounting_method = req.query.accounting_method || "Accrual";
+  let clientId = req.clientId || req.query.clientId;
+  if (!clientId && req.headers.referer) {
+    const m = req.headers.referer.match(/\/client\/([^/]+)/);
+    if (m) clientId = m[1];
+  }
+  if (!clientId) return res.status(400).json({ error: "Missing Client ID." });
+  if (!start_date || !end_date) {
+    return res.status(400).json({ error: "start_date and end_date are required" });
+  }
+
+  try {
+    await loadQBConfig(clientId);
+    const qb = getQBConfig(clientId);
+    if (!qb.accessToken || !qb.realmId) {
+      return res.status(401).json({ error: "QuickBooks is not connected for this company." });
+    }
+
+    const fetchReport = async (qbName) => {
+      const execute = (token) =>
+        axios.get(`${qb.baseUrl}/v3/company/${qb.realmId}/reports/${qbName}`, {
+          headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+          proxy: false,
+          params: { start_date, end_date, summarize_column_by: "Month", accounting_method, minorversion: 75 },
+        });
+      try {
+        return (await execute(qb.accessToken)).data;
+      } catch (err) {
+        if (err.response?.status !== 401) throw err;
+        qb.accessToken = await tokenManager.refreshAccessToken(clientId);
+        return (await execute(qb.accessToken)).data;
+      }
+    };
+
+    const [bsReport, plReport] = await Promise.all([
+      fetchReport("BalanceSheet"),
+      fetchReport("ProfitAndLoss"),
+    ]);
+
+    const { balanceSheetMonthly, profitAndLossMonthly } =
+      buildActivityReviewMonthlyStatements(bsReport, plReport);
+
+    return res.json({
+      success: true,
+      reports: {
+        balanceSheet: { monthly: balanceSheetMonthly },
+        profitAndLoss: { monthly: profitAndLossMonthly },
+      },
+    });
+  } catch (error) {
+    console.error("QB Activity Review Error:", error.response?.data || error.message);
+    return res.status(500).json({
+      error: "Failed to fetch Activity Review data.",
+      details: error.response?.data || error.message,
+    });
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ALSO update your existing /qb-financial-reports-for-reconciliation route
 // to return account-level balance sheet data (minor addition at the bottom

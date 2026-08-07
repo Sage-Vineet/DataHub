@@ -260,6 +260,15 @@ app.use("/security", securityRoutes);
 app.use("/public", publicRoutes);
 app.use("/users", userRoutes);
 app.use("/companies", companyRoutes);
+// tokenRoutes must be mounted before any "/"-mounted router with a blanket
+// `router.use(requireAuth)` (groupRoutes is the first of those below). Those
+// blanket guards apply to every path that reaches them, not just their own —
+// they would otherwise swallow /api/auth/quickbooks (needs the ticket-based
+// requireOAuthTicket, not a header) and /api/auth/callback (must stay
+// unauthenticated; Intuit calls it directly) before token.js ever sees them.
+// token.js has no blanket guard of its own, so moving it here doesn't change
+// behaviour for any path other than the ones it explicitly defines.
+app.use("/", tokenRoutes);
 app.use("/", groupRoutes);
 app.use("/", requestRoutes);
 app.use("/", folderRoutes);
@@ -268,7 +277,6 @@ app.use("/", reminderRoutes);
 app.use("/", activityRoutes);
 app.use("/", messageRoutes);
 app.use("/", messageGroupRoutes);
-app.use("/", tokenRoutes);
 app.use("/", uploadRoutes);
 app.use("/", workspacePageStateRoutes);
 app.use("/", cimStyleProfileRoutes);

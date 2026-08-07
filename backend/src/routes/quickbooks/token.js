@@ -16,16 +16,57 @@ const { logQuickBooksDebug, maskValue } = require("../../quickbooksLogger");
 
 const { requireAuth } = require("../../middleware/auth");
 const { canAccessCompany } = require("../../services/permissionService");
+const { getUserById } = require("../../services/userService");
+const { signActionToken, verifyActionToken, TokenError } = require("../../security/tokens");
 const router = express.Router();
 
 // Public callback (OAuth redirect)
 // router.get("/api/auth/callback", ...) -> defined later
 
 // Protected routes
-// router.get("/api/auth/quickbooks", requireAuth, ...)
+// router.get("/api/auth/quickbooks", requireOAuthTicket, ...)
 // router.get("/api/auth/status", requireAuth, ...)
 // router.get("/api/auth/disconnect", requireAuth, ...)
 // router.get("/refresh-token", requireAuth, ...)
+
+const OAUTH_TICKET_PURPOSE = "quickbooks_oauth_start";
+
+/**
+ * Starting the OAuth handshake means a full browser navigation
+ * (`window.location.href`), not a fetch — so there is no way to attach an
+ * `Authorization` header to it. A general access token can't be put in the
+ * URL to compensate (query-string tokens leak into access logs, browser
+ * history and the Referer header — see security/tokens.js).
+ *
+ * Instead the frontend exchanges its access token for a one-time, 60-second,
+ * single-purpose ticket via an authenticated fetch (POST /api/auth/quickbooks/ticket),
+ * then puts *that* in the URL. Same pattern already used for email
+ * verification / password reset links, which have the identical constraint
+ * of having to travel through a URL.
+ */
+async function requireOAuthTicket(req, res, next) {
+  const ticket = req.query?.ticket;
+  if (!ticket || typeof ticket !== "string") {
+    return res.status(401).json({ error: "Authentication required", code: "MISSING_TICKET" });
+  }
+
+  let payload;
+  try {
+    payload = verifyActionToken(ticket, OAUTH_TICKET_PURPOSE);
+  } catch (error) {
+    const code = error instanceof TokenError && error.code === "EXPIRED" ? "TICKET_EXPIRED" : "INVALID_TICKET";
+    return res.status(401).json({ error: "Authentication required", code });
+  }
+
+  const user = await getUserById(payload.sub);
+  if (!user) return res.status(401).json({ error: "Authentication required", code: "INVALID_TICKET" });
+  if (String(user.status || "").toLowerCase() === "inactive") {
+    return res.status(401).json({ error: "Authentication required", code: "ACCOUNT_DISABLED" });
+  }
+
+  req.user = user;
+  return next();
+}
 
 function parseOAuthState(rawState) {
   if (!rawState) return {};
@@ -266,8 +307,18 @@ router.get("/refresh-token", requireAuth, async (req, res) => {
   }
 });
 
+// POST /api/auth/quickbooks/ticket - Mint a short-lived ticket for the OAuth redirect
+router.post("/api/auth/quickbooks/ticket", requireAuth, (req, res) => {
+  const ticket = signActionToken({
+    purpose: OAUTH_TICKET_PURPOSE,
+    userId: req.user.id,
+    ttlSeconds: 60,
+  });
+  res.json({ ticket });
+});
+
 // GET /api/auth/quickbooks - Start OAuth flow
-router.get("/api/auth/quickbooks", requireAuth, async (req, res) => {
+router.get("/api/auth/quickbooks", requireOAuthTicket, async (req, res) => {
   let clientId = getClientId(req);
   const confirmSwitch = parseBoolean(req.query.confirmSwitch);
 

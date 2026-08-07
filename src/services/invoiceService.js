@@ -15,14 +15,7 @@ async function request(path, options = {}) {
       ...(options.body && !(options.body instanceof FormData)
         ? { "Content-Type": "application/json" }
         : {}),
-      ...(token
-        ? {
-          Authorization: `Bearer ${token}`,
-          "X-Access-Token": token,
-          "X-Auth-Token": token,
-          "X-Token": token,
-        }
-        : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(options.headers || {}),
     },
   });

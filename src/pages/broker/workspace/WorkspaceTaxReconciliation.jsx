@@ -396,12 +396,7 @@ export default function WorkspaceTaxReconciliation() {
   const getHeaders = useCallback(() => {
     const token = getStoredToken();
     return {
-      ...(token ? {
-        Authorization: `Bearer ${token}`,
-        "X-Access-Token": token,
-        "X-Auth-Token": token,
-        "X-Token": token,
-      } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(clientId ? { "X-Client-Id": clientId } : {}),
     };
   }, [clientId]);

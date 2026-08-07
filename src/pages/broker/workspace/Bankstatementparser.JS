@@ -76,14 +76,7 @@ async function parseChunkViaBackend(text, bankHint, headers = {}) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(token
-        ? {
-          Authorization: `Bearer ${token}`,
-          "X-Access-Token": token,
-          "X-Auth-Token": token,
-          "X-Token": token,
-        }
-        : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...headers,
     },
     body: JSON.stringify({ systemPrompt: SYSTEM_PROMPT, userMessage }),

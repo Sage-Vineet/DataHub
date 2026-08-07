@@ -59,7 +59,7 @@ export async function request(path, options = {}) {
   return payload;
 }
 
-export function connectQuickbooks(redirectHash, explicitClientId = null, options = {}) {
+export async function connectQuickbooks(redirectHash, explicitClientId = null, options = {}) {
   const hash = window.location.hash || "";
   // 1. Try explicit ID (passed from component)
   // 2. Try broker path
@@ -88,11 +88,15 @@ export function connectQuickbooks(redirectHash, explicitClientId = null, options
     })
   );
 
-  const token = getStoredToken();
-  const authQuery = token ? `&token=${encodeURIComponent(token)}` : "";
+  // Starting the OAuth handshake is a full browser navigation, so there's no
+  // way to attach an Authorization header to it. Exchange the access token
+  // for a one-time, short-lived ticket over a normal (header-authenticated)
+  // request first, then put only that ticket in the URL.
+  const { ticket } = await request("/api/auth/quickbooks/ticket", { method: "POST" });
+
   const timestamp = Date.now();
   const confirmSwitch = options?.confirmSwitch !== false;
-  window.location.href = `${API_BASE_URL}/api/auth/quickbooks?state=${state}&clientId=${clientId || ""}&confirmSwitch=${confirmSwitch ? "true" : "false"}${authQuery}&t=${timestamp}`;
+  window.location.href = `${API_BASE_URL}/api/auth/quickbooks?state=${state}&clientId=${clientId || ""}&confirmSwitch=${confirmSwitch ? "true" : "false"}&ticket=${encodeURIComponent(ticket)}&t=${timestamp}`;
 }
 
 export function getConnectionStatus() {
