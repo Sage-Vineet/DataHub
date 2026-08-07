@@ -22,14 +22,30 @@ export default function KeyReportGenerationToaster() {
     if (!showToast) return;
     listUnnotifiedCompletions().forEach((state) => {
       const label = state.versionLabel || "Key Reports version";
-      if (state.status === "done") {
-        const w = state.warnCount || 0;
+      // CONFIRMED ROOT CAUSE (fixed here): this used to branch on
+      // `state.status === "done"` and `state.warnCount`, neither of which this
+      // state machine has ever written (see lib/keyReportGeneration.js's real
+      // terminal statuses: "reports_ready" / "coa_review_required" /
+      // "coa_generation_failed" / "error" — WorkspaceKeyReports.jsx's own doc
+      // comment lists the same four). Every completion therefore fell through
+      // to the `else` branch, including a fully successful Proposed-COA
+      // generation — "generation failed" popped even when generation
+      // succeeded and was simply waiting on the user's review/approve.
+      const w = Array.isArray(state.warnings) ? state.warnings.length : 0;
+      if (state.status === "reports_ready") {
         showToast({
           type: "success",
           title: `${label} — reports ready`,
           message: `Generation completed successfully${w ? ` with ${w} warning${w === 1 ? "" : "s"}` : ""}.`,
         });
+      } else if (state.status === "coa_review_required") {
+        showToast({
+          type: "success",
+          title: `${label} — Chart of Accounts ready for review`,
+          message: "A Proposed Chart of Accounts was generated. Review and approve it to generate reports.",
+        });
       } else {
+        // "coa_generation_failed" / "error" — the only two real failure states.
         showToast({
           type: "error",
           title: `${label} — generation failed`,
