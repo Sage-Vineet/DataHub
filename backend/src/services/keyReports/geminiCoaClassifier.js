@@ -140,10 +140,23 @@ function buildClassifyPrompt(batch, knownPaths = []) {
     const bsSec     = a.bsSection     ? ` [BS section: ${a.bsSection}]`   : "";
     const bsSub     = a.bsSubSection  ? ` [BS sub-section: ${a.bsSubSection}]` : "";
     const plSec     = a.plSection     ? ` [P&L section: ${a.plSection}]` : "";
+    // PRIORITY 2 evidence, so the model reasons WITHIN what the ledger proves
+    // rather than from the account name alone. Before this was added, an
+    // account missing from both uploaded statements reached Gemini with
+    // bsSection and plSection both null -- i.e. the model saw the NAME and
+    // nothing else, which is why equity/expense/liability inversions were
+    // getting through. `allowedTypes` is enforced independently by
+    // coaAccountingConstraints on the way back; stating it here just avoids
+    // wasting a round trip on an answer that would be vetoed.
+    const glEv = a.glEvidenceText ? `\n    [GENERAL LEDGER EVIDENCE: ${a.glEvidenceText}]` : "";
+    const allowed = a.allowedTypes?.length
+      ? `\n    [ALLOWED ACCOUNT TYPES -- the General Ledger has already PROVEN this account is one of`
+        + ` these; answering anything else will be rejected: ${a.allowedTypes.join(", ")}]`
+      : "";
     const candidates = a.ambiguousCandidates?.length
       ? ` [UPLOADED COA CANDIDATES â€” this account matched more than one row in the company's own\n    uploaded Chart of Accounts and structural evidence couldn't tell them apart; pick the one\n    whose hierarchy genuinely fits this account and reuse ITS hierarchy verbatim as your\n    "levels" answer, or ignore all of them and reason a fresh hierarchy if none genuinely fit:\n${a.ambiguousCandidates.map((c, i) => `      ${i + 1}. "${c.accountName}" -> ${c.hierarchyPath}`).join("\n")}]`
       : "";
-    return `- key="${a.key}" name="${a.accountName}"${num}${bsSec}${bsSub}${plSec}${candidates}`;
+    return `- key="${a.key}" name="${a.accountName}"${num}${bsSec}${bsSub}${plSec}${allowed}${glEv}${candidates}`;
   });
 
   const knownPathsBlock = knownPaths.length
