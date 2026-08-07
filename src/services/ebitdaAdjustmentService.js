@@ -503,8 +503,28 @@ function buildYearValueFromTransactions(transactions, year) {
   };
 }
 
+// The account this row's values should be looked up under. MUST match
+// getReferenceTransactions' resolution above -- the two are the same concept
+// (which account is this adjustment linked to?) and had drifted apart.
+//
+// CONFIRMED ROOT CAUSE this fixes: buildFallbackYearValue used to resolve
+//   row.label || row.accountName || ""
+// and an adjustment draft (see buildAdjustmentDraft) has NEITHER field -- it
+// carries `name`, `linkedAccountName` and `linkedAccountId`. So the key was
+// ALWAYS "", WorkspaceEbitda's getValueFromPL returns null immediately for a
+// falsy label, apiValue came out 0, and the modal's Auto column rendered "-".
+// The computed value never depended on the selected account at all, which is
+// precisely why changing the Account dropdown appeared to do nothing.
+//
+// Only the Key Reports path was affected: Manual GL supplies a referenceIndex,
+// so it takes the getReferenceTransactions branch and never reaches here.
+function resolveLinkedAccountName(row) {
+  return normalizeText(row?.accountName || row?.linkedAccountName || row?.label || "");
+}
+
 function buildFallbackYearValue(row, year, fallbackLookup) {
-  const fallback = typeof fallbackLookup === "function" ? fallbackLookup(year, row.label || row.accountName || "") : null;
+  const accountName = resolveLinkedAccountName(row);
+  const fallback = typeof fallbackLookup === "function" ? fallbackLookup(year, accountName) : null;
   const numeric = toAbsoluteNumber(fallback, 0);
   const startMonth = Number(row.allocationStartMonth ?? row.monthStart ?? row.metadata?.startMonth ?? 1);
   const endMonth = Number(row.allocationEndMonth ?? row.monthEnd ?? row.metadata?.endMonth ?? 12);
@@ -535,12 +555,31 @@ export function applyReferenceValues(row, years = [], { referenceIndex = null, f
   const selectedYears = Array.isArray(years) ? years.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0) : [];
   const transactions = referenceIndex ? getReferenceTransactions(referenceIndex, next) : [];
 
+  // Did the linked account change since these values were last computed? The
+  // row records the account its stored values belong to, so this is answered
+  // from the data itself rather than needing the caller to say so.
+  //
+  // CONFIRMED ROOT CAUSE this addresses (the second of two): the month-level
+  // values below are deliberately preserved across a recompute, so a user's
+  // per-month fine-tuning is not wiped every time the row is touched -- and the
+  // YEAR TOTAL is derived from them whenever they exist. Correct while the row
+  // stays on one account; wrong the moment the account changes, because it pins
+  // the row to the PREVIOUS account's figures. Retaining them was hiding the
+  // refresh even after the lookup-key defect above was fixed.
+  //
+  // Only the AUTO-COMPUTED side is reset. Overrides are untouched — see below.
+  const resolvedAccountName = resolveLinkedAccountName(next);
+  const accountChanged = normalizeText(next.valuesAccountName ?? resolvedAccountName) !== resolvedAccountName;
+  next.valuesAccountName = resolvedAccountName;
+
   next.values = next.values && typeof next.values === "object" ? clone(next.values) : {};
   selectedYears.forEach((year) => {
     const yearKey = String(year);
     const current = next.values[yearKey] || {};
     const existingOverride = current.overrideValue ?? current.userValue ?? null;
-    const existingMonthly = current.monthlyValues || current.monthValues || current.months || {};
+    const existingMonthly = accountChanged
+      ? {}
+      : (current.monthlyValues || current.monthValues || current.months || {});
     const computed = transactions.length
       ? buildYearValueFromTransactions(transactions, year)
       : buildFallbackYearValue(next, year, fallbackLookup);
