@@ -37,6 +37,11 @@ const { classifyReportTag } = require("./keyReports/reportTagRules");
 const { createCoaMapper, matchAnyName } = require("./keyReports/coaMappingService");
 const { strongSimilarity } = require("./keyReports/coaAccountMatcher");
 const { norm: fuzzyNorm } = require("./keyReports/accountNameMatching");
+const { buildGlEvidence, describeGlEvidence } = require("./keyReports/coaGlEvidence");
+const {
+  statementForAccountType, allowedAccountTypes, checkClassification,
+} = require("./keyReports/coaAccountingConstraints");
+const { inferHierarchyType } = require("./keyReports/coaHierarchyEvidence");
 
 const MAX_LEVELS = 15;
 
@@ -2347,6 +2352,30 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
     if (r.split_account) namesWithGlActivity.add(normName(r.split_account));
   }
 
+  // PRIORITY 2 evidence, computed once for the whole ledger. Keyed by the same
+  // normName() every other stage of this pipeline keys on.
+  const glEvidenceByKey = buildGlEvidence(glRows);
+
+  // PRIORITY 3 peer set: accounts already resolved by an AUTHORITATIVE source
+  // (the uploaded Chart of Accounts, or the account's own position in an
+  // uploaded statement). Deliberately excludes anything AI-derived -- inferring
+  // one account's type from another account's guess would let a single AI error
+  // propagate across a whole number block. Computed on demand rather than
+  // cached, because addLeaf resolves accounts incrementally as it walks the
+  // rows; only ever called for an account that carries an account_number, which
+  // is the sole input coaHierarchyEvidence acts on.
+  const resolvedPeersWithNumbers = () => {
+    const out = [];
+    for (const bucket of leavesByName.values()) {
+      for (const l of bucket) {
+        if (!l.accountType || !l.accountNumber) continue;
+        if (l.classificationSource !== "client_coa" && l.classificationSource !== "document_hierarchy") continue;
+        out.push({ accountNumber: l.accountNumber, accountType: l.accountType });
+      }
+    }
+    return out;
+  };
+
   // High AI confidence must not be silently overwritten by a lower-priority
   // structural inference (see below) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â only a missing or low-confidence AI
   // result may be filled in by bsSection/plSection. This does NOT weaken the
@@ -2355,7 +2384,29 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
   // versioning), not a genuinely confident-and-correct AI answer being
   // second-guessed. A client_chart_of_accounts match (Pass 1, downstream of
   // this function) still always wins regardless of AI confidence.
-  const AI_OVERRIDE_CONFIDENCE_FLOOR = 0.95;
+  // CONFIRMED ROOT CAUSE (this floor is now unreachable, i.e. disabled). It
+  // used to be 0.95: whenever Gemini returned a confidence at or above it, the
+  // bsSection/plSection structural evidence below was NOT allowed to correct
+  // the type. Gemini scores its own confidence, and the prompt tells it >= 0.90
+  // means "unambiguous", so it routinely returns 0.95-1.00 -- which switched
+  // document section evidence OFF in exactly the cases where the model was most
+  // overconfident. A direct inversion of this pipeline's stated priority order.
+  //
+  // Document section evidence now always outranks AI; there is no confidence at
+  // which a model answer may override a document. Kept as a named constant --
+  // set ABOVE the maximum possible confidence (1.0) rather than deleting the two
+  // `aiConfident` guards -- so the inversion stays documented exactly where it
+  // lived and cannot be reintroduced by accident.
+  //
+  // MIND THE DIRECTION: both guards read `confidence >= FLOOR` and act on
+  // `if (!aiConfident)`. An unreachable floor makes `aiConfident` permanently
+  // false, so section evidence is permanently authoritative. A floor of 0 would
+  // do the exact OPPOSITE -- every AI answer would count as confident and
+  // section evidence would never apply at all.
+  //
+  // See coaAccountingConstraints for the constraint layer that additionally
+  // vetoes an AI answer contradicting GL-proven permanence.
+  const AI_OVERRIDE_CONFIDENCE_FLOOR = Number.POSITIVE_INFINITY;
 
   // plSection values are the canonical labels profitLossExtractionService's
   // header detection recognizes: revenue | cost_of_sales | operating_expenses
@@ -2706,19 +2757,81 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
         if (accountType) structuralSectionEvidence = name;
       }
     }
+    // ── PRIORITY 2 / 4: General Ledger structural evidence and the constraint
+    // veto. This is the gate that makes AI a genuine fallback rather than an
+    // override.
+    //
+    // `glEvidence` proves permanence for an account whose ledger carried a
+    // non-zero balance across a fiscal-year boundary -- which only an
+    // asset/liability/equity account does. Measured against live data before
+    // this was written: 20/20 such accounts are Balance Sheet types, 0 are P&L
+    // types. See coaGlEvidence for the two signals deliberately NOT enforced
+    // (normal balance is not derivable under this codebase's natural-balance
+    // sign convention; year-over-year continuity measured only 92% accurate,
+    // with every error in the direction of vetoing a CORRECT answer).
+    //
+    // The document's own section, when present, is stronger still and is
+    // already reflected in `accountType` by the pass above.
+    const glEvidence = glEvidenceByKey.get(key) || null;
+    const documentAccountType = bsSectionToType(bsSection) || plSectionToType(plSection) || null;
+
+    // A classification that contradicts proven evidence is DISCARDED, not
+    // downgraded: a wrong type silently reshapes the Balance Sheet and the P&L,
+    // whereas an unclassified account surfaces in the existing review queue.
+    let constraintViolation = null;
+    if (accountType) {
+      constraintViolation = checkClassification({
+        accountType,
+        statementType: null, // derived from accountType below -- never an independent input
+        glEvidence,
+        documentAccountType,
+      });
+      if (constraintViolation) {
+        console.warn(
+          `[ChartOfAccounts][CLASSIFICATION_REJECTED] account="${name}" rejectedType=${accountType} ` +
+          `source=${aiOwnAccountType === accountType ? "ai" : "structural"} ` +
+          `violation=${constraintViolation.violation} -- ${constraintViolation.detail}`,
+        );
+        accountType = null; // falls through to needsReview/needsMapping
+      }
+    }
+
+    // ── PRIORITY 3: hierarchy evidence. Only consulted when everything above
+    // left the account unresolved, and only allowed to propose a type the
+    // constraints already permit.
+    let hierarchyBasis = null;
+    if (!accountType && number) {
+      const { allowed } = allowedAccountTypes({ glEvidence, documentAccountType });
+      const inferred = inferHierarchyType(
+        { accountNumber: number },
+        resolvedPeersWithNumbers(),
+        { allowed },
+      );
+      if (inferred) {
+        accountType = inferred.accountType;
+        hierarchyBasis = inferred.basis;
+      }
+    }
+
     const aiNormalizedName = aiResult?.normalizedName || null;
     const confidence = aiResult?.confidence ?? null;
-    const needsReview = isReportRowOverride || !aiResult || (confidence !== null && confidence < AI_NEEDS_REVIEW_THRESHOLD);
+    // A rejected classification is never silently accepted at any confidence.
+    const needsReview = Boolean(constraintViolation) || isReportRowOverride || !aiResult
+      || (confidence !== null && confidence < AI_NEEDS_REVIEW_THRESHOLD);
     const classificationMethod =
-      isReportRowOverride ? "AI_REPORT_ROW_OVERRIDE" :
-        !aiResult ? "unclassified" :
-          needsReview ? "ai_low_confidence" :
-            "gemini";
+      constraintViolation ? "constraint_rejected" :
+        hierarchyBasis ? "hierarchy_evidence" :
+          isReportRowOverride ? "AI_REPORT_ROW_OVERRIDE" :
+            !aiResult ? "unclassified" :
+              needsReview ? "ai_low_confidence" :
+                "gemini";
     const resolvedSource =
-      isReportRowOverride ? "AI_REPORT_ROW_OVERRIDE" : // Root Cause 1 spec: classification_source literal
-        !aiResult ? "no_ai_result" :
-          confidence !== null ? `ai_${confidence.toFixed(2)}` :
-            "gemini";
+      constraintViolation ? `rejected_${constraintViolation.violation}` :
+        hierarchyBasis ? "hierarchy_evidence" :
+          isReportRowOverride ? "AI_REPORT_ROW_OVERRIDE" : // Root Cause 1 spec: classification_source literal
+            !aiResult ? "no_ai_result" :
+              confidence !== null ? `ai_${confidence.toFixed(2)}` :
+                "gemini";
 
     // CONFIRMED ROOT CAUSE (fixed below at aiLevels): the structural override
     // above can change accountType AWAY from the AI's own aiOwnAccountType
@@ -2748,7 +2861,23 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
       sectionDiscriminator: bucket.length ? documentSectionType(bsSection, plSection) : null,
       accountType,
       partitionStatementType: partitionStatementType || null,
-      statementType: partitionStatementType || (accountType ? statementTypeFor(accountType) : null),
+      // CONFIRMED ROOT CAUSE (fixed here). This used to read
+      //   partitionStatementType || (accountType ? statementTypeFor(accountType) : null)
+      // so the coarse GL Retained-Earnings-boundary bucket OUTRANKED the
+      // statement implied by the account's own type. That made
+      // accountType:"equity" + statementType:"profit_loss" reachable, and
+      // getFinalCoaPrefix then matched on statementType==="profit_loss", found
+      // "equity" among none of cogs/expense/income, and fell through to the
+      // P&L anchor -- filing an equity account under Profit & Loss. That is
+      // exactly the reported "Equity -> P&L" symptom, and it required no AI
+      // mistake whatsoever to occur.
+      //
+      // An account's statement side is a pure function of its type (there is no
+      // such thing as an equity account on the P&L), so it is now derived, never
+      // supplied. partitionStatementType survives only as a last-resort filler
+      // for an account whose type is genuinely unknown -- where it cannot
+      // contradict anything, because there is nothing yet to contradict.
+      statementType: (accountType ? statementForAccountType(accountType) : null) || partitionStatementType,
       classificationSource: resolvedSource,
       classificationMethod,
       aiNormalizedName,
@@ -2764,7 +2893,12 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
       // Cleared when the structural override invalidated the AI's own type
       // assumption (accountTypeOverriddenByStructuralEvidence) -- see the
       // comment above this leaf's construction.
-      aiLevels: isReportRowOverride || accountTypeOverriddenByStructuralEvidence ? [] : (aiResult?.levels || []),
+      // A constraint-rejected classification also invalidates the AI's category
+      // path: that path was reasoned out under the very type the constraints
+      // just discarded, so keeping it would re-attach a wrong-section hierarchy
+      // to an account whose type is now (correctly) unresolved.
+      aiLevels: isReportRowOverride || accountTypeOverriddenByStructuralEvidence || constraintViolation
+        ? [] : (aiResult?.levels || []),
       aiReasoning: isReportRowOverride ? null : (aiResult?.reasoning || null),
       sources: new Set([source]),
       fiscalYears: new Set(fiscalYear ? [Number(fiscalYear)] : []),
@@ -2885,6 +3019,40 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map(), matchResul
  *
  * @returns {string[]|null} category levels, or null if there's no real ancestor
  */
+/**
+ * Attach PRIORITY 2 evidence to the accounts about to be sent to Gemini.
+ *
+ * WHY: an account that reaches AI is, by construction, one the uploaded Chart
+ * of Accounts and both uploaded statements failed to resolve -- so its
+ * bsSection and plSection are null and the prompt would otherwise carry the
+ * account NAME and nothing else. That is the root cause of the reported
+ * equity/expense/liability inversions: the model was guessing from a string.
+ *
+ * `allowedTypes` is advisory to the model only. coaAccountingConstraints
+ * re-checks the answer in buildCoaModel regardless of what comes back, so a
+ * model that ignores the constraint is still vetoed -- this just avoids
+ * spending a round trip on an answer that would be thrown away.
+ *
+ * Shared by both AI call sites (buildProposedCoaTree and ensureCoaComplete) so
+ * the two can never drift apart on what evidence the model receives.
+ */
+function attachGlEvidenceForAi(accounts, glRows, matchResults) {
+  const evidenceByKey = buildGlEvidence(glRows);
+  return (accounts || []).map((a) => {
+    const ev = evidenceByKey.get(a.key) || null;
+    const { allowed } = allowedAccountTypes({
+      glEvidence: ev,
+      documentAccountType: bsSectionToType(a.bsSection) || plSectionToType(a.plSection) || null,
+    });
+    return {
+      ...a,
+      ambiguousCandidates: matchResults?.get(a.key)?.candidates || null,
+      glEvidenceText: describeGlEvidence(ev) || null,
+      allowedTypes: allowed,
+    };
+  });
+}
+
 function categoryLevelsFromRaw(levels) {
   const raw = levels.filter(Boolean);
   if (raw.length < 2) return null;
@@ -4462,6 +4630,16 @@ function validateHierarchyConsistency(hierarchical) {
         expectedPrefix,
         kind: "anchor_mismatch",
       });
+      // CONFIRMED ROOT CAUSE (fixed here): this branch used to be console.warn
+      // ONLY -- it never set needsReview and never blocked. An account filed
+      // under the wrong statement anchor (the "Equity -> P&L" symptom, where an
+      // equity account received the P&L anchor) therefore shipped silently into
+      // the Chart of Accounts with nothing surfaced to the reviewer. The
+      // statementType fix in buildCoaModel makes that state unreachable by
+      // construction; this makes anything that still reaches it visible instead
+      // of invisible, through the review surface that already exists.
+      leaf.needsReview = true;
+      leaf.anchorMismatch = { expected: expectedPrefix, actual: actualPrefix.filter(Boolean) };
     }
 
     // Cross-statement check on the DYNAMIC labels. The anchor test above passes
@@ -4730,7 +4908,7 @@ async function buildProposedCoaTree(companyId, versionId, batchId, opts = {}) {
   let aiResults = new Map();
   if (needsAi.length) {
     try {
-      const aiInput = needsAi.map((a) => ({ ...a, ambiguousCandidates: matchResults.get(a.key)?.candidates || null }));
+      const aiInput = attachGlEvidenceForAi(needsAi, glRows, matchResults);
       aiResults = await classifyAccountsWithAI(aiInput, { companyId, categoryPaths: categoryPaths.map((c) => c.path) });
     } catch (err) {
       console.warn(`[ChartOfAccounts] AI pre-pass failed ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â accounts will be flagged for review: ${err.message}`);
@@ -6393,7 +6571,7 @@ async function _ensureCoaCompleteImpl(companyId, versionId, plRows = [], hasLink
   let aiResults = new Map();
   if (needsAi.length) {
     try {
-      const aiInput = needsAi.map((a) => ({ ...a, ambiguousCandidates: matchResults.get(a.key)?.candidates || null }));
+      const aiInput = attachGlEvidenceForAi(needsAi, glRowsInOrder, matchResults);
       aiResults = await classifyAccountsWithAI(aiInput, { companyId, categoryPaths: categoryPaths.map((c) => c.path) });
     } catch (err) {
       console.warn(`[COA][ensureComplete] AI classification failed ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â accounts flagged for review: ${err.message}`);

@@ -1,11 +1,43 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation } from 'react-router-dom';
 import { listCompaniesRequest, listCompanyDirectMessageContactsRequest, listMyMessageGroups } from '../lib/api';
 import { useAuth } from './AuthContext';
 
+// ── Why this provider no longer fetches proactively ──────────────────────────
+// This provider is mounted once at the app root (App.jsx, above every route)
+// and stays mounted for the whole session. `refresh()` powers the sidebar/
+// navbar unread-message badge, and internally it calls the same two endpoints
+// the actual Messages page uses to populate its contact/group lists:
+//   GET /companies/:companyId/direct-messages/contacts  (once per assigned company)
+//   GET /my-groups
+// There is no lightweight "unread count" endpoint — the badge is derived
+// client-side from the full contacts/groups payload — so these calls take
+// 2-4 seconds each.
+//
+// Previously this fired: once on login, again on EVERY route change (a
+// `useLocation()`-keyed effect — confirmed root cause of the reported
+// background calls on Dashboard/Reports/Key Reports/COA/etc.), and again on
+// every window focus/tab-visibility change. All three were unconditional:
+// they had no idea whether the user had ever opened Messages.
+//
+// Decision (explicit product tradeoff, not a bug fix): the badge now shows
+// the LAST-KNOWN count, persisted in localStorage so it survives a full page
+// reload, and is refreshed only by a genuine user action:
+//   - opening the bell/notifications dropdown (MessageNotificationsMenu's
+//     onClick already calls ensureFresh — unchanged)
+//   - marking something read while Messages is open (markConversationRead /
+//     markGroupRead — local cache mutation only, never a network call)
+// It is never refreshed automatically by mounting, navigating, or refocusing
+// the tab. First-ever session (nothing cached yet) shows no badge until the
+// user opens Messages or the bell once.
+//
+// None of this changes refresh()'s own logic (which endpoints, chunking,
+// how unread is derived) — only when it is allowed to run.
+
 const MessageNotificationsContext = createContext(null);
+// How long a fetched result is considered fresh enough to skip a re-fetch when
+// ensureFresh/refresh IS explicitly invoked (bell click, manual refresh, etc.)
+// — NOT a polling interval; nothing in this file calls these on a timer.
 const NOTIFICATION_CACHE_TTL_MS = 60_000;
-const BACKGROUND_STALE_MS = 5 * 60_000;
 const COMPANY_CACHE_TTL_MS = 10 * 60_000;
 const REQUEST_DEBOUNCE_MS = 1_500;
 
@@ -41,17 +73,63 @@ function threadKey(companyId, participantId) {
   return `${companyId}:${participantId}`;
 }
 
+// Durable copy of the last-fetched notification snapshot, so the sidebar/bell
+// badge can show a last-known count on a fresh page load WITHOUT firing a
+// network request — the in-memory `notificationCache` Map alone is lost on
+// every full reload / new tab. This is purely a cache-durability addition:
+// it never changes what refresh() fetches or how, only lets an already-fetched
+// result survive a reload. See the module doc comment above for why this
+// provider no longer fetches proactively (removed: on-mount-with-no-cache
+// eager fetch, per-route-change refresh, focus/visibility refresh).
+function getPersistedStorageKey(userId) {
+  return `leo-message-notifications-cache:${userId}`;
+}
+
+function readPersistedState(userId) {
+  if (!userId) return null;
+  try {
+    const raw = localStorage.getItem(getPersistedStorageKey(userId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.notifications)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writePersistedState(userId, state) {
+  if (!userId) return;
+  try {
+    localStorage.setItem(getPersistedStorageKey(userId), JSON.stringify(state));
+  } catch {
+    /* quota / serialization — non-fatal, badge just won't survive a reload this time */
+  }
+}
+
 function getCachedState(userId) {
-  return notificationCache.get(userId) || null;
+  const inMemory = notificationCache.get(userId);
+  if (inMemory) return inMemory;
+  // Fall back to the durable copy (e.g. right after a full page reload, before
+  // any fetch has happened this session) and warm the in-memory map from it so
+  // subsequent reads this session don't re-hit localStorage.
+  const persisted = readPersistedState(userId);
+  if (persisted) {
+    notificationCache.set(userId, persisted);
+    return persisted;
+  }
+  return null;
 }
 
 function setCachedState(userId, state) {
   if (!userId) return;
-  notificationCache.set(userId, {
+  const entry = {
     notifications: state.notifications || [],
     lastUpdatedAt: state.lastUpdatedAt || new Date().toISOString(),
     fetchedAt: state.fetchedAt || Date.now(),
-  });
+  };
+  notificationCache.set(userId, entry);
+  writePersistedState(userId, entry);
 }
 
 function applySeenMap(notifications, userId) {
@@ -104,7 +182,6 @@ async function resolveCompanyIds(user, force = false) {
 
 export function MessageNotificationsProvider({ children }) {
   const { user } = useAuth();
-  const location = useLocation();
   const userId = user?.id ? String(user.id) : null;
   const cachedState = userId ? getCachedState(userId) : null;
   const [notifications, setNotifications] = useState(() => cachedState?.notifications || []);
@@ -269,8 +346,19 @@ export function MessageNotificationsProvider({ children }) {
     };
   }, []);
 
+  // Seed React state from cache ONLY — never fetches. `getCachedState` already
+  // falls back to the localStorage-persisted snapshot, so this shows a
+  // last-known badge across a full page reload with zero network calls. If
+  // nothing has ever been cached for this user (first-ever session, or a
+  // browser that never opened Messages), the badge simply stays empty until
+  // the user opens the bell dropdown or the Messages page themselves — see the
+  // module doc comment above for why this is a deliberate tradeoff, not an
+  // oversight.
   useEffect(() => {
     let cancelled = false;
+    // Deferred (not called synchronously in the effect body) — same pattern
+    // the previous version of this effect used, to avoid a same-tick
+    // cascading render.
     const commit = (fn) => {
       queueMicrotask(() => {
         if (!cancelled) fn();
@@ -283,44 +371,33 @@ export function MessageNotificationsProvider({ children }) {
         setLastUpdatedAt(null);
         setLoading(false);
       });
-      return () => {
-        cancelled = true;
-      };
+    } else {
+      const cached = getCachedState(userId);
+      if (cached) {
+        commit(() => {
+          setNotifications(applySeenMap(cached.notifications, userId));
+          setLastUpdatedAt(cached.lastUpdatedAt);
+        });
+      }
     }
 
-    const cached = getCachedState(userId);
-    if (cached) {
-      commit(() => {
-        setNotifications(applySeenMap(cached.notifications, userId));
-        setLastUpdatedAt(cached.lastUpdatedAt);
-      });
-      ensureFresh({ silent: true, maxAge: BACKGROUND_STALE_MS });
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    requestRefresh({ force: true });
     return () => {
       cancelled = true;
     };
-  }, [ensureFresh, requestRefresh, userId]);
+  }, [userId]);
 
-  useEffect(() => {
-    ensureFresh({ silent: true, maxAge: BACKGROUND_STALE_MS });
-  }, [ensureFresh, location.pathname, location.search]);
-
+  // Cross-tab / same-tab LOCAL sync only — neither listener below makes a
+  // network call. `storage` fires when another tab marks something read
+  // (writeSeenMap in a different tab); the custom event fires when THIS tab's
+  // markConversationRead/markGroupRead mutates the cache. Both simply re-derive
+  // the already-cached notifications through the seen-map filter.
+  //
+  // Deliberately NOT listening for `focus`/`visibilitychange` anymore: those
+  // used to trigger a network refresh, which is exactly the
+  // "background polling when chat is closed" this provider must never do.
   useEffect(() => {
     if (!userId) return undefined;
 
-    const handleFocus = () => {
-      ensureFresh({ silent: true, maxAge: NOTIFICATION_CACHE_TTL_MS });
-    };
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        ensureFresh({ silent: true, maxAge: NOTIFICATION_CACHE_TTL_MS });
-      }
-    };
     const handleStorage = (event) => {
       if (event.key === getStorageKey(userId)) {
         const cached = getCachedState(userId);
@@ -332,18 +409,14 @@ export function MessageNotificationsProvider({ children }) {
       setNotifications((current) => applySeenMap(cached?.notifications || current, userId));
     };
 
-    window.addEventListener('focus', handleFocus);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('storage', handleStorage);
     window.addEventListener('leo-message-notifications-updated', handleCustomUpdate);
 
     return () => {
-      window.removeEventListener('focus', handleFocus);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('storage', handleStorage);
       window.removeEventListener('leo-message-notifications-updated', handleCustomUpdate);
     };
-  }, [ensureFresh, userId]);
+  }, [userId]);
 
   const markGroupRead = useCallback((groupId) => {
     if (!userId || !groupId) return;
