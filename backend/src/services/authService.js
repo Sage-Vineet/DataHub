@@ -19,7 +19,7 @@ function getAuthPool() {
   return _authPool;
 }
 const { attachAssignedCompanies, flattenUser, getUserByEmail, getUserById } = require("./userService");
-const { CLIENT_STATIC_PASSWORD } = require("../config/demoUsers");
+const { JWT_SECRET } = require("../config/secrets");
 const { invalidateUserCache } = require("../middleware/auth");
 
 /**
@@ -28,7 +28,7 @@ const { invalidateUserCache } = require("../middleware/auth");
  * @returns {string} Signed token
  */
 function signToken(userId) {
-  return jwt.sign({ sub: userId }, process.env.JWT_SECRET || "change_me", {
+  return jwt.sign({ sub: userId }, JWT_SECRET, {
     expiresIn: process.env.JWT_EXPIRES_IN || "7d",
   });
 }
@@ -140,10 +140,55 @@ async function authenticate(email, password) {
 
   const isClientUser = user.role === "buyer" || user.role === "client";
 
-  if (isClientUser && rawPassword === CLIENT_STATIC_PASSWORD) {
-    // Static-password path: sync company assignment then re-fetch.
-    // If company_id is missing (orphaned post-migration account), try to recover
-    // it by matching the user's email against companies.contact_email.
+  // Standard credential check for ALL users. There is no shared static-password
+  // bypass: every account (including client/buyer) must authenticate against its
+  // own stored password_hash. Clients that have never set a password use the
+  // password-reset flow (POST /auth/forgot-password) to establish one.
+  //
+  // password_hash is already present when the Postgres fallback was used inside
+  // getUserByEmail. Only query Supabase when it's absent, and fall back to a
+  // direct Postgres query if Supabase is unavailable.
+  let storedPassword = user.password_hash || null;
+
+  if (!storedPassword) {
+    const { data: authData } = await supabase
+      .from("users")
+      .select("password_hash")
+      .eq("id", user.id)
+      .single();
+    storedPassword = authData?.password_hash || null;
+  }
+
+  if (!storedPassword) {
+    const pool = getAuthPool();
+    if (pool) {
+      try {
+        const { rows } = await pool.query(
+          "SELECT password_hash FROM users WHERE id = $1 LIMIT 1",
+          [user.id],
+        );
+        storedPassword = rows[0]?.password_hash || null;
+      } catch { /* ignore — will throw Invalid credentials below */ }
+    }
+  }
+
+  // Only bcrypt hashes are accepted. Legacy plaintext-equality comparison has
+  // been removed so a leaked/plaintext value can never authenticate.
+  let ok = false;
+  if (storedPassword && /^\$2[aby]\$/.test(storedPassword)) {
+    try {
+      ok = await bcrypt.compare(rawPassword, storedPassword);
+    } catch {
+      ok = false;
+    }
+  }
+
+  if (!ok) throw new Error("Invalid credentials");
+
+  // For client/buyer users, sync the company association so user_companies is
+  // populated after a DB migration that left the join table empty. Also recover
+  // company_id via email if missing, and ensure default folders exist.
+  if (isClientUser) {
     let resolvedCompanyId = user.company_id;
     if (!resolvedCompanyId) {
       const { data: matched } = await supabase
@@ -159,67 +204,6 @@ async function authenticate(email, password) {
     if (resolvedCompanyId) {
       await syncUserCompanyAssignment(user.id, resolvedCompanyId);
       await ensureDefaultFolders(resolvedCompanyId, user.id);
-    }
-  } else {
-    // Standard credential check for all other users / passwords.
-    // password_hash is already present when the Postgres fallback was used
-    // inside getUserByEmail. Only query Supabase when it's absent, and fall
-    // back to a direct Postgres query if Supabase is unavailable.
-    let storedPassword = user.password_hash || null;
-
-    if (!storedPassword) {
-      const { data: authData } = await supabase
-        .from("users")
-        .select("password_hash")
-        .eq("id", user.id)
-        .single();
-      storedPassword = authData?.password_hash || null;
-    }
-
-    if (!storedPassword) {
-      const pool = getAuthPool();
-      if (pool) {
-        try {
-          const { rows } = await pool.query(
-            "SELECT password_hash FROM users WHERE id = $1 LIMIT 1",
-            [user.id],
-          );
-          storedPassword = rows[0]?.password_hash || null;
-        } catch { /* ignore — will throw Invalid credentials below */ }
-      }
-    }
-
-    let ok = storedPassword ? rawPassword === storedPassword : false;
-
-    if (storedPassword && /^\$2[aby]\$/.test(storedPassword)) {
-      try {
-        ok = await bcrypt.compare(rawPassword, storedPassword);
-      } catch {
-        ok = false;
-      }
-    }
-
-    if (!ok) throw new Error("Invalid credentials");
-
-    // For client/buyer users with a custom password, still sync the company
-    // association so user_companies is populated after a DB migration
-    // that left the join table empty. Also recover company_id via email if missing.
-    if (isClientUser) {
-      let resolvedCompanyId = user.company_id;
-      if (!resolvedCompanyId) {
-        const { data: matched } = await supabase
-          .from("companies")
-          .select("id")
-          .ilike("contact_email", normalizedEmail)
-          .maybeSingle();
-        if (matched?.id) {
-          resolvedCompanyId = matched.id;
-          await supabase.from("users").update({ company_id: resolvedCompanyId }).eq("id", user.id);
-        }
-      }
-      if (resolvedCompanyId) {
-        await syncUserCompanyAssignment(user.id, resolvedCompanyId);
-      }
     }
   }
 

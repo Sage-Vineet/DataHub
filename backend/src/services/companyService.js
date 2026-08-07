@@ -1,7 +1,7 @@
 const { supabase } = require("../db");
 const { Pool } = require("pg");
 const bcrypt = require("bcryptjs");
-const CLIENT_STATIC_PASSWORD = process.env.CLIENT_STATIC_PASSWORD || "123456";
+const crypto = require("crypto");
 const PROFIT_METRIC_VALUES = Object.freeze({
   ADJUSTED_EBITDA: "adjusted_ebitda",
   SDE: "sde",
@@ -268,8 +268,11 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
     return existingUser.id;
   }
 
-  // Create new buyer — Supabase first, Postgres fallback
-  const passwordHash = await bcrypt.hash(CLIENT_STATIC_PASSWORD, 10);
+  // Create new buyer — Supabase first, Postgres fallback.
+  // The account is seeded with a random, unguessable password (never shared or
+  // communicated). The client establishes their own password via the
+  // password-reset flow (POST /auth/forgot-password) before first login.
+  const passwordHash = await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10);
 
   const { data: createdUser, error: insertError } = await supabase
     .from("users")

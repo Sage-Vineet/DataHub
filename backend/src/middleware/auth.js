@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const { getUserById } = require("../services/userService");
+const { JWT_SECRET } = require("../config/secrets");
 
 // In-process user cache to avoid a DB round-trip on every authenticated request.
 // Entries expire after 60 s; the cache is bounded at 500 entries to limit memory use.
@@ -27,7 +28,7 @@ function _setCachedUser(userId, user) {
 const _userPromiseCache = new Map();
 
 
-function extractToken(req) {
+function extractToken(req, { allowQueryToken = false } = {}) {
   const authorization = req.headers.authorization || "";
   if (authorization.startsWith("Bearer ")) {
     return authorization.slice(7);
@@ -42,23 +43,32 @@ function extractToken(req) {
   const headerToken = alternateHeaders.find((value) => typeof value === "string" && value.trim());
   if (headerToken) return headerToken.trim();
 
-  const queryToken = req.query?.token || req.query?.access_token || req.query?.accessToken;
-  if (typeof queryToken === "string" && queryToken.trim()) {
-    return queryToken.trim();
+  // By default we do NOT read the token from the query string: query params leak
+  // into server access logs, browser history, and Referer headers. The single
+  // exception is top-level browser navigations that cannot set an Authorization
+  // header (e.g. the QuickBooks OAuth-start redirect), which opt in explicitly.
+  if (allowQueryToken) {
+    const queryToken = req.query?.token || req.query?.access_token || req.query?.accessToken;
+    if (typeof queryToken === "string" && queryToken.trim()) {
+      return queryToken.trim();
+    }
   }
 
   return null;
 }
 
-async function requireAuth(req, res, next) {
-  const token = extractToken(req);
+// Factory so most routes get header-only auth while a whitelisted few (browser
+// redirects) can opt into query-string tokens.
+function makeRequireAuth({ allowQueryToken = false } = {}) {
+  return async function requireAuth(req, res, next) {
+  const token = extractToken(req, { allowQueryToken });
 
   if (!token) {
     return res.status(401).json({ error: "Missing token" });
   }
 
   try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET || "change_me", { clockTolerance: 30 });
+    const payload = jwt.verify(token, JWT_SECRET, { clockTolerance: 30 });
 
     const cached = _getCachedUser(payload.sub);
     if (cached) {
@@ -86,7 +96,13 @@ async function requireAuth(req, res, next) {
   } catch (err) {
     return res.status(401).json({ error: "Invalid token" });
   }
+  };
 }
+
+// Default: header-only auth for all API/data routes.
+const requireAuth = makeRequireAuth();
+// Whitelisted variant for top-level browser redirects that cannot set headers.
+const requireAuthAllowQueryToken = makeRequireAuth({ allowQueryToken: true });
 
 function requireRole(roles) {
   return (req, res, next) => {
@@ -109,4 +125,4 @@ function invalidateUserCache(userId) {
   _userPromiseCache.delete(key);
 }
 
-module.exports = { requireAuth, requireRole, invalidateUserCache };
+module.exports = { requireAuth, requireAuthAllowQueryToken, requireRole, invalidateUserCache };

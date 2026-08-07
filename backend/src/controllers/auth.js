@@ -4,6 +4,8 @@ const { authenticate, createBrokerAccount } = require("../services/authService")
 const userService = require("../services/userService");
 const otpService = require("../services/otpService");
 const { sendOtpEmail } = require("../services/emailService");
+const { JWT_SECRET } = require("../config/secrets");
+const { invalidateUserCache } = require("../middleware/auth");
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -49,7 +51,7 @@ const signupBroker = asyncHandler(async (req, res) => {
 
   let decodedToken;
   try {
-    decodedToken = jwt.verify(verification_token, process.env.JWT_SECRET || "change_me");
+    decodedToken = jwt.verify(verification_token, JWT_SECRET);
   } catch {
     return res.status(403).json({
       error: "Verification token is expired or invalid. Please verify your email again.",
@@ -167,6 +169,106 @@ const verifyVerificationOtp = asyncHandler(async (req, res) => {
   });
 });
 
+// ── Password reset flow ───────────────────────────────────────────────────────
+
+function validatePasswordStrength(password) {
+  const pw = String(password || "");
+  if (pw.length < 8) return "Password must be at least 8 characters.";
+  if (!/[A-Za-z]/.test(pw) || !/\d/.test(pw)) {
+    return "Password must include at least one letter and one number.";
+  }
+  return null;
+}
+
+/**
+ * POST /auth/forgot-password
+ * Body: { email }
+ * Sends a 6-digit reset code to the email IF an account exists. Always returns
+ * a generic success response so the endpoint cannot be used to enumerate which
+ * email addresses have accounts. Rate-limiting is enforced by otpService.
+ */
+const forgotPassword = asyncHandler(async (req, res) => {
+  const { email } = req.body || {};
+
+  const genericResponse = {
+    success: true,
+    message: "If an account exists for that email, a reset code has been sent.",
+  };
+
+  if (!email || !EMAIL_RE.test(String(email).trim())) {
+    return res.status(400).json({ error: "A valid email address is required." });
+  }
+
+  const normalizedEmail = String(email).trim().toLowerCase();
+
+  try {
+    const user = await userService.getUserByEmail(normalizedEmail);
+    // Only send a code to real, non-inactive accounts — but never reveal which.
+    if (user && String(user.status || "").toLowerCase() !== "inactive") {
+      const otp = await otpService.sendOtp(normalizedEmail);
+      const emailResult = await sendOtpEmail(normalizedEmail, otp);
+      if (!emailResult.sent) {
+        console.warn(
+          `[Audit] [Reset] Email delivery failed for <${normalizedEmail}>: ` +
+            `${emailResult.reason} ${emailResult.error || ""}`
+        );
+      } else {
+        console.log(
+          `[Audit] [Reset] Reset code sent to <${normalizedEmail}> at ${new Date().toISOString()}`
+        );
+      }
+    } else {
+      console.log(`[Audit] [Reset] Reset requested for non-account <${normalizedEmail}> (no code sent)`);
+    }
+  } catch (err) {
+    // Includes otpService rate-limit (429). Swallow so the response stays generic
+    // and non-enumerable; the rate limit itself is still enforced internally.
+    console.warn(`[Audit] [Reset] forgot-password suppressed error for <${normalizedEmail}>: ${err.message}`);
+  }
+
+  return res.json(genericResponse);
+});
+
+/**
+ * POST /auth/reset-password
+ * Body: { email, otp, new_password }
+ * Verifies the reset code and sets a new bcrypt-hashed password on the account.
+ */
+const resetPassword = asyncHandler(async (req, res) => {
+  const { email, otp } = req.body || {};
+  const newPassword = req.body?.new_password ?? req.body?.newPassword ?? req.body?.password;
+
+  if (!email || !otp || !newPassword) {
+    return res.status(400).json({ error: "Email, reset code, and new password are required." });
+  }
+
+  const strengthError = validatePasswordStrength(newPassword);
+  if (strengthError) {
+    return res.status(400).json({ error: strengthError });
+  }
+
+  const normalizedEmail = String(email).trim().toLowerCase();
+
+  // Verify the OTP first. Throws (400/429) on invalid/expired/too-many-attempts.
+  await otpService.verifyOtp(normalizedEmail, String(otp).trim());
+
+  const user = await userService.getUserByEmail(normalizedEmail);
+  if (!user) {
+    // OTPs are only issued to real accounts, so this is effectively unreachable;
+    // return a generic error rather than confirming account (non-)existence.
+    return res.status(400).json({ error: "Unable to reset password. Please request a new code." });
+  }
+
+  await userService.updateUser(user.id, { password: String(newPassword) });
+  invalidateUserCache(user.id);
+
+  console.log(
+    `[Audit] [Reset] Password reset completed for <${normalizedEmail}> at ${new Date().toISOString()}`
+  );
+
+  return res.json({ success: true, message: "Your password has been reset. You can now sign in." });
+});
+
 module.exports = {
   login,
   signupBroker,
@@ -174,4 +276,6 @@ module.exports = {
   me,
   sendVerificationOtp,
   verifyVerificationOtp,
+  forgotPassword,
+  resetPassword,
 };

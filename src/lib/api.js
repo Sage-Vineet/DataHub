@@ -228,6 +228,42 @@ export function verifyVerificationOtpRequest(payload) {
   });
 }
 
+export function forgotPasswordRequest(payload) {
+  return fetch(buildUrl('/auth/forgot-password'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+    credentials: 'omit',
+  }).then(async (response) => {
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = new Error(data?.error || 'Failed to send reset code.');
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  });
+}
+
+export function resetPasswordRequest(payload) {
+  return fetch(buildUrl('/auth/reset-password'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+    credentials: 'omit',
+  }).then(async (response) => {
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = new Error(data?.error || 'Password reset failed.');
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  });
+}
+
 export function loadSavedQBBankActivityRequest(clientId) {
   const params = new URLSearchParams();
   if (clientId) params.append("clientId", clientId);

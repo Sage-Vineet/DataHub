@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { supabase } = require("../db");
+const { JWT_SECRET } = require("../config/secrets");
 
 const OTP_EXPIRY_MS = 10 * 60 * 1000;  // 10 minutes
 const MAX_ATTEMPTS = 5;
@@ -257,7 +258,7 @@ async function verifyOtp(email, otp) {
 
   const verificationToken = jwt.sign(
     { purpose: "email_verification", email: normalized },
-    process.env.JWT_SECRET || "change_me",
+    JWT_SECRET,
     { expiresIn: VERIFICATION_TOKEN_TTL }
   );
 

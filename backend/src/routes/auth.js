@@ -6,6 +6,8 @@ const {
   me,
   sendVerificationOtp,
   verifyVerificationOtp,
+  forgotPassword,
+  resetPassword,
 } = require("../controllers/auth");
 const { requireAuth } = require("../middleware/auth");
 
@@ -17,5 +19,7 @@ router.post("/logout",                   requireAuth, logout);
 router.get("/me",                        requireAuth, me);
 router.post("/send-verification-otp",    sendVerificationOtp);
 router.post("/verify-verification-otp",  verifyVerificationOtp);
+router.post("/forgot-password",          forgotPassword);
+router.post("/reset-password",           resetPassword);
 
 module.exports = router;

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import {
   Eye, EyeOff, LogIn, UserPlus, X,
@@ -657,6 +658,15 @@ export default function Login() {
                           {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
                         </button>
                       </div>
+                    </div>
+
+                    <div className="text-right">
+                      <Link
+                        to="/forgot-password"
+                        className="text-sm font-medium text-primary hover:underline"
+                      >
+                        Forgot password?
+                      </Link>
                     </div>
 
                     {error && (

@@ -19,6 +19,7 @@ import BrokerLayout from "./components/layout/BrokerLayout";
 import ClientWorkspaceLayout from "./components/layout/ClientWorkspaceLayout";
 import UserLayout from "./components/layout/UserLayout";
 import Login from "./pages/Login";
+import ForgotPassword from "./pages/ForgotPassword";
 import BrokerDashboard from "./pages/broker/Dashboard";
 import BrokerRequests from "./pages/broker/Requests";
 import BrokerDocuments from "./pages/broker/Documents";
@@ -268,6 +269,7 @@ function AppRoutes() {
           )
         }
       />
+      <Route path="/forgot-password" element={<ForgotPassword />} />
 
       {/* Broker global pages */}
       <Route

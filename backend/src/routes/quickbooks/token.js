@@ -14,7 +14,7 @@ const {
 } = require("../../qbconfig");
 const { logQuickBooksDebug, maskValue } = require("../../quickbooksLogger");
 
-const { requireAuth } = require("../../middleware/auth");
+const { requireAuth, requireAuthAllowQueryToken } = require("../../middleware/auth");
 const { canAccessCompany } = require("../../services/permissionService");
 const router = express.Router();
 
@@ -266,8 +266,10 @@ router.get("/refresh-token", requireAuth, async (req, res) => {
   }
 });
 
-// GET /api/auth/quickbooks - Start OAuth flow
-router.get("/api/auth/quickbooks", requireAuth, async (req, res) => {
+// GET /api/auth/quickbooks - Start OAuth flow.
+// This is a top-level browser navigation (window.location) that cannot set an
+// Authorization header, so it uses the query-token-allowing auth variant.
+router.get("/api/auth/quickbooks", requireAuthAllowQueryToken, async (req, res) => {
   let clientId = getClientId(req);
   const confirmSwitch = parseBoolean(req.query.confirmSwitch);
 
