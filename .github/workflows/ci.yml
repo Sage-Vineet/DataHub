@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [ba/rearch]
+  push:
+    branches: [ba/rearch]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: typecheck · lint · test · audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Test (with coverage gate)
+        run: pnpm run test
+
+      # Dependency audit. Non-blocking for now: xlsx / pdf-parse carry high
+      # advisories with no upstream fix (audit finding H7); this step ratchets
+      # to a hard gate once those are replaced in a later phase.
+      - name: Dependency audit
+        continue-on-error: true
+        run: pnpm audit --audit-level=high
