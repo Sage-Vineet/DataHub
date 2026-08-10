@@ -92,6 +92,14 @@ DataHub is a multi-tenant M&A / accounting platform (React/Vite SPA + Express/No
 - **Note:** inside `nix develop` the `devenv` command is a reduced flake wrapper (foreground-TUI `up`); use the **standalone** devenv CLI at the repo root for detached/headless (`devenv up -d --no-tui`).
 - **drizzle-kit introspection fixed:** `db:pull` had failed with `ERR_PACKAGE_PATH_NOT_EXPORTED` — drizzle-kit 0.30.6 imports `drizzle-orm/gel-core` (first exported in drizzle-orm 0.40.0). Bumped `drizzle-orm ^0.38.3 → ^0.40.1` (packages/db + apps/api; typecheck 7/7, 49 tests still green). `db:pull` now introspects the local DB and validates the phase-1-auth auth-slice schema.
 
+### 9. shadcn design system — `@datahub/ui`
+- **Change:** `shadcn-design-system` (implements [ADR-0006](adr/0006-shadcn-design-system.md)). Implementation commit *(this change)*.
+- **What:** new `packages/ui` — 13 shadcn/Radix components (Button, Input, Label, Badge, Skeleton, Card, Table, Dialog, Tabs, Tooltip, DropdownMenu, Select, Toast) + `cn()`, a lightweight Vite gallery, and vitest/Testing-Library tests. A shared `tailwind-preset` (tokens extracted verbatim from the app) is now consumed by **both** `apps/web` and the library — one token source.
+- **Why:** replace duplicated hand-rolled UI with owned, tested, accessible primitives matching the current look (~90%+, [ADR-0006](adr/0006-shadcn-design-system.md)); seeds FE TypeScript adoption at the UI layer.
+- **Key decision:** styled with the existing Tailwind tokens (`bg-primary`, `rounded-card`…) instead of shadcn's default palette → exact parity.
+- **Adoption proof + deviation:** the spec named the broker "Users table", but `Users.jsx` has no table — it uses hand-rolled modals; migrated its **DeleteModal** to the `@datahub/ui` Dialog + Button instead (same intent; modals are the real duplicated primitive there). Proves a `.jsx` page consumes `@datahub/ui` `.tsx` via Vite.
+- **Verification:** typecheck 8/8 · ui tests **13/13** (incl. Dialog focus-trap/Escape, DropdownMenu keyboard, Select) · coverage **92% stmts** · lint 7/7 · build 4/4 (`apps/web` builds consuming the library; CSS regenerates with the new component classes). No backend/routing/state changes; `main` frozen.
+
 ## Decisions (ADR index)
 
 | ADR | Decision | Reason (one line) |

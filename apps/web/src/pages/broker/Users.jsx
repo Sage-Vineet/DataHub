@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Dialog, DialogContent, DialogTitle, DialogDescription, DialogFooter, Button,
+} from '@datahub/ui';
+import {
   AlertCircle, Plus, X, Pencil, Trash2,
   Phone, Mail, Building2, Calendar, ChevronDown, Check,
   Search, Users as UsersIcon, Briefcase, ShoppingCart,
@@ -777,27 +780,28 @@ function InviteBrokerModal({ onConfirm, onClose, submitting }) {
 
 // ─── Delete modal ─────────────────────────────────────────────────────────────
 
+// Migrated to the @datahub/ui Dialog (adoption proof for shadcn-design-system):
+// gains focus-trap + Escape-to-close from Radix while preserving the look/behavior.
 function DeleteModal({ user, onConfirm, onClose, submitting, error }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-white/30 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 z-10">
-        <div className="flex items-center justify-center w-14 h-14 rounded-full bg-red-100 mx-auto mb-4">
-          <Trash2 size={24} className="text-red-500" />
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-w-sm text-center">
+        <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-negative/10">
+          <Trash2 size={24} className="text-negative" />
         </div>
-        <h3 className="text-center text-lg font-bold text-[#05164D] mb-1">Delete User</h3>
-        <p className="text-center text-sm text-gray-500 mb-6">
-          Are you sure you want to delete <span className="font-semibold text-[#05164D]">{user.name}</span>? This action cannot be undone.
-        </p>
-        {error && <p className="mb-4 text-sm text-red-600 bg-red-50 rounded-xl px-3 py-2 text-center">{error}</p>}
-        <div className="flex gap-3">
-          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50">Cancel</button>
-          <button onClick={onConfirm} disabled={submitting} className="flex-1 py-2.5 rounded-xl bg-red-500 hover:bg-red-600 text-white text-sm font-semibold disabled:opacity-60">
+        <DialogTitle className="text-center">Delete User</DialogTitle>
+        <DialogDescription className="mt-1 text-center">
+          Are you sure you want to delete <span className="font-semibold text-text-primary">{user.name}</span>? This action cannot be undone.
+        </DialogDescription>
+        {error && <p className="mt-4 rounded-lg bg-negative/10 px-3 py-2 text-sm text-negative">{error}</p>}
+        <DialogFooter className="mt-6 sm:justify-center">
+          <Button variant="outline" onClick={onClose} className="flex-1">Cancel</Button>
+          <Button variant="destructive" onClick={onConfirm} disabled={submitting} className="flex-1">
             {submitting ? 'Deleting...' : 'Delete'}
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

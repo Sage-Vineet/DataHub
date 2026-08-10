@@ -1,0 +1,20 @@
+/* @datahub/ui — optional keyframes for Radix overlay/content transitions.
+   Components are fully functional without this file; import it for the subtle
+   fade/zoom used by Dialog/Tooltip/Select/DropdownMenu overlays. */
+
+@keyframes dh-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes dh-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes dh-zoom-in {
+  from { opacity: 0; transform: scale(0.97); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+[data-state="open"].dh-animate { animation: dh-fade-in 120ms ease-out; }
+[data-state="closed"].dh-animate { animation: dh-fade-out 100ms ease-in; }
+[data-state="open"].dh-animate-content { animation: dh-zoom-in 120ms ease-out; }

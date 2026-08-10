@@ -13,6 +13,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@datahub/ui": "workspace:*",
     "@google/generative-ai": "^0.24.1",
     "axios": "^1.14.0",
     "fflate": "^0.8.3",
