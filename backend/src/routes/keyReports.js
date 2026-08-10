@@ -715,10 +715,49 @@ router.post("/key-reports/hierarchy-recommendations/:recommendationId/ignore", a
     const recommendation = await loadRecommendationWithAccess(req, res);
     if (!recommendation) return;
     const { ignoreRecommendation } = require("../services/keyReports/aiHierarchyRecommendationService");
-    const result = await ignoreRecommendation(recommendation.id, req.user?.id || null);
+    const result = await ignoreRecommendation(recommendation.id, req.user?.id || null, req.body?.reason);
     return res.json({ success: true, ...result });
   } catch (error) {
     return handleError(res, error, "POST hierarchy-recommendations/ignore");
+  }
+});
+
+// Apply an AI reasonableness recommendation. Distinct from /accept only in
+// that it reports a STALE recommendation as a 409 conflict instead of an
+// error: if the account has changed since the recommendation was generated,
+// the proposal was reasoned about a Chart of Accounts that no longer exists
+// and must be regenerated rather than applied over a newer user edit.
+router.post("/key-reports/hierarchy-recommendations/:recommendationId/apply", async (req, res) => {
+  try {
+    const recommendation = await loadRecommendationWithAccess(req, res);
+    if (!recommendation) return;
+    const { applyRecommendation } = require("../services/keyReports/aiHierarchyRecommendationService");
+    const result = await applyRecommendation(recommendation.id, req.user?.id || null);
+    if (!result.ok) {
+      return res.status(result.conflict ? 409 : 422).json({ success: false, ...result });
+    }
+    const coa = await chartOfAccountsService.getChartOfAccounts(recommendation.version_id);
+    res.json({ success: true, ...result, ...coa });
+    // Reports are regenerated off the updated COA exactly as they are after a
+    // manual edit — the recommendation layer adds no separate report path.
+    warmFinancialStatementsCache(recommendation.version_id, {});
+    return;
+  } catch (error) {
+    return handleError(res, error, "POST hierarchy-recommendations/apply");
+  }
+});
+
+// Reject a recommendation â€” the COA is left untouched; the decision and an
+// optional reason are stored for audit.
+router.post("/key-reports/hierarchy-recommendations/:recommendationId/reject", async (req, res) => {
+  try {
+    const recommendation = await loadRecommendationWithAccess(req, res);
+    if (!recommendation) return;
+    const { rejectRecommendation } = require("../services/keyReports/aiHierarchyRecommendationService");
+    const result = await rejectRecommendation(recommendation.id, req.user?.id || null, req.body?.reason);
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return handleError(res, error, "POST hierarchy-recommendations/reject");
   }
 });
 

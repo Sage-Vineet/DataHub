@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import * as XLSX from "xlsx";
 import {
   RefreshCw, Loader2, Table2, Check, X, Pencil, RotateCcw, Search, Undo2, Redo2, Download,
@@ -1105,9 +1106,12 @@ export default function ChartOfAccountsGrid({
     return items;
   }, [groupedData, search, nodesByKey, childrenByParentKey, collapsedKeys]);
 
+  // The API reports statuses uppercase (PENDING / APPLIED / REJECTED). The
+  // hook already derives `pending`; the filter is the fallback for any caller
+  // holding an older hook shape.
   const pendingRecCount = useMemo(
-    () => rec.recommendations.filter((r) => r.status === "pending").length,
-    [rec.recommendations],
+    () => (rec.pending || rec.recommendations.filter((r) => r.status === "PENDING")).length,
+    [rec.pending, rec.recommendations],
   );
 
   // Root anchor key per sub-group, used only to enable/disable that
@@ -1163,11 +1167,11 @@ export default function ChartOfAccountsGrid({
           {pendingRecCount > 0 && (
             <button
               onClick={() => setShowRecPanel(true)}
-              title="Review AI hierarchy suggestions"
+              title="AI reasonableness check — review suggested reclassifications"
               className="flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary hover:bg-primary/20"
             >
               <Sparkles size={11} />
-              Review Recommendations ({pendingRecCount})
+              Reasonableness Check ({pendingRecCount})
             </button>
           )}
           {pendingCount > 0 && (
@@ -1985,19 +1989,92 @@ export default function ChartOfAccountsGrid({
   );
 }
 
+const REC_POPOVER_WIDTH = 320;
+
+// The suggestion popover is rendered into a PORTAL rather than inside the
+// row. It lives inside the Account Name cell, which is `position: sticky` with
+// a z-index so the leading columns stay frozen while the table scrolls
+// horizontally — and a positioned, z-indexed element creates its own stacking
+// context. An absolutely-positioned child could therefore never rise above a
+// LATER row's sticky cell (same z-index, later in DOM order, so it wins), and
+// was additionally clipped by the wrapper's overflow-x-auto. Portalling to
+// <body> with fixed coordinates escapes both problems for good.
 function RecommendationBadge({ rec, accept, ignore, deciding }) {
   const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState(null);
+  const btnRef = useRef(null);
+  const popRef = useRef(null);
+
+  // Anchored to the badge, then clamped so a row near the right edge or the
+  // bottom of the viewport still shows the whole panel.
+  const place = useCallback(() => {
+    const el = btnRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const left = Math.max(8, Math.min(r.left, window.innerWidth - REC_POPOVER_WIDTH - 8));
+    const wouldOverflowBottom = r.bottom + 6 + 180 > window.innerHeight;
+    setPos({
+      left,
+      top: wouldOverflowBottom ? Math.max(8, r.top - 6) : r.bottom + 6,
+      flipped: wouldOverflowBottom,
+    });
+  }, []);
+
+  // Position is computed in the click handler (not an effect) so opening never
+  // triggers a second render pass just to place the panel.
+  const toggle = () => {
+    if (open) { setOpen(false); return; }
+    place();
+    setOpen(true);
+  };
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const reposition = () => place();
+    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    const onPointerDown = (e) => {
+      if (popRef.current?.contains(e.target) || btnRef.current?.contains(e.target)) return;
+      setOpen(false);
+    };
+    // `true` — the table scrolls in an inner pane, so the event must be caught
+    // during capture rather than waiting for it to reach window.
+    window.addEventListener("scroll", reposition, true);
+    window.addEventListener("resize", reposition);
+    window.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onPointerDown);
+    return () => {
+      window.removeEventListener("scroll", reposition, true);
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onPointerDown);
+    };
+  }, [open, place]);
+
   return (
     <span className="relative ml-1.5 inline-block">
       <button
-        onClick={() => setOpen((v) => !v)}
-        title="AI hierarchy suggestion available"
+        ref={btnRef}
+        onClick={toggle}
+        title="AI reasonableness suggestion available"
         className="flex items-center gap-1 rounded-full border border-dashed border-primary bg-primary/5 px-1.5 py-0.5 text-[10px] font-medium text-primary hover:bg-primary/10"
       >
         <Sparkles size={10} /> Suggestion
       </button>
-      {open && (
-        <div className="absolute left-0 top-6 z-10 w-80 rounded-xl border border-border bg-white p-3 text-left shadow-lg">
+      {open && pos && createPortal(
+        <div
+          ref={popRef}
+          className="rounded-xl border border-border bg-white p-3 text-left shadow-xl"
+          style={{
+            position: "fixed",
+            top: pos.top,
+            left: pos.left,
+            width: REC_POPOVER_WIDTH,
+            // Above the sticky columns and every row, below Modal (99999) so an
+            // open dialog still covers it.
+            zIndex: 9000,
+            transform: pos.flipped ? "translateY(-100%)" : undefined,
+          }}
+        >
           <p className="text-xs text-text-muted">
             Suggested roll-up: <span className="font-semibold text-text-primary">{rec.recommendedRollup}</span>
             {rec.recommendedParent ? <> under <span className="font-semibold">{rec.recommendedParent}</span></> : null}
@@ -2009,7 +2086,7 @@ function RecommendationBadge({ rec, accept, ignore, deciding }) {
               disabled={deciding}
               className="flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50"
             >
-              <Check size={11} /> Accept
+              {deciding ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />} Accept
             </button>
             <button
               onClick={async () => { await ignore(rec.id); setOpen(false); }}
@@ -2019,7 +2096,8 @@ function RecommendationBadge({ rec, accept, ignore, deciding }) {
               <X size={11} /> Ignore
             </button>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </span>
   );
