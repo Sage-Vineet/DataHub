@@ -308,6 +308,72 @@ PAGE 1 — INCOME & DEDUCTIONS (Form 1120):
   reconcilingItems: [] (no Schedule K for C-Corp)
 
 ═══════════════════════════════════════════════════════
+SCHEDULE M-1 — BOOK-TO-TAX RECONCILIATION (ALL FORMS)
+═══════════════════════════════════════════════════════
+
+Schedule M-1 is titled "Reconciliation of Income (Loss) per Books With Income (Loss)
+per Return". On Form 1120-S and Form 1065 it sits on the LAST page, beside
+Schedule M-2. On Form 1120 it is Schedule M-1 on page 5/6.
+
+⚠️ Some returns OMIT Schedule M-1 entirely (a small filer meeting the Schedule B
+   total-receipts-and-assets test is not required to complete it). If the schedule
+   is genuinely absent, return "scheduleM1": null. DO NOT synthesize it, and DO NOT
+   copy figures from Schedule M-2 (the Accumulated Adjustments Account) into it —
+   M-2 holds running EQUITY BALANCES, not a book-to-tax reconciliation.
+
+Read these into the "scheduleM1" object. Every amount is read from the printed
+figure; a blank line is 0 and is omitted from "lines".
+
+  Line 1  — "Net income (loss) per books"        → "netIncomePerBooks"
+            ⚠️ THIS IS THE MOST IMPORTANT FIGURE ON THE SCHEDULE. It states what the
+               preparer believed the company's BOOKS reported. Read it exactly as
+               printed, including a negative (loss) value. If line 1 is blank or the
+               schedule is absent, set "netIncomePerBooks" to null — NOT to 0, and
+               never to the Ordinary business income figure from page 1.
+
+  The final reconciled total (the line that equals Schedule K's income/loss
+  reconciliation):
+    Form 1120-S — line 8  "Income (loss) (Schedule K, line 18)"
+    Form 1065   — line 9  "Income (loss) (Analysis of Net Income (Loss), line 1)"
+    Form 1120   — line 10 "Income (loss) before NOL and special deductions"
+                                                  → "reconciledIncome"
+            Set to null when not printed. Do NOT compute it yourself.
+
+  DETAIL LINES → "lines": an array of { "label": string, "amount": integer }.
+  Use these EXACT labels. Include a line ONLY when a non-zero amount is printed:
+
+    Form 1120-S / Form 1065 (line numbers for 1120-S; 1065 differs by one):
+      Income on Schedule K not recorded on books  → "Income on Schedule K Not on Books"
+      Expenses on books not on Schedule K:
+        Depreciation                             → "Book Depreciation Not on Schedule K"
+        Travel and entertainment                 → "Travel and Entertainment"
+        Nondeductible expenses                   → "Nondeductible Expenses"
+        (any other itemised sub-line)            → use the label exactly as printed
+      Tax-exempt interest                        → "Tax-Exempt Interest Income"
+      Deductions on Schedule K not charged against book income:
+        Depreciation                             → "Tax Depreciation Not on Books"
+        Section 179 deduction                    → "Section 179 Deduction"
+        Charitable contributions                 → "Charitable Contributions"
+        (any other itemised sub-line)            → use the label exactly as printed
+
+    Form 1120:
+      Federal income tax per books               → "Federal Income Tax per Books"
+      Excess of capital losses over capital gains→ "Excess Capital Losses"
+      Income subject to tax not recorded on books→ "Income Not on Books"
+      Expenses on books not deducted on return:
+        Depreciation                             → "Book Depreciation Not on Return"
+        Charitable contributions                 → "Charitable Contributions"
+        Travel and entertainment                 → "Travel and Entertainment"
+      Tax-exempt interest                        → "Tax-Exempt Interest Income"
+      Deductions on the return not charged against book income:
+        Depreciation                             → "Tax Depreciation Not on Books"
+        Charitable contributions                 → "Charitable Contributions"
+
+  SIGN RULE: report every "lines" amount as the POSITIVE figure printed on the
+  form. Do not apply the schedule's add/subtract direction yourself — the
+  application applies it from each line's own label.
+
+═══════════════════════════════════════════════════════
 COMMON RULES FOR ALL FORMS
 ═══════════════════════════════════════════════════════
 
@@ -344,6 +410,8 @@ OUTPUT RULES:
 - Negative amounts: negative integer (e.g. -5000).
 - reconcilingItems: array of { "label": string, "value": integer }. Empty [] if none.
 - Only include reconcilingItems entries where value is non-zero.
+- scheduleM1: an object, or null when the return does not include Schedule M-1.
+  netIncomePerBooks / reconciledIncome are null when not printed — never 0 as a stand-in.
 
 JSON schema:
 {
@@ -361,7 +429,12 @@ JSON schema:
   "interestExpense": 0,
   "allOtherExpenses": 0,
   "netIncome": 0,
-  "reconcilingItems": []
+  "reconcilingItems": [],
+  "scheduleM1": {
+    "netIncomePerBooks": null,
+    "reconciledIncome": null,
+    "lines": []
+  }
 }
 `.trim();
 
@@ -419,7 +492,12 @@ function canonicalizeReconLabel(label) {
   if (!key) return null;
   if (SCHEDULE_K_DROP.some((rx) => rx.test(key))) return null;
   for (const [rx, canon] of SCHEDULE_K_CANON) if (rx.test(key)) return canon;
-  return String(label).trim(); // unknown line — keep as-is, never lose data
+  // Unknown line — kept, never dropped, but Title Cased so a CASING variant of the
+  // same unrecognized line ("Other credits" from one pass, "Other Credits" from
+  // another) collapses onto one row instead of rendering twice. This is the
+  // duplicate-category problem the client reported; a label whose canonical form
+  // differs only by case is the same Schedule K line.
+  return String(label).trim().replace(/\S+/g, (w) => w.charAt(0).toUpperCase() + w.slice(1));
 }
 
 // Canonicalize + de-duplicate the reconciling items inside a tax "data" array.
@@ -429,18 +507,48 @@ function canonicalizeReconcilingData(data) {
   if (!Array.isArray(data)) return data;
   const out = [];
   const idxByLabel = new Map();
+  // Which RAW source labels have already contributed to each canonical label.
+  // This is what separates the two situations that both look like a duplicate:
+  //
+  //  (a) THE SAME LINE RE-EMITTED — the extraction pass and the Schedule-K
+  //      verification pass both report line 16c, one as "Nondeductible expenses"
+  //      and the other as "Nondeductible Expenses". Identical normalized raw key
+  //      → keep the larger magnitude. Summing would DOUBLE the line.
+  //
+  //  (b) TWO GENUINELY DIFFERENT LINES that share a category — Form 1065 line 13a
+  //      "Charitable Contributions Cash" and 13b "Charitable Contributions
+  //      Noncash" both canonicalize to "Charitable Contributions". Different raw
+  //      keys → SUM them.
+  //
+  // CONFIRMED BUG (fixed here): this used to apply (a)'s keep-the-larger rule to
+  // BOTH cases, so in case (b) the smaller of the two real amounts was silently
+  // discarded. That is a direct contributor to the client's "numbers do not
+  // foot" report — a reconciling item short by the whole of its noncash half,
+  // with nothing on screen to indicate anything had been dropped.
+  const rawKeysByLabel = new Map();
   for (const row of data) {
     if (!row || !row.isReconcilingItem) { out.push(row); continue; }
     const canon = canonicalizeReconLabel(row.label);
     if (!canon) continue; // dropped (e.g. Line 18 reconciliation)
     const val = Number(row.taxReturn || 0);
+    const rawKey = _normKey(row.label);
+
     if (idxByLabel.has(canon)) {
-      // Same line under a variant label — keep the larger-magnitude value.
       const idx = idxByLabel.get(canon);
-      if (Math.abs(val) > Math.abs(Number(out[idx].taxReturn || 0))) out[idx].taxReturn = val;
+      const seenRaw = rawKeysByLabel.get(canon);
+      if (seenRaw.has(rawKey)) {
+        // (a) same line re-emitted — keep the larger magnitude, never add.
+        if (Math.abs(val) > Math.abs(Number(out[idx].taxReturn || 0))) out[idx].taxReturn = val;
+      } else {
+        // (b) a different source line in the same category — add it.
+        seenRaw.add(rawKey);
+        out[idx].taxReturn = Number(out[idx].taxReturn || 0) + val;
+        out[idx].sourceLabels = [...(out[idx].sourceLabels || []), row.label];
+      }
     } else {
       idxByLabel.set(canon, out.length);
-      out.push({ ...row, label: canon });
+      rawKeysByLabel.set(canon, new Set([rawKey]));
+      out.push({ ...row, label: canon, sourceLabels: [row.label] });
     }
   }
   return out;
@@ -491,12 +599,124 @@ function buildTaxReturnResponseData(tax) {
   return canonicalizeReconcilingData(data);
 }
 
+/**
+ * Normalise the AI's `scheduleM1` object into the exact shape the Tax
+ * Reconciliation engine consumes (src/lib/taxReconciliation.js —
+ * resolveTaxReturnForYear / buildM1Adjustments).
+ *
+ * `netIncomePerBooks` and `reconciledIncome` are deliberately kept NULLABLE and
+ * are NOT coerced to 0. A missing Schedule M-1 line 1 and a genuine book income
+ * of zero are completely different facts: the first means the reconciliation has
+ * no anchor and must be reported as unavailable, the second is a real figure.
+ * Coercing the first to 0 would make the page display a fabricated
+ * "Reported M1 Book Net Income" of zero and an unreconciled difference equal to
+ * the entire book income — exactly the kind of masked error Part 20 forbids.
+ */
+function normalizeScheduleM1(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const nullableNum = (v) => {
+    if (v === null || v === undefined || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const lines = (Array.isArray(raw.lines) ? raw.lines : [])
+    .map((l) => ({ label: String(l?.label || '').trim(), amount: Number(l?.amount) || 0 }))
+    .filter((l) => l.label && l.amount !== 0);
+  const netIncomePerBooks = nullableNum(raw.netIncomePerBooks);
+  const reconciledIncome = nullableNum(raw.reconciledIncome);
+  // A schedule with nothing readable on it is the same as no schedule at all.
+  if (netIncomePerBooks === null && reconciledIncome === null && !lines.length) return null;
+  return { netIncomePerBooks, reconciledIncome, lines };
+}
+
 function clearTaxExtractCache(cacheKey) {
   if (cacheKey) _taxExtractCache.delete(cacheKey);
   else _taxExtractCache.clear();
 }
 
-async function extractTaxDataFromBuffer(pdfBuffer, cacheKey) {
+// ─── Tax returns are a GEMINI-ONLY document type ─────────────────────────────
+//
+// A tax return must be read by Gemini, directly from the original file bytes, and
+// by nothing else. It is not a tabular statement: the figures live at named form
+// lines (1120-S line 21, Schedule K line 16c, Schedule M-1 line 1), which is what
+// TAX_EXTRACTION_PROMPT is built around. Every other reader in this file is a
+// TABLE reader, so pointing one at a return does not produce slightly worse
+// data — it produces confidently wrong data:
+//
+//   • parsePdfWithGemini() is the generic balance-sheet / P&L / cash-flow prompt.
+//     It returns a {rows} tree and has no concept of a form line, so a return read
+//     through it yields plausible-looking rows attached to the wrong lines. The
+//     same mistake is already documented in taxReturnExtractionService.js, which
+//     was moved off it for exactly this reason.
+//   • extractPdfLines() (pdf-parse) and extractRowsFromWorkbook() (xlsx) are the
+//     rule-based fallbacks inside parseStoredReport. They emit whatever text or
+//     cells they find, and detectStatementType() cannot even return "tax_return",
+//     so the output gets filed under some other statement type entirely.
+//   • extract_pdf_text.py / extract_pdf_ocr.py still carry a `--type tax_return`
+//     branch. Nothing in the JS calls it (verified), and nothing may start:
+//     the Key Reports path is Gemini-direct (taxReturnExtractionService v2).
+//
+// The guards below are what keep that true. They deliberately FAIL LOUDLY rather
+// than degrading to another reader, because a silently mis-read return is far
+// worse than a return the user is told could not be read.
+
+// Formats Gemini accepts as inline data AND that can carry a tax return. Scanned
+// returns arrive as images at least as often as PDFs, so they are first-class
+// here rather than being skipped.
+const TAX_DOCUMENT_MIME_TYPES = Object.freeze({
+  pdf: "application/pdf",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  heic: "image/heic",
+  heif: "image/heif",
+});
+
+/**
+ * The Gemini mime type for a tax return file, or `null` when the format is one
+ * Gemini cannot read inline (a spreadsheet, a Word document, an archive…).
+ *
+ * `null` is a hard stop, never a signal to try another reader — see the block
+ * comment above. Callers turn it into a user-visible failure naming the file.
+ */
+function resolveTaxDocumentMime(fileName, contentType = "") {
+  const ct = String(contentType || "").toLowerCase();
+  for (const mime of Object.values(TAX_DOCUMENT_MIME_TYPES)) {
+    if (ct.includes(mime)) return mime;
+  }
+  // A generic "application/octet-stream" tells us nothing; fall back to the
+  // extension, which is what the stored file name carries.
+  const ext = String(fileName || "").toLowerCase().split(".").pop();
+  return TAX_DOCUMENT_MIME_TYPES[ext] || null;
+}
+
+/** Human-readable reason a tax return file cannot be sent to Gemini. */
+function unreadableTaxDocumentReason(fileName) {
+  const ext = String(fileName || "").toLowerCase().split(".").pop();
+  return (
+    `"${fileName}" is a .${ext} file. Tax returns are read directly by Gemini, which accepts ` +
+    `PDF and image files (${Object.keys(TAX_DOCUMENT_MIME_TYPES).map((e) => `.${e}`).join(", ")}). ` +
+    `No other reader is used for tax returns, so this file was NOT read — please upload the return ` +
+    `as a PDF or a scanned image.`
+  );
+}
+
+/**
+ * Tax extraction has no non-AI fallback, so a missing key is a hard failure with
+ * a clear cause rather than an empty reconciliation nobody can explain.
+ */
+function assertGeminiConfiguredForTaxReturns() {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error(
+      "GEMINI_API_KEY is not configured. Tax returns are read only by Gemini — there is no " +
+      "fallback reader for them — so no tax data can be extracted until the key is set.",
+    );
+  }
+}
+
+async function extractTaxDataFromBuffer(pdfBuffer, cacheKey, { mimeType = TAX_DOCUMENT_MIME_TYPES.pdf } = {}) {
+  assertGeminiConfiguredForTaxReturns();
   if (_taxExtractCache.has(cacheKey)) return _taxExtractCache.get(cacheKey);
 
   const promise = (async () => {
@@ -508,11 +728,11 @@ async function extractTaxDataFromBuffer(pdfBuffer, cacheKey) {
       let delay = 5000;
       while (retries > 0) {
         try {
-          console.log(`[TaxExtract] model=${modelName} key=${cacheKey}`);
+          console.log(`[TaxExtract] model=${modelName} key=${cacheKey} mime=${mimeType}`);
           const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
           const model = genAI.getGenerativeModel({ model: modelName });
           const result = await model.generateContent([
-            { inlineData: { mimeType: "application/pdf", data: pdfBase64 } },
+            { inlineData: { mimeType, data: pdfBase64 } },
             { text: TAX_EXTRACTION_PROMPT },
           ]);
           let text = result.response.text().trim();
@@ -527,7 +747,11 @@ async function extractTaxDataFromBuffer(pdfBuffer, cacheKey) {
           parsed.reconcilingItems = parsed.reconcilingItems
             .map((i) => ({ label: String(i.label || "").trim(), value: Number(i.value) || 0 }))
             .filter((i) => i.label && i.value !== 0);
-          console.log(`[TaxExtract] formType=${parsed.formType} year=${parsed.year} via ${modelName}`);
+          parsed.scheduleM1 = normalizeScheduleM1(parsed.scheduleM1);
+          console.log(
+            `[TaxExtract] formType=${parsed.formType} year=${parsed.year} via ${modelName} ` +
+            `scheduleM1=${parsed.scheduleM1 ? `booksNI=${parsed.scheduleM1.netIncomePerBooks} lines=${parsed.scheduleM1.lines.length}` : "absent"}`,
+          );
           return parsed;
         } catch (err) {
           lastError = err;
@@ -686,14 +910,15 @@ Return ONLY a raw JSON object in the exact same schema. No markdown, no explanat
 }
 
 // Second-pass: if first extraction fails validation, re-run with targeted correction prompt
-async function extractTaxDataWithVerification(pdfBuffer, cacheKey) {
-  const extracted = await extractTaxDataFromBuffer(pdfBuffer, cacheKey);
+async function extractTaxDataWithVerification(pdfBuffer, cacheKey, { mimeType = TAX_DOCUMENT_MIME_TYPES.pdf } = {}) {
+  assertGeminiConfiguredForTaxReturns();
+  const extracted = await extractTaxDataFromBuffer(pdfBuffer, cacheKey, { mimeType });
   const { status, issues } = validateTaxExtraction(extracted);
 
   if (status === "Verified") {
     // Still run Schedule K verification to remove hallucinated items
     extracted.reconcilingItems = await verifyScheduleKItems(
-      pdfBuffer, extracted.formType || "1120-S", extracted.reconcilingItems || []
+      pdfBuffer, extracted.formType || "1120-S", extracted.reconcilingItems || [], { mimeType }
     );
     _taxExtractCache.set(cacheKey, Promise.resolve(extracted));
     return { extracted, status: "Verified" };
@@ -709,7 +934,7 @@ async function extractTaxDataWithVerification(pdfBuffer, cacheKey) {
       const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
       const model = genAI.getGenerativeModel({ model: modelName });
       const result = await model.generateContent([
-        { inlineData: { mimeType: "application/pdf", data: pdfBase64 } },
+        { inlineData: { mimeType, data: pdfBase64 } },
         { text: verificationPrompt },
       ]);
       let text = result.response.text().trim()
@@ -725,13 +950,17 @@ async function extractTaxDataWithVerification(pdfBuffer, cacheKey) {
       corrected.reconcilingItems = corrected.reconcilingItems
         .map((i) => ({ label: String(i.label || "").trim(), value: Number(i.value) || 0 }))
         .filter((i) => i.label && i.value !== 0);
+      // The correction prompt only re-reads the page-1 lines it was told failed,
+      // so it may omit Schedule M-1 entirely. Keep the first pass's M-1 in that
+      // case rather than losing the reconciliation anchor to a page-1 retry.
+      corrected.scheduleM1 = normalizeScheduleM1(corrected.scheduleM1) || extracted.scheduleM1 || null;
 
       const secondCheck = validateTaxExtraction(corrected);
       console.log(`[TaxVerify] key=${cacheKey} second pass status=${secondCheck.status} via ${modelName}`);
 
       // Schedule K verification pass — remove any hallucinated reconciling items
       corrected.reconcilingItems = await verifyScheduleKItems(
-        pdfBuffer, corrected.formType, corrected.reconcilingItems
+        pdfBuffer, corrected.formType, corrected.reconcilingItems, { mimeType }
       );
 
       _taxExtractCache.set(cacheKey, Promise.resolve(corrected));
@@ -743,7 +972,7 @@ async function extractTaxDataWithVerification(pdfBuffer, cacheKey) {
 
   // Second pass completely failed — still run Schedule K verification on first-pass result
   extracted.reconcilingItems = await verifyScheduleKItems(
-    pdfBuffer, extracted.formType || "1120-S", extracted.reconcilingItems || []
+    pdfBuffer, extracted.formType || "1120-S", extracted.reconcilingItems || [], { mimeType }
   );
   return { extracted, status: "Needs Review" };
 }
@@ -805,7 +1034,7 @@ Return ONLY a raw JSON array of confirmed items (empty array [] if none):
 No markdown, no explanation.`;
 }
 
-async function verifyScheduleKItems(pdfBuffer, formType, reconcilingItems) {
+async function verifyScheduleKItems(pdfBuffer, formType, reconcilingItems, { mimeType = TAX_DOCUMENT_MIME_TYPES.pdf } = {}) {
   const ft = String(formType || "").toUpperCase();
   // C-Corporations (Form 1120, NOT 1120-S) have no Schedule K — nothing to fetch.
   const isCCorp = ft.includes("1120") && !ft.includes("1120-S") && !ft.includes("1120S");
@@ -823,7 +1052,7 @@ async function verifyScheduleKItems(pdfBuffer, formType, reconcilingItems) {
       const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
       const model = genAI.getGenerativeModel({ model: modelName });
       const result = await model.generateContent([
-        { inlineData: { mimeType: "application/pdf", data: pdfBase64 } },
+        { inlineData: { mimeType, data: pdfBase64 } },
         { text: prompt },
       ]);
       let text = result.response.text().trim()
@@ -1055,22 +1284,42 @@ async function syncTaxReturnFolder(companyId, folder, now) {
       }
     }
 
+    // A file that cannot be read must be REPORTED, not skipped. Both of these
+    // used to `continue` with only a console line, so a linked return that never
+    // reached Gemini looked identical to one that had no tax data in it — the user
+    // saw a missing year with no explanation anywhere in the UI.
     if (!buffer?.length) {
       console.warn(`[TaxReturnSync] No binary for "${fileName}"`);
+      failedDocs.push({
+        documentId: doc.id, fileName, folderName: folder.name,
+        reason: `"${fileName}" has no readable file contents — nothing was sent to Gemini.`,
+      });
       continue;
     }
 
-    if (!lowerName.endsWith(".pdf")) {
-      console.log(`[TaxReturnSync] Skipping non-PDF "${fileName}"`);
+    const mimeType = resolveTaxDocumentMime(fileName, null);
+    if (!mimeType) {
+      console.log(`[TaxReturnSync] "${fileName}" is not a Gemini-readable format`);
+      failedDocs.push({
+        documentId: doc.id, fileName, folderName: folder.name,
+        reason: unreadableTaxDocumentReason(fileName),
+      });
       continue;
     }
 
     try {
       const cacheKey = `tax_sync_${companyId}_${doc.upload_id || lowerName}`;
-      const extracted = await extractTaxDataFromBuffer(buffer, cacheKey);
+      const extracted = await extractTaxDataFromBuffer(buffer, cacheKey, { mimeType });
       if (extracted?.year) {
         const year = Number(extracted.year);
-        taxYears[year] = { year, fileName, data: buildTaxReturnResponseData(extracted) };
+        // scheduleM1 is carried alongside `data` (not inside it): it is a
+        // reconciliation ANCHOR, not a label/amount row, and the Tax
+        // Reconciliation engine reads it as `taxYear.scheduleM1`.
+        taxYears[year] = {
+          year, fileName,
+          scheduleM1: extracted.scheduleM1 || null,
+          data: buildTaxReturnResponseData(extracted),
+        };
         processedDocs.push({ documentId: doc.id, fileName, folderName: folder.name, statementType: STATEMENT_TYPES.TAX_RETURN, taxYear: year });
         console.log(`[TaxReturnSync] Stored year=${year} from "${fileName}"`);
       } else {
@@ -1574,6 +1823,41 @@ function extractPeriodDatesFromLines(lines = []) {
     };
   }
   return null;
+}
+
+/**
+ * Does this file's own text identify it as an IRS return?
+ *
+ * Deliberately narrow: it matches the FORM DESIGNATION printed on a return
+ * ("Form 1120-S", "U.S. Return of Partnership Income", a Schedule K-1 header),
+ * not soft signals like "depreciation" or a four-digit year that a normal
+ * management statement also carries. A false positive here would reject a
+ * legitimate statement, so only markers that appear on a return and essentially
+ * nowhere else are listed.
+ */
+const TAX_RETURN_MARKERS = [
+  /\bform\s*1120[\s-]?s?\b/,
+  /\bform\s*1065\b/,
+  /\bform\s*1040\b/,
+  /\bu\.?s\.?\s+income\s+tax\s+return\b/,
+  /\bu\.?s\.?\s+return\s+of\s+partnership\s+income\b/,
+  /\bincome\s+tax\s+return\s+for\s+an\s+s\s+corporation\b/,
+  /\bschedule\s+k-1\b/,
+  /\bshareholders?'?\s+pro\s+rata\s+share\s+items\b/,
+  /\bpartners'?\s+distributive\s+share\s+items\b/,
+  /\bdepartment\s+of\s+the\s+treasury\b.*\binternal\s+revenue\s+service\b/,
+];
+
+function looksLikeTaxReturn({ fileName = "", rows = [], lines = [] }) {
+  const haystack = [
+    fileName,
+    ...rows.slice(0, 60).map((row) => (Array.isArray(row) ? row.join(" ") : "")),
+    ...lines.slice(0, 120),
+  ]
+    .join(" ")
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+  return TAX_RETURN_MARKERS.some((rx) => rx.test(haystack));
 }
 
 function detectStatementType({ fileName = "", rows = [], lines = [] }) {
@@ -2128,6 +2412,69 @@ async function parseStoredReport(upload, forcedStatementType = null, { skipAI = 
   const lowerFileName = fileName.toLowerCase();
   const isPdf = lowerFileName.endsWith(".pdf") || contentType.toLowerCase().includes("pdf");
 
+  // ── Tax returns: the dedicated Gemini tax reader, and NOTHING else ──────
+  //
+  // CONFIRMED BUG (fixed here). This function is called with
+  // forcedStatementType="tax_return" from the QMS upload sync
+  // (QMS_AI_STATEMENT_TYPES includes "tax_return", so skipAI is false), and it
+  // then did two wrong things in sequence:
+  //
+  //   1. sent the return to parsePdfWithGemini() below — the GENERIC
+  //      balance-sheet / P&L / cash-flow prompt. It returns a {rows} tree and has
+  //      no notion of an IRS form line, so page-1, Schedule K and Schedule M-1
+  //      figures came back attached to invented table rows. This is the exact
+  //      mistake taxReturnExtractionService.js was already moved off.
+  //   2. on ANY Gemini failure — or simply when GEMINI_API_KEY was unset — fell
+  //      through to the rule-based readers further down: extractPdfLines()
+  //      (pdf-parse text) for PDFs, extractRowsFromWorkbook() (xlsx) for
+  //      spreadsheets. detectStatementType() cannot even return "tax_return", so
+  //      the result was filed under whatever else it matched — a return that
+  //      mentions "net income" lands as a Profit & Loss.
+  //
+  // Both are silent: the caller only checks `parsed.report.rows.length`, so wrong
+  // data looked exactly like right data. A tax return now takes this branch and
+  // returns or throws — it can never reach the readers below.
+  const resolvedTaxType = forcedStatementType === STATEMENT_TYPES.TAX_RETURN;
+  if (resolvedTaxType) {
+    const mimeType = resolveTaxDocumentMime(fileName, contentType);
+    if (!mimeType) throw new Error(unreadableTaxDocumentReason(fileName));
+    if (!buffer?.length) throw new Error(`"${fileName}" has no readable file contents.`);
+
+    const cacheKey = `tax_parse_${upload?.id || lowerFileName}`;
+    const { extracted, status } = await extractTaxDataWithVerification(buffer, cacheKey, { mimeType });
+    if (!extracted?.year) {
+      throw new Error(
+        `Gemini could not determine the tax year for "${fileName}". The return was not stored ` +
+        `rather than being filed under a guessed year.`,
+      );
+    }
+    return {
+      statementType: STATEMENT_TYPES.TAX_RETURN,
+      parserType: "gemini-tax-direct",
+      taxReturn: {
+        year: Number(extracted.year),
+        fileName,
+        status: status || "Needs Review",
+        scheduleM1: extracted.scheduleM1 || null,
+        data: buildTaxReturnResponseData(extracted),
+      },
+      report: {
+        // Kept so existing `parsed.report.rows.length` guards still behave, but the
+        // authoritative payload is `taxReturn` above.
+        rows: buildTaxReturnResponseData(extracted).map((row) => ({
+          id: `tax-${normalizeSlug(row.label) || "row"}`,
+          name: row.label,
+          amount: Number(row.taxReturn || 0),
+          type: row.isReconcilingItem ? "data" : "total",
+        })),
+        asOfDate: `${Number(extracted.year)}-12-31`,
+        periodStart: null,
+        periodEnd: `${Number(extracted.year)}-12-31`,
+        detectedYears: [Number(extracted.year)],
+      },
+    };
+  }
+
   // ── Gemini path for PDFs ────────────────────────────────────────────────
   // Skipped when skipAI=true (QMS mode for non-AI statement types).
   if (isPdf && process.env.GEMINI_API_KEY && !skipAI) {
@@ -2177,6 +2524,20 @@ async function parseStoredReport(upload, forcedStatementType = null, { skipAI = 
 
   // Detect monthly period columns in Excel files (e.g. "P&L by Month" with Jan 22 … Dec 25 headers)
   const periodInfo = (!isPdf && rows.length) ? detectPeriodColumns(rows) : null;
+
+  // A tax return that reached the rule-based readers without being declared as one
+  // must NOT be filed as whatever else it happens to match. detectStatementType
+  // cannot return "tax_return", and a return mentioning "net income" matches the
+  // Profit & Loss test — so without this it would be ingested as a P&L, by a text
+  // or spreadsheet reader, and look entirely normal downstream. Refuse it and say
+  // where it belongs; tax returns are Gemini-only (see the branch at the top).
+  if (looksLikeTaxReturn({ fileName, rows, lines })) {
+    throw new Error(
+      `"${fileName}" looks like an IRS tax return, not a financial statement. Tax returns are read ` +
+      `only by Gemini through the Tax Return document type — this file was NOT parsed as a ` +
+      `statement. Upload it to the Tax Return folder (or link it as a Tax Return in Key Reports).`,
+    );
+  }
 
   const statementType = forcedStatementType || detectStatementType({ fileName, rows, lines });
   console.log(`[ManualReportUpload] "${fileName}" detected as: ${statementType || "unknown"}${forcedStatementType ? " (forced)" : ""}${periodInfo ? ` [${periodInfo.periods.length} period columns]` : ""}`);
@@ -2402,6 +2763,7 @@ async function processDocumentMapping(companyId, documentId, category, opts = {}
             [extracted.year]: {
               year: extracted.year,
               fileName,
+              scheduleM1: extracted.scheduleM1 || null,
               data: buildTaxReturnResponseData(extracted),
             },
           },
@@ -4049,6 +4411,14 @@ module.exports = {
   extractAndCacheReportAsOfDate,
   extractTaxDataFromBuffer,
   extractTaxDataWithVerification,
+  // Tax returns are a GEMINI-ONLY document type — see the block comment above
+  // extractTaxDataFromBuffer. These decide whether a file can be sent to Gemini
+  // at all, and explain to the user when it cannot, instead of any caller quietly
+  // handing the file to a table reader.
+  TAX_DOCUMENT_MIME_TYPES,
+  resolveTaxDocumentMime,
+  unreadableTaxDocumentReason,
+  looksLikeTaxReturn,
   validateTaxExtraction,
   clearTaxExtractCache,
   buildTaxReturnResponseData,

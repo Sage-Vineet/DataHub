@@ -216,7 +216,26 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
     // P&L side. Bump so every previously-cached Balance Sheet — which carries
     // the OLD, possibly-wrong section — is re-extracted rather than serving a
     // stale misclassification forever.
-    this.parserVersion = 'v9';
+    // v10: CONFIRMED ROOT CAUSE of the client's "the December <year> Balance
+    // Sheet is missing" report. Two defects, both in the multi-period path:
+    //   (a) detectedYears was the sheet's single title-derived year while the
+    //       account rows carried their own per-period years. detectedYears is
+    //       persisted to key_report_document_mappings.metadata.detectedYears and
+    //       is what keyReportValidationService.resolveMappingYears reads to
+    //       decide which fiscal years a version has a Balance Sheet for — so a
+    //       monthly export whose columns cross a calendar year had rows for both
+    //       years inserted but only ONE year reported, and the other was shown to
+    //       the user as having no Balance Sheet at all.
+    //   (b) structural (header/group) rows were stamped with that same title
+    //       year rather than the period they actually belong to, which can put a
+    //       structural-only as_of_date into a fiscal year with no account rows.
+    //       generateYearlyBs picks the LATEST as_of_date for a year, so it could
+    //       select that date and render the whole year as zeros.
+    // Both are fixed in extract_excel.py (primary path) and here (JS fallback +
+    // Gemini PDF path). Bump so every previously-cached parse — which carries the
+    // wrong detectedYears and possibly a mis-stamped structural year — is
+    // re-extracted instead of serving the stale year set forever.
+    this.parserVersion = 'v10';
   }
 
   async extract({ fileName, fileBuffer }) {
@@ -336,7 +355,7 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
     }));
 
     this.logger.log(`PDF "${fileName}": ${rows.length} rows (as_of_date=${asOfDate})`);
-    return { rows, detectedYears: [fiscalYear] };
+    return { rows, detectedYears: this._yearsFromRows(rows, fiscalYear) };
   }
 
   // ── Excel / CSV ─────────────────────────────────────────────────────────────
@@ -513,7 +532,30 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
     this.logger.log(`  "${fileName}": Rows detected=${rowsDetected}, extracted=${rows.length}, rejected=${rowsRejected}`);
     if (!rows.length) throw new Error('No Balance Sheet data rows extracted from Excel file');
 
-    return { rows, detectedYears: [fiscalYear] };
+    // Derived from the rows themselves rather than from the sheet's title year.
+    // See extract_excel.py's extract_balance_sheet for the confirmed root cause
+    // this mirrors: detectedYears is persisted to
+    // key_report_document_mappings.metadata.detectedYears and is what
+    // keyReportValidationService uses to decide which fiscal years a version has
+    // a Balance Sheet for, so a title year standing in for the real periods
+    // reported a year as having no Balance Sheet even though its rows existed.
+    return { rows, detectedYears: this._yearsFromRows(rows, fiscalYear) };
+  }
+
+  /** Distinct, plausible fiscal years present in extracted rows. */
+  _yearsFromRows(rows, fallbackYear = null) {
+    const years = new Set();
+    for (const row of rows || []) {
+      const y = Number(row?.fiscal_year);
+      if (Number.isInteger(y) && y >= 1900 && y <= 2100) years.add(y);
+    }
+    // `Number(null)` is 0 and `Number.isInteger(0)` is true, so the plausibility
+    // range — not just an integer check — is what keeps a null/blank fallback out.
+    const fallback = Number(fallbackYear);
+    if (!years.size && Number.isInteger(fallback) && fallback >= 1900 && fallback <= 2100) {
+      years.add(fallback);
+    }
+    return [...years].sort((a, b) => a - b);
   }
 
   // ── Validation: lenient ─────────────────────────────────────────────────────

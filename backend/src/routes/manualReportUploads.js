@@ -17,6 +17,10 @@ const {
   getManualUploadProgress,
   extractAndCacheReportAsOfDate,
   extractTaxDataWithVerification,
+  // Tax returns are a Gemini-only document type; these two decide whether a file
+  // can go to Gemini at all and explain it to the user when it cannot.
+  resolveTaxDocumentMime,
+  unreadableTaxDocumentReason,
   validateTaxExtraction,
   clearTaxExtractCache,
   buildTaxReturnResponseData,
@@ -1058,26 +1062,39 @@ async function runTaxExtraction(clientId, { datasetVersion = null, keyReportVers
         }
       }
 
+      // Every early return below used to be a SILENT `return null`: a linked return
+      // that never reached Gemini produced a missing fiscal-year column with no
+      // explanation anywhere in the UI, indistinguishable from a return that
+      // genuinely held no data. Each now reports why the file was not read.
       if (!uploadData?.data) {
         console.warn(`[TaxData] No binary for "${fileName}"`);
-        return null;
+        return { unreadable: true, fileName, reason: `"${fileName}" has no readable file contents — nothing was sent to Gemini.` };
       }
 
-      const storedName = String(uploadData.file_name || fileName).toLowerCase();
-      const ct = String(uploadData.content_type || "").toLowerCase();
-      if (!storedName.endsWith(".pdf") && !ct.includes("pdf") && !fileName.toLowerCase().endsWith(".pdf")) {
-        console.log(`[TaxData] Skipping non-PDF "${fileName}"`);
-        return null;
+      const storedName = String(uploadData.file_name || fileName);
+      const ct = String(uploadData.content_type || "");
+      // Tax returns are read ONLY by Gemini, directly from the original file, so
+      // the accepted formats are exactly the ones Gemini takes as inline data
+      // (PDF + images — a scanned return is as common as a digital one). Anything
+      // else is refused outright rather than handed to a table reader.
+      const mimeType = resolveTaxDocumentMime(storedName, ct)
+        || resolveTaxDocumentMime(fileName, ct);
+      if (!mimeType) {
+        console.log(`[TaxData] "${fileName}" is not a Gemini-readable format`);
+        return { unreadable: true, fileName, reason: unreadableTaxDocumentReason(fileName) };
       }
 
       let buffer = normalizeUploadBinary(uploadData.data);
-      if (!buffer?.length) { console.warn(`[TaxData] Empty buffer for "${fileName}"`); return null; }
+      if (!buffer?.length) {
+        console.warn(`[TaxData] Empty buffer for "${fileName}"`);
+        return { unreadable: true, fileName, reason: `"${fileName}" is empty — nothing was sent to Gemini.` };
+      }
 
       // Encrypted PDFs make Gemini fail with "The document has no pages" — which
       // silently dropped the return. Try a best-effort decrypt (handles the
       // common owner-restricted / empty-user-password case); if it still needs a
       // real password, report it clearly instead of losing the file.
-      if (isEncryptedPdf(buffer)) {
+      if (mimeType === "application/pdf" && isEncryptedPdf(buffer)) {
         console.log(`[TaxData] "${fileName}" is encrypted — attempting decrypt…`);
         const decrypted = await decryptPdfEmptyPassword(buffer);
         if (decrypted?.length) {
@@ -1089,9 +1106,9 @@ async function runTaxExtraction(clientId, { datasetVersion = null, keyReportVers
         }
       }
 
-      console.log(`[TaxData] Sending "${fileName}" (${buffer.length} bytes) to Gemini...`);
+      console.log(`[TaxData] Sending "${fileName}" (${buffer.length} bytes, ${mimeType}) to Gemini...`);
       const cacheKey = `tax_rt_${clientId}_${uploadId}`;
-      const { extracted, status } = await extractTaxDataWithVerification(buffer, cacheKey);
+      const { extracted, status } = await extractTaxDataWithVerification(buffer, cacheKey, { mimeType });
       return { extracted, fileName, status };
     })
   );
@@ -1106,6 +1123,13 @@ async function runTaxExtraction(clientId, { datasetVersion = null, keyReportVers
   };
 
   for (const s of settlements) {
+    if (s.status === "fulfilled" && s.value?.unreadable) {
+      // Linked, but never reached Gemini. Surfaced so the user knows the document
+      // was not read at all, instead of silently losing a fiscal year.
+      warnings.push(s.value.reason);
+      console.warn(`[TaxData] unreadable: ${s.value.reason}`);
+      continue;
+    }
     if (s.status === "fulfilled" && s.value?.locked) {
       // Encrypted PDF that needs a real password — surface it so the user knows
       // exactly which file to replace, instead of it vanishing from the table.
@@ -1141,7 +1165,19 @@ async function runTaxExtraction(clientId, { datasetVersion = null, keyReportVers
       if (years[year] && years[year].fileName !== fileName) {
         warnings.push(`Two tax returns resolved to ${year} ("${years[year].fileName}" and "${fileName}"); showing the latter.`);
       }
-      years[year] = { year, fileName, status: status || "Needs Review", data: buildTaxReturnResponseData(extracted) };
+      // scheduleM1 is carried alongside `data` (not inside it): it anchors the
+      // book-to-tax reconciliation (Schedule M-1 line 1 "Net income (loss) per
+      // books") rather than being a label/amount row, and the Tax Reconciliation
+      // engine reads it as `taxYear.scheduleM1`. It stays null when the return
+      // has no Schedule M-1 so the page reports the anchor as unavailable instead
+      // of showing a fabricated zero.
+      years[year] = {
+        year,
+        fileName,
+        status: status || "Needs Review",
+        scheduleM1: extracted.scheduleM1 || null,
+        data: buildTaxReturnResponseData(extracted),
+      };
       console.log(`[TaxData] year=${year} (content=${contentYear}, file=${fileYear}) status=${status} from "${fileName}"`);
     } else if (s.status === "rejected") {
       const msg = s.reason?.message || String(s.reason);

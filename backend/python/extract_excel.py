@@ -546,6 +546,21 @@ def extract_balance_sheet(wb):
     structural_as_of = (
         month_end_date(period_cols[-1][1], period_cols[-1][2]) if is_multi_period else as_of_date
     )
+    # CONFIRMED ROOT CAUSE (fixed here) of "the December <year> Balance Sheet is
+    # missing": in multi-period mode the structural rows were stamped with the
+    # SHEET's title-derived `fiscal_year` while the account rows were correctly
+    # stamped with each period's own year (`py`). A monthly export whose columns
+    # cross a calendar year, or whose title line names a different year from its
+    # columns, therefore wrote structural rows into a fiscal year that has no
+    # account rows at all -- and generateYearlyBs (financialStatementService)
+    # selects the LATEST as_of_date for a fiscal year, so it could land on that
+    # structural-only date and render the whole year as zeros.
+    #
+    # The structural rows belong to the same period `structural_as_of` names, so
+    # the fiscal year must be read from that date, never from the title.
+    structural_fiscal_year = (
+        period_cols[-1][1] if is_multi_period else fiscal_year
+    )
     if is_multi_period:
         dbg(f'BS multi-period: {len(period_cols)} period column(s) '
             f'{period_cols[0][1]}-{period_cols[0][2]:02d} .. {period_cols[-1][1]}-{period_cols[-1][2]:02d}')
@@ -632,7 +647,7 @@ def extract_balance_sheet(wb):
                 'parent_path':     parent_path,
                 'amount':          0,
                 'as_of_date':      structural_as_of,
-                'fiscal_year':     fiscal_year,
+                'fiscal_year':     structural_fiscal_year,
                 'is_total':        False,
                 'is_section_header': True,
                 'node_type':       'hierarchy_section',
@@ -656,7 +671,7 @@ def extract_balance_sheet(wb):
                 'parent_path':     parent_path,
                 'amount':          0,
                 'as_of_date':      structural_as_of,
-                'fiscal_year':     fiscal_year,
+                'fiscal_year':     structural_fiscal_year,
                 'is_total':        False,
                 'is_section_header': False,
                 'node_type':       'hierarchy_group',
@@ -703,8 +718,33 @@ def extract_balance_sheet(wb):
         # this was the direct cause of intermittent, algorithmic (not
         # client-specific) Level 3/4 corruption. Do not re-add this push.
 
-    detected_years = [fiscal_year] if result else []
-    dbg(f'Extracted {len(result)} BS rows')
+    # CONFIRMED ROOT CAUSE (fixed here) of the client's "the December <year>
+    # Balance Sheet is missing" report.
+    #
+    # This was `[fiscal_year]` — the SHEET's single title-derived year — while
+    # every account row above is correctly stamped with its OWN period's year
+    # (`py`, see the emit_periods loop). A multi-period Balance Sheet whose
+    # columns span more than one calendar year (a monthly export running e.g.
+    # Dec of one year through Dec of the next, or one whose title line names a
+    # different year from its columns) therefore reported exactly ONE detected
+    # year even though rows for both years were inserted.
+    #
+    # detected_years is not cosmetic: extractionService.base.js persists it to
+    # key_report_document_mappings.metadata.detectedYears, and
+    # keyReportValidationService.resolveMappingYears/collectYears reads THAT to
+    # decide which fiscal years a version has a Balance Sheet for. The year whose
+    # rows existed but whose number never made it into this list was reported to
+    # the user as having no Balance Sheet at all.
+    #
+    # Derived from the rows actually emitted, which is what
+    # profitLossExtractionService.js already does on the P&L side
+    # (`[...new Set(rows.map(r => r.fiscal_year))]`) — the two extractors now
+    # agree instead of one reporting per-period years and the other a title year.
+    detected_years = sorted({
+        r['fiscal_year'] for r in result
+        if isinstance(r.get('fiscal_year'), int) and 1900 <= r['fiscal_year'] <= 2100
+    })
+    dbg(f'Extracted {len(result)} BS rows, years={detected_years}')
     return {'rows': result, 'detected_years': detected_years}
 
 

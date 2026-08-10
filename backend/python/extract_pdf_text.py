@@ -249,7 +249,17 @@ def extract_balance_sheet(pdf):
     if not rows:
         rows = parse_lines_balance_sheet(text, fiscal_year, as_of_date)
 
-    return {'rows': rows, 'detected_years': [fiscal_year] if rows else []}
+    # Derived from the rows actually emitted, not from the title-derived
+    # fiscal_year — see extract_excel.py's extract_balance_sheet for the full
+    # writeup of why a title year cannot stand in for the periods a Balance Sheet
+    # really covers (it reported a year as having no Balance Sheet even though its
+    # rows had been inserted). Equivalent for a single-period PDF; correct for one
+    # whose parsed rows carry more than one year.
+    detected_years = sorted({
+        r['fiscal_year'] for r in rows
+        if isinstance(r.get('fiscal_year'), int) and 1900 <= r['fiscal_year'] <= 2100
+    })
+    return {'rows': rows, 'detected_years': detected_years}
 
 
 def parse_lines_balance_sheet(text, fiscal_year, as_of_date):

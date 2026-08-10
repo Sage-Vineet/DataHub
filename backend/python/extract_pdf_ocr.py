@@ -349,7 +349,13 @@ def main():
             detected_years = [fiscal_year] if rows else []
         elif args.type == 'balance_sheet':
             rows = parse_statement_lines(full_text, 'balance_sheet', fiscal_year, as_of_date)
-            detected_years = [fiscal_year] if rows else []
+            # From the rows themselves, never the title-derived year — see
+            # extract_excel.py's extract_balance_sheet for why a title year
+            # cannot stand in for the periods a Balance Sheet really covers.
+            detected_years = sorted({
+                r['fiscal_year'] for r in rows
+                if isinstance(r.get('fiscal_year'), int) and 1900 <= r['fiscal_year'] <= 2100
+            })
         elif args.type == 'general_ledger':
             rows = parse_gl_lines(full_text, fiscal_year)
             detected_years = sorted({r['fiscal_year'] for r in rows})
