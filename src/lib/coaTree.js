@@ -404,6 +404,54 @@ export function createCategory(nodes, { parentKey = null, label, accountType, st
 }
 
 /**
+ * Validate a proposed NEW parent category before creating it — pure, no
+ * mutation. Separated from createCategory so the Create Parent dialog can
+ * report a problem while the user is still typing, instead of failing (or
+ * silently de-duplicating) at commit time.
+ *
+ * `parentKey` null means "a new root-level category".
+ *
+ * @returns {{ ok: boolean, error: string|null, message: string|null }}
+ *   error ∈ null | "EMPTY_NAME" | "PARENT_NOT_FOUND" | "PARENT_IS_ACCOUNT" | "DUPLICATE"
+ */
+export function validateNewCategory(nodes, parentKey, label) {
+  const trimmed = String(label || "").trim();
+  if (!trimmed) {
+    return { ok: false, error: "EMPTY_NAME", message: "Enter a name for the new parent." };
+  }
+
+  const list = nodes || [];
+  let parent = null;
+  if (parentKey) {
+    parent = list.find((n) => n.key === parentKey) || null;
+    if (!parent) {
+      return { ok: false, error: "PARENT_NOT_FOUND", message: "That destination no longer exists in this tree." };
+    }
+    if (parent.nodeType === "ACCOUNT") {
+      return {
+        ok: false,
+        error: "PARENT_IS_ACCOUNT",
+        message: `"${displayName(parent)}" is a posting account — a parent can only be created under a category.`,
+      };
+    }
+  }
+
+  // A same-named sibling category would resolve to the SAME path key and
+  // silently merge into the existing node (resolveOrCreateCategoryChain keys
+  // by normalized path). Report it instead of quietly doing nothing.
+  const target = parentKey || null;
+  const clash = list.find(
+    (n) => n.nodeType === "CATEGORY" && (n.parentKey ?? null) === target && normName(displayName(n)) === normName(trimmed),
+  );
+  if (clash) {
+    const where = parent ? `"${displayName(parent)}"` : "the top level";
+    return { ok: false, error: "DUPLICATE", message: `"${displayName(clash)}" already exists under ${where}.` };
+  }
+
+  return { ok: true, error: null, message: null };
+}
+
+/**
  * Delete an EMPTY category (zero children of either type) — pure, returns a
  * NEW array on success or the ORIGINAL array reference on failure. Refuses
  * (rather than cascading) when the category still has content: mergeCategory

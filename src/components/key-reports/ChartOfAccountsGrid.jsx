@@ -19,6 +19,7 @@ import {
 import { clearCachedFinancials } from "../../lib/keyReportFinancials";
 import { useHierarchyRecommendations } from "../../hooks/useHierarchyRecommendations";
 import RecommendedChangesPanel from "./RecommendedChangesPanel";
+import CreateParentModal from "./CreateParentModal";
 import Modal from "../common/Modal";
 
 const STATEMENT_LABELS = { balance_sheet: "Balance Sheet", profit_loss: "P&L" };
@@ -392,6 +393,13 @@ export default function ChartOfAccountsGrid({
   // ── Save preview (diff before Save) ─────────────────────────────────────
   const [showSavePreview, setShowSavePreview] = useState(false);
   const [showRecPanel, setShowRecPanel] = useState(false);
+
+  // ── Create Parent dialog ────────────────────────────────────────────────
+  // createParentUnder is the destination the dialog OPENS on (the row whose
+  // "+ Add Parent" was clicked, or null for the toolbar entry point); the user
+  // can still pick any other destination from the tree inside the dialog.
+  const [showCreateParent, setShowCreateParent] = useState(false);
+  const [createParentUnder, setCreateParentUnder] = useState(null);
 
   // Drag-and-drop reclassification. Native HTML5 DnD (the pattern already used
   // by FileExplorer) — no new dependency. `dragKey` is the account being
@@ -882,9 +890,52 @@ export default function ChartOfAccountsGrid({
   // existing precedent that the per-account Pencil/GitMerge/FolderInput
   // actions already render in both modes today (only native drag-and-drop is
   // proposal-only, via canReorder). This is not a new restriction.
-  const openCreateCategory = (parentKey) => {
+  // Create Parent now runs through CreateParentModal — a hierarchy-aware
+  // dialog (tree destination picker + live before/after preview + validation)
+  // rather than a bare name field on one row. It stages through the SAME
+  // commit() as every other edit, so undo/redo, the unsaved-changes badge,
+  // live validation and the Save preview all apply unchanged.
+  const openCreateParent = (parentKey) => {
     cancelEdit();
-    setCategoryEditor({ mode: "create", parentKey, value: "" });
+    closeCategoryEditor();
+    setCreateParentUnder(parentKey || null);
+    setShowCreateParent(true);
+  };
+  const handleCreateParent = ({ parentKey, label }) => {
+    const parentNode = parentKey ? nodesByKey.get(parentKey) : null;
+    const result = createCategory(nodes, {
+      parentKey: parentKey || null,
+      label,
+      accountType: parentNode?.accountType,
+      statementType: parentNode?.statementType,
+    });
+    if (result.error) {
+      notify?.(
+        `Couldn't create "${label}" — ${result.error === "PARENT_IS_LEAF" ? "that location is a posting account, not a category" : "invalid location"}.`,
+        "error",
+      );
+      return;
+    }
+    commit(result.nodes);
+    // Keep the new parent visible: make sure its whole ancestor path is
+    // expanded, so it doesn't land inside a collapsed branch.
+    setCollapsedKeys((prev) => {
+      const next = new Set(prev);
+      let cur = parentKey;
+      let guard = 0;
+      while (cur && guard < MAX_LEVELS + 2) {
+        next.delete(cur);
+        cur = nodesByKey.get(cur)?.parentKey || null;
+        guard += 1;
+      }
+      return next;
+    });
+    notify?.(
+      parentNode
+        ? `Created "${label}" under "${displayName(parentNode)}". Existing accounts were not moved — drag them in, then Save.`
+        : `Created "${label}". Existing accounts were not moved — drag them in, then Save.`,
+      "success",
+    );
   };
   const openRenameCategory = (node) => {
     cancelEdit();
@@ -897,30 +948,6 @@ export default function ChartOfAccountsGrid({
   const submitCategoryEditor = () => {
     if (!categoryEditor) return;
     const trimmed = categoryEditor.value.trim();
-
-    if (categoryEditor.mode === "create") {
-      if (!trimmed) { notify?.("Enter a name for the new parent category.", "error"); return; }
-      const parentNode = categoryEditor.parentKey ? nodesByKey.get(categoryEditor.parentKey) : null;
-      const result = createCategory(nodes, {
-        parentKey: categoryEditor.parentKey || null,
-        label: trimmed,
-        accountType: parentNode?.accountType,
-        statementType: parentNode?.statementType,
-      });
-      if (result.error) {
-        notify?.(`Couldn't create "${trimmed}" — ${result.error === "PARENT_IS_LEAF" ? "that location is a posting account, not a category" : "invalid location"}.`, "error");
-        return;
-      }
-      commit(result.nodes);
-      notify?.(
-        result.created
-          ? `Created "${trimmed}". It won't be saved until it contains at least one account.`
-          : `"${trimmed}" already exists at that location.`,
-        "success",
-      );
-      closeCategoryEditor();
-      return;
-    }
 
     if (categoryEditor.mode === "rename") {
       if (!trimmed) { notify?.("Enter a name.", "error"); return; }
@@ -1160,6 +1187,14 @@ export default function ChartOfAccountsGrid({
             />
           </div>
           <button
+            onClick={() => openCreateParent(null)}
+            disabled={!accountCount}
+            title="Create a new parent group anywhere in this Chart of Accounts"
+            className="flex items-center gap-1 rounded-lg border border-primary px-2 py-1.5 text-xs font-semibold text-primary hover:bg-primary/5 disabled:opacity-40"
+          >
+            <FolderPlus size={13} /> Add Parent
+          </button>
+          <button
             onClick={collapseAll}
             title="Collapse all categories"
             className="flex items-center gap-1 rounded-lg border border-border px-2 py-1.5 text-xs font-semibold text-text-primary hover:bg-bg-page"
@@ -1355,10 +1390,8 @@ export default function ChartOfAccountsGrid({
 
                 if (item.kind === "subGroup") {
                   const anchorKey = subGroupAnchorKey[item.sg.key];
-                  const isCreatingAtAnchor = categoryEditor?.mode === "create" && categoryEditor.parentKey === anchorKey;
                   return (
-                    <Fragment key={`sg-${item.sg.key}`}>
-                    <tr style={{ backgroundColor: "#2C4D7A" }}>
+                    <tr key={`sg-${item.sg.key}`} style={{ backgroundColor: "#2C4D7A" }}>
                       <td colSpan={TOTAL_COLS} className="px-6 py-2 text-xs font-bold text-white">
                         <div className="flex items-center justify-between">
                           <span>
@@ -1367,50 +1400,16 @@ export default function ChartOfAccountsGrid({
                           </span>
                           {anchorKey && (
                             <button
-                              onClick={() => (isCreatingAtAnchor ? closeCategoryEditor() : openCreateCategory(anchorKey))}
-                              title={`Create a category under ${item.sg.label}`}
-                              className="flex items-center gap-1 rounded p-1 text-white/70 hover:bg-white/10 hover:text-white"
+                              onClick={() => openCreateParent(anchorKey)}
+                              title={`Add a parent under ${item.sg.label}`}
+                              className="flex items-center gap-1 rounded px-1.5 py-1 text-[11px] font-semibold text-white/70 hover:bg-white/10 hover:text-white"
                             >
-                              <FolderPlus size={13} />
+                              <FolderPlus size={13} /> Add Parent
                             </button>
                           )}
                         </div>
                       </td>
                     </tr>
-                    {isCreatingAtAnchor && (
-                      <tr className="bg-primary/5 border-b border-border/40">
-                        <td colSpan={TOTAL_COLS} className="px-4 py-3">
-                          <div className="flex flex-wrap items-end gap-3">
-                            <div className="flex flex-col gap-1">
-                              <label className="text-[10px] font-semibold uppercase tracking-wide text-text-muted">
-                                New category under {item.sg.label}
-                              </label>
-                              <input
-                                autoFocus
-                                value={categoryEditor.value}
-                                onChange={(e) => setCategoryEditor((c) => ({ ...c, value: e.target.value }))}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter") submitCategoryEditor();
-                                  if (e.key === "Escape") closeCategoryEditor();
-                                }}
-                                placeholder="Category name"
-                                className="w-[320px] rounded border border-primary px-2 py-1.5 text-xs"
-                              />
-                            </div>
-                            <button onClick={submitCategoryEditor} className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90">
-                              <Check size={13} /> Create
-                            </button>
-                            <button onClick={closeCategoryEditor} className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-text-primary hover:bg-white">
-                              <X size={13} /> Cancel
-                            </button>
-                          </div>
-                          <p className="mt-2 text-[11px] text-text-muted">
-                            Won't be saved until it contains at least one account.
-                          </p>
-                        </td>
-                      </tr>
-                    )}
-                    </Fragment>
                   );
                 }
 
@@ -1434,7 +1433,6 @@ export default function ChartOfAccountsGrid({
                   const catBg = isDropTargetCat ? "rgba(139,197,61,0.1)" : "#f9fafb";
                   const isRenamingThis = categoryEditor?.mode === "rename" && categoryEditor.targetKey === catNode.key;
                   const isMovingThis = categoryEditor?.mode === "move" && categoryEditor.targetKey === catNode.key;
-                  const isCreatingChildHere = categoryEditor?.mode === "create" && categoryEditor.parentKey === catNode.key;
                   const moveTargets = isMovingThis ? getMoveTargetsForCategory(nodes, catNode) : [];
 
                   return (
@@ -1474,11 +1472,11 @@ export default function ChartOfAccountsGrid({
                       <td colSpan={TOTAL_COLS - 1} className="py-1.5 px-3" style={{ backgroundColor: catBg }}>
                         <div className="flex items-center justify-end gap-1">
                           <button
-                            onClick={() => (isCreatingChildHere ? closeCategoryEditor() : openCreateCategory(catNode.key))}
-                            title="Create a sub-category here"
-                            className="rounded p-1 text-text-muted hover:bg-white/80 hover:text-primary"
+                            onClick={() => openCreateParent(catNode.key)}
+                            title={`Add a parent under "${item.label}"`}
+                            className="flex items-center gap-1 rounded px-1.5 py-1 text-[11px] font-semibold text-text-muted hover:bg-white/80 hover:text-primary"
                           >
-                            <FolderPlus size={12} />
+                            <FolderPlus size={12} /> Add Parent
                           </button>
                           <button
                             onClick={() => (isRenamingThis ? closeCategoryEditor() : openRenameCategory(catNode))}
@@ -1507,13 +1505,13 @@ export default function ChartOfAccountsGrid({
                       </td>
                     </tr>
 
-                    {(isCreatingChildHere || isRenamingThis) && (
+                    {isRenamingThis && (
                       <tr className="bg-primary/5 border-b border-border/40">
                         <td colSpan={TOTAL_COLS} className="px-4 py-3">
                           <div className="flex flex-wrap items-end gap-3">
                             <div className="flex flex-col gap-1">
                               <label className="text-[10px] font-semibold uppercase tracking-wide text-text-muted">
-                                {isCreatingChildHere ? `New sub-category under "${item.label}"` : `Rename "${item.label}" to`}
+                                Rename "{item.label}" to
                               </label>
                               <input
                                 autoFocus
@@ -1528,17 +1526,12 @@ export default function ChartOfAccountsGrid({
                               />
                             </div>
                             <button onClick={submitCategoryEditor} className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90">
-                              <Check size={13} /> {isCreatingChildHere ? "Create" : "Rename"}
+                              <Check size={13} /> Rename
                             </button>
                             <button onClick={closeCategoryEditor} className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-text-primary hover:bg-white">
                               <X size={13} /> Cancel
                             </button>
                           </div>
-                          {isCreatingChildHere && (
-                            <p className="mt-2 text-[11px] text-text-muted">
-                              Won't be saved until it contains at least one account.
-                            </p>
-                          )}
                         </td>
                       </tr>
                     )}
@@ -1893,6 +1886,18 @@ export default function ChartOfAccountsGrid({
 
       <RecommendedChangesPanel isOpen={showRecPanel} onClose={() => setShowRecPanel(false)} rec={rec} />
 
+      {/* Mounted only while open, so each launch seeds fresh from the row the
+          user clicked rather than carrying over the previous name/destination. */}
+      {showCreateParent && (
+        <CreateParentModal
+          isOpen
+          onClose={() => setShowCreateParent(false)}
+          nodes={nodes}
+          initialParentKey={createParentUnder}
+          onCreate={handleCreateParent}
+        />
+      )}
+
       <Modal isOpen={showSavePreview} onClose={() => setShowSavePreview(false)} title="Review changes before saving" size="lg">
         <div className="space-y-4">
           {saveDiff.created.length > 0 && (
@@ -1903,8 +1908,8 @@ export default function ChartOfAccountsGrid({
                   <li key={c.key} className="text-xs text-text-muted">
                     {c.path}
                     {!c.hasDescendantAccount && (
-                      <span className="ml-1.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
-                        won't be saved — empty, add an account first
+                      <span className="ml-1.5 rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold text-blue-800">
+                        empty — no accounts moved in yet
                       </span>
                     )}
                   </li>

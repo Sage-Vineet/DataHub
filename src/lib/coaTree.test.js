@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import {
   buildIndexes, getSubtreeKeys, createCategory, deleteCategory,
   getMoveTargetsForCategory, diffCoaTrees, renameNode, moveNode,
+  validateNewCategory, getHierarchyPathLabel,
 } from "./coaTree.js";
 
 // A small realistic Balance Sheet + P&L tree:
@@ -213,5 +214,136 @@ describe("diffCoaTrees", () => {
     assert.equal(diff.deleted.length, 1);
     assert.equal(diff.deleted[0].key, "fixed-assets");
     assert.equal(diff.deleted[0].path, "Total Assets > Fixed Assets");
+  });
+});
+
+// ── "Create New Parent" ─────────────────────────────────────────────────────
+// The client-side half of the feature: validateNewCategory guards the dialog,
+// createCategory performs the edit. Together they must satisfy the brief's
+// test case — create "Cash Equivalents" under "Current Assets" and have
+// Bank Accounts (and its accounts) stay exactly where they are.
+describe("validateNewCategory", () => {
+  test("requires a name", () => {
+    const r = validateNewCategory(baseTree(), "current-assets", "   ");
+    assert.equal(r.ok, false);
+    assert.equal(r.error, "EMPTY_NAME");
+  });
+
+  test("accepts a fresh name under an existing category", () => {
+    const r = validateNewCategory(baseTree(), "current-assets", "  Cash Equivalents  ");
+    assert.equal(r.ok, true);
+    assert.equal(r.error, null);
+  });
+
+  test("rejects a duplicate sibling instead of silently merging into it", () => {
+    // "Current Assets" already exists under the Total Assets anchor.
+    const r = validateNewCategory(baseTree(), "assets-root", "current assets");
+    assert.equal(r.ok, false);
+    assert.equal(r.error, "DUPLICATE");
+    assert.match(r.message, /already exists/i);
+  });
+
+  test("the same name under a DIFFERENT parent is fine", () => {
+    const r = validateNewCategory(baseTree(), "le-root", "Current Assets");
+    assert.equal(r.ok, true);
+  });
+
+  test("rejects creating a parent under a posting account", () => {
+    const r = validateNewCategory(baseTree(), "chase", "Sub-group");
+    assert.equal(r.ok, false);
+    assert.equal(r.error, "PARENT_IS_ACCOUNT");
+  });
+
+  test("rejects a destination that no longer exists", () => {
+    const r = validateNewCategory(baseTree(), "ghost", "Whatever");
+    assert.equal(r.ok, false);
+    assert.equal(r.error, "PARENT_NOT_FOUND");
+  });
+
+  test("a root-level parent is allowed and dedup-checked against other roots", () => {
+    assert.equal(validateNewCategory(baseTree(), null, "Off Balance Sheet").ok, true);
+    const dup = validateNewCategory(baseTree(), null, "Total Assets");
+    assert.equal(dup.ok, false);
+    assert.equal(dup.error, "DUPLICATE");
+  });
+});
+
+describe("creating a parent does not disturb the existing hierarchy", () => {
+  // The brief's §19 case, at tree level.
+  const build = () => {
+    const nodes = baseTree();
+    const { nodes: withBank, categoryKey: bankKey } = createCategory(nodes, {
+      parentKey: "current-assets", label: "Bank Accounts",
+    });
+    // Move the existing account under Bank Accounts so the fixture matches
+    // "Current Assets > Bank Accounts > Chase Bank".
+    return { nodes: moveNode(withBank, "chase", bankKey), bankKey };
+  };
+
+  test("the new parent lands as a SIBLING — no existing account is moved into it", () => {
+    const { nodes, bankKey } = build();
+    const before = getHierarchyPathLabel(buildIndexes(nodes).nodesByKey, "chase");
+    const { nodes: after, categoryKey } = createCategory(nodes, {
+      parentKey: "current-assets", label: "Cash Equivalents",
+    });
+
+    const idx = buildIndexes(after);
+    // Chase Bank is untouched.
+    assert.equal(getHierarchyPathLabel(idx.nodesByKey, "chase"), before);
+    assert.equal(idx.nodesByKey.get("chase").parentKey, bankKey);
+    // The new parent is a peer of Bank Accounts, and is empty.
+    assert.equal(idx.nodesByKey.get(categoryKey).parentKey, "current-assets");
+    assert.equal((idx.childrenByParentKey.get(categoryKey) || []).length, 0);
+    // Both now sit under Current Assets.
+    const siblings = (idx.childrenByParentKey.get("current-assets") || []).map((n) => n.label);
+    assert.ok(siblings.includes("Bank Accounts"));
+    assert.ok(siblings.includes("Cash Equivalents"));
+  });
+
+  test("no account is added or lost, and none is duplicated", () => {
+    const { nodes } = build();
+    const accountsOf = (list) => list.filter((n) => n.nodeType === "ACCOUNT").map((n) => n.key).sort();
+    const { nodes: after } = createCategory(nodes, { parentKey: "current-assets", label: "Cash Equivalents" });
+    assert.deepEqual(accountsOf(after), accountsOf(nodes));
+    assert.equal(new Set(accountsOf(after)).size, accountsOf(after).length);
+  });
+
+  test("account fields the user never touched are byte-for-byte identical", () => {
+    const { nodes } = build();
+    const { nodes: after } = createCategory(nodes, { parentKey: "current-assets", label: "Cash Equivalents" });
+    for (const before of nodes.filter((n) => n.nodeType === "ACCOUNT")) {
+      assert.deepEqual(after.find((n) => n.key === before.key), before);
+    }
+  });
+
+  test("the new parent inherits its destination's classification, not a guess", () => {
+    const { nodes } = build();
+    const { nodes: after, categoryKey } = createCategory(nodes, { parentKey: "current-assets", label: "Cash Equivalents" });
+    const created = after.find((n) => n.key === categoryKey);
+    assert.equal(created.accountType, "asset");
+    assert.equal(created.statementType, "balance_sheet");
+  });
+
+  test("levels are derived from the new position — never hand-set", () => {
+    const { nodes } = build();
+    const { nodes: after, categoryKey } = createCategory(nodes, { parentKey: "current-assets", label: "Cash Equivalents" });
+    const idx = buildIndexes(after);
+    assert.equal(getHierarchyPathLabel(idx.nodesByKey, categoryKey), "Total Assets > Current Assets > Cash Equivalents");
+    // Nothing anywhere in the tree stores a `levels` field.
+    assert.equal(after.some((n) => "levels" in n), false);
+  });
+
+  test("a P&L parent behaves identically — one generic code path", () => {
+    const pl = [
+      { key: "pl-root", parentKey: null, nodeType: "CATEGORY", label: "Total Expenses", accountType: "expense", statementType: "profit_loss" },
+      { key: "opex", parentKey: "pl-root", nodeType: "CATEGORY", label: "Operating Expenses", accountType: "expense", statementType: "profit_loss" },
+      { key: "sw", parentKey: "opex", nodeType: "ACCOUNT", accountName: "Software", accountType: "expense", statementType: "profit_loss" },
+    ];
+    assert.equal(validateNewCategory(pl, "opex", "Technology Expenses").ok, true);
+    const { nodes: after, categoryKey } = createCategory(pl, { parentKey: "opex", label: "Technology Expenses" });
+    const idx = buildIndexes(after);
+    assert.equal(after.find((n) => n.key === categoryKey).statementType, "profit_loss");
+    // Software stayed put.
+    assert.equal(idx.nodesByKey.get("sw").parentKey, "opex");
   });
 });

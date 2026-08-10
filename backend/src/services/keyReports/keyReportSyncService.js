@@ -1176,7 +1176,14 @@ async function generateFinancialTables(version, opts = {}) {
 
   let coaSummary = null;
   try {
-    coaSummary = await persistApprovedCoaTree(companyId, versionId, validation.hierarchical, { hasLinkedCoaDocument });
+    // categoryPaths carries the categories the submitted tree stated
+    // explicitly, so a parent the user created that holds no account yet is
+    // persisted instead of being silently dropped (every other category is
+    // re-derived from the leaves, exactly as before).
+    coaSummary = await persistApprovedCoaTree(companyId, versionId, validation.hierarchical, {
+      hasLinkedCoaDocument,
+      categoryPaths: validation.categoryPaths,
+    });
     if (coaSummary.rejected) {
       logger.warn(`  ✗ Approved COA persistence rejected: ${(coaSummary.violations || []).join(' | ')}`);
       return haltWith(
