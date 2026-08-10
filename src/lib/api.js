@@ -1766,6 +1766,25 @@ export function ignoreHierarchyRecommendation(recommendationId) {
   });
 }
 
+// Apply an AI reasonableness recommendation. Returns 409 when the account has
+// changed since the recommendation was generated — a stale proposal must be
+// regenerated, never applied over a newer user edit.
+export function applyHierarchyRecommendation(recommendationId) {
+  return request(`/key-reports/hierarchy-recommendations/${recommendationId}/apply`, {
+    method: 'POST',
+    body: {},
+  });
+}
+
+// Reject a recommendation. The Chart of Accounts is left untouched; only the
+// decision (and an optional reason) is recorded, for audit.
+export function rejectHierarchyRecommendation(recommendationId, reason = null) {
+  return request(`/key-reports/hierarchy-recommendations/${recommendationId}/reject`, {
+    method: 'POST',
+    body: reason ? { reason } : {},
+  });
+}
+
 // COA-mapped financial statements (monthly + yearly P&L and Balance Sheet).
 export function getFinancialStatements(versionId, { year, currency } = {}) {
   const params = new URLSearchParams();

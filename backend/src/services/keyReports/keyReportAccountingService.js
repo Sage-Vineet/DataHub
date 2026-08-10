@@ -21,8 +21,7 @@
 
 const { supabase } = require("../../db");
 
-const TABLE_GL = "general_ledger_entries";
-const TABLE_BS = "balance_sheet_entries";
+
 
 // Earliest/latest GL transaction date (month granularity for the roll-forward).
 // Also the sole source of first/last GL year now (migration 069 removed
@@ -32,7 +31,7 @@ const TABLE_BS = "balance_sheet_entries";
 async function glDateRange(companyId, versionId) {
   const base = () =>
     supabase
-      .from(TABLE_GL)
+      .from("general_ledger_entries")
       .select("transaction_date")
       .eq("company_id", companyId)
       .eq("version_id", versionId)
@@ -68,7 +67,7 @@ async function glDateRange(companyId, versionId) {
 // enough to reconcile against the GL's end.
 async function buildBsCoverage(companyId, versionId) {
   const { data, error } = await supabase
-    .from(TABLE_BS)
+    .from("balance_sheet_entries")
     .select("source_file_id, as_of_date, fiscal_year")
     .eq("company_id", companyId)
     .eq("version_id", versionId)
@@ -109,7 +108,7 @@ async function buildBsCoverage(companyId, versionId) {
 async function findBsSnapshotForYear(companyId, versionId, year) {
   if (year == null) return null;
   const { data } = await supabase
-    .from(TABLE_BS)
+    .from("balance_sheet_entries")
     .select("as_of_date, fiscal_year")
     .eq("company_id", companyId).eq("version_id", versionId)
     .eq("fiscal_year", year)
@@ -121,7 +120,7 @@ async function findBsSnapshotForYear(companyId, versionId, year) {
 
 async function glRowCount(companyId, versionId) {
   const { count } = await supabase
-    .from(TABLE_GL)
+    .from("general_ledger_entries")
     .select("id", { count: "exact", head: true })
     .eq("company_id", companyId)
     .eq("version_id", versionId);
@@ -1230,7 +1229,7 @@ async function fetchGlRowsForYear(companyId, versionId, year) {
   const PAGE = 1000;
   for (let page = 0; page < 1000; page += 1) {
     const { data, error } = await supabase
-      .from(TABLE_GL)
+      .from("general_ledger_entries")
       .select("account_name, account_section, amount, debit_amount, credit_amount, running_balance, row_type, row_number, transaction_date, coa_id, split_account")
       .eq("company_id", companyId)
       .eq("version_id", versionId)
@@ -1610,7 +1609,7 @@ async function generateTrialBalance(companyId, versionId, gate) {
 async function bsBalancesAtLatest(companyId, versionId, year, generated) {
   const base = () =>
     supabase
-      .from(TABLE_BS)
+      .from("balance_sheet_entries")
       .select("as_of_date")
       .eq("company_id", companyId)
       .eq("version_id", versionId)
@@ -1622,7 +1621,7 @@ async function bsBalancesAtLatest(companyId, versionId, year, generated) {
   if (!asOf) return { balances: new Map(), excluded: [] };
 
   let rq = supabase
-    .from(TABLE_BS)
+    .from("balance_sheet_entries")
     .select("account_name, account_type, section, amount, is_total")
     .eq("company_id", companyId)
     .eq("version_id", versionId)
@@ -1939,7 +1938,7 @@ async function linkGlToCoa(companyId, versionId) {
 
   for (;;) {
     const { data: glRows, error: glErr } = await supabase
-      .from(TABLE_GL)
+      .from("general_ledger_entries")
       .select("id, account_name, split_account, coa_id, split_coa_id")
       .eq("company_id", companyId)
       .eq("version_id", versionId)
@@ -1993,12 +1992,12 @@ async function linkGlToCoa(companyId, versionId) {
     }
 
     for (const [coaId, ids] of byCoa) {
-      const ok = await updateBatchWithRetry(TABLE_GL, { coa_id: coaId }, ids, `[linkGlToCoa] Update error for coa_id=${coaId}`);
+      const ok = await updateBatchWithRetry("general_ledger_entries", { coa_id: coaId }, ids, `[linkGlToCoa] Update error for coa_id=${coaId}`);
       if (ok) linked += ids.length;
     }
 
     for (const [splitCoaId, ids] of bySplitCoa) {
-      const ok = await updateBatchWithRetry(TABLE_GL, { split_coa_id: splitCoaId }, ids, `[linkGlToCoa] Update error for split_coa_id=${splitCoaId}`);
+      const ok = await updateBatchWithRetry("general_ledger_entries", { split_coa_id: splitCoaId }, ids, `[linkGlToCoa] Update error for split_coa_id=${splitCoaId}`);
       if (ok) splitLinked += ids.length;
     }
 
@@ -2052,7 +2051,7 @@ async function linkGlToCoa(companyId, versionId) {
     for (const [name, leavesRaw] of ambiguous) {
       const leaves = leavesRaw.slice().sort((a, b) => (rankOf(a.accountType) - rankOf(b.accountType)) || String(a.id).localeCompare(String(b.id)));
       const { data: rows, error } = await supabase
-        .from(TABLE_GL)
+        .from("general_ledger_entries")
         .select("id, row_number, source_file_id")
         .eq("company_id", companyId)
         .eq("version_id", versionId)
@@ -2086,7 +2085,7 @@ async function linkGlToCoa(companyId, versionId) {
         for (let i = 0; i < ids.length; i += CHUNK) {
           const chunk = ids.slice(i, i + CHUNK);
           const ok = await updateBatchWithRetry(
-            TABLE_GL, { coa_id: coaId }, chunk, `[linkGlToCoa] disambiguate "${name}"`,
+            "general_ledger_entries", { coa_id: coaId }, chunk, `[linkGlToCoa] disambiguate "${name}"`,
           );
           if (ok) disambiguated += chunk.length;
         }
@@ -2145,7 +2144,7 @@ async function linkBsToCoa(companyId, versionId) {
 
   for (;;) {
     const { data: bsRows, error: bsErr } = await supabase
-      .from(TABLE_BS)
+      .from("balance_sheet_entries")
       .select("id, account_name")
       .eq("company_id", companyId)
       .eq("version_id", versionId)
@@ -2174,7 +2173,7 @@ async function linkBsToCoa(companyId, versionId) {
     }
 
     for (const [coaId, ids] of byCoa) {
-      const ok = await updateBatchWithRetry(TABLE_BS, { coa_id: coaId }, ids, `[linkBsToCoa] Update error for coa_id=${coaId}`);
+      const ok = await updateBatchWithRetry("balance_sheet_entries", { coa_id: coaId }, ids, `[linkBsToCoa] Update error for coa_id=${coaId}`);
       if (ok) linked += ids.length;
     }
 
