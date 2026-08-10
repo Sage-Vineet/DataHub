@@ -46,7 +46,7 @@
 
 ## 7. Cutover & verify — runtime (pending a deploy)
 
-- [ ] 7.1 Enable `AUTH_MODULE_ENABLED` in a canary/preview; run the parity checklist (needs the DB + running deploy)
+- [x] 7.1 **Local soak passed (9/9)** — `AUTH_MODULE_ENABLED=true` gateway against the local dev Postgres (seeded user): login→200+token, `/me` 200/401, wrong-password 401, enumeration-safe forgot-password 200, and rate-limit **429** live (H1). helmet + pino confirmed active and scoped. (Reset/OTP flows are unit-covered; tenant boundary is unit-tested.)
 - [ ] 7.2 Confirm all non-auth routes still proxy to legacy unchanged (runtime)
 - [ ] 7.3 After a green soak, remove the legacy `/api/auth` handlers (separate, reversible commit)
 

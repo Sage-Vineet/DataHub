@@ -31,7 +31,7 @@
 ## 6. Verify parity & docs
 
 - [x] 6.1 Inside the shell: `pnpm test` green — **49 tests, 7/7 packages** (typecheck/lint/build verified across the same workspace)
-- [ ] 6.2 Full gateway e2e with `AUTH_MODULE_ENABLED=true` against the dev DB — **pending** (deferred with 4.3; DB + schema are ready, but end-to-end run wants the reconciled Drizzle schema)
+- [x] 6.2 Full gateway e2e with `AUTH_MODULE_ENABLED=true` against the dev DB — **done: 9/9 auth soak passed** (login/`/me`/401/forgot/429) against local Postgres; see phase-1-auth task 7.1
 - [x] 6.3 `nix flake check` → "all checks passed!"
 - [x] 6.4 README "Run locally (Nix)" section + `docs/REARCH_LOG.md` entry; `flake.lock` committed
 
@@ -43,5 +43,5 @@
 ## Notes
 
 - **Flake vs standalone devenv:** inside `nix develop` the `devenv` command is a reduced flake wrapper (`up` is foreground-TUI-only). For detached/headless Postgres control use the **standalone** devenv CLI at the repo root: `devenv up -d --no-tui` / `devenv processes down`. In a normal terminal, `devenv up` (foreground TUI) also works. Documented in `devenv.nix` + README.
-- **4.3 resolved:** the drizzle-kit↔drizzle-orm mismatch is fixed (orm → 0.40.1); `db:pull` verified against the local DB. **6.2** (full gateway e2e with `AUTH_MODULE_ENABLED=true`) remains an optional deeper check — the DB, schema, and introspection are all proven.
+- **4.3 & 6.2 resolved:** drizzle introspection fixed (orm → 0.40.1) and the full auth e2e soak passed 9/9 against local Postgres. The dev environment is fully verified end-to-end.
 - First `nix develop` / `nix flake check` downloads inputs (one-time; pinned by `flake.lock`).

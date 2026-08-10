@@ -82,7 +82,7 @@ DataHub is a multi-tenant M&A / accounting platform (React/Vite SPA + Express/No
 - **Why:** establish the reusable module pattern (router→service→repository→contract, cross-module only via typed services — [ADR-0004](adr/0004-modular-monolith.md)) and prove per-route cutover. The service depends only on a repository *port*, so it is fully tested without a database (in-memory adapter) — the Drizzle adapter is the runtime counterpart.
 - **Cutover design:** the module mounts at `/api/auth` **ahead of** the proxy, gated by `AUTH_MODULE_ENABLED` (off by default → falls through to legacy); tokens use the **same secret + `{sub}` claim** as legacy so a flip/rollback is zero-downtime (design D3).
 - **Verification:** typecheck 7/7 · **49 tests** · lint 6/6 · build 4/4 · auth module **95% stmts / 100% funcs**. Legacy source untouched; `main` frozen.
-- **Pending (runtime):** enabling the flag needs a reachable `DATABASE_URL` + a deploy to run the parity soak, then delete legacy auth (tasks 7.x). The schema fallback (2.2) should be reconciled with `drizzle-kit pull` before enabling.
+- **Local soak passed (9/9):** with the dev environment (§8), the flag-on gateway ran against local Postgres — login→token, `/me`, 401s, enumeration-safe forgot-password, and live rate-limit **429** (H1); helmet + pino confirmed. Remaining 7.x are true-deploy steps (canary soak on staging, then delete legacy `/api/auth`).
 
 ### 8. Local dev environment — Nix flake + devenv
 - **Change:** `local-dev-environment` (tooling; skip_specs). Implementation commit *(this change)*.
