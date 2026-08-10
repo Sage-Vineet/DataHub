@@ -7,7 +7,7 @@
 ## 2. Data layer (`packages/db`, Drizzle — auth slice)
 
 - [x] 2.1 Scaffold `packages/db`; add `drizzle-orm` + `drizzle-kit`; add a typed pg client reading `DATABASE_URL`
-- [x] 2.2 Auth-slice schema committed. **Fallback used** (no reachable `DATABASE_URL`): hand-authored from `backend/sql/schema.sql` (design D4); reconcile with `drizzle-kit pull` when a DB is available
+- [x] 2.2 Auth-slice schema committed (hand-authored from `backend/sql/schema.sql`, design D4). **Reconciliation validated:** with the local dev DB (see local-dev-environment), `drizzle-kit pull` now introspects successfully (after bumping drizzle-orm → 0.40.1) and confirms the auth-slice tables/columns match the hand-authored schema.
 - [x] 2.3 `drizzle.config.ts` + `migrations/README` establish the Drizzle baseline; legacy 76-file set documented as frozen
 - [x] 2.4 Schema smoke test (types compile; column names asserted)
 

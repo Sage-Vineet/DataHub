@@ -21,7 +21,7 @@
 
 - [x] 4.1 Dev-only `JWT_SECRET` exported; `AUTH_MODULE_ENABLED` unset (opt-in)
 - [x] 4.2 Verified: `psql "$DATABASE_URL" -f backend/sql/schema.sql` loads; auth tables (users, companies, user_companies, email_verifications, folders) present
-- [ ] 4.3 `db:pull` introspection — **blocked by a `packages/db` drizzle-kit↔drizzle-orm compat issue** (`ERR_PACKAGE_PATH_NOT_EXPORTED` during introspect), NOT a dev-env defect. Owned by phase-1-auth task 2.2 (schema reconciliation); the local DB it needs is now available.
+- [x] 4.3 `db:pull` introspection — **fixed and verified.** Root cause: drizzle-kit 0.30.6 imports `drizzle-orm/gel-core`, first exported in drizzle-orm 0.40.0; bumped `drizzle-orm ^0.38.3 → ^0.40.1` (packages/db + apps/api). `db:pull` now introspects the local DB (11 enums, 58 indexes, 80 FKs; auth-slice tables confirmed). packages/db keeps its curated auth-slice `src/schema.ts` (the full dump is validation-only, not committed).
 
 ## 5. Helper scripts
 
@@ -43,5 +43,5 @@
 ## Notes
 
 - **Flake vs standalone devenv:** inside `nix develop` the `devenv` command is a reduced flake wrapper (`up` is foreground-TUI-only). For detached/headless Postgres control use the **standalone** devenv CLI at the repo root: `devenv up -d --no-tui` / `devenv processes down`. In a normal terminal, `devenv up` (foreground TUI) also works. Documented in `devenv.nix` + README.
-- **Follow-ups:** 4.3/6.2 depend on resolving the `packages/db` drizzle-kit version mismatch (phase-1-auth 2.2). The dev environment itself is complete and verified.
+- **4.3 resolved:** the drizzle-kit↔drizzle-orm mismatch is fixed (orm → 0.40.1); `db:pull` verified against the local DB. **6.2** (full gateway e2e with `AUTH_MODULE_ENABLED=true`) remains an optional deeper check — the DB, schema, and introspection are all proven.
 - First `nix develop` / `nix flake check` downloads inputs (one-time; pinned by `flake.lock`).

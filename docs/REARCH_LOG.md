@@ -89,7 +89,8 @@ DataHub is a multi-tenant M&A / accounting platform (React/Vite SPA + Express/No
 - **What:** `flake.nix` (+ `flake.lock`) wrapping **devenv** (`devenv.nix`/`devenv.yaml`), plus `.envrc` for direnv. Provides Node 22, corepack-pinned pnpm 9.15.9, and a **local Postgres** (127.0.0.1:**5433** — 5432 was in use) with `DATABASE_URL` + dev `JWT_SECRET` exported, and helper scripts (`db-up`, `load-schema`, `introspect`, `stack`).
 - **Why:** make the stack reproducibly runnable/testable with no external services, and **unblock phase-1-auth 2.2 (Drizzle introspection) and 7.x (local cutover soak)** which need a real `DATABASE_URL`.
 - **Verification:** `nix flake check` → "all checks passed!"; in-shell node 22.23.2 / pnpm 9.15.9 / psql 16.14 and **49 tests pass**; standalone `devenv up -d --no-tui` starts Postgres (ready in ~1s), `select 1` and the legacy schema load succeed. See README "Run locally (Nix)".
-- **Note:** inside `nix develop` the `devenv` command is a reduced flake wrapper (foreground-TUI `up`); use the **standalone** devenv CLI at the repo root for detached/headless (`devenv up -d --no-tui`). **Follow-up:** `db:pull` introspection is blocked by a `packages/db` drizzle-kit↔drizzle-orm compat issue (owned by phase-1-auth task 2.2); the local DB it needs is now available.
+- **Note:** inside `nix develop` the `devenv` command is a reduced flake wrapper (foreground-TUI `up`); use the **standalone** devenv CLI at the repo root for detached/headless (`devenv up -d --no-tui`).
+- **drizzle-kit introspection fixed:** `db:pull` had failed with `ERR_PACKAGE_PATH_NOT_EXPORTED` — drizzle-kit 0.30.6 imports `drizzle-orm/gel-core` (first exported in drizzle-orm 0.40.0). Bumped `drizzle-orm ^0.38.3 → ^0.40.1` (packages/db + apps/api; typecheck 7/7, 49 tests still green). `db:pull` now introspects the local DB and validates the phase-1-auth auth-slice schema.
 
 ## Decisions (ADR index)
 
