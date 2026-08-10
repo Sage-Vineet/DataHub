@@ -32,6 +32,17 @@ const logger = require("../security/logger");
  * to a request initiated by another site, so an attacker's page cannot silently
  * mint fresh access tokens. `path` narrows it further, so the cookie is only
  * ever sent to the two endpoints that need it.
+ *
+ * OUTSIDE PRODUCTION the policy is relaxed to "lax". WHY: for cookie purposes
+ * `http://127.0.0.1:5173` and `http://localhost:4000` are DIFFERENT SITES (the
+ * host must match; the port is what's ignored, not the hostname). Under Strict
+ * the browser therefore silently dropped this cookie whenever the dev server was
+ * opened on one spelling of loopback and the API on the other — /auth/refresh
+ * saw no token, returned 401, and the client logged the user out roughly eleven
+ * minutes into every session. "lax" still refuses the cookie on cross-site
+ * subrequests, and it remains HttpOnly and scoped to /auth, so the CSRF surface
+ * in a local dev environment is negligible next to the breakage it caused.
+ * Production keeps Strict.
  */
 const REFRESH_COOKIE = "dh_rt";
 
@@ -39,7 +50,7 @@ function refreshCookieOptions() {
   return {
     httpOnly: true,
     secure: config.IS_PRODUCTION,
-    sameSite: "strict",
+    sameSite: config.IS_PRODUCTION ? "strict" : "lax",
     path: "/auth",
     maxAge: config.REFRESH_TOKEN_TTL_SECONDS * 1000,
   };
@@ -76,6 +87,16 @@ function sessionResponse(res, { user, accessToken, refreshToken, expiresIn, extr
     user,
     role: resolveRole(user),
     permissions: permissionsFor(user),
+    // The same block /auth/me returns. Login and refresh must carry it too:
+    // the client sizes its idle/absolute windows from this, and without it here
+    // it silently fell back to its own hardcoded defaults for the whole session
+    // (signing people out on the local 30-minute idle rule even when the server
+    // was configured to allow far longer).
+    session: {
+      idleTimeoutSeconds: config.SESSION_IDLE_TIMEOUT_SECONDS,
+      absoluteTimeoutSeconds: config.SESSION_ABSOLUTE_TIMEOUT_SECONDS,
+      accessTokenTtlSeconds: config.ACCESS_TOKEN_TTL_SECONDS,
+    },
     ...extra,
   });
 }

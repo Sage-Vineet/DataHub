@@ -47,6 +47,13 @@ import {
 } from "../../../services/reportService";
 import { loadQMSDashboard } from "../../../services/qmsManualDashboardService";
 import { loadManualUploadDashboard } from "../../../services/manualUploadDashboardService";
+import {
+  loadKeyReportFinancials,
+  buildKeyReportKpis,
+  buildKeyReportTrends,
+} from "../../../services/keyReportsDashboardService";
+import { clearCachedFinancials } from "../../../lib/keyReportFinancials";
+import KeyReportVersionSelector from "../../../components/key-reports/KeyReportVersionSelector";
 import { fetchInvoices } from "../../../services/invoiceService";
 import { getProfitAndLoss } from "../../../services/profitAndLossService";
 import { syncQuickbooksReports } from "../../../lib/quickbooks";
@@ -59,6 +66,12 @@ import {
 import { exportToCSV } from "../../../lib/exportCSV";
 import { useDataSource } from "../../../context/DataSourceContext";
 import { emitWorkspaceDataSourceUpdated } from "../../../lib/dataSourceEvents";
+import {
+  useKeyReportContextStore,
+  selectKeyReportContext,
+  maskKeyReportContext,
+} from "../../../store/useKeyReportContextStore";
+import { useShallow } from "zustand/react/shallow";
 
 const DASHBOARD_STORAGE_PREFIX = "workspace-datahub-dashboard";
 
@@ -311,6 +324,31 @@ export default function WorkspaceDashboardDatahub() {
     () => getReportSourceMode(activeSourceKey),
     [activeSourceKey],
   );
+
+  // ── Key Reports context ────────────────────────────────────────────────
+  //
+  // In Key Reports mode every figure comes from the selected version's
+  // generated financial statements rather than the QuickBooks API. The version
+  // list is normally populated by mounting <KeyReportVersionSelector>, but this
+  // page has no version picker in its UI, so the store is primed directly below
+  // and the active version is used implicitly.
+  const krSelected = useMemo(
+    () => normalizeReportSourceKey(activeSourceKey) === REPORT_SOURCE_KEYS.KEY_REPORTS,
+    [activeSourceKey],
+  );
+  const rawKr = useKeyReportContextStore(useShallow(selectKeyReportContext));
+  const kr = useMemo(() => maskKeyReportContext(rawKr, krSelected), [rawKr, krSelected]);
+  const fetchKrVersions = useKeyReportContextStore((state) => state.fetchVersions);
+  const krVersionId = krSelected ? kr.selectedVersionId : null;
+  // Read inside callbacks without making them depend on (and re-fire for) it.
+  const krVersionIdRef = useRef(null);
+  useEffect(() => { krVersionIdRef.current = krVersionId; }, [krVersionId]);
+
+  useEffect(() => {
+    if (!krSelected || !clientId) return;
+    fetchKrVersions(clientId);
+  }, [krSelected, clientId, fetchKrVersions]);
+
   // ── Date-range calculator ──────────────────────────────────────────────
 
   const calculateDateRangeFromYearMonth = useCallback((year, month) => {
@@ -581,16 +619,27 @@ export default function WorkspaceDashboardDatahub() {
     sourceModeOverride = "",
   ) => {
     const sourceMode = sourceModeOverride || activeSourceMode;
-    const requestKey = `${start}|${end}|${aggType}|${sourceMode}`;
+    const krVersion = sourceMode === "key_reports" ? krVersionIdRef.current : null;
+    // The version is part of the key so switching versions refetches.
+    const requestKey = `${start}|${end}|${aggType}|${sourceMode}|${krVersion || ""}`;
     if (lastChartRequestKeyRef.current === requestKey) return;
+
+    // Key Reports without a resolved version yet — leave the key unset so the
+    // request re-fires once the store finishes loading versions.
+    if (sourceMode === "key_reports" && !krVersion) return;
+
     lastChartRequestKeyRef.current = requestKey;
     const requestSeq = ++chartRequestSeqRef.current;
 
     setIsChartLoading(true);
     try {
-      const data = await fetchFinancialTrends(start, end, aggType, {
-        sourceMode,
-      });
+      const data =
+        sourceMode === "key_reports"
+          ? buildKeyReportTrends(
+            await loadKeyReportFinancials(krVersion, { clientId }),
+            { startDate: start, endDate: end, aggregationType: aggType },
+          )
+          : await fetchFinancialTrends(start, end, aggType, { sourceMode });
       if (requestSeq !== chartRequestSeqRef.current) return;
       setChartDataState(data);
     } catch (err) {
@@ -603,15 +652,24 @@ export default function WorkspaceDashboardDatahub() {
         setIsChartLoading(false);
       }
     }
-  }, [activeSourceMode]);
+  }, [activeSourceMode, clientId]);
 
   const loadKpiData = useCallback(async (start, end, sourceModeOverride = "") => {
     const sourceMode = sourceModeOverride || activeSourceMode;
+    const krVersion = sourceMode === "key_reports" ? krVersionIdRef.current : null;
+    // Key Reports without a resolved version yet — the effect below re-runs this
+    // once the store finishes loading versions.
+    if (sourceMode === "key_reports" && !krVersion) return;
+
     const requestSeq = ++kpiRequestSeqRef.current;
     setIsLoading(true);
     try {
       const [kpiData, invsData] = await Promise.all([
-        fetchDashboardKPIs(start, end, { sourceMode }),
+        sourceMode === "key_reports"
+          ? loadKeyReportFinancials(krVersion, { clientId }).then((financials) =>
+            buildKeyReportKpis(financials, { startDate: start, endDate: end }),
+          )
+          : fetchDashboardKPIs(start, end, { sourceMode }),
         sourceMode === "quickbooks" ? fetchInvoices() : Promise.resolve([]),
       ]);
       if (requestSeq !== kpiRequestSeqRef.current) return;
@@ -636,8 +694,12 @@ export default function WorkspaceDashboardDatahub() {
         kpiData.find((k) => k.label === "Total Revenue")?.rawValue || 0;
       const totalExpenses =
         kpiData.find((k) => k.label === "Total Expenses")?.rawValue || 0;
+      // The card is labelled "Account Payable" (singular) by every dashboard
+      // source; matching only the plural made this insight permanently $0.
       const accountsPayable =
-        kpiData.find((k) => k.label === "Accounts Payable")?.rawValue || 0;
+        kpiData.find(
+          (k) => k.label === "Account Payable" || k.label === "Accounts Payable",
+        )?.rawValue || 0;
       const cashBank =
         kpiData.find((k) => k.label === "Cash & Bank Balance")?.rawValue || 0;
 
@@ -676,9 +738,12 @@ export default function WorkspaceDashboardDatahub() {
     } catch (err) {
       if (requestSeq !== kpiRequestSeqRef.current) return;
       console.error("Failed to load dashboard KPI data:", err);
-      const reportFallback = await getProfitAndLoss("", "", "", {
-        sourceMode,
-      }).catch(() => null);
+      // The fallback probe is a QuickBooks-only endpoint — pointless (and a
+      // guaranteed 4xx) for Key Reports, whose data never comes from it.
+      const reportFallback =
+        sourceMode === "key_reports"
+          ? null
+          : await getProfitAndLoss("", "", "", { sourceMode }).catch(() => null);
       if (requestSeq !== kpiRequestSeqRef.current) return;
       if (reportFallback) {
         setMonthlyInsights((current) =>
@@ -699,7 +764,7 @@ export default function WorkspaceDashboardDatahub() {
         setIsLoading(false);
       }
     }
-  }, [activeSourceMode]);
+  }, [activeSourceMode, clientId]);
 
   // ── Manual sync (explicit user action — always re-fetches) ─────────────
 
@@ -714,6 +779,12 @@ export default function WorkspaceDashboardDatahub() {
       } else if (isQBManualMode) {
         await loadQMSDashboardData(qmsSelectedYear);
       } else {
+        // Sync is an explicit "get me fresh numbers" action, so drop the cached
+        // financial statements first — otherwise Key Reports would re-render the
+        // same sessionStorage payload it already had.
+        if (activeSourceMode === "key_reports" && krVersionIdRef.current) {
+          clearCachedFinancials(clientId, krVersionIdRef.current);
+        }
         await loadKpiData(startDate, endDate, activeSourceMode);
         lastChartRequestKeyRef.current = "";
         await loadChartData(
@@ -743,6 +814,7 @@ export default function WorkspaceDashboardDatahub() {
     loadChartData,
     loadKpiData,
     startDate,
+    clientId,
   ]);
 
   // ── Source-switch handler ──────────────────────────────────────────────
@@ -923,6 +995,50 @@ export default function WorkspaceDashboardDatahub() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId, user?.id, loadManualUploadDashboardData, loadQMSDashboardData, contextActiveSource]);
 
+  // ── Key Reports: load once the selected version resolves ──────────────────
+  //
+  // The version list is fetched asynchronously by the store, so the bootstrap
+  // above usually runs before a version id exists — loadKpiData/loadChartData
+  // bail out in that case. This picks the load back up the moment a version is
+  // available, and re-runs it whenever the selected version changes. The ref
+  // guard keeps it to one load per version; ordinary filter changes continue to
+  // flow through the existing handlers.
+  const krLoadedVersionRef = useRef(null);
+  useEffect(() => {
+    if (!krSelected) {
+      krLoadedVersionRef.current = null;
+      return;
+    }
+    if (!krVersionId || krLoadedVersionRef.current === krVersionId) return;
+    krLoadedVersionRef.current = krVersionId;
+
+    const currentYear = new Date().getFullYear();
+    const kpiRange =
+      startDate && endDate
+        ? { startDate, endDate }
+        : calculateDateRangeFromYearMonth(selectedYear || currentYear, selectedMonth);
+    const chartRange =
+      chartStartDate && chartEndDate
+        ? { startDate: chartStartDate, endDate: chartEndDate }
+        : calculateDateRangeFromYearMonth(chartSelectedYear || currentYear, chartSelectedMonth);
+
+    if (!startDate || !endDate) {
+      setStartDate(kpiRange.startDate);
+      setEndDate(kpiRange.endDate);
+    }
+    if (!chartStartDate || !chartEndDate) {
+      setChartStartDate(chartRange.startDate);
+      setChartEndDate(chartRange.endDate);
+    }
+
+    // Clear the dedupe key so a version switch always re-renders the chart.
+    lastChartRequestKeyRef.current = "";
+    loadKpiData(kpiRange.startDate, kpiRange.endDate, "key_reports");
+    loadChartData(chartRange.startDate, chartRange.endDate, aggregationType, "key_reports");
+    hasRestoredRef.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [krSelected, krVersionId, loadKpiData, loadChartData]);
+
   // ── Auto-save: persist state to sessionStorage after every meaningful change
   //
   // Only runs after the mount restoration is complete (hasRestoredRef = true)
@@ -999,6 +1115,29 @@ export default function WorkspaceDashboardDatahub() {
     applyGlobalDateRange(newStart, newEnd, "yearMonth");
   };
 
+  /**
+   * Applies a year/month selection immediately.
+   *
+   * WHY every year/month control applies on change: the date inputs below are
+   * bound to the SAME startDate/endDate that drive the KPI cards, so whenever a
+   * year/month control changed the label without applying, the page showed one
+   * period ("January 2026") while the cards still held another (the previously
+   * applied range) — with nothing on screen saying which one was live. The three
+   * controls also disagreed: the month arrows always applied, the year arrows
+   * only applied while filterType was already "yearMonth", and the dropdowns
+   * never applied at all. Applying on every interaction keeps the displayed
+   * period and the loaded period identical, and touching a year/month control is
+   * itself an unambiguous request to filter by year/month — so it also takes
+   * over from a previously applied custom range.
+   */
+  const applyYearMonth = (year, month) => {
+    setSelectedYear(year);
+    setSelectedMonth(month);
+    const { startDate: newStart, endDate: newEnd } =
+      calculateDateRangeFromYearMonth(year, month || undefined);
+    applyGlobalDateRange(newStart, newEnd, "yearMonth");
+  };
+
   const handleCustomDateChange = () => {
     if (startDate && endDate) {
       syncFilterStateFromRange(
@@ -1012,55 +1151,33 @@ export default function WorkspaceDashboardDatahub() {
   };
 
   const handlePreviousYear = () => {
-    const newYear = selectedYear - 1;
-    setSelectedYear(newYear);
-    if (filterType === "yearMonth") {
-      const { startDate: newStart, endDate: newEnd } =
-        calculateDateRangeFromYearMonth(newYear, selectedMonth || undefined);
-      applyGlobalDateRange(newStart, newEnd, "yearMonth");
-    }
+    applyYearMonth(selectedYear - 1, selectedMonth);
   };
 
   const handleNextYear = () => {
-    const newYear = selectedYear + 1;
-    setSelectedYear(newYear);
-    if (filterType === "yearMonth") {
-      const { startDate: newStart, endDate: newEnd } =
-        calculateDateRangeFromYearMonth(newYear, selectedMonth || undefined);
-      applyGlobalDateRange(newStart, newEnd, "yearMonth");
-    }
+    applyYearMonth(selectedYear + 1, selectedMonth);
   };
 
   const handlePreviousMonth = () => {
-    if (selectedMonth) {
-      let newMonth = parseInt(selectedMonth, 10) - 1;
-      let newYear = selectedYear;
-      if (newMonth < 1) {
-        newMonth = 12;
-        newYear = selectedYear - 1;
-      }
-      setSelectedYear(newYear);
-      setSelectedMonth(newMonth.toString());
-      const { startDate: newStart, endDate: newEnd } =
-        calculateDateRangeFromYearMonth(newYear, newMonth.toString());
-      applyGlobalDateRange(newStart, newEnd, "yearMonth");
+    if (!selectedMonth) return;
+    let newMonth = parseInt(selectedMonth, 10) - 1;
+    let newYear = selectedYear;
+    if (newMonth < 1) {
+      newMonth = 12;
+      newYear = selectedYear - 1;
     }
+    applyYearMonth(newYear, newMonth.toString());
   };
 
   const handleNextMonth = () => {
-    if (selectedMonth) {
-      let newMonth = parseInt(selectedMonth, 10) + 1;
-      let newYear = selectedYear;
-      if (newMonth > 12) {
-        newMonth = 1;
-        newYear = selectedYear + 1;
-      }
-      setSelectedYear(newYear);
-      setSelectedMonth(newMonth.toString());
-      const { startDate: newStart, endDate: newEnd } =
-        calculateDateRangeFromYearMonth(newYear, newMonth.toString());
-      applyGlobalDateRange(newStart, newEnd, "yearMonth");
+    if (!selectedMonth) return;
+    let newMonth = parseInt(selectedMonth, 10) + 1;
+    let newYear = selectedYear;
+    if (newMonth > 12) {
+      newMonth = 1;
+      newYear = selectedYear + 1;
     }
+    applyYearMonth(newYear, newMonth.toString());
   };
 
   const handleChartPreviousYear = () => {
@@ -1294,6 +1411,12 @@ export default function WorkspaceDashboardDatahub() {
               </div>
             )}
 
+            {/* Key Reports: which version every figure on this page is read from.
+                Changing it re-derives the KPI cards and the trends chart. */}
+            {krSelected && (
+              <KeyReportVersionSelector clientId={clientId} variant="filter" />
+            )}
+
             {/* All other sources: full year / month / date-range filter */}
             {!isManualUploadMode && !isQBManualMode && activeSourceMode !== "manual" && <><div className="flex items-center gap-2 bg-bg-page rounded-lg border border-border p-2">
               <button
@@ -1305,7 +1428,9 @@ export default function WorkspaceDashboardDatahub() {
               </button>
               <select
                 value={selectedYear}
-                onChange={(e) => setSelectedYear(parseInt(e.target.value, 10))}
+                onChange={(e) =>
+                  applyYearMonth(parseInt(e.target.value, 10), selectedMonth)
+                }
                 className="px-3 py-1.5 text-[13px] font-medium bg-transparent border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
               >
                 {generateYearOptions().map((year) => (
@@ -1335,7 +1460,7 @@ export default function WorkspaceDashboardDatahub() {
               </button>
               <select
                 value={selectedMonth}
-                onChange={(e) => setSelectedMonth(e.target.value)}
+                onChange={(e) => applyYearMonth(selectedYear, e.target.value)}
                 className="px-3 py-1.5 text-[13px] font-medium bg-transparent border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
               >
                 <option value="">Full Year</option>

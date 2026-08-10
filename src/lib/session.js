@@ -30,14 +30,24 @@ const DEFAULTS = {
 let idleTimeoutMs = DEFAULTS.idleTimeoutMs;
 let absoluteTimeoutMs = DEFAULTS.absoluteTimeoutMs;
 
-/** Adopts the server's configured timeouts, taking the stricter of the two. */
+/**
+ * Adopts the server's configured timeouts.
+ *
+ * The server is the authority — it enforces the real deadline on every request,
+ * and everything in this module is only a UX affordance (see the header). This
+ * previously took Math.min() against the hardcoded defaults above, which meant
+ * the client could only ever be STRICTER: raising SESSION_IDLE_TIMEOUT_SECONDS
+ * on the server had no effect and the UI still signed people out at the local
+ * 30-minute default while their server session was very much alive. Mirroring
+ * the server's value keeps the two windows in step in both directions.
+ */
 export function applyServerSessionConfig(sessionConfig) {
   if (!sessionConfig) return;
   if (Number.isFinite(sessionConfig.idleTimeoutSeconds)) {
-    idleTimeoutMs = Math.min(idleTimeoutMs, sessionConfig.idleTimeoutSeconds * 1000);
+    idleTimeoutMs = sessionConfig.idleTimeoutSeconds * 1000;
   }
   if (Number.isFinite(sessionConfig.absoluteTimeoutSeconds)) {
-    absoluteTimeoutMs = Math.min(absoluteTimeoutMs, sessionConfig.absoluteTimeoutSeconds * 1000);
+    absoluteTimeoutMs = sessionConfig.absoluteTimeoutSeconds * 1000;
   }
 }
 

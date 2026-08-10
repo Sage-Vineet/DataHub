@@ -103,6 +103,9 @@ const EXPIRY_MESSAGES = {
   revoked: 'You were signed out because your account was signed in on another device.',
 };
 
+/** How soon to retry a token renewal that failed for a non-auth reason. */
+const REFRESH_RETRY_DELAY_MS = 30_000;
+
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [permissions, setPermissions] = useState([]);
@@ -153,13 +156,14 @@ export function AuthProvider({ children }) {
   const proactiveRefreshRef = useRef(null);
 
   const scheduleProactiveRefresh = useCallback(
-    (expiresInSeconds) => {
+    (expiresInSeconds, overrideDelayMs = null) => {
       if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
       refreshTimerRef.current = null;
 
       if (!Number.isFinite(expiresInSeconds)) return;
       // Renew at 75% of the lifetime, with a 30s floor.
-      const delayMs = Math.max(30_000, expiresInSeconds * 1000 * 0.75);
+      const delayMs =
+        overrideDelayMs ?? Math.max(30_000, expiresInSeconds * 1000 * 0.75);
 
       refreshTimerRef.current = setTimeout(async () => {
         // Do not renew a session the user has walked away from — that would
@@ -171,8 +175,19 @@ export function AuthProvider({ children }) {
         try {
           await refreshAccessToken();
           proactiveRefreshRef.current?.(expiresInSeconds);
-        } catch {
-          expireSession('revoked');
+        } catch (error) {
+          // Only an explicit rejection from the server means the session is
+          // actually gone. Previously ANY failure signed the user out, so a
+          // dropped connection, an API restart, or a transient 5xx threw them
+          // to the login screen mid-task — and because this fires at 75% of the
+          // token lifetime, the access token was still valid for the remaining
+          // 25% at that moment. Retry instead; if the session really is dead,
+          // the reactive refresh in api.js catches it on the next request.
+          if (error?.status === 401 || error?.status === 403) {
+            expireSession('revoked');
+            return;
+          }
+          proactiveRefreshRef.current?.(expiresInSeconds, REFRESH_RETRY_DELAY_MS);
         }
       }, delayMs);
     },
