@@ -22,6 +22,12 @@ out
 .turbo/
 **/.turbo/
 
+# ── Nix / devenv / direnv (state, not config; flake.lock IS committed) ─────────
+.devenv*
+.direnv/
+devenv.local.nix
+.pre-commit-config.yaml
+
 # ── Logs ──────────────────────────────────────────────────────────────────────
 logs
 *.log

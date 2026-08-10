@@ -24,7 +24,23 @@ The **gateway** (`apps/api`) fronts all backend traffic. Today its routing table
 - Node ≥ 20
 - **pnpm** (pinned via `packageManager`; `corepack enable` will provide it, or `npm i -g pnpm@9`)
 
-## Run locally
+## Run locally (Nix — recommended)
+
+A Nix flake + [devenv](https://devenv.sh) provide the whole toolchain (Node 22, pnpm 9.15.9) **and a local Postgres**, so nothing external is needed:
+
+```bash
+direnv allow                 # or: nix develop --impure   (or: devenv shell)
+devenv up -d                 # start local Postgres (127.0.0.1:5433, db "datahub_dev")
+load-schema                  # load backend/sql/schema.sql into the dev DB
+introspect                   # pnpm --filter @datahub/db db:pull  (reconcile packages/db)
+```
+
+`DATABASE_URL`, a dev `JWT_SECRET`, and `PG*` are exported in the shell. To exercise the
+TypeScript auth module end-to-end: `AUTH_MODULE_ENABLED=true pnpm dev:api`. Verify the flake
+with `nix flake check`. Postgres defaults to **5433** (5432 is often taken); override in a
+git-ignored `devenv.local.nix`.
+
+## Run locally (without Nix)
 
 ```bash
 pnpm install                 # installs the whole workspace
