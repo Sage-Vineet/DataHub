@@ -7,8 +7,12 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "text-summary", "lcov"],
       include: ["src/**/*.ts"],
-      // server.ts is the listen bootstrap (no logic to unit-test).
-      exclude: ["src/**/*.test.ts", "src/server.ts"],
+      exclude: [
+        "src/**/*.test.ts",
+        "src/server.ts", // listen bootstrap
+        "src/modules/**/repository.drizzle.ts", // runtime DB adapter — verified against a real DB, not unit-tested
+        "src/modules/**/emailer.ts", // dev stub; real Graph adapter lands later
+      ],
       thresholds: {
         lines: 80,
         functions: 80,

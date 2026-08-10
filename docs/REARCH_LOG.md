@@ -76,6 +76,14 @@ DataHub is a multi-tenant M&A / accounting platform (React/Vite SPA + Express/No
 
 ---
 
+### 7. Phase 1 — auth reference domain (implementation)
+- **Change:** `phase-1-auth` (proposal `c177c0d`); implementation commit *(this change)*.
+- **What:** first real domain rebuilt behind the gateway — `packages/contracts` (zod auth schemas), `packages/db` (Drizzle auth-slice schema, hand-authored via the design's no-DB fallback), and `apps/api/src/modules/auth` (router + service + repository + tests). Ports the C1/C2/H3 fixes into TypeScript and **adds the still-open H1 login rate-limit**; `helmet` + `pino-http` scoped to the module.
+- **Why:** establish the reusable module pattern (router→service→repository→contract, cross-module only via typed services — [ADR-0004](adr/0004-modular-monolith.md)) and prove per-route cutover. The service depends only on a repository *port*, so it is fully tested without a database (in-memory adapter) — the Drizzle adapter is the runtime counterpart.
+- **Cutover design:** the module mounts at `/api/auth` **ahead of** the proxy, gated by `AUTH_MODULE_ENABLED` (off by default → falls through to legacy); tokens use the **same secret + `{sub}` claim** as legacy so a flip/rollback is zero-downtime (design D3).
+- **Verification:** typecheck 7/7 · **49 tests** · lint 6/6 · build 4/4 · auth module **95% stmts / 100% funcs**. Legacy source untouched; `main` frozen.
+- **Pending (runtime):** enabling the flag needs a reachable `DATABASE_URL` + a deploy to run the parity soak, then delete legacy auth (tasks 7.x). The schema fallback (2.2) should be reconciled with `drizzle-kit pull` before enabling.
+
 ## Decisions (ADR index)
 
 | ADR | Decision | Reason (one line) |

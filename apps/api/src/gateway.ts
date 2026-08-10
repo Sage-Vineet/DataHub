@@ -1,12 +1,23 @@
 import type { ServerResponse } from "node:http";
 import express from "express";
-import type { Express } from "express";
+import type { Express, Router } from "express";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { resolveTarget, type RoutingTable } from "./routing.js";
+
+/** An in-process module mounted ahead of the proxy (e.g. the auth module). */
+export interface MountedModule {
+  path: string;
+  router: Router;
+}
 
 export interface GatewayOptions {
   /** Upstream timeout in ms before a request is failed as 504. */
   proxyTimeoutMs?: number;
+  /**
+   * In-process modules mounted BEFORE the catch-all proxy. Requests matching a
+   * module path are served in-process; everything else falls through to legacy.
+   */
+  modules?: ReadonlyArray<MountedModule>;
 }
 
 /**
@@ -24,6 +35,12 @@ export function createGateway(table: RoutingTable, options: GatewayOptions = {})
   app.get("/healthz", (_req, res) => {
     res.status(200).json({ status: "ok", service: "gateway" });
   });
+
+  // In-process modules are mounted ahead of the proxy: a migrated route-group
+  // (e.g. /api/auth) is served here; everything else still falls through to legacy.
+  for (const mod of options.modules ?? []) {
+    app.use(mod.path, mod.router);
+  }
 
   const proxy = createProxyMiddleware({
     // A concrete default target satisfies the middleware; `router` overrides per request.

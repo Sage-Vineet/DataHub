@@ -14,13 +14,23 @@
     "test:cov": "vitest run --coverage"
   },
   "dependencies": {
+    "@datahub/contracts": "workspace:*",
+    "@datahub/db": "workspace:*",
+    "bcryptjs": "^2.4.3",
+    "drizzle-orm": "^0.38.3",
     "express": "^4.21.2",
-    "http-proxy-middleware": "^3.0.3"
+    "express-rate-limit": "^7.4.1",
+    "helmet": "^8.0.0",
+    "http-proxy-middleware": "^3.0.3",
+    "jsonwebtoken": "^9.0.2",
+    "pino-http": "^10.3.0"
   },
   "devDependencies": {
     "@datahub/config": "workspace:*",
     "@eslint/js": "^9.39.4",
+    "@types/bcryptjs": "^2.4.6",
     "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.7",
     "@types/node": "^22.10.2",
     "@types/supertest": "^6.0.2",
     "@vitest/coverage-v8": "^2.1.9",
