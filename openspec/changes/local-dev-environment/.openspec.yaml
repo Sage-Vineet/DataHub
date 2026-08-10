@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-10
+# Tooling / dev-infra change — no product behavior changes, so no spec deltas.
+skip_specs: true
