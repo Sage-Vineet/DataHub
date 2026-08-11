@@ -70,6 +70,7 @@ CI runs the same steps plus a dependency audit — see `.github/workflows/ci.yml
 
 ## Documentation
 
+- **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — how to build here: quick start, the quality gate, the module blueprint + Definition of Done (keep it open while working)
 - **[`docs/REARCH_LOG.md`](docs/REARCH_LOG.md)** — referenced, reasoned trail of the modernization work (start here)
 - **[`docs/MODERNIZATION_PLAN.md`](docs/MODERNIZATION_PLAN.md)** — target architecture + phased roadmap
 - **[`docs/adr/`](docs/adr/)** — one record per decision (context, decision, reasons, consequences)
