@@ -21,3 +21,22 @@ export type {
   CompanyListQuery,
   CompanyResponse,
 } from "./companies.js";
+
+export * as users from "./users.js";
+export {
+  BROKER_SUB_ROLES,
+  BROKER_TEAM_SUB_ROLES,
+  CLIENT_SIDE_SUB_ROLES,
+  CLIENT_TEAM_SUB_ROLES,
+} from "./users.js";
+export type {
+  SubRole,
+  EffectiveRole,
+  UserCreate,
+  UserUpdate,
+  UserListQuery,
+  CompanyMembership,
+  BrokerTeamInvite,
+  AssignedCompany,
+  UserResponse,
+} from "./users.js";

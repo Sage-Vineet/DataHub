@@ -1,5 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { companies, users, emailVerifications, userCompanies } from "./schema.js";
+import { brokerTeamInvites, companies, users, emailVerifications, userCompanies } from "./schema.js";
+
+describe("@datahub/db schema (users slice)", () => {
+  it("models the multi-role + profile columns", () => {
+    expect(users.subRole.name).toBe("sub_role");
+    expect(users.designation.name).toBe("designation");
+    expect(users.buyerCompanyName.name).toBe("buyer_company_name");
+    expect(users.parentUserId.name).toBe("parent_user_id");
+    expect(users.dateOfBirth.name).toBe("date_of_birth");
+    expect(users.brokerCompany.name).toBe("broker_company");
+  });
+
+  it("models the broker-team invites join", () => {
+    expect(brokerTeamInvites.teamOwnerId.name).toBe("team_owner_id");
+    expect(brokerTeamInvites.invitedBrokerId.name).toBe("invited_broker_id");
+  });
+});
 
 describe("@datahub/db schema (companies slice)", () => {
   it("models the full companies columns", () => {

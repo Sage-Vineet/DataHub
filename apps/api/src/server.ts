@@ -10,6 +10,7 @@ import {
 } from "./modules/auth/index.js";
 import { ConsoleEmailer } from "./modules/auth/index.js";
 import { createCompaniesModule } from "./modules/companies/index.js";
+import { createUsersModule } from "./modules/users/index.js";
 import { requireSession } from "./shared/session.js";
 import { parseRoutingTable } from "./routing.js";
 
@@ -55,19 +56,27 @@ function buildModules(): MountedModule[] {
     console.warn("[gateway] bespoke auth module ENABLED at /api/auth (in-process)");
   }
 
-  if (process.env.COMPANIES_MODULE_ENABLED === "true") {
+  // Domain modules share one session guard: a Better Auth instance validates
+  // sessions (ADR-0007), even if /api/auth itself is still legacy.
+  const domainsEnabled =
+    process.env.COMPANIES_MODULE_ENABLED === "true" || process.env.USERS_MODULE_ENABLED === "true";
+  if (domainsEnabled) {
     const db = getDb();
-    // A Better Auth instance validates sessions for the domain (ADR-0007), even
-    // if /api/auth itself is still legacy — the shared session guard needs it.
     const auth = createBetterAuth({
       db,
       emailer: graphEmailer(),
       config: loadBetterAuthConfig(process.env),
     });
     const requireAuth = requireSession(auth, new DrizzleAuthRepository(db));
-    const { router } = createCompaniesModule({ db, requireAuth });
-    modules.push({ path: "/api/companies", router });
-    console.warn("[gateway] companies module ENABLED at /api/companies (in-process)");
+
+    if (process.env.COMPANIES_MODULE_ENABLED === "true") {
+      modules.push({ path: "/api/companies", router: createCompaniesModule({ db, requireAuth }).router });
+      console.warn("[gateway] companies module ENABLED at /api/companies (in-process)");
+    }
+    if (process.env.USERS_MODULE_ENABLED === "true") {
+      modules.push({ path: "/api/users", router: createUsersModule({ db, requireAuth }).router });
+      console.warn("[gateway] users module ENABLED at /api/users (in-process)");
+    }
   }
   return modules;
 }

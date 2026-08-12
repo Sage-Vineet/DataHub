@@ -54,9 +54,34 @@ export const users = pgTable("users", {
   role: userRole("role").notNull(),
   companyId: uuid("company_id").references(() => companies.id, { onDelete: "set null" }),
   status: userStatus("status").notNull().default("active"),
+  // Multi-role fields (migration 041). `sub_role` is text at the DB layer (parity).
+  subRole: text("sub_role"),
+  designation: text("designation"),
+  buyerCompanyName: text("buyer_company_name"),
+  parentUserId: uuid("parent_user_id"),
+  // Profile fields.
+  dateOfBirth: date("date_of_birth"),
+  occupation: text("occupation"),
+  address: text("address"),
+  brokerCompany: text("broker_company"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/** Broker-team invitations: a broker (owner) inviting another broker to their team. */
+export const brokerTeamInvites = pgTable(
+  "broker_team_invites",
+  {
+    teamOwnerId: uuid("team_owner_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    invitedBrokerId: uuid("invited_broker_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.teamOwnerId, t.invitedBrokerId] }) }),
+);
 
 export const userCompanies = pgTable(
   "user_companies",

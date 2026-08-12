@@ -30,6 +30,8 @@ CREATE TABLE users (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, email text NOT NULL UNIQUE,
   phone text, password_hash text NOT NULL, role user_role NOT NULL, company_id uuid,
   status user_status NOT NULL DEFAULT 'active',
+  sub_role text, designation text, buyer_company_name text, parent_user_id uuid,
+  date_of_birth date, occupation text, address text, broker_company text,
   created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE user_companies (

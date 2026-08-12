@@ -116,6 +116,14 @@ DataHub is a multi-tenant M&A / accounting platform (React/Vite SPA + Express/No
 - **Verification:** api **76/76** tests (13 companies: 9 service w/ in-memory repo + fake ports, 4 integration w/ the **transactional cascade** against real Postgres/PGlite — seed-and-delete across 8+ tables, atomic, `users.company_id` nulled); coverage **93% stmts / 79% branch** (service 96–98%, router 89–94%); contracts 13/13, db 4/4; typecheck + lint clean; `openspec validate --strict` green.
 - **Deferred (need a real env / later domains):** staging parity + legacy retirement (§9.1/9.2); swapping the provisioning ports to the real `users`/`folders` module services (§9.3) — a no-contract-change swap once those land.
 
+### 12. Phase 2 — `users` domain (implementation)
+- **Change:** `users-domain` (second Phase 2 domain; reuses the shared guards from `companies-domain`). The richest access logic in the app.
+- **What:** contracts (`packages/contracts/users.ts` — create/update/list/membership/team-invite/response with `effective_role` + sub-roles); fuller `packages/db` users columns + `broker_team_invites`; `apps/api/src/modules/users/` = `roles.ts` (pure rules) + ports + service + `repository.drizzle.ts` + `repository.memory.ts` + transitional adapters + router (10 endpoints); mounted at `/api/users` behind **`USERS_MODULE_ENABLED`**.
+- **Key rules ported:** tenant-scoped visibility (self / shared-company broker + invited-team / admin-all), role/sub-role-gated create (brokers can't make admin/primary-broker), guarded update (no broker role-change; self password requires + verifies `current_password`), **`effective_role`** computation as a pure function (admin/broker/client/user, incl. seller-by-contact-email + client sub-roles), company membership, broker-team invites, and **delete-with-reassignment**: the replacement-owner invariant (400 if none) then reassign `created_by`/`uploaded_by` across 8 tables + delete, **in one transaction** (D4). Auth-cache invalidation is a no-op (Better Auth sessions are DB-backed, ADR-0007).
+- **Verification:** api **104/104** tests (28 users: 13-case table-driven `effective_role`, 10 service rules w/ in-memory repo + spy ports, 5 integration incl. the **transactional reassign-and-delete** against real Postgres/PGlite); coverage **91% stmts / 80% branch**; contracts 17/17, db 6/6; typecheck + lint clean; `openspec validate --strict` green.
+- **Deviations (documented):** historical-company-inference shim (D5) not ported — `assignedCompaniesFor` unions `user_companies` + primary `company_id`, covering the observable behavior; reassignment is a transactional repo method rather than a separate port, to guarantee atomicity.
+- **Deferred (need a real env / later domains):** staging parity + legacy retirement (§9.1/9.2); swapping the reassignment/notification ports to real sibling services (§9.3).
+
 ## Decisions (ADR index)
 
 | ADR | Decision | Reason (one line) |

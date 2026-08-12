@@ -51,6 +51,8 @@ CREATE TABLE users (
   role user_role NOT NULL,
   company_id uuid REFERENCES companies(id) ON DELETE SET NULL,
   status user_status NOT NULL DEFAULT 'active',
+  sub_role text, designation text, buyer_company_name text, parent_user_id uuid,
+  date_of_birth date, occupation text, address text, broker_company text,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
