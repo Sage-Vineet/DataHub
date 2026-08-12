@@ -134,4 +134,21 @@ describe("gateway", () => {
     expect(res.status).toBe(502);
     expect(res.body.error).toBe("gateway_upstream_error");
   });
+
+  it("emits credentialed-CORS headers for allow-listed origins and answers preflight", async () => {
+    const table = parseRoutingTable({ LEGACY_ORIGIN: legacy.url });
+    const app = createGateway(table, { corsOrigins: ["https://app.datahub.test"] });
+
+    // Preflight from an allowed origin → 204 with credentials allowed.
+    const pre = await request(app)
+      .options("/api/auth/login")
+      .set("Origin", "https://app.datahub.test");
+    expect(pre.status).toBe(204);
+    expect(pre.headers["access-control-allow-origin"]).toBe("https://app.datahub.test");
+    expect(pre.headers["access-control-allow-credentials"]).toBe("true");
+
+    // An origin NOT on the list gets no CORS headers.
+    const other = await request(app).get("/healthz").set("Origin", "https://evil.example.com");
+    expect(other.headers["access-control-allow-origin"]).toBeUndefined();
+  });
 });

@@ -1,6 +1,6 @@
 import type { ServerResponse } from "node:http";
 import express from "express";
-import type { Express, Router } from "express";
+import type { Express, RequestHandler, Router } from "express";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { resolveTarget, type RoutingTable } from "./routing.js";
 
@@ -8,6 +8,29 @@ import { resolveTarget, type RoutingTable } from "./routing.js";
 export interface MountedModule {
   path: string;
   router: Router;
+}
+
+/**
+ * Minimal credentialed-CORS: reflect an allow-listed Origin and permit cookies.
+ * Only emits headers for origins on the list, so it never widens access blindly.
+ */
+function corsMiddleware(origins: ReadonlyArray<string>): RequestHandler {
+  const allow = new Set(origins);
+  return (req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin && allow.has(origin)) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Credentials", "true");
+      res.setHeader("Vary", "Origin");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Client-Id");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+      if (req.method === "OPTIONS") {
+        res.status(204).end();
+        return;
+      }
+    }
+    next();
+  };
 }
 
 export interface GatewayOptions {
@@ -18,6 +41,13 @@ export interface GatewayOptions {
    * module path are served in-process; everything else falls through to legacy.
    */
   modules?: ReadonlyArray<MountedModule>;
+  /**
+   * Origins allowed to make credentialed (cookie) requests — needed for cookie
+   * sessions when the SPA and gateway are on different origins (ADR-0007). Empty →
+   * no CORS headers (same-origin deploys). CSRF for the auth endpoints is enforced
+   * by Better Auth's own Origin check against its trustedOrigins.
+   */
+  corsOrigins?: ReadonlyArray<string>;
 }
 
 /**
@@ -30,6 +60,12 @@ export interface GatewayOptions {
  */
 export function createGateway(table: RoutingTable, options: GatewayOptions = {}): Express {
   const app = express();
+
+  // Credentialed CORS (for cross-origin cookie sessions) runs first so it also
+  // covers preflight for the in-process modules and the proxy. No-op when unset.
+  if (options.corsOrigins && options.corsOrigins.length > 0) {
+    app.use(corsMiddleware(options.corsOrigins));
+  }
 
   // Liveness — independent of upstream availability, never proxied.
   app.get("/healthz", (_req, res) => {

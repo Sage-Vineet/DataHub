@@ -144,7 +144,7 @@ async function request(path, options = {}) {
     headers,
     body: options.body ? JSON.stringify(options.body) : undefined,
     cache: 'no-store',
-    credentials: options.credentials || 'omit',
+    credentials: options.credentials || 'include',
   });
 
   if (response.status === 204) {
@@ -171,7 +171,7 @@ export function loginRequest(credentials) {
     headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     body: JSON.stringify(credentials),
     cache: 'no-store',
-    credentials: 'omit',
+    credentials: 'include',
   }).then(async (response) => {
     const data = await response.json().catch(() => null);
     if (!response.ok) {
@@ -198,7 +198,7 @@ export function sendVerificationOtpRequest(payload) {
     headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     body: JSON.stringify(payload),
     cache: 'no-store',
-    credentials: 'omit',
+    credentials: 'include',
   }).then(async (response) => {
     const data = await response.json().catch(() => null);
     if (!response.ok) {
@@ -216,7 +216,7 @@ export function verifyVerificationOtpRequest(payload) {
     headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     body: JSON.stringify(payload),
     cache: 'no-store',
-    credentials: 'omit',
+    credentials: 'include',
   }).then(async (response) => {
     const data = await response.json().catch(() => null);
     if (!response.ok) {
@@ -234,7 +234,7 @@ export function forgotPasswordRequest(payload) {
     headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     body: JSON.stringify(payload),
     cache: 'no-store',
-    credentials: 'omit',
+    credentials: 'include',
   }).then(async (response) => {
     const data = await response.json().catch(() => null);
     if (!response.ok) {
@@ -252,7 +252,7 @@ export function resetPasswordRequest(payload) {
     headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     body: JSON.stringify(payload),
     cache: 'no-store',
-    credentials: 'omit',
+    credentials: 'include',
   }).then(async (response) => {
     const data = await response.json().catch(() => null);
     if (!response.ok) {
@@ -276,7 +276,7 @@ export function brokerSignupRequest(payload) {
     headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     body: JSON.stringify(payload),
     cache: 'no-store',
-    credentials: 'omit',
+    credentials: 'include',
   }).then(async (response) => {
     const data = await response.json().catch(() => null);
     if (!response.ok) {
@@ -533,7 +533,7 @@ export async function uploadFile(file, options = {}) {
     headers,
     body: file,
     cache: 'no-store',
-    credentials: 'omit',
+    credentials: 'include',
   });
 
   const data = await response.json().catch(() => null);
@@ -571,7 +571,7 @@ export async function fetchProtectedFileBlob(fileUrl, options = {}) {
     method: 'GET',
     headers,
     cache: 'no-store',
-    credentials: 'omit',
+    credentials: 'include',
   });
 
   if (!response.ok) {

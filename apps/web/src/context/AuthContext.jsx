@@ -165,13 +165,13 @@ export function AuthProvider({ children }) {
     const checkAuth = async () => {
       try {
         const token = getStoredToken();
-        if (!token) return;
 
-        // If the session expiry key is present and legitimately past → expire.
-        // If the key is ABSENT but a valid token exists (storage trimmed, migrated
-        // from an older build, browser backup restore), repair the session window
-        // instead of logging the user out — the server will confirm validity below.
-        if (isSessionExpired()) {
+        // Cookie-first session restore (Better Auth, ADR-0007): a valid httpOnly
+        // session cookie is enough — `meRequest()` sends it via credentials:'include'
+        // and the server (getSession) validates it, so we no longer bail when there
+        // is no stored bearer token. The legacy expiry-window checks only apply when
+        // a bearer token is present (transitional legacy-interop path).
+        if (token && isSessionExpired()) {
           let keyExists = false;
           try { keyExists = localStorage.getItem('leo-session-expiry') !== null; } catch { /* ignore */ }
           if (keyExists) {

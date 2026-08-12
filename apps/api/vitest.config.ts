@@ -10,8 +10,9 @@ export default defineConfig({
       exclude: [
         "src/**/*.test.ts",
         "src/server.ts", // listen bootstrap
-        "src/modules/**/repository.drizzle.ts", // runtime DB adapter — verified against a real DB, not unit-tested
-        "src/modules/**/emailer.ts", // dev stub; real Graph adapter lands later
+        "src/modules/**/repository.drizzle.ts", // runtime DB adapter — exercised by integration tests, not unit-counted
+        "src/modules/**/emailer.ts", // dev console stub (the real Graph adapter IS tested)
+        "src/modules/**/better-test-harness.ts", // test-only harness (PGlite wiring)
       ],
       thresholds: {
         lines: 80,
