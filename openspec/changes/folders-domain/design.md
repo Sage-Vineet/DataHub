@@ -10,8 +10,8 @@ See `proposal.md` and the domain map. Legacy `folderService.js` (~12 fns) + `fol
 
 ## Decisions
 
-### D1 — Blueprint + shared access
-`modules/folders/` follows the `auth`/`companies` blueprint and uses the shared `canAccessCompany`. Access-management endpoints additionally require broker/admin.
+### D1 — Blueprint + shared guards
+`modules/folders/` follows the `companies` blueprint and uses the shared guards: `requireSession` (Better Auth session → `req.user`, [ADR-0007](../../../docs/adr/0007-auth-library-vs-bespoke.md)) + `canAccessCompany` (tenant scoping) — not the bespoke `requireAuth`. Access-management endpoints additionally require broker/admin.
 
 ### D2 — Idempotent provisioning via a unique index, not a mutex
 Define the 22-folder hierarchy as data (a constant tree) and create it with a **unique index** on `(company_id, parent_id, name)` + `onConflictDoNothing` inside a transaction. This makes provisioning safe under concurrency without the legacy per-company mutex, and keeps the self-heal (provision if the count is below expected) as an explicit call.

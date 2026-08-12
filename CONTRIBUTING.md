@@ -41,23 +41,25 @@ Write an **ADR** in `docs/adr/` for any significant decision (context, options, 
 
 ## 4. Building a backend domain — the blueprint
 
-Copy `apps/api/src/modules/auth/` — it's the worked reference. Every domain looks the same:
+Copy the **shape** of `apps/api/src/modules/auth/` — the ports/adapters layout below is the worked reference. (Auth itself is a special case: the identity engine is **Better Auth**, [ADR-0007](docs/adr/0007-auth-library-vs-bespoke.md) — you don't reimplement login/sessions per domain; see the auth note under "Two hard rules".) Every *business* domain looks the same:
 
 ```
 apps/api/src/modules/<domain>/
   contract.ts            zod schemas (re-exported from packages/contracts)
-  ports.ts               Repository + Emailer interfaces (the "ports")
+  ports.ts               Repository interfaces (the "ports")
   service.ts             business logic — the ONLY cross-module entry point
   repository.drizzle.ts  runtime adapter over packages/db (Postgres)
   repository.memory.ts   in-memory adapter — used by tests, no DB needed
   router.ts              thin HTTP surface; validate every input via the contract
-  middleware.ts          requireAuth / guards
+  middleware.ts          domain-specific guards (role checks); NOT auth itself
   *.test.ts              vitest + supertest
 ```
 
 **Two hard rules:**
 1. Modules talk to each other **only through typed `service` interfaces** — never reach into another module's repository or tables.
 2. **Raw SQL lives only in repositories** (via `packages/db`).
+
+**Auth is not re-implemented per domain.** The identity engine is **Better Auth** (ADR-0007): sessions are httpOnly cookies, revocable server-side. Protect routes with the **shared session guard** (`requireSession` in `apps/api/src/shared/`, which resolves the Better Auth session and populates `req.user: SessionUser`) and the **shared `canAccessCompany`** for tenant scoping — both engine-agnostic, so a domain router only adds *domain-specific* guards (e.g. "broker/admin only"). Do **not** copy the auth module's `requireAuth`/`AuthService` into a domain; that bespoke path is the retiring rollback target.
 
 ### Definition of Done (per domain)
 
@@ -67,7 +69,8 @@ apps/api/src/modules/<domain>/
 - [ ] Router is thin and validates every request against the contract (400 on failure).
 - [ ] Tests (vitest + supertest) meet the coverage gate — service is tested against the in-memory repo, no DB.
 - [ ] Mounted in the gateway **behind an env flag** (`<DOMAIN>_MODULE_ENABLED`), default off → falls through to legacy.
-- [ ] Tokens/behavior stay at parity so cutover and rollback are zero-downtime.
+- [ ] Routes protected via the shared `requireSession` (Better Auth) + `canAccessCompany` — not a hand-rolled auth check.
+- [ ] Behavior stays at parity (same responses, same session cookie) so cutover and rollback are zero-downtime.
 - [ ] Soaked green, then the legacy handlers are deleted (separate, reversible commit).
 
 ## 5. How we test
@@ -75,13 +78,13 @@ apps/api/src/modules/<domain>/
 The service depends on a repository **interface**, not the database — so tests run with the in-memory adapter, fast and deterministic:
 
 ```ts
-const repo = new InMemoryAuthRepository();
-repo.addUser({ /* ... */ });
-const svc = new AuthService({ repo, emailer, config });
-await expect(svc.authenticate(email, "wrong")).rejects.toBeInstanceOf(InvalidCredentialsError);
+const repo = new InMemoryCompaniesRepository();
+repo.addCompany({ /* ... */ });
+const svc = new CompaniesService({ repo });
+await expect(svc.get(userWithoutAccess, otherCompanyId)).rejects.toBeInstanceOf(ForbiddenError);
 ```
 
-Router-level tests use `supertest` against the Express app with the in-memory repo wired in. UI tests use `@testing-library/react` + jsdom (see `packages/ui`).
+Router-level tests use `supertest` against the Express app with the in-memory repo wired in. Auth-dependent domains that need a real session (cookie/DB-backed, Better Auth) test against **PGlite** — see `apps/api/src/modules/auth/better-test-harness.ts` for the pattern (embedded Postgres, no external DB). UI tests use `@testing-library/react` + jsdom (see `packages/ui`).
 
 ## 6. Frontend
 

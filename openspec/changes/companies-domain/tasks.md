@@ -12,6 +12,7 @@
 ## 3. Shared access + ports
 
 - [ ] 3.1 Move `canAccessCompany` from `modules/auth` to `apps/api/src/shared/access.ts`; update auth to import it
+- [ ] 3.1b Add `apps/api/src/shared/session.ts` — `requireSession` (wraps Better Auth `requireBetterAuth`/`resolveSessionUser`, injects the shared auth instance) → `req.user: SessionUser`; the companies router uses it, not the bespoke `requireAuth` ([ADR-0007](../../../docs/adr/0007-auth-library-vs-bespoke.md))
 - [ ] 3.2 Define `UserProvisioningPort` (client-rep sync) + `FolderProvisioningPort` (default folders) + `CompanyStatsPort` in `modules/companies/ports.ts`
 - [ ] 3.3 Legacy-backed adapters for each port (call the existing services) until users/folders modules exist
 

@@ -13,8 +13,10 @@ See `proposal.md`. Legacy lives in `backend/src/{routes,controllers,services}/co
 ### D1 — Reuse the module blueprint
 `modules/companies/` = contract + ports + service + `repository.drizzle.ts` + `repository.memory.ts` + router + tests. Copy `auth` structure.
 
-### D2 — Promote `canAccessCompany` to a shared guard
-It already exists in `modules/auth/service.ts`. Move it to a shared `apps/api/src/shared/access.ts` (pure function over the session user) so every domain module uses one implementation. This is the single most-reused rule in the app.
+### D2 — Promote the shared guards (`canAccessCompany` + `requireSession`)
+Two engine-agnostic guards move to `apps/api/src/shared/`, so every domain uses one implementation:
+- `access.ts` — `canAccessCompany` (already in `modules/auth/service.ts`), a pure function over the `SessionUser`. The single most-reused rule in the app.
+- `session.ts` — `requireSession`, an Express middleware that resolves the **Better Auth** session (cookie or bearer) and populates `req.user: SessionUser`. It wraps `requireBetterAuth`/`resolveSessionUser` from `modules/auth/better-session.ts` so domains depend on the shared guard, not the auth module internals or the retiring bespoke `requireAuth` ([ADR-0007](../../../docs/adr/0007-auth-library-vs-bespoke.md)). The Better Auth instance is created once (in `server.ts`) and injected, so a domain router just does `router.use(requireSession)` then reads `req.user`.
 
 ### D3 — Cross-domain side effects via ports, not direct calls
 Company create/update must sync a client-rep **user** and provision **folders** — other domains. Define `UserProvisioningPort` and `FolderProvisioningPort` interfaces in `modules/companies/ports.ts`. Back them with **legacy adapters** now (call the existing services), and swap to the real `users`/`folders` module services once those land — no contract change. This keeps the "cross-module only via service interfaces" rule.

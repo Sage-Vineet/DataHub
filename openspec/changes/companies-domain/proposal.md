@@ -9,7 +9,7 @@
 - **`packages/contracts`** — zod schemas for company create/update/list and the response shape (incl. stats).
 - **`packages/db`** — extend the introspected schema to the full `companies` columns (`project_name`, `logo`, `contact_*`, `data_source_type`, `quickbooks_connected`, `manual_upload_active`, `profit_metric`, `last_source_switch_at`) and `user_companies` (already modeled).
 - **`apps/api/src/modules/companies`** — router + service + repository (Drizzle + in-memory) + contract + tests. Ports the endpoints and rules: list-for-user, get-with-stats, create, update, delete-cascade.
-- **Shared access guard** — promote `canAccessCompany` into a shared helper used by all domain modules (it already exists in the auth module).
+- **Shared guards** — promote two engine-agnostic helpers into `apps/api/src/shared/`, used by all domain modules: `canAccessCompany` (tenant scoping, already in the auth module) and `requireSession` (populates `req.user: SessionUser` from the **Better Auth** session — [ADR-0007](../../../docs/adr/0007-auth-library-vs-bespoke.md) — so domains never re-implement auth).
 - **Cross-domain side effects via ports** — company creation/update triggers **client-representative sync** (a user concern) and **default-folder provisioning** (a folders concern). Model these as injected ports with legacy-backed adapters until the `users`/`folders` modules exist, then swap to their services.
 - **Gateway cutover** — flip `/api/companies` to the module behind `COMPANIES_MODULE_ENABLED`; everything else stays legacy; instant rollback.
 

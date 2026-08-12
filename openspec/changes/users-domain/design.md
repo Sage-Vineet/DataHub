@@ -10,8 +10,8 @@ See `proposal.md` and the domain map. Legacy `userService.js` is ~1,097 lines wi
 
 ## Decisions
 
-### D1 — Blueprint + shared access
-`modules/users/` follows the `auth` blueprint and imports the shared `canAccessCompany` (promoted in `companies-domain`). If companies hasn't landed yet, promote the shared guard here.
+### D1 — Blueprint + shared guards
+`modules/users/` follows the domain blueprint and imports the shared guards promoted in `companies-domain`: `canAccessCompany` (tenant scoping) and `requireSession` (Better Auth session → `req.user`, [ADR-0007](../../../docs/adr/0007-auth-library-vs-bespoke.md)) — never the bespoke `requireAuth`. If companies hasn't landed yet, promote both shared guards here.
 
 ### D2 — Effective-role + visibility as pure, tested functions
 Port `effective_role` and the visibility filter into pure functions in the service (input: viewer + target rows) so they're unit-tested exhaustively across role/sub-role combinations. This is the highest-value correctness surface.
