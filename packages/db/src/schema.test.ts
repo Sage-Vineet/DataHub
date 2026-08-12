@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { users, emailVerifications, userCompanies } from "./schema.js";
+import { companies, users, emailVerifications, userCompanies } from "./schema.js";
+
+describe("@datahub/db schema (companies slice)", () => {
+  it("models the full companies columns", () => {
+    expect(companies.projectName.name).toBe("project_name");
+    expect(companies.logo.name).toBe("logo");
+    expect(companies.contactName.name).toBe("contact_name");
+    expect(companies.contactPhone.name).toBe("contact_phone");
+    expect(companies.profitMetric.name).toBe("profit_metric");
+    expect(companies.dataSourceType.name).toBe("data_source_type");
+    expect(companies.quickbooksConnected.name).toBe("quickbooks_connected");
+    expect(companies.manualUploadActive.name).toBe("manual_upload_active");
+    expect(companies.lastSourceSwitchAt.name).toBe("last_source_switch_at");
+  });
+});
 
 describe("@datahub/db schema (auth slice)", () => {
   it("models the users table with the auth columns", () => {

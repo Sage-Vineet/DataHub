@@ -174,12 +174,10 @@ export class AuthService {
   }
 }
 
-/** Multi-tenant boundary parity with legacy `canAccessCompany`. */
-export function canAccessCompany(user: SessionUser, companyId: string): boolean {
-  if (user.role === "admin" || user.role === "broker") return true;
-  if (user.company_id === companyId) return true;
-  return (user.company_ids ?? []).includes(companyId);
-}
+// `canAccessCompany` now lives in the shared guard so every domain shares one
+// implementation (promoted in companies-domain). Re-exported here for the
+// existing auth imports/tests.
+export { canAccessCompany } from "../../shared/access.js";
 
 function toSessionUser(record: AuthUserRecord, companyIds: string[]): SessionUser {
   return {

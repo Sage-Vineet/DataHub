@@ -1,46 +1,73 @@
-import { createDb } from "@datahub/db";
+import { createDb, type Db } from "@datahub/db";
 import { createGateway, type MountedModule } from "./gateway.js";
 import {
   createAuthModule,
+  createBetterAuth,
   createBetterAuthModule,
   DrizzleAuthRepository,
   GraphEmailer,
+  loadBetterAuthConfig,
 } from "./modules/auth/index.js";
+import { ConsoleEmailer } from "./modules/auth/index.js";
+import { createCompaniesModule } from "./modules/companies/index.js";
+import { requireSession } from "./shared/session.js";
 import { parseRoutingTable } from "./routing.js";
 
+/** Lazily create a single shared Drizzle client for all in-process modules. */
+function dbFactory(): () => Db {
+  let db: Db | undefined;
+  return () => {
+    if (!db) {
+      const databaseUrl = process.env.DATABASE_URL;
+      if (!databaseUrl) {
+        throw new Error("An enabled in-process module requires DATABASE_URL.");
+      }
+      db = createDb(databaseUrl);
+    }
+    return db;
+  };
+}
+
 /**
- * Build the in-process modules to mount ahead of the proxy. `/api/auth` is
- * served by exactly one engine, chosen by env (cutover/rollback = a flag, not a
- * code deploy — ADR-0003/0007):
- *   - BETTER_AUTH_ENABLED=true → Better Auth (ADR-0007). Wins if both are set.
- *   - AUTH_MODULE_ENABLED=true → the bespoke module (rollback target).
- *   - neither → /api/auth falls through to legacy.
- * A real emailer is used when Graph is configured, else the console stub (dev).
+ * Build the in-process modules to mount ahead of the proxy. Each `/api/*`
+ * route-group is served by exactly one engine, chosen by env (cutover/rollback =
+ * a flag, not a code deploy — ADR-0003/0007):
+ *   - BETTER_AUTH_ENABLED=true → Better Auth serves /api/auth (ADR-0007; wins if both set)
+ *   - AUTH_MODULE_ENABLED=true → the bespoke module serves /api/auth (rollback target)
+ *   - COMPANIES_MODULE_ENABLED=true → the companies module serves /api/companies
+ *   - otherwise → the route-group falls through to legacy.
+ * Domain modules are protected by the shared Better Auth session guard.
  */
 function buildModules(): MountedModule[] {
   const modules: MountedModule[] = [];
+  const getDb = dbFactory();
+  const graphEmailer = () =>
+    process.env.GRAPH_TENANT_ID ? GraphEmailer.fromEnv(process.env) : new ConsoleEmailer();
 
   if (process.env.BETTER_AUTH_ENABLED === "true") {
-    const databaseUrl = process.env.DATABASE_URL;
-    if (!databaseUrl) {
-      throw new Error("BETTER_AUTH_ENABLED=true requires DATABASE_URL for the auth module.");
-    }
-    const emailer = process.env.GRAPH_TENANT_ID ? GraphEmailer.fromEnv(process.env) : undefined;
-    const { router } = createBetterAuthModule({ db: createDb(databaseUrl), emailer });
+    const { router } = createBetterAuthModule({ db: getDb(), emailer: graphEmailer() });
     modules.push({ path: "/api/auth", router });
     console.warn("[gateway] Better Auth ENABLED at /api/auth (in-process, ADR-0007)");
-    return modules;
-  }
-
-  if (process.env.AUTH_MODULE_ENABLED === "true") {
-    const databaseUrl = process.env.DATABASE_URL;
-    if (!databaseUrl) {
-      throw new Error("AUTH_MODULE_ENABLED=true requires DATABASE_URL for the auth module.");
-    }
-    const repo = new DrizzleAuthRepository(createDb(databaseUrl));
+  } else if (process.env.AUTH_MODULE_ENABLED === "true") {
+    const repo = new DrizzleAuthRepository(getDb());
     const { router } = createAuthModule({ repo });
     modules.push({ path: "/api/auth", router });
     console.warn("[gateway] bespoke auth module ENABLED at /api/auth (in-process)");
+  }
+
+  if (process.env.COMPANIES_MODULE_ENABLED === "true") {
+    const db = getDb();
+    // A Better Auth instance validates sessions for the domain (ADR-0007), even
+    // if /api/auth itself is still legacy — the shared session guard needs it.
+    const auth = createBetterAuth({
+      db,
+      emailer: graphEmailer(),
+      config: loadBetterAuthConfig(process.env),
+    });
+    const requireAuth = requireSession(auth, new DrizzleAuthRepository(db));
+    const { router } = createCompaniesModule({ db, requireAuth });
+    modules.push({ path: "/api/companies", router });
+    console.warn("[gateway] companies module ENABLED at /api/companies (in-process)");
   }
   return modules;
 }

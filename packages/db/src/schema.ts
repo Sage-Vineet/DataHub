@@ -25,10 +25,22 @@ export const companyStatus = pgEnum("company_status", ["active", "inactive"]);
 export const companies = pgTable("companies", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
-  industry: text("industry").notNull(),
+  projectName: text("project_name"),
+  industry: text("industry"),
   status: companyStatus("status").notNull().default("active"),
   since: date("since"),
+  logo: text("logo"),
+  contactName: text("contact_name"),
   contactEmail: text("contact_email"),
+  contactPhone: text("contact_phone"),
+  // Canonical profit metric ("adjusted_ebitda" | "sde"); text at the DB layer
+  // (legacy is untyped), normalized to the contract enum on the way in.
+  profitMetric: text("profit_metric").notNull().default("adjusted_ebitda"),
+  // Integration-managed columns — NEVER written by a companies update (safe-field rule).
+  dataSourceType: text("data_source_type"),
+  quickbooksConnected: boolean("quickbooks_connected").notNull().default(false),
+  manualUploadActive: boolean("manual_upload_active").notNull().default(false),
+  lastSourceSwitchAt: timestamp("last_source_switch_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

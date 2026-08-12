@@ -26,10 +26,19 @@ CREATE TYPE company_status AS ENUM ('active','inactive');
 CREATE TABLE companies (
   id uuid PRIMARY KEY,
   name text NOT NULL,
-  industry text NOT NULL,
+  project_name text,
+  industry text,
   status company_status NOT NULL DEFAULT 'active',
   since date,
+  logo text,
+  contact_name text,
   contact_email text,
+  contact_phone text,
+  profit_metric text NOT NULL DEFAULT 'adjusted_ebitda',
+  data_source_type text,
+  quickbooks_connected boolean NOT NULL DEFAULT false,
+  manual_upload_active boolean NOT NULL DEFAULT false,
+  last_source_switch_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
