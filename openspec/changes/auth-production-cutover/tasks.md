@@ -31,6 +31,13 @@
 
 ## 6. Retire legacy auth
 
+> **PAUSED (2026-08-11):** blocked pending the auth-engine decision in
+> [ADR-0007](../../../docs/adr/0007-auth-library-vs-bespoke.md) — the CTO chose to adopt
+> **Better Auth** (change `adopt-better-auth`). Do **not** delete legacy or the bespoke
+> engine until Better Auth is the soaked production engine; legacy remains the rollback
+> target. When Better Auth's soak is green, this section retires legacy under that change
+> (`adopt-better-auth` task 9.3) instead of the bespoke module.
+
 - [ ] 6.1 After a green soak, delete legacy `/api/auth` handlers: `backend/src/routes/auth.js`, `controllers/auth.js`, and the now-unused parts of `authService.js`/`otpService.js`
 - [ ] 6.2 Remove the auth route from the legacy mount; confirm the gateway serves `/api/auth` entirely in-process
 - [ ] 6.3 Separate, reversible commit; keep it revertable for one release

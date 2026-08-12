@@ -4,6 +4,13 @@ The TypeScript auth module (`phase-1-auth`) is built, tested, and **locally** so
 
 **Track:** `auth` (closing the reference domain). No new product behavior — this is rollout, so `skip_specs` (the `auth` capability spec already exists at `openspec/specs/auth/spec.md`).
 
+> **Update (2026-08-11):** per [ADR-0007](../../../docs/adr/0007-auth-library-vs-bespoke.md)
+> the reference auth engine is moving to **Better Auth** (change `adopt-better-auth`).
+> The "Retire legacy auth" step (§6) is **paused** — legacy stays as the rollback target
+> and is retired under `adopt-better-auth` once Better Auth is the soaked prod engine, not
+> under the bespoke module. The earlier tasks here (schema reconcile, secret parity, staging
+> checklist) remain useful groundwork regardless of engine.
+
 ## What Changes
 
 - **Reconcile `packages/db`** with the real database via `drizzle-kit pull` (the auth-slice schema was hand-authored offline; confirm it matches prod before serving).

@@ -100,6 +100,13 @@ DataHub is a multi-tenant M&A / accounting platform (React/Vite SPA + Express/No
 - **Adoption proof + deviation:** the spec named the broker "Users table", but `Users.jsx` has no table — it uses hand-rolled modals; migrated its **DeleteModal** to the `@datahub/ui` Dialog + Button instead (same intent; modals are the real duplicated primitive there). Proves a `.jsx` page consumes `@datahub/ui` `.tsx` via Vite.
 - **Verification:** typecheck 8/8 · ui tests **13/13** (incl. Dialog focus-trap/Escape, DropdownMenu keyboard, Select) · coverage **92% stmts** · lint 7/7 · build 4/4 (`apps/web` builds consuming the library; CSS regenerates with the new component classes). No backend/routing/state changes; `main` frozen.
 
+### 10. Auth engine decision — off-the-shelf vs bespoke ([ADR-0007](adr/0007-auth-library-vs-bespoke.md))
+- **Trigger:** a CTO question mid-cutover — *are we using an off-the-shelf, bulletproof auth solution, or building it ourselves? What about Better Auth / Supabase?* Answer: we use sound **primitives** (`bcryptjs`, `jsonwebtoken`) but the **identity/session layer is hand-rolled**, and the cutover proposal defers revocation/refresh (**M1**) and cookie/CORS hardening (**M2/M3**). Auth is the reference domain Phase 2 will copy, so the engine choice is cheapest to make **now**.
+- **Decision (proposed):** adopt **Better Auth** (self-hosted, MIT, TS-native) behind the existing gateway seam, keeping identity in our own Postgres — over Supabase Auth (deepens the very platform coupling ADR-0002 removes) and over keeping the bespoke module (owning revocation/MFA/SSO forever). See [ADR-0007](adr/0007-auth-library-vs-bespoke.md).
+- **Spike (evidence, not vibes):** `spikes/better-auth/` — real Better Auth 1.6.27 on the real Drizzle adapter over embedded Postgres (PGlite). **8/8 green:** existing **bcrypt** hash logs in unchanged (parity, custom `verify`), session is an **httpOnly cookie** (M2/M3) and a **DB row** in our Postgres, and **revocation** invalidates it server-side (**M1 — the gap the bespoke HS256 module cannot close**).
+- **Findings:** migration is a `users → user/account` backfill (credentials move to Better Auth's `account` table), bcrypt hashes carry over verbatim, `drizzle-orm` should bump to `^0.45.2` (spike ran green on 0.40.1 anyway), and the SPA moves from `Bearer`-in-`localStorage` to cookie sessions (~1–1.5 wk total). Full writeup: `spikes/better-auth/SPIKE.md`.
+- **Decision:** CTO **chose Better Auth** (2026-08-11). ADR-0007 **Accepted**; scoped as OpenSpec change **`adopt-better-auth`** (proposal + design + tasks + `auth` spec deltas for cookie/DB-backed sessions + revocation). Key design call: map Better Auth's `user` model onto the **existing `users` table** (keep FKs), add only `session`/`account`/`verification`, backfill credentials from `users.password_hash`. `auth-production-cutover` §6 (retire legacy) is **paused** — legacy stays the rollback target and is retired under `adopt-better-auth` once Better Auth is the soaked prod engine.
+
 ## Decisions (ADR index)
 
 | ADR | Decision | Reason (one line) |
@@ -110,6 +117,7 @@ DataHub is a multi-tenant M&A / accounting platform (React/Vite SPA + Express/No
 | [0004](adr/0004-modular-monolith.md) | Modular monolith, module boundaries via typed contracts | Enforce boundaries now; keep the microservice option open |
 | [0005](adr/0005-testing-and-coverage-standard.md) | 100% TypeScript + 90% coverage gate on new code | Convert a class of runtime failures into compile/CI errors |
 | [0006](adr/0006-shadcn-design-system.md) | Reusable shadcn/ui component system (~90% look match) | Replace duplicated god-component UI with a tested design system |
+| [0007](adr/0007-auth-library-vs-bespoke.md) | Off-the-shelf auth (Better Auth) vs. the bespoke module *(accepted; spike green → `adopt-better-auth`)* | Get revocation/MFA/SSO off-the-shelf and stop owning the identity layer |
 
 ## Pending actions outside the repo
 - **Vercel** "Root Directory" → `apps/web`, with a preview-deploy check (Phase 0 task 6.4).

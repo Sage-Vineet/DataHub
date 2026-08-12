@@ -12,5 +12,6 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Status is one of `Proposed` / 
 | [0004](0004-modular-monolith.md) | Modular monolith with typed module boundaries | Accepted |
 | [0005](0005-testing-and-coverage-standard.md) | 100% TypeScript + 90% coverage on new code | Accepted |
 | [0006](0006-shadcn-design-system.md) | Reusable shadcn/ui design system | Proposed |
+| [0007](0007-auth-library-vs-bespoke.md) | Off-the-shelf auth (Better Auth) vs. the bespoke module | Accepted |
 
 See also the program-level [`../MODERNIZATION_PLAN.md`](../MODERNIZATION_PLAN.md) and the [`../REARCH_LOG.md`](../REARCH_LOG.md) work log.
