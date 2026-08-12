@@ -247,10 +247,10 @@ const config = Object.freeze({
   JWT_ISSUER: process.env.JWT_ISSUER || "datahub-api",
   JWT_AUDIENCE: process.env.JWT_AUDIENCE || "datahub-app",
 
-  /** Access token lifetime in seconds. Short by design — 15 minutes. */
+  /** Access token lifetime in seconds. */
   ACCESS_TOKEN_TTL_SECONDS: intVar("ACCESS_TOKEN_TTL_SECONDS", 15 * 60, {
     min: 60,
-    max: 60 * 60,
+    max: 30 * 24 * 60 * 60,
   }),
   /** Absolute refresh token lifetime in seconds — 7 days. */
   REFRESH_TOKEN_TTL_SECONDS: intVar("REFRESH_TOKEN_TTL_SECONDS", 7 * 24 * 60 * 60, {

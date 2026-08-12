@@ -53,6 +53,12 @@ export function normalizeTaxYears(response) {
       fileName: entry?.fileName || null,
       status: entry?.status || null,
       scheduleM1: entry?.scheduleM1 ?? null,
+      // Schedule L — the return's own balance sheet. Carried through untouched
+      // (including `null`) because the Cash/Accrual section states what the RETURN
+      // reports for A/R and A/P separately from the book Balance Sheet it computes
+      // the conversion from. A missing Schedule L must read "Not Reported", never
+      // borrow the book balance — see taxReconciliation.readScheduleLLine.
+      scheduleL: entry?.scheduleL ?? entry?.schedule_l ?? null,
       data: Array.isArray(entry?.data) ? entry.data : [],
     };
   }

@@ -150,9 +150,13 @@ describe('non-reconciling rows and drops are unchanged', () => {
     const data = buildTaxReturnResponseData({ ...page1, reconcilingItems: [] });
     assert.deepEqual(
       data.filter((r) => !r.isReconcilingItem).map((r) => r.label),
+      // "All Other Income" carries page-1 net gain (line 4) + other income (line 5).
+      // It was added deliberately: those amounts previously had no row of their own
+      // and were netted into "All Other Expenses", reporting income as expense. See
+      // manualReportUploadService.taxAccuracy.test.js.
       ['Total Revenue', 'Total Cost of Goods Sold', 'Gross Profit', 'Officer Wages',
         'Depreciation Expense', 'Amortization Expense', 'Total Interest Expense',
-        'All Other Expenses', 'Net Income'],
+        'All Other Expenses', 'All Other Income', 'Net Income'],
     );
   });
 
@@ -173,6 +177,60 @@ describe('non-reconciling rows and drops are unchanged', () => {
   test('a non-array input is returned unchanged', () => {
     assert.equal(canonicalizeReconcilingData(null), null);
     assert.equal(canonicalizeReconcilingData(undefined), undefined);
+  });
+});
+
+// A blank/unread line and a preparer's nil assertion are different facts, and the
+// Tax Reconciliation page renders them differently ("Not Reported" vs a figure).
+// Publishing an unread line as 0 with reported:true is what put "Nondeductible
+// Expenses 0" on a report whose Schedule K line 16c prints 912 — a 0 no consumer
+// could tell apart from a real reading.
+describe('a Schedule K line the extraction did not read', () => {
+  const item = (label, value) => buildTaxReturnResponseData({
+    ...page1, reconcilingItems: [{ label, value }],
+  });
+
+  test('is published as null, flagged not reported — never as 0', () => {
+    for (const missing of [null, undefined, '']) {
+      const row = reconRows(item('Nondeductible Expenses', missing))[0];
+      assert.ok(row, `an unread line is kept so the reviewer sees it (${String(missing)})`);
+      assert.equal(row.taxReturn, null);
+      assert.equal(row.source.reported, false);
+    }
+  });
+
+  test('a printed zero is still left out, and a real figure is still published', () => {
+    assert.equal(reconRows(item('Nondeductible Expenses', 0)).length, 0);
+    const row = reconRows(item('Nondeductible Expenses', 912))[0];
+    assert.equal(row.taxReturn, 912);
+    assert.equal(row.source.reported, true);
+  });
+
+  test('a later pass that DOES read the line replaces the unread row', () => {
+    const data = canonicalizeReconcilingData([
+      { label: 'Nondeductible expenses', taxReturn: null, isReconcilingItem: true, source: { reported: false } },
+      { label: 'Nondeductible Expenses', taxReturn: 912, isReconcilingItem: true, source: { reported: true } },
+    ]);
+    const rows = reconRows(data);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].taxReturn, 912, 'the reading wins over the blank');
+    assert.equal(rows[0].source.reported, true);
+  });
+
+  test('an unread duplicate never drags a read value back to zero', () => {
+    const data = canonicalizeReconcilingData([
+      { label: 'Nondeductible Expenses', taxReturn: 912, isReconcilingItem: true, source: { reported: true } },
+      { label: 'Nondeductible expenses', taxReturn: null, isReconcilingItem: true, source: { reported: false } },
+    ]);
+    assert.equal(valueOf(data, 'Nondeductible Expenses'), 912);
+  });
+
+  test('an unread line is not summed as 0 into a genuinely different line', () => {
+    const data = canonicalizeReconcilingData([
+      { label: 'Charitable Contributions Cash', taxReturn: 4000, isReconcilingItem: true },
+      { label: 'Charitable Contributions Noncash', taxReturn: null, isReconcilingItem: true, source: { reported: false } },
+    ]);
+    assert.equal(valueOf(data, 'Charitable Contributions'), 4000);
   });
 });
 

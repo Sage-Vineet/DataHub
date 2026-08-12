@@ -660,12 +660,58 @@ describe('cash/accrual adjustments and Balance Sheet period resolution', () => {
     assert.equal(ar.adjustment, -123);
     assert.equal(ar.isOverride, true);
   });
+
+  test('the return\'s own reading comes from Schedule L only — a blank one is NOT REPORTED', () => {
+    const periods = [bsPeriod('2021-12-31', { ar: 218298 }), bsPeriod('2022-12-31', { ar: 227670 })];
+    const taxReturn = resolveTaxReturnForYear({ 2022: taxYear(2022) }, 2022);
+    const ca = buildCashAccrualAdjustments({ periods, fiscalYear: 2022, returnBasis: 'Cash', taxReturn });
+    const ar = ca.items.find((i) => i.label === 'Accounts Receivable');
+
+    // The balances are the BOOK Balance Sheet, and the conversion still works…
+    assert.equal(ar.beginningBalance, 218298);
+    assert.equal(ar.endingBalance, 227670);
+    assert.equal(ar.adjustment, round2(-(227670 - 218298)));
+
+    // …but the return reports nothing for the line, and says so. The book balance
+    // is never presented as the return's figure — the defect this guards is a real
+    // export in which 227,670 read as a claim about Schedule L line 2a, which is
+    // blank on a cash-basis return.
+    assert.equal(ar.scheduleLLine, '2a');
+    assert.equal(ar.taxReturnReported, false);
+    assert.equal(ar.taxReturnBeginning, null);
+    assert.equal(ar.taxReturnEnding, null);
+    assert.notEqual(ar.taxReturnEnding, ar.endingBalance);
+    assert.match(ar.taxReturnReason, /Schedule L/);
+  });
+
+  test('a Schedule L the return does publish is read at its own line', () => {
+    const periods = [bsPeriod('2021-12-31', { ar: 100 }), bsPeriod('2022-12-31', { ar: 150 })];
+    const entry = taxYear(2022);
+    entry.scheduleL = [
+      { line: '2a', beginningValue: 90, endingValue: 140 },
+      { line: '16', beginningValue: null, endingValue: null },
+    ];
+    const taxReturn = resolveTaxReturnForYear({ 2022: entry }, 2022);
+    const ca = buildCashAccrualAdjustments({ periods, fiscalYear: 2022, returnBasis: 'Cash', taxReturn });
+    const ar = ca.items.find((i) => i.label === 'Accounts Receivable');
+    assert.equal(ar.taxReturnReported, true);
+    assert.equal(ar.taxReturnBeginning, 90);
+    assert.equal(ar.taxReturnEnding, 140);
+    // The adjustment is still the BOOK conversion — Schedule L is displayed, not
+    // substituted into the calculation.
+    assert.equal(ar.adjustment, -50);
+
+    // A line printed blank in both columns is reported as blank, not as 0.
+    const ap = ca.items.find((i) => i.label === 'Accounts Payable');
+    assert.equal(ap.taxReturnReported, false);
+    assert.match(ap.taxReturnReason, /blank on the return/);
+  });
 });
 
 // ── Other adjustments (Part 9) ─────────────────────────────────────────────
 
 describe('other adjustments', () => {
-  test('the depreciation and interest residuals are the page-1 book-to-tax differences', () => {
+  test('the depreciation and interest rows COMPARE book and page-1 figures without adjusting', () => {
     const taxReturn = resolveTaxReturnForYear({
       2024: taxYear(2024, { depreciation: 700, interestExpense: 90, scheduleK: [['Section 179 Deduction', 200]] }),
     }, 2024);
@@ -675,15 +721,59 @@ describe('other adjustments', () => {
       taxReturn,
       m1,
     });
-    // The books deducted 1000, the return's page 1 deducted 700 → tax income is
-    // 300 higher. Section 179 is separately stated and must NOT be netted here.
+    // Both figures are shown, and so is the difference between them…
     const dep = other.items.find((i) => i.label === 'Other Depreciation Variance');
-    assert.equal(dep.adjustment, 300);
-    assert.match(dep.reason, /deliberately not netted/);
+    assert.equal(dep.pl, 1000);
+    assert.equal(dep.taxReturn, 700);
+    assert.equal(dep.variance, 300);
     const int = other.items.find((i) => i.label === 'Other Interest Variance');
-    assert.equal(int.adjustment, 10);
+    assert.equal(int.variance, 10);
+
+    // …but neither moves the reconciliation. Book income and tax income are both
+    // already net of the expense; a genuine book-to-tax difference is stated on
+    // Schedule M-1 and adjusted in Section 2, so adjusting here double-counts.
+    assert.equal(dep.adjustment, 0);
+    assert.equal(int.adjustment, 0);
+    assert.equal(dep.hasIncomeEffect, false);
+    assert.equal(int.hasIncomeEffect, false);
+    assert.equal(other.total, 0);
+    assert.match(int.reason, /shown, not added/);
+
     // The M1 §179 add-back stands on its own, undisturbed.
     assert.equal(m1.items.find((i) => i.category === 'Section 179 Depreciation').adjustment, 200);
+  });
+
+  test('a page-1 line the return does not state is NOT REPORTED, not a zero comparison', () => {
+    const entry = taxYear(2024, { interestExpense: 0 });
+    // The publisher marks a line it could not read on the form.
+    entry.data = entry.data.map((row) => (row.label === 'Total Interest Expense'
+      ? { ...row, taxReturn: 0, source: { form: 'Form 1120-S', line: '13', reported: false } }
+      : row));
+    const taxReturn = resolveTaxReturnForYear({ 2024: entry }, 2024);
+    const other = buildOtherAdjustments({ plValues: { interestExpense: 5000 }, taxReturn, m1: null });
+    const int = other.items.find((i) => i.label === 'Other Interest Variance');
+    assert.equal(int.taxReturn, null, 'a blank line is never published here as 0');
+    assert.equal(int.taxReturnReported, false);
+    assert.equal(int.variance, null, 'no comparison is invented against a blank line');
+    assert.equal(int.adjustment, 0);
+    assert.equal(other.complete, false, 'the missing comparison is reported, not hidden');
+  });
+
+  test('an override on a variance row is honoured and marked as a human assertion', () => {
+    const taxReturn = resolveTaxReturnForYear({
+      2024: taxYear(2024, { interestExpense: 240911 }),
+    }, 2024);
+    const other = buildOtherAdjustments({
+      plValues: { interestExpense: 0 },
+      taxReturn,
+      m1: null,
+      overrides: { 'Other Interest Variance': { taxReturn: -240911 } },
+    });
+    const int = other.items.find((i) => i.label === 'Other Interest Variance');
+    assert.equal(int.adjustment, -240911);
+    assert.equal(int.isOverride, true);
+    assert.equal(int.hasIncomeEffect, true);
+    assert.equal(other.total, -240911);
   });
 
   test('no page-1 difference produces a zero residual, not a phantom one', () => {
@@ -790,6 +880,77 @@ describe('validation 5 — final reconciliation', () => {
     assert.equal(year.reconciled, false);
     // Every footing identity still holds — the residual is real, not arithmetic error.
     assert.deepEqual(okFooting(year.footing), []);
+  });
+
+  /**
+   * REGRESSION — the shape of the client's reported failure, end to end.
+   *
+   * A cash-basis S-corporation return whose page 1 states interest expense that
+   * the P&L does not carry as its own line (it sits inside operating expenses), a
+   * Schedule M-1 stating book income 912 below the P&L's, and a receivables
+   * movement across the two Balance Sheets. Every figure here is arbitrary except
+   * the RELATIONSHIPS, which are the ones that used to break:
+   *
+   *   • the page-1 interest line was subtracted a second time in Section 6 and
+   *     produced an unreconciled difference equal to it, exactly;
+   *   • the nondeductible expenses that bridge book income to ordinary income
+   *     have to come through Section 2 once, and only once.
+   *
+   * Book NI (60) + M1 (12) + Cash/Accrual (−72) + Other (0) = 0 = the return's
+   * ordinary business income, so the year reconciles to the penny.
+   */
+  test('a return whose page-1 interest is not a P&L line still reconciles to zero', () => {
+    const year = buildYearReconciliation({
+      fiscalYear: 2024,
+      plRows: plTree({
+        revenue: [['Fees', 1000]],
+        cogs: [['Contract Labour', 700]],
+        // Interest is INSIDE operating expenses on the books — the P&L has no
+        // separate interest line, so its interest bucket is 0.
+        expenses: [['Officer Compensation', 100], ['Operating Costs', 140]],
+      }),
+      taxYears: {
+        2024: taxYear(2024, {
+          officerWages: 100,
+          interestExpense: 24, // page 1 states it; the books do not, separately
+          netIncome: 0,        // ordinary business income (loss)
+          scheduleM1: {
+            netIncomePerBooks: -12,
+            lines: [{ label: 'Nondeductible Expenses', amount: 12 }],
+          },
+        }),
+      },
+      bsPeriods: [bsPeriod('2023-12-31', { ar: 200 }), bsPeriod('2024-12-31', { ar: 272 })],
+      accountingMethod: 'Cash',
+    });
+
+    assert.equal(year.bookNetIncome, 60);
+    assert.equal(year.m1.total, 12, 'the M-1 nondeductible add-back, counted once');
+    assert.equal(year.cashAccrual.total, -72, 'the receivables conversion');
+
+    // The page-1 interest is SHOWN against the book figure and adjusts nothing.
+    const interest = year.other.items.find((i) => i.label === 'Other Interest Variance');
+    assert.equal(interest.taxReturn, 24);
+    assert.equal(interest.variance, -24);
+    assert.equal(interest.adjustment, 0);
+    assert.equal(year.other.total, 0, 'no second deduction of an expense already in book income');
+
+    // Section 4: the book-basis gap is fully explained.
+    assert.equal(year.m1VarianceCheck.variance, 72);
+    assert.equal(year.m1VarianceCheck.residual, 0);
+
+    // Section 7: lands on the return's own ordinary business income, exactly.
+    assert.equal(year.calculatedReconciledIncome, 0);
+    assert.equal(year.expectedReconciledIncome, 0);
+    assert.equal(year.unreconciled, 0);
+    assert.equal(year.reconciled, true);
+    assert.deepEqual(okFooting(year.footing), []);
+
+    // And Section 5 does not present a book balance as a tax-return figure.
+    const ar = year.cashAccrual.items.find((i) => i.label === 'Accounts Receivable');
+    assert.equal(ar.endingBalance, 272);
+    assert.equal(ar.taxReturnReported, false);
+    assert.equal(ar.taxReturnEnding, null);
   });
 
   test('the return\'s own stated reconciled income takes precedence when present', () => {
@@ -926,6 +1087,133 @@ describe('Schedule K section', () => {
     assert.equal(row.isOverride, true);
   });
 
+  test('a line the extraction did not read is NOT REPORTED and stays out of the total', () => {
+    const entry = taxYear(2024, { scheduleK: [['Other Credits', 100]] });
+    entry.data.push({
+      label: 'Nondeductible Expenses',
+      taxReturn: null,
+      isReconcilingItem: true,
+      source: { form: 'Schedule K', line: '16c', reported: false },
+    });
+    const sk = buildScheduleKSection({ taxReturn: resolveTaxReturnForYear({ 2024: entry }, 2024) });
+    const row = sk.items.find((i) => i.label === 'Nondeductible Expenses');
+    assert.equal(row.taxReturn, null, 'an unread line must never be published as 0');
+    assert.equal(row.reported, false);
+    assert.deepEqual(sk.notReported, ['Nondeductible Expenses']);
+    assert.equal(sk.total, 100, 'only reported items are totalled');
+  });
+
+  test('an unread line creates no M1 adjustment row claiming a zero', () => {
+    const entry = taxYear(2024);
+    entry.data.push({
+      label: 'Nondeductible Expenses',
+      taxReturn: null,
+      isReconcilingItem: true,
+      source: { form: 'Schedule K', line: '16c', reported: false },
+    });
+    const m1 = buildM1Adjustments({ taxReturn: resolveTaxReturnForYear({ 2024: entry }, 2024) });
+    assert.equal(m1.items.length, 0, 'no adjustment can be asserted from a line with no figure');
+    assert.equal(m1.total, 0);
+  });
+
+  test('Schedule M-1 supplies a Schedule K line the extraction left unread', () => {
+    // The traced 2023 return: Schedule K line 16c prints 912, arrived unread, and
+    // the same 912 was read from Schedule M-1 line 3. One figure, two addresses —
+    // so the printed one is used and the address it came from is recorded.
+    const entry = taxYear(2024, {
+      scheduleM1: { netIncomePerBooks: -391999, lines: [{ label: 'Nondeductible Expenses', amount: 912 }] },
+    });
+    entry.data.push({
+      label: 'Nondeductible expenses',
+      taxReturn: null,
+      isReconcilingItem: true,
+      source: { form: 'Schedule K', line: '16c', reported: false },
+    });
+    const sk = buildScheduleKSection({ taxReturn: resolveTaxReturnForYear({ 2024: entry }, 2024) });
+    const row = sk.items.find((i) => i.label === 'Nondeductible Expenses');
+    assert.equal(row.taxReturn, 912);
+    assert.equal(row.reported, true);
+    assert.match(row.sourceAddress, /Schedule M-1/);
+    assert.equal(sk.total, 912, 'the figure is counted once, not summed across the two schedules');
+  });
+
+  test('ordinary business income is shown from the line that prints it, and never totalled', () => {
+    const taxReturn = resolveTaxReturnForYear({
+      2024: taxYear(2024, { netIncome: -391087, scheduleK: [['Nondeductible Expenses', 912]] }),
+    }, 2024);
+    const sk = buildScheduleKSection({ taxReturn });
+    const obi = sk.items.find((i) => i.label === 'Ordinary Business Income (Loss)');
+    assert.equal(obi.taxReturn, -391087, 'Schedule K line 1 restates page 1 line 22');
+    assert.equal(obi.isBottomLine, true);
+    assert.match(obi.sourceAddress, /Schedule K line 1/);
+    assert.equal(sk.total, 912, 'the bottom line is a reference, not a reconciling item');
+  });
+
+  // A saved 0 on a line the return prints is residue from the era when an unread
+  // line was DISPLAYED as 0 and that 0 was persisted. On the export that produced
+  // these tests, "Nondeductible Expenses 0" and "Ordinary Business Income (loss)
+  // 0" were still shown, tagged "manual entry", beside the correctly-read −391,087
+  // — one report contradicting itself.
+  describe('a stale placeholder-zero override', () => {
+    const withOverride = (overrides) => buildScheduleKSection({
+      taxReturn: resolveTaxReturnForYear({
+        2024: taxYear(2024, { netIncome: -391087, scheduleK: [['Nondeductible Expenses', 912]] }),
+      }, 2024),
+      overrides,
+    });
+
+    test('does not mask a figure the return prints', () => {
+      const row = withOverride({ 'Nondeductible Expenses': { taxReturn: 0 } })
+        .items.find((i) => i.label === 'Nondeductible Expenses');
+      assert.equal(row.taxReturn, 912);
+      assert.equal(row.ignoredOverride, true);
+      assert.match(row.note, /delete the row/);
+    });
+
+    test('under any casing of the same line, which collapses to one row', () => {
+      const sk = withOverride({ 'Ordinary business income (loss)': { taxReturn: 0 } });
+      const rows = sk.items.filter((i) => /ordinary business income/i.test(i.label));
+      assert.equal(rows.length, 1, 'a casing variant must not render as a second row');
+      assert.equal(rows[0].taxReturn, -391087);
+      assert.equal(rows[0].label, 'Ordinary Business Income (Loss)');
+    });
+
+    test('but a typed figure, a user-added row and a deletion are all still honoured', () => {
+      assert.equal(
+        withOverride({ 'Nondeductible Expenses': { taxReturn: 999 } })
+          .items.find((i) => i.label === 'Nondeductible Expenses').taxReturn,
+        999,
+        'a non-zero override is the user\'s figure and wins',
+      );
+      assert.equal(
+        withOverride({ 'Client Line': { taxReturn: 0, userAdded: true } })
+          .items.find((i) => i.label === 'Client Line').taxReturn,
+        0,
+        'a row the user created may legitimately sit at 0',
+      );
+      assert.ok(
+        !withOverride({ 'Nondeductible Expenses': { deleted: true } })
+          .items.some((i) => i.label === 'Nondeductible Expenses'),
+        'removing the row is how a line is taken off the report',
+      );
+    });
+
+    test('and the same protection applies to the M1 adjustment it feeds', () => {
+      const taxReturn = resolveTaxReturnForYear({
+        2024: taxYear(2024, { scheduleK: [['Nondeductible Expenses', 912]] }),
+      }, 2024);
+      const stale = buildM1Adjustments({
+        taxReturn, overrides: { 'Nondeductible Expenses': { taxReturn: 0 } },
+      });
+      const row = stale.items.find((i) => i.category === 'Nondeductible Expenses');
+      assert.equal(row.taxReturn, 912);
+      assert.equal(row.adjustment, 912);
+      assert.equal(row.isOverride, false);
+      assert.equal(row.ignoredOverride, true);
+      assert.equal(stale.total, 912);
+    });
+  });
+
   test('a deleted row is removed and does not reappear on refresh', () => {
     const taxReturn = resolveTaxReturnForYear({
       2024: taxYear(2024, { scheduleK: [['Nondeductible Expenses', 10]] }),
@@ -978,11 +1266,18 @@ describe('end-to-end multi-year reconciliation', () => {
     ],
   });
 
-  // Return: page-1 depreciation 8,000 (2,000 more than books) and interest 1,000.
+  // Return: page-1 depreciation 8,000 (2,000 more than the books show) and
+  // interest 1,000 (the same as the books).
   // Schedule K: §179 3,000 (add), Interest Income 500 (subtract),
   // Nondeductible Expenses 250 (add), Distributions 10,000 (informational).
   // M1 total = 3,000 − 500 + 250 = 2,750.
-  // Other: depreciation residual 6,000 − 8,000 = −2,000; interest 1,000 − 1,000 = 0.
+  //
+  // Section 6 shows the 6,000-vs-8,000 depreciation difference and adjusts nothing
+  // for it: the return states its book income on Schedule M-1, and where tax
+  // depreciation genuinely differs from book depreciation the M-1 says so on its
+  // own depreciation lines (3a / 6a) and it reaches the chain through Section 2.
+  // Recomputing it in Section 6 would relieve the same amount twice — the defect
+  // that produced the client's unreconciled difference.
   const ret = (year) => taxYear(year, {
     totalRevenue: 100000, cogs: 40000, grossProfit: 60000,
     officerWages: 12000, depreciation: 8000, interestExpense: 1000,
@@ -993,8 +1288,8 @@ describe('end-to-end multi-year reconciliation', () => {
       ['Nondeductible Expenses', 250],
       ['Distributions', 10000],
     ],
-    // Books per the preparer: 21,500 − 2,000 (the depreciation residual) = 19,500.
-    scheduleM1: { netIncomePerBooks: 19500, lines: [] },
+    // The preparer's stated book income agrees with these books.
+    scheduleM1: { netIncomePerBooks: 21500, lines: [] },
     fileName: `FY${year}.pdf`,
   });
 
@@ -1060,17 +1355,22 @@ describe('end-to-end multi-year reconciliation', () => {
   });
 
   test('a year with both Balance Sheet periods reconciles to exactly 0.00', () => {
-    // Accrual books, accrual-basis return → no cash/accrual conversion, so the
-    // only book-basis difference is the depreciation residual of −2,000, which is
-    // exactly what the preparer's book income of 19,500 reflects.
+    // Accrual books, accrual-basis return → no cash/accrual conversion, and the
+    // preparer's stated book income agrees with the P&L, so there is no book-basis
+    // gap for Sections 5 and 6 to explain and both totals are 0.
     const y = run('Accrual').byYear[YEARS[0]];
     assert.equal(y.bookNetIncome, 21500);
-    assert.equal(y.other.total, -2000);
+    assert.equal(y.other.total, 0, 'the depreciation difference is shown, not adjusted');
+    assert.equal(
+      y.other.items.find((i) => i.label === 'Other Depreciation Variance').variance,
+      -2000,
+      'and the difference itself is still on the page',
+    );
     assert.equal(y.cashAccrual.total, 0);
-    assert.equal(y.m1VarianceCheck.variance, 2000);
-    assert.equal(y.m1VarianceCheck.residual, 0, 'the residual is fully explained by Other');
-    assert.equal(y.calculatedReconciledIncome, round2(21500 + 2750 + 0 - 2000));
-    assert.equal(y.expectedReconciledIncome, round2(19500 + 2750));
+    assert.equal(y.m1VarianceCheck.variance, 0);
+    assert.equal(y.m1VarianceCheck.residual, 0);
+    assert.equal(y.calculatedReconciledIncome, round2(21500 + 2750));
+    assert.equal(y.expectedReconciledIncome, round2(21500 + 2750));
     assert.equal(y.unreconciled, 0);
     assert.equal(y.reconciled, true);
     assert.equal(y.sdePct.status, 'ok');
@@ -1154,8 +1454,8 @@ describe('end-to-end multi-year reconciliation', () => {
     assert.equal(y.m1.items.find((i) => i.category === 'Nondeductible Expenses').isOverride, true);
     assert.ok(y.scheduleK.items.some((i) => i.label === 'Client Specific Line' && i.userAdded));
     // Both sides of the chain move together — see the next test.
-    assert.equal(y.calculatedReconciledIncome, round2(21500 + 3750 + 0 - 2000));
-    assert.equal(y.expectedReconciledIncome, round2(19500 + 3750));
+    assert.equal(y.calculatedReconciledIncome, round2(21500 + 3750));
+    assert.equal(y.expectedReconciledIncome, round2(21500 + 3750));
     // Other years are untouched.
     assert.equal(recon.byYear[YEARS[3]].m1.total, 2750);
   });

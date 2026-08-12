@@ -88,7 +88,23 @@ function _clearManualUploadProgress(companyId) {
 // default fallback order used when no override is configured.
 // "gemini-2.0-flash" removed — decommissioned (API returns 404), so as a fallback
 // it only converted transient failures into hard errors.
-const TAX_GEMINI_MODELS = getGeminiModels(["gemini-2.5-flash-lite", "gemini-2.5-flash"]);
+//
+// ── WHY TAX RETURNS GET A STRONGER MODEL THAN EVERY OTHER READER HERE ────────
+// flash-lite used to be FIRST. A filed return package is 100–200 pages and the task
+// is not "read a table" but "hold a form/schedule/line/column address space": page 1
+// line 22 vs line 21, Schedule K 16c vs 16d, Schedule M-1 vs Schedule M-2, federal
+// vs five state returns each repeating the same captions with different numbers.
+// flash-lite loses that structure and returns confidently mis-addressed figures — a
+// wrong number is far more expensive here than a slow one, because a CPA signs it.
+//
+// Ordering is accuracy-first with graceful degradation: the loop below advances to
+// the next model on a 404, so an unavailable tier costs one failed call, not an error.
+// Override per environment with GEMINI_MODELS (ordered list) or GEMINI_MODEL.
+const TAX_GEMINI_MODELS = getGeminiModels([
+  "gemini-2.5-pro",
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+]);
 const _taxExtractCache = new Map();
 const _taxExtractSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -123,9 +139,22 @@ PAGE 1 — INCOME & DEDUCTIONS (Form 1120-S):
                 Line 6 into "totalRevenue" — it goes in "totalIncome" only.
   Line 7   — Compensation of officers   → "officerWages"
   Line 13  — Interest                   → "interestExpense"
-  Line 14  — Depreciation               → "depreciation"
-  Line 19  — Other deductions           → "allOtherExpenses" (and check attached statement for amortization)
-  Line 21  — Ordinary business income   → "netIncome"
+  Line 14  — Depreciation from Form 4562 → "depreciation"
+  Line 20  — Other deductions           → "allOtherExpenses" (and check attached statement for amortization)
+  Line 21  — Total deductions           → "totalDeductions"
+  Line 22  — Ordinary business income (loss) → "netIncome"
+
+  ⚠️⚠️ MATCH THE PRINTED CAPTION, NOT THE LINE NUMBER. The IRS renumbered the
+     deductions block: the 2023 revision inserted line 19 "Energy efficient
+     commercial buildings deduction", pushing Other deductions 19→20, Total
+     deductions 20→21 and Ordinary business income 21→22. Older returns still use
+     the old numbers. So for these three fields find the row by its CAPTION:
+       "Other deductions"                  → "allOtherExpenses"
+       "Total deductions"                  → "totalDeductions"
+       "Ordinary business income (loss)"    → "netIncome"
+     NEVER put "Total deductions" into "netIncome" — it is a large POSITIVE number
+     (often 7–8 figures) and netIncome is the small bottom-line profit or loss.
+     NEVER put "Other deductions" into "totalDeductions".
 
 SCHEDULE K (Form 1120-S) — "Shareholders' Pro Rata Share Items", Lines 2 through 17:
   ⚠️ Schedule K SPANS TWO PAGES (typically page 3 for lines 1–14 and page 4 for
@@ -229,10 +258,16 @@ PAGE 1 — INCOME & DEDUCTIONS (Form 1065):
   Line 16c — Net depreciation (far-right column) → "depreciation"
              ⚠️ If the far-right column for Line 16c is blank or empty, enter 0.
              Do NOT substitute any value from Schedule K or Schedule K-1 for this field.
+  Line 7   — Other income (loss)        → "otherIncome"  (0 if blank)
+  Line 8   — Total income (loss)        → "totalIncome"
   Line 21  — Other deductions (NOT Line 22) → "allOtherExpenses"
              ⚠️ Use ONLY Line 21 "Other deductions". Do NOT use Line 22 "Total deductions".
              Line 22 is the sum of all deductions and will be much larger — ignore it.
+  Line 22  — Total deductions           → "totalDeductions"
   Line 23  — Ordinary business income (loss) → "netIncome"
+             ⚠️ Match these three by CAPTION, not line number — IRS line numbering
+                shifts between revisions. "Other deductions" ≠ "Total deductions" ≠
+                "Ordinary business income (loss)".
 
   "amortization":
     Look for a statement attached to Line 21 (may be labelled "Statement 1", "Statement 2", etc.)
@@ -300,11 +335,17 @@ PAGE 1 — INCOME & DEDUCTIONS (Form 1120):
   Line 1c  — Gross receipts balance     → "totalRevenue"
   Line 2   — Cost of goods sold         → "totalCostOfGoodsSold"
   Line 3   — Gross profit               → "grossProfit"
+  Line 9   — Net gain (loss) Form 4797  → "netGain4797" (0 if blank)
+  Line 10  — Other income               → "otherIncome"  (0 if blank)
+  Line 11  — Total income               → "totalIncome"
   Line 12  — Compensation of officers   → "officerWages"
   Line 17  — Interest                   → "interestExpense"
   Line 20  — Depreciation               → "depreciation"
   Line 26  — Other deductions           → "allOtherExpenses"
+  Line 27  — Total deductions           → "totalDeductions"
   Line 28  — Taxable income before NOL  → "netIncome"
+             ⚠️ Match "Other deductions", "Total deductions" and the bottom line by
+                CAPTION, not line number — IRS numbering shifts between revisions.
   reconcilingItems: [] (no Schedule K for C-Corp)
 
 ═══════════════════════════════════════════════════════
@@ -312,8 +353,21 @@ SCHEDULE M-1 — BOOK-TO-TAX RECONCILIATION (ALL FORMS)
 ═══════════════════════════════════════════════════════
 
 Schedule M-1 is titled "Reconciliation of Income (Loss) per Books With Income (Loss)
-per Return". On Form 1120-S and Form 1065 it sits on the LAST page, beside
-Schedule M-2. On Form 1120 it is Schedule M-1 on page 5/6.
+per Return". It sits beside Schedule M-2 on:
+  Form 1120-S — PAGE 5 of the form (footer reads "Form 1120-S (20xx)  … Page 5")
+  Form 1065   — PAGE 6 of the form (Schedule M-1 / M-2 / Analysis of Net Income)
+  Form 1120   — page 5/6 of the form
+
+⚠️⚠️ "PAGE 5 OF THE FORM" IS NOT "THE LAST PAGE OF THE PDF". A filed return package
+   routinely runs 100–200 pages: cover letters and tax summaries FIRST, then the
+   federal form, then Schedule K-1 for every owner, supporting statements,
+   depreciation schedules, and a full set of STATE returns — each with its own
+   Schedule M-1. Do NOT jump to the end of the PDF, and do NOT read a state
+   Schedule M-1 (California Form 100S, DC Schedule H-1, etc.) in place of the
+   FEDERAL one. Locate the page whose header reads "Form 1120-S (20xx)" (or
+   "Form 1065") and whose footer says Page 5, and read Schedule M-1 from THAT page.
+   State figures legitimately differ from federal — using one for the other is wrong
+   even though both look plausible.
 
 ⚠️ Some returns OMIT Schedule M-1 entirely (a small filer meeting the Schedule B
    total-receipts-and-assets test is not required to complete it). If the schedule
@@ -369,6 +423,22 @@ figure; a blank line is 0 and is omitted from "lines".
         Depreciation                             → "Tax Depreciation Not on Books"
         Charitable contributions                 → "Charitable Contributions"
 
+  ⚠️ "SEE STATEMENT n" SUB-LINES. An itemised M-1 sub-line is often printed as a
+     statement reference with its amount beside it, e.g.
+         b Travel and entertainment  $        50.
+           SEE STATEMENT 7                   862.        912.
+     Do NOT emit "SEE STATEMENT 7" as a label — it names nothing. Find the statement
+     with that number in the PDF (a page headed "FEDERAL STATEMENTS", "STATEMENT 7,
+     FORM 1120S, SCHEDULE M-1, LINE 3") and use ITS line-item description as the
+     label (here: "Penalties" = 862). If the statement cannot be located, omit the
+     sub-line rather than emitting a reference as a label — the section subtotal is
+     already captured.
+
+  ⚠️ A STATEMENT EXPLAINS ITS PARENT LINE; IT DOES NOT ADD TO IT. In the example
+     above the sub-lines 50 + 862 = 912 and 912 is the printed section total. Emit
+     the sub-lines only. Never emit both the sub-lines and the total, and never sum
+     them into 1,824.
+
   SIGN RULE: report every "lines" amount as the POSITIVE figure printed on the
   form. Do not apply the schedule's add/subtract direction yourself — the
   application applies it from each line's own label.
@@ -393,16 +463,26 @@ SELF-CHECK (mandatory before returning):
 After extracting all values, mentally verify these formulas:
   1) grossProfit  = totalRevenue - totalCostOfGoodsSold   (must match within $5)
   2) totalIncome  = grossProfit + netGain4797 + otherIncome   (must match within $5)
-  3) netIncome    = grossProfit - officerWages - depreciation - amortization
-                   - interestExpense - allOtherExpenses   (must match within $5)
+  3) netIncome    = totalIncome - totalDeductions   (must match within $5)
+       ⚠️ Formula 3 starts at TOTAL income, NOT gross profit. The form's own bottom
+          line is "total income − total deductions", and total income includes net
+          gain (line 4) and other income (line 5). Measuring from gross profit makes
+          other income look like an expense.
+       ⚠️ Do NOT force formula 3 to balance by ADJUSTING allOtherExpenses. Every
+          value in it is read from a printed line; if the formula fails, one of those
+          READINGS is wrong — re-read the page and fix the misread figure.
 If any formula fails, re-examine the relevant lines and correct the values.
 The most common mistakes:
   - Putting Line 6 "Total income" into totalRevenue. totalRevenue is ALWAYS Line 1c "Gross receipts
     or sales" — the smaller top-line figure BEFORE net gain and other income are added. Line 6 goes
     in totalIncome. (If formula 1 fails, LOWER totalRevenue to Line 1c — do NOT raise grossProfit.)
   - Using Line 1a (gross receipts) instead of Line 1c (balance after returns) for totalRevenue
-  - Reading the wrong line for netIncome (must be the "Ordinary business income" line, NOT taxable income)
+  - Reading the wrong line for netIncome: it is the "Ordinary business income (loss)" line — NOT
+    "Taxable income", and NOT the "Total deductions" line printed directly above it.
   - Omitting a deduction line or double-counting it in allOtherExpenses
+  - Netting other income (line 5) or net gain (line 4) into allOtherExpenses. Those are INCOME.
+    allOtherExpenses is the "Other deductions" line only; the application derives any residual
+    itself from totalDeductions.
 
 OUTPUT RULES:
 - Return ONLY a raw JSON object. No markdown, no backticks, no explanation.
@@ -428,6 +508,7 @@ JSON schema:
   "amortization": 0,
   "interestExpense": 0,
   "allOtherExpenses": 0,
+  "totalDeductions": 0,
   "netIncome": 0,
   "reconcilingItems": [],
   "scheduleM1": {
@@ -530,13 +611,33 @@ function canonicalizeReconcilingData(data) {
     if (!row || !row.isReconcilingItem) { out.push(row); continue; }
     const canon = canonicalizeReconLabel(row.label);
     if (!canon) continue; // dropped (e.g. Line 18 reconciliation)
+    const rowIsRead = row.taxReturn !== null && row.taxReturn !== undefined
+      && row.source?.reported !== false;
     const val = Number(row.taxReturn || 0);
     const rawKey = _normKey(row.label);
 
     if (idxByLabel.has(canon)) {
       const idx = idxByLabel.get(canon);
       const seenRaw = rawKeysByLabel.get(canon);
-      if (seenRaw.has(rawKey)) {
+      const heldIsRead = out[idx].taxReturn !== null && out[idx].taxReturn !== undefined;
+      // An UNREAD row (taxReturn null, source.reported false — see
+      // buildTaxReturnResponseData) is not a value: it can neither win a
+      // magnitude comparison nor be added to. Merging it as 0 would reinstate the
+      // "blank published as a printed zero" defect one layer up.
+      if (!rowIsRead) {
+        if (!seenRaw.has(rawKey)) {
+          seenRaw.add(rawKey);
+          out[idx].sourceLabels = [...(out[idx].sourceLabels || []), row.label];
+        }
+      } else if (!heldIsRead) {
+        // The category was only an unread line so far; adopt the real reading.
+        out[idx].taxReturn = val;
+        out[idx].source = { ...(out[idx].source || {}), reported: true };
+        if (!seenRaw.has(rawKey)) {
+          seenRaw.add(rawKey);
+          out[idx].sourceLabels = [...(out[idx].sourceLabels || []), row.label];
+        }
+      } else if (seenRaw.has(rawKey)) {
         // (a) same line re-emitted — keep the larger magnitude, never add.
         if (Math.abs(val) > Math.abs(Number(out[idx].taxReturn || 0))) out[idx].taxReturn = val;
       } else {
@@ -554,45 +655,232 @@ function canonicalizeReconcilingData(data) {
   return out;
 }
 
-function buildTaxReturnResponseData(tax) {
-  // For Form 1065 (Partnership): allOtherExpenses comes directly from Line 21
-  // "Other deductions" — it already excludes guaranteed payments, interest, etc.
-  // For 1120-S / 1120: derive it from gross profit minus known expense lines.
-  const isPartnership = String(tax.formType || "").includes("1065");
-  const allOtherExpenses = isPartnership
-    ? Number(tax.allOtherExpenses || 0)
-    : Number(tax.grossProfit || 0) -
-    Number(tax.officerWages || 0) -
-    Number(tax.depreciation || 0) -
-    Number(tax.amortization || 0) -
-    Number(tax.interestExpense || 0) -
-    Number(tax.netIncome || 0);
+/**
+ * The page-1 income base that a deduction residual must be measured against.
+ *
+ * ── WHY THIS EXISTS (a real, traced defect) ─────────────────────────────────
+ * The residual used to be measured from GROSS PROFIT alone. On Form 1120-S the
+ * bottom line is
+ *     Ordinary business income = TOTAL income (line 6) − total deductions (line 21)
+ * and line 6 = gross profit (line 3) + net gain (line 4) + OTHER income (line 5).
+ * Starting the residual at gross profit therefore silently pushed every dollar of
+ * lines 4 and 5 into "All Other Expenses" — booking INCOME as an EXPENSE.
+ *
+ * Observed on a real 2023 return: page 1 reported other income of 1,613 (a state tax
+ * refund, per the line-5 statement). The residual came out 8,907,339 while the
+ * return's own deduction lines sum to 8,908,952 (salaries 4,547,088 + taxes 393,034
+ * + benefits 410,456 + other deductions 3,558,374). The 1,613 gap was exactly the
+ * refund, reported as an expense, and nothing on screen said so.
+ */
+function taxIncomeBase(tax) {
+  const grossProfit = Number(tax.grossProfit || 0);
+  const netGain4797 = Number(tax.netGain4797 || 0);
+  const otherIncome = Number(tax.otherIncome || 0);
+  const totalIncome = Number(tax.totalIncome || 0);
+  const built = grossProfit + netGain4797 + otherIncome;
 
-  // Label officer wages as "Guaranteed Payments" for partnerships
+  // Prefer the PRINTED total-income line when it agrees with its components: that is
+  // the figure the form itself foots to. Fall back to the component sum when the
+  // total was not captured (older payloads; reconstructed cache rows).
+  if (totalIncome !== 0 && Math.abs(totalIncome - built) <= TAX_VALIDATE_TOLERANCE) {
+    return totalIncome;
+  }
+  return built || totalIncome;
+}
+
+/**
+ * The deductions NOT already shown on their own row: total deductions less officer
+ * compensation, depreciation, amortization and interest.
+ *
+ * ── WHY THIS IS ANCHORED ON THE PRINTED "TOTAL DEDUCTIONS" LINE ─────────────
+ * Page 1 itemises ~14 deduction lines; the app shows 4 of them. Something has to
+ * carry the rest (on the return above: salaries 4,547,088 + taxes 393,034 + benefits
+ * 410,456 + other deductions 3,558,374 = 8,908,952).
+ *
+ * There were two contradictory contracts for that figure. The prompt pointed
+ * `allOtherExpenses` at the single "Other deductions" line, while the validator's
+ * identity treated it as the whole remainder — so exactly one of them was always
+ * being lied to. Deriving from the PRINTED total deductions line settles it: every
+ * input is a figure read off the form, the arithmetic is ours, and a mis-scoped
+ * `allOtherExpenses` reading can no longer corrupt what the page shows.
+ *
+ * Falls back to the income-base residual for payloads extracted before
+ * `totalDeductions` was requested.
+ */
+function taxOtherDeductions(tax) {
+  const named =
+    Number(tax.officerWages || 0) +
+    Number(tax.depreciation || 0) +
+    Number(tax.amortization || 0) +
+    Number(tax.interestExpense || 0);
+
+  const totalDeductions = Number(tax.totalDeductions || 0);
+  if (totalDeductions !== 0) return totalDeductions - named;
+
+  // Legacy path: no printed total captured. Back it out of the bottom line instead.
+  return taxIncomeBase(tax) - named - Number(tax.netIncome || 0);
+}
+
+/**
+ * Which printed line of the FEDERAL return each page-1 row publishes.
+ *
+ * ── WHY AN EXPLICIT TABLE ───────────────────────────────────────────────────
+ * The Tax Return column is a claim about a specific line of a specific federal
+ * form. Two failures are only avoidable if that claim is written down:
+ *
+ *  1. Silent re-labelling. "Total Revenue" used to publish `totalRevenue`, which
+ *     the extractor defines as Line 1c GROSS RECEIPTS. On a return with other
+ *     income those differ: 1c = 9,020,165 but Line 6 total income = 9,021,778.
+ *     The row said "Total Revenue" and showed gross receipts, and nothing on
+ *     screen distinguished the two. Line 6 was extracted correctly all along
+ *     (`totalIncome`) — the row was simply reading the wrong field.
+ *  2. Passing arithmetic off as a reading. "All Other Expenses" is not a line on
+ *     any 1120-S; it is total deductions minus the four deductions shown on their
+ *     own rows. It is legitimate to display, but it must be labelled DERIVED so a
+ *     reviewer never goes looking for it on the form.
+ *
+ * `type: "direct"`   — the value is the figure printed on `form`/`line`.
+ * `type: "derived"`  — computed here from printed figures; `from` lists them.
+ * `reported: false`  — the extraction carried no value for this row, so the 0 is
+ *                      the display convention for "not reported", NOT a figure
+ *                      read off the return. Kept numeric because the
+ *                      reconciliation engine and the variance column are
+ *                      arithmetic; the distinction lives in the metadata.
+ *
+ * Federal only. Never populate these from a state return (this package carries
+ * AZ 120S, CA 100S, DC D-20, IL-1120-ST, MN M8, OH IT 1140/4708 and TX 05-169,
+ * several of which restate the same captions with different numbers — CA reports
+ * -391,960 and DC -391,100 where the federal bottom line is -391,087).
+ */
+function taxPage1Rows(tax) {
+  const isPartnership = String(tax.formType || "").includes("1065");
+  const is1120 = /^1120$/.test(String(tax.formType || "").trim());
+
+  // Line numbers differ per form. Captions do not.
+  const L = isPartnership
+    ? { form: "Form 1065", cogs: "2", gp: "3", comp: "10", dep: "16a", amort: "21", int: "15", ti: "8", td: "22", obi: "23" }
+    : is1120
+      ? { form: "Form 1120", cogs: "2", gp: "3", comp: "12", dep: "20", amort: "20", int: "18", ti: "11", td: "27", obi: "28" }
+      : { form: "Form 1120-S", cogs: "2", gp: "3", comp: "7", dep: "14", amort: "20", int: "13", ti: "6", td: "21", obi: "22" };
+
   const officerWagesLabel = isPartnership ? "Guaranteed Payments" : "Officer Wages";
 
-  const page1 = {
-    "Total Revenue": tax.totalRevenue,
-    "Total Cost of Goods Sold": tax.totalCostOfGoodsSold,
-    "Gross Profit": tax.grossProfit,
-    [officerWagesLabel]: tax.officerWages,
-    "Depreciation Expense": tax.depreciation,
-    "Amortization Expense": tax.amortization,
-    "Total Interest Expense": tax.interestExpense,
-    "All Other Expenses": allOtherExpenses,
-    "Net Income": tax.netIncome,
-  };
+  // Form 1065 without a captured printed total: allOtherExpenses is "Other
+  // deductions" verbatim, which already excludes guaranteed payments and interest.
+  // Every other case derives the remainder — see taxOtherDeductions.
+  const legacyPartnershipOther = isPartnership && !Number(tax.totalDeductions || 0);
 
-  const data = Object.entries(page1).map(([label, value]) => ({
-    label,
-    taxReturn: Number(value || 0),
+  const has = (v) => v !== null && v !== undefined && v !== "";
+
+  return [
+    // Line 6 TOTAL income, not Line 1c gross receipts. See the header above.
+    { label: "Total Revenue", value: taxIncomeBase(tax),
+      form: L.form, line: L.ti, caption: "Total income (loss)",
+      type: "direct", reported: has(tax.totalIncome) },
+    { label: "Total Cost of Goods Sold", value: tax.totalCostOfGoodsSold,
+      form: L.form, line: L.cogs, caption: "Cost of goods sold",
+      type: "direct", reported: has(tax.totalCostOfGoodsSold) },
+    { label: "Gross Profit", value: tax.grossProfit,
+      form: L.form, line: L.gp, caption: "Gross profit",
+      type: "direct", reported: has(tax.grossProfit) },
+    { label: officerWagesLabel, value: tax.officerWages,
+      form: L.form, line: L.comp,
+      caption: isPartnership ? "Guaranteed payments to partners" : "Compensation of officers",
+      type: "direct", reported: has(tax.officerWages) },
+    { label: "Depreciation Expense", value: tax.depreciation,
+      form: L.form, line: L.dep, caption: "Depreciation",
+      type: "direct", reported: has(tax.depreciation) },
+    { label: "Amortization Expense", value: tax.amortization,
+      form: L.form, line: L.amort, caption: "Amortization (from the Other deductions statement)",
+      type: "direct", reported: has(tax.amortization) },
+    { label: "Total Interest Expense", value: tax.interestExpense,
+      form: L.form, line: L.int, caption: "Interest",
+      type: "direct", reported: has(tax.interestExpense) },
+    // NOT a printed line — see the header above.
+    { label: "All Other Expenses",
+      value: legacyPartnershipOther ? Number(tax.allOtherExpenses || 0) : taxOtherDeductions(tax),
+      form: L.form, line: legacyPartnershipOther ? "21" : L.td,
+      caption: legacyPartnershipOther
+        ? "Other deductions"
+        : "Total deductions less the deductions shown on their own rows",
+      type: legacyPartnershipOther ? "direct" : "derived",
+      from: legacyPartnershipOther ? undefined
+        : ["totalDeductions", "officerWages", "depreciation", "amortization", "interestExpense"],
+      reported: legacyPartnershipOther ? has(tax.allOtherExpenses) : has(tax.totalDeductions) },
+    // Page-1 income that is NOT gross receipts: net gain on asset sales plus other
+    // income. Its own row so it can be compared against the P&L's "All Other
+    // Income" instead of disappearing into the expense residual.
+    { label: "All Other Income",
+      value: Number(tax.netGain4797 || 0) + Number(tax.otherIncome || 0),
+      form: L.form, line: isPartnership ? "7" : is1120 ? "9 + 10" : "4 + 5",
+      caption: "Net gain (Form 4797) plus Other income",
+      type: "derived", from: ["netGain4797", "otherIncome"],
+      reported: has(tax.netGain4797) || has(tax.otherIncome) },
+    // Ordinary business income (loss). NOT Schedule M-1 line 1 net income per
+    // books — those are different figures (-391,087 vs -391,999 on the return
+    // above) and merging them destroys the whole point of the M-1 reconciliation.
+    { label: "Net Income", value: tax.netIncome,
+      form: L.form, line: L.obi, caption: "Ordinary business income (loss)",
+      type: "direct", reported: has(tax.netIncome) },
+  ];
+}
+
+function buildTaxReturnResponseData(tax) {
+  const data = taxPage1Rows(tax).map((row) => ({
+    label: row.label,
+    taxReturn: Number(row.value || 0),
     isReconcilingItem: false,
+    source: {
+      document: "federal",
+      form: row.form,
+      line: row.line,
+      caption: row.caption,
+      type: row.type,
+      ...(row.from ? { from: row.from } : {}),
+      reported: row.reported !== false,
+    },
   }));
 
+  // Schedule K items (nondeductible expenses 16c, distributions 16d, …). These are
+  // read off the FEDERAL Schedule K / M-2, never off a state K-1 — the Illinois
+  // K-1-P and Minnesota KS restate per-shareholder shares of the same captions.
+  //
+  // ── A LINE THE EXTRACTION DID NOT READ IS NOT A ZERO ────────────────────────
+  // This used to publish `Number(item.value || 0)` behind an `item.value !== 0`
+  // filter, so a printed 0 was dropped as noise but a NULL (line present in the
+  // model's output, no value read) sailed through as a hard 0 — published with
+  // `reported: true`, i.e. as a figure claimed to be printed on the form.
+  //
+  // Traced on a real 2023 1120-S: Schedule K line 16c prints 912 and line 1 prints
+  // −391,087; both arrived null and were published as 0. Tax Reconciliation showed
+  // "Nondeductible Expenses 0" under Tax Return while the same 912 was visible two
+  // sections higher from Schedule M-1 — a self-contradicting report, and one no
+  // consumer could detect, because a 0 that means "unread" is indistinguishable
+  // from a 0 the preparer asserted.
+  //
+  // So an unread line is published with `taxReturn: null, reported: false` and
+  // renders as "Not Reported". It is kept rather than dropped precisely so the
+  // reviewer sees the line the return has and can see it was not read.
   (Array.isArray(tax.reconcilingItems) ? tax.reconcilingItems : []).forEach((item) => {
-    if (item.label && item.value !== 0) {
-      data.push({ label: item.label, taxReturn: Number(item.value || 0), isReconcilingItem: true });
-    }
+    if (!item?.label) return;
+    const raw = item.value;
+    const unread = raw === null || raw === undefined || raw === "";
+    const value = unread ? null : Number(raw);
+    // A printed 0 carries no adjustment and no information a reviewer can act on,
+    // so it stays out of the table — unchanged, long-standing behaviour.
+    if (!unread && (!Number.isFinite(value) || value === 0)) return;
+    data.push({
+      label: item.label,
+      taxReturn: value,
+      isReconcilingItem: true,
+      source: {
+        document: "federal",
+        form: "Schedule K",
+        caption: item.label,
+        type: "direct",
+        reported: !unread,
+      },
+    });
   });
 
   // Canonicalize + de-dup Schedule K reconciling items and drop non-items (Line 18).
@@ -740,7 +1028,8 @@ async function extractTaxDataFromBuffer(pdfBuffer, cacheKey, { mimeType = TAX_DO
           const parsed = JSON.parse(text);
           ["year", "totalRevenue", "totalCostOfGoodsSold", "grossProfit", "netGain4797",
             "otherIncome", "totalIncome", "officerWages",
-            "depreciation", "amortization", "interestExpense", "allOtherExpenses", "netIncome"]
+            "depreciation", "amortization", "interestExpense", "allOtherExpenses",
+            "totalDeductions", "netIncome"]
             .forEach((f) => { parsed[f] = Number(parsed[f]) || 0; });
           if (!parsed.formType) parsed.formType = "1120-S";
           if (!Array.isArray(parsed.reconcilingItems)) parsed.reconcilingItems = [];
@@ -801,26 +1090,73 @@ function validateTaxExtraction(extracted) {
   if (year < 2010 || year > 2030) {
     issues.push(`Tax year out of expected range: ${year}`);
   }
-  if (rev <= 0) {
-    issues.push(`Total Revenue is zero or negative: ${rev}`);
+
+  // Gross receipts is checkable only when it was actually captured. It is absent on
+  // the reconstruction path (the published rows carry TOTAL income, not gross
+  // receipts — see taxPage1Rows), and an absent figure must not be treated as a
+  // reported zero: doing so produced a "Gross Profit mismatch" against a number the
+  // validator had invented, and pushed a correctly-read return to Needs Review.
+  const grossReceiptsKnown =
+    extracted.totalRevenue !== null && extracted.totalRevenue !== undefined;
+
+  if (grossReceiptsKnown) {
+    if (rev <= 0) {
+      issues.push(`Total Revenue is zero or negative: ${rev}`);
+    }
+    // Formula 1: grossProfit = grossReceipts (Line 1c) - totalCostOfGoodsSold
+    const expectedGP = rev - cogs;
+    if (Math.abs(gp - expectedGP) > TAX_VALIDATE_TOLERANCE) {
+      issues.push(
+        `Gross Profit mismatch: extracted ${gp}, expected ${expectedGP} (revenue ${rev} - COGS ${cogs})`
+      );
+    }
+  } else if (gp <= 0 && totalInc <= 0) {
+    issues.push(`No income figure available: gross profit ${gp}, total income ${totalInc}`);
   }
 
-  // Formula 1: grossProfit = totalRevenue - totalCostOfGoodsSold
-  const expectedGP = rev - cogs;
-  if (Math.abs(gp - expectedGP) > TAX_VALIDATE_TOLERANCE) {
-    issues.push(
-      `Gross Profit mismatch: extracted ${gp}, expected ${expectedGP} (revenue ${rev} - COGS ${cogs})`
-    );
-  }
+  // Formula 2: netIncome = TOTAL income - all deductions
+  //
+  // ⚠️ This identity starts at TOTAL income (line 6 / line 8 / line 11), NOT gross
+  // profit. It previously started at gross profit, which made the check WRONG in the
+  // most damaging possible way: the only value of allOtherExpenses that could satisfy
+  // it was one with net gain (line 4) and other income (line 5) already subtracted —
+  // i.e. income misreported as expense. A correctly-read return then FAILED this
+  // check and was sent to the corrective second pass, which "fixed" the right answer
+  // into the wrong one. Proven on a real 2023 return whose 1,613 state tax refund was
+  // the entire discrepancy. Keep the base as total income; see taxIncomeBase.
+  const incomeBase = taxIncomeBase(extracted);
+  const totalDed = Number(extracted.totalDeductions || 0);
 
-  // Formula 2: netIncome = grossProfit - all deductions
-  // Uses the raw AI-extracted allOtherExpenses (before buildTaxReturnResponseData derives it for corps)
-  const expectedNet = gp - wages - dep - amor - interest - other;
-  if (Math.abs(netInc - expectedNet) > TAX_VALIDATE_TOLERANCE) {
-    issues.push(
-      `Net Income mismatch: extracted ${netInc}, expected ${expectedNet} ` +
-      `(GP ${gp} - wages ${wages} - dep ${dep} - amor ${amor} - interest ${interest} - other ${other})`
-    );
+  if (totalDed !== 0) {
+    // Preferred: both sides are printed totals, so this checks two readings against
+    // the bottom line without depending on how allOtherExpenses was scoped.
+    const expectedNet = incomeBase - totalDed;
+    if (Math.abs(netInc - expectedNet) > TAX_VALIDATE_TOLERANCE) {
+      issues.push(
+        `Net Income mismatch: extracted ${netInc}, expected ${expectedNet} ` +
+        `(total income ${incomeBase} - total deductions ${totalDed})`
+      );
+    }
+    // The separately-reported lines are a SUBSET of total deductions. If they exceed
+    // it, one of them was misread — commonly "Total deductions" landing in a component
+    // field, or a component picked up from the wrong column.
+    const named = wages + dep + amor + interest;
+    if (named - totalDed > TAX_VALIDATE_TOLERANCE) {
+      issues.push(
+        `Deduction components (${named}) exceed total deductions (${totalDed}): ` +
+        `wages ${wages}, dep ${dep}, amor ${amor}, interest ${interest}`
+      );
+    }
+  } else {
+    // Legacy: no printed total captured, so allOtherExpenses must carry the remainder.
+    const expectedNet = incomeBase - wages - dep - amor - interest - other;
+    if (Math.abs(netInc - expectedNet) > TAX_VALIDATE_TOLERANCE) {
+      issues.push(
+        `Net Income mismatch: extracted ${netInc}, expected ${expectedNet} ` +
+        `(total income ${incomeBase} - wages ${wages} - dep ${dep} - amor ${amor} ` +
+        `- interest ${interest} - other ${other})`
+      );
+    }
   }
 
   // Guard the #1 extraction error: totalRevenue must be gross receipts (Line 1c),
@@ -864,6 +1200,7 @@ PREVIOUSLY EXTRACTED (INCORRECT) VALUES:
   amortization:         ${extracted.amortization}
   interestExpense:      ${extracted.interestExpense}
   allOtherExpenses:     ${extracted.allOtherExpenses}
+  totalDeductions:      ${extracted.totalDeductions}
   netIncome:            ${extracted.netIncome}
 
 FAILED CHECKS:
@@ -871,8 +1208,14 @@ ${issues.map((i) => `  • ${i}`).join("\n")}
 
 REQUIRED FORMULAS (must hold within $5):
   grossProfit = totalRevenue - totalCostOfGoodsSold   (totalRevenue = Line 1c gross receipts ONLY)
-  totalIncome = grossProfit + netGain4797 + otherIncome   (Line 6 / Line 8 — NOT totalRevenue)
-  netIncome   = grossProfit - officerWages - depreciation - amortization - interestExpense - allOtherExpenses
+  totalIncome = grossProfit + netGain4797 + otherIncome   (Line 6 / Line 8 / Line 11 — NOT totalRevenue)
+  netIncome   = totalIncome - totalDeductions
+  ⚠️ The last formula starts at TOTAL income, not gross profit: the form's bottom line is
+     "total income − total deductions", and total income includes net gain and other income.
+  ⚠️ NEVER satisfy a formula by adjusting allOtherExpenses. Every field is a PRINTED line; a
+     failing formula means a MISREAD line. Re-read the page and correct the misread figure.
+     In particular do NOT subtract other income (Line 5 / Line 7 / Line 10) from allOtherExpenses
+     to make the arithmetic close — that reports income as expense.
 
 INSTRUCTIONS:
 1. Go back to the specific form lines mentioned in each failed check.
@@ -884,8 +1227,13 @@ INSTRUCTIONS:
      match a Line-6 revenue. grossProfit must equal Line 3 exactly as printed, and totalRevenue must
      exclude net gain (Line 4) and other income (Line 5 / Line 7).
    • Line 1a vs Line 1c confusion for totalRevenue (always use the "Balance" column, Line 1c)
-   • Wrong line for netIncome (use "Ordinary business income", NOT "Taxable income")
-   • allOtherExpenses over/under-counted — verify against Line 19 (1120-S), Line 21 (1065), or Line 26 (1120)
+   • netIncome taken from the "Total deductions" row printed directly ABOVE the bottom line. Match
+     the CAPTION "Ordinary business income (loss)" — the IRS renumbered this block (2023 shifted
+     1120-S Other deductions 19→20, Total deductions 20→21, Ordinary business income 21→22), so a
+     remembered line number is unreliable. netIncome is the small profit/loss, never the large
+     total-deductions figure. And it is NOT "Taxable income".
+   • allOtherExpenses over/under-counted — it is the "Other deductions" CAPTION only, and must
+     exclude officer compensation, interest, depreciation and amortization.
    • A deduction line misread (e.g. depreciation split across two sub-lines)
 4. After correcting, verify the formulas hold before responding.
 
@@ -904,6 +1252,7 @@ Return ONLY a raw JSON object in the exact same schema. No markdown, no explanat
   "amortization": 0,
   "interestExpense": 0,
   "allOtherExpenses": 0,
+  "totalDeductions": 0,
   "netIncome": 0,
   "reconcilingItems": []
 }`;
@@ -943,7 +1292,8 @@ async function extractTaxDataWithVerification(pdfBuffer, cacheKey, { mimeType = 
 
       ["year","totalRevenue","totalCostOfGoodsSold","grossProfit","netGain4797",
        "otherIncome","totalIncome","officerWages",
-       "depreciation","amortization","interestExpense","allOtherExpenses","netIncome"]
+       "depreciation","amortization","interestExpense","allOtherExpenses",
+       "totalDeductions","netIncome"]
         .forEach((f) => { corrected[f] = Number(corrected[f]) || 0; });
       if (!corrected.formType) corrected.formType = extracted.formType || "1120-S";
       if (!Array.isArray(corrected.reconcilingItems)) corrected.reconcilingItems = extracted.reconcilingItems || [];

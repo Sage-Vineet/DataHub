@@ -116,6 +116,17 @@ function formatAmount(value, { blankWhenNull = true, zeroAsZero = false, decimal
 const formatCheck = (value) =>
   formatAmount(value, { zeroAsZero: true, decimals: 2 });
 
+/**
+ * What a Tax Return cell says when the return does not state the line.
+ *
+ * It is deliberately words, not a number and not an em dash: on the traced 2023
+ * return, Schedule L line 2a (accounts receivable) and Schedule K line 16c were
+ * both blank/unread and were rendered as figures — 227,670 borrowed from the book
+ * Balance Sheet, and 0 for a line that prints 912. "Not Reported" is the only
+ * rendering of a blank return line that a reviewer cannot mistake for a reading.
+ */
+const NOT_REPORTED = "Not Reported";
+
 function getVarianceClass(value) {
   const n = Number(value || 0);
   if (!n) return "text-text-primary";
@@ -923,6 +934,19 @@ export default function WorkspaceTaxReconciliation() {
     }
     rows.push(header1, header2);
 
+    // ── PER-SECTION COLUMN CAPTIONS ────────────────────────────────────────
+    // Only sections 1, 2 and 6 actually hold (P&L | Tax Return | Variance). The
+    // others reuse the same three slots for entirely different quantities, and
+    // labelling them with the global header made correct values read as fabricated
+    // tax-return figures. Observed on a real export: Accounts Receivable showed
+    // "218,298 | 227,670" under P&L/Tax Return, and 227,670 was read as a claimed
+    // Schedule L line 2a — which is BLANK on that return. It is in fact the ENDING
+    // BALANCE SHEET, correctly sourced; only the header was wrong. Likewise
+    // Section 4's 9,372 is a computed cross-source variance, not a return figure.
+    // Emitting the real captions per section is the fix; the values were right.
+    const sectionHeader = (captions) =>
+      push("", activeYears.flatMap(() => captions));
+
     push(`SECTION 1 — ${SECTIONS[0].title}`, perYear(() => ["", "", ""]));
     for (const item of yearOf(activeYears[0])?.statementRows || []) {
       push(item.label, perYear((y) => {
@@ -944,11 +968,25 @@ export default function WorkspaceTaxReconciliation() {
     }
     push("Total M1 Adjustments", perYear((y) => ["", "", y?.m1?.total ?? ""]));
 
-    push(`SECTION 3 — ${SECTIONS[2].title}`, perYear((y) => ["", y?.reportedM1BookNetIncome ?? "", ""]));
-    push(`SECTION 4 — ${SECTIONS[3].title}`,
+    // Section 3 reports one figure — Schedule M-1 line 1 net income per books. It is
+    // NOT the page-1 ordinary business income on the Net Income row above; on the
+    // return this was traced against, those are -391,999 and -391,087 and their
+    // difference IS the M-1 adjustment.
+    push(`SECTION 3 — ${SECTIONS[2].title}`, perYear(() => ["", "", ""]));
+    sectionHeader(["", "Schedule M-1 line 1 (per books)", ""]);
+    push("Reported M1 Book Net Income", perYear((y) => ["", y?.reportedM1BookNetIncome ?? "", ""]));
+
+    // Section 4 is entirely CALCULATED — it compares the book income the P&L shows
+    // against the book income the M-1 reports. Neither column is a tax-return line.
+    push(`SECTION 4 — ${SECTIONS[3].title}`, perYear(() => ["", "", ""]));
+    sectionHeader(["", "Variance (calculated)", "Residual (calculated)"]);
+    push("M1 Variance Check",
       perYear((y) => ["", y?.m1VarianceCheck?.variance ?? "", y?.m1VarianceCheck?.residual ?? ""]));
 
+    // Section 5 columns are BALANCE SHEET balances and the resulting adjustment.
+    // Nothing in this first block comes from the tax return.
     push(`SECTION 5 — ${SECTIONS[4].title}`, perYear(() => ["", "", ""]));
+    sectionHeader(["Beginning Balance Sheet", "Ending Balance Sheet", "Adjustment (calculated)"]);
     for (const item of yearOf(activeYears[0])?.cashAccrual?.items || []) {
       push(item.label, perYear((y) => {
         const row = y?.cashAccrual?.items?.find((i) => i.label === item.label);
@@ -957,29 +995,75 @@ export default function WorkspaceTaxReconciliation() {
     }
     push("Total Cash/Accrual Adjustments", perYear((y) => ["", "", y?.cashAccrual?.total ?? ""]));
 
+    // What the RETURN reports for the same three captions — Schedule L only. On a
+    // cash-basis return these lines are blank, and that is the fact this block
+    // states. It is emitted so the balances above can never be mistaken for the
+    // return's figures again: the book Balance Sheet and Schedule L are two
+    // different documents, and only one of them is the tax return.
+    sectionHeader(["Schedule L (beginning)", "Schedule L (ending)", ""]);
+    for (const item of yearOf(activeYears[0])?.cashAccrual?.items || []) {
+      push(
+        `${item.label} — per tax return${item.scheduleLLine ? ` (Schedule L line ${item.scheduleLLine})` : ""}`,
+        perYear((y) => {
+          const row = y?.cashAccrual?.items?.find((i) => i.label === item.label);
+          if (!row?.taxReturnReported) return [NOT_REPORTED, NOT_REPORTED, ""];
+          return [row.taxReturnBeginning ?? NOT_REPORTED, row.taxReturnEnding ?? NOT_REPORTED, ""];
+        }),
+      );
+    }
+
+    // Section 6 rows are named "… Variance" but their first two columns are the two
+    // SOURCE figures being compared; only the third is the adjustment. The tax-return
+    // column here is a real federal figure (e.g. interest expense 240,911) — it is
+    // not a line called "Other Interest Variance".
+    //
+    // The two variance rows are DISPLAY rows: their adjustment is 0 unless a user
+    // overrides it, because the difference they show is a presentation difference
+    // that both book and tax income are already net of. Adding it produced an
+    // unreconciled −240,911 on the traced return. See buildOtherAdjustments.
     push(`SECTION 6 — ${SECTIONS[5].title}`, perYear(() => ["", "", ""]));
+    sectionHeader(["P&L", "Tax Return", "Adjustment (calculated)"]);
     for (const item of yearOf(activeYears[0])?.other?.items || []) {
       push(item.label, perYear((y) => {
         const row = y?.other?.items?.find((i) => i.label === item.label);
-        return [row?.pl ?? "", row?.taxReturn ?? "", row?.adjustment ?? ""];
+        if (!row) return ["", "", ""];
+        const taxCell = row.taxReturn == null
+          ? (row.taxReturnReported === false ? NOT_REPORTED : "")
+          : row.taxReturn;
+        return [row.pl ?? "", taxCell, row.adjustment ?? ""];
       }));
     }
     push("Total Other Adjustments", perYear((y) => ["", "", y?.other?.total ?? ""]));
 
+    // Sections 7 and 8 are calculated. "Expected Reconciled Income" is the only
+    // figure here traceable to the return (Schedule K ordinary business income);
+    // everything else is this engine's arithmetic.
     push(`SECTION 7 — ${SECTIONS[6].title}`, perYear(() => ["", "", ""]));
+    sectionHeader(["", "Amount (calculated)", ""]);
     push("Calculated Reconciled Income", perYear((y) => ["", y?.calculatedReconciledIncome ?? "", ""]));
     push("Expected Reconciled Income", perYear((y) => ["", y?.expectedReconciledIncome ?? "", ""]));
     push("Unreconciled Difference", perYear((y) => ["", y?.unreconciled ?? "", ""]));
 
     push(`SECTION 8 — ${SECTIONS[7].title}`, perYear(() => ["", "", ""]));
+    sectionHeader(["Amount (calculated)", "", ""]);
     push("SDE", perYear((y) => [y?.sde ?? "", "", ""]));
     push("Unreconciled % of SDE", perYear((y) => [y?.sdePct?.display ?? "n/a", "", ""]));
 
+    // Section 9 is federal Schedule K / M-1 only. A line the extraction did not
+    // read is exported as "Not Reported" — never as 0, which is what made
+    // "Nondeductible Expenses 0" sit two sections below the same figure of 912
+    // read from Schedule M-1 on the traced return.
     push(`SECTION 9 — ${SECTIONS[8].title}`, perYear(() => ["", "", ""]));
+    sectionHeader(["", "Tax Return (as filed)", "Printed at"]);
     for (const label of scheduleKRows) {
       push(label, perYear((y) => {
         const item = y?.scheduleK?.items?.find((i) => i.label === label);
-        return ["", item?.taxReturn ?? "", ""];
+        if (!item) return ["", "", ""];
+        return [
+          "",
+          item.reported === false ? NOT_REPORTED : (item.taxReturn ?? NOT_REPORTED),
+          item.isOverride ? "manual entry" : (item.sourceAddress || ""),
+        ];
       }));
     }
 
@@ -1593,11 +1677,28 @@ export default function WorkspaceTaxReconciliation() {
                     cells={(year, y) => {
                       const row = y?.statementRows?.find((r) => r.key === template.key);
                       if (!row) return [blank, blank, blank];
+                      // The publisher marks a page-1 line it could not read on the
+                      // form (`reported: false`) and carries a display 0 so the
+                      // variance column stays arithmetic. The tooltip says so — a 0
+                      // for a blank line must not read as a figure off the return.
+                      const src = row.taxReturnSource;
+                      const provenance = src
+                        ? `${src.form || "federal return"}${src.line ? ` line ${src.line}` : ""}` +
+                          `${src.caption ? ` — ${src.caption}` : ""}` +
+                          `${src.type === "derived" ? "\nDerived from printed figures, not a line on the form." : ""}` +
+                          `${row.taxReturnReported === false ? `\n${NOT_REPORTED} on the return; shown as 0 so the variance stays computable.` : ""}`
+                        : undefined;
                       return [
                         { value: row.pl, tone: "text-text-secondary" },
                         row.taxReturn == null
                           ? { text: "—", tone: "text-text-muted", hint: y?.taxReturn?.reason || undefined }
-                          : { value: row.taxReturn, tone: row.taxReturn ? "bg-primary/5 text-primary" : "text-text-secondary" },
+                          : {
+                            value: row.taxReturn,
+                            tone: row.taxReturnReported === false
+                              ? "text-text-muted"
+                              : (row.taxReturn ? "bg-primary/5 text-primary" : "text-text-secondary"),
+                            hint: provenance,
+                          },
                         row.variance == null ? blank : { value: row.variance, tone: getVarianceClass(row.variance) },
                       ];
                     }}
@@ -1704,6 +1805,7 @@ export default function WorkspaceTaxReconciliation() {
 
                 {/* ══ SECTION 3 — Reported M1 Book Net Income ══ */}
                 <SectionRow section={SECTIONS[2]} note="Schedule M-1 line 1 — “Net income (loss) per books”, as filed." />
+                <CaptionRow captions={["", "Schedule M-1 line 1", ""]} />
                 <DataRow
                   label="Reported M1 Book Net Income"
                   bold
@@ -1718,6 +1820,7 @@ export default function WorkspaceTaxReconciliation() {
 
                 {/* ══ SECTION 4 — M1 Variance Check ══ */}
                 <SectionRow section={SECTIONS[3]} note="Book Net Income vs the return's reported book income — the gap Sections 5 and 6 must explain." />
+                <CaptionRow captions={["P&L", "Calculated", ""]} />
                 <DataRow
                   label="Book Net Income (per P&L)"
                   cells={(year, y) => [{ value: y?.bookNetIncome, text: formatCheck(y?.bookNetIncome ?? 0), tone: "text-text-secondary" }, blank, blank]}
@@ -1756,9 +1859,10 @@ export default function WorkspaceTaxReconciliation() {
                   section={SECTIONS[4]}
                   note={
                     `Beginning = prior fiscal period Balance Sheet · Ending = current fiscal period · Change = Ending − Beginning. ` +
-                    `Columns show Beginning, Ending, Adjustment.`
+                    `These are BOOK balances; what the return reports for the same captions is shown below them.`
                   }
                 />
+                <CaptionRow captions={["Beginning Balance Sheet", "Ending Balance Sheet", "Adjustment (calculated)"]} />
                 {(firstYearData?.cashAccrual?.items || []).map((template) => (
                   <DataRow
                     key={template.label}
@@ -1797,12 +1901,48 @@ export default function WorkspaceTaxReconciliation() {
                     { value: y?.cashAccrual?.total, text: formatCheck(y?.cashAccrual?.total ?? 0), tone: getVarianceClass(y?.cashAccrual?.total) },
                   ]}
                 />
+                {/* What the RETURN reports for the same captions — Schedule L, and
+                    nothing else. A cash-basis return leaves these blank, and that
+                    is stated rather than filled from the Balance Sheet above. */}
+                <CaptionRow captions={["Schedule L (beginning)", "Schedule L (ending)", ""]} />
+                {(firstYearData?.cashAccrual?.items || []).map((template) => (
+                  <DataRow
+                    key={`sl-${template.label}`}
+                    label={
+                      `${template.label} — per tax return` +
+                      (template.scheduleLLine ? ` (Schedule L line ${template.scheduleLLine})` : "")
+                    }
+                    indent={2}
+                    title={
+                      "Read from the return's own balance sheet only. The Beginning/Ending figures above " +
+                      "are the company's Balance Sheet — a different document — and are never presented here."
+                    }
+                    cells={(year, y) => {
+                      const row = y?.cashAccrual?.items?.find((i) => i.label === template.label);
+                      if (!row) return [blank, blank, blank];
+                      const cell = (value) => (
+                        value == null
+                          ? { text: NOT_REPORTED, tone: "text-amber-700 text-[11px]", hint: row.taxReturnReason }
+                          : { value, tone: "bg-primary/5 text-primary" }
+                      );
+                      return [
+                        cell(row.taxReturnReported ? row.taxReturnBeginning : null),
+                        cell(row.taxReturnReported ? row.taxReturnEnding : null),
+                        blank,
+                      ];
+                    }}
+                  />
+                ))}
 
                 {/* ══ SECTION 6 — Other Adjustments ══ */}
                 <SectionRow
                   section={SECTIONS[5]}
-                  note="Genuine residuals only. Nothing is ever computed into “Other” to make the report balance."
+                  note={
+                    "The two variance rows COMPARE book and page-1 figures; they contribute nothing " +
+                    "unless you override them. Nothing is ever computed into “Other” to make the report balance."
+                  }
                 />
+                <CaptionRow captions={["P&L", "Tax Return", "Adjustment (calculated)"]} />
                 {(firstYearData?.other?.items || []).map((template) => (
                   <DataRow
                     key={template.label}
@@ -1813,12 +1953,20 @@ export default function WorkspaceTaxReconciliation() {
                       if (!row) return [blank, blank, blank];
                       return [
                         row.pl == null ? blank : { value: row.pl, tone: "text-text-secondary" },
-                        row.taxReturn == null ? blank : { value: row.taxReturn, tone: "text-text-secondary" },
+                        row.taxReturn == null
+                          ? (row.taxReturnReported === false
+                            ? { text: NOT_REPORTED, tone: "text-amber-700 text-[11px]", hint: row.reason }
+                            : blank)
+                          : { value: row.taxReturn, tone: "bg-primary/5 text-primary" },
                         row.adjustment == null
                           ? { text: "unavailable", tone: "text-amber-700 text-[11px]", hint: row.reason }
                           : editableCell(year, template.label, row.adjustment, {
                             isOverride: row.isOverride,
-                            hint: row.reason,
+                            hint:
+                              row.reason +
+                              (row.variance != null && row.isDisplayOnly
+                                ? `\nPresentation difference: ${formatCheck(row.variance)} — shown above, not adjusted.`
+                                : ""),
                           }),
                       ];
                     }}
@@ -1836,6 +1984,7 @@ export default function WorkspaceTaxReconciliation() {
                   section={SECTIONS[6]}
                   note="Book Net Income + M1 + Cash/Accrual + Other = Calculated. Calculated − Expected = Unreconciled Difference."
                 />
+                <CaptionRow captions={["", "Amount", ""]} />
                 <DataRow
                   label="Calculated Reconciled Income"
                   cells={(year, y) => [blank, { value: y?.calculatedReconciledIncome, text: formatCheck(y?.calculatedReconciledIncome ?? 0), tone: "text-text-secondary" }, blank]}
@@ -1903,8 +2052,12 @@ export default function WorkspaceTaxReconciliation() {
                 {/* ══ SECTION 9 — Schedule K ══ */}
                 <SectionRow
                   section={SECTIONS[8]}
-                  note="Every item keeps its source document and tax year. Manual entries survive refresh, sync and recalculation."
+                  note={
+                    "Read from the federal return only, at the line that prints the figure. A line the " +
+                    "extraction did not read reads “Not Reported” — never 0. Manual entries survive refresh and sync."
+                  }
                 />
+                <CaptionRow captions={["", "Tax Return (as filed)", "Printed at"]} />
                 {scheduleKRows.length === 0 ? (
                   <EmptyRow span={1 + activeYears.length * 3}>
                     No Schedule K items found. Add items with the button below.
@@ -1918,20 +2071,34 @@ export default function WorkspaceTaxReconciliation() {
                     cells={(year, y) => {
                       const item = y?.scheduleK?.items?.find((i) => i.label === label);
                       if (!item) return [blank, blank, blank];
+                      const hint =
+                        `Source: ${item.sourceLabels.join(" + ")}` +
+                        `${item.sourceAddress ? `\nPrinted at: ${item.sourceAddress}` : ""}` +
+                        `${item.sourceDetail ? ` (read from ${item.sourceDetail})` : ""}` +
+                        `${item.sourceDocument ? `\nDocument: ${item.sourceDocument}` : ""}` +
+                        `\nTax year: ${item.taxYear ?? "unknown"}` +
+                        `${item.userAdded ? "\nManually added — preserved on refresh." : ""}` +
+                        `${item.note ? `\n${item.note}` : ""}`;
                       return [
                         blank,
-                        editableCell(year, label, item.taxReturn, {
-                          isOverride: item.isOverride,
-                          hint:
-                            `Source: ${item.sourceLabels.join(" + ")}` +
-                            `${item.sourceDocument ? `\nDocument: ${item.sourceDocument}` : ""}` +
-                            `\nTax year: ${item.taxYear ?? "unknown"}` +
-                            `${item.userAdded ? "\nManually added — preserved on refresh." : ""}` +
-                            `${item.note ? `\n${item.note}` : ""}`,
-                        }),
+                        // An unread line is not a zero: it stays editable (so the
+                        // reviewer can type what the form prints) but shows no
+                        // figure until one exists.
+                        item.reported === false
+                          ? {
+                            ...editableCell(year, label, null, { hint }),
+                            text: NOT_REPORTED,
+                            tone: "text-amber-700 text-[11px] cursor-pointer",
+                          }
+                          : editableCell(year, label, item.taxReturn, {
+                            isOverride: item.isOverride,
+                            hint,
+                          }),
                         item.userAdded
                           ? { text: "manual", tone: "text-primary/60 text-[11px]" }
-                          : blank,
+                          : item.sourceAddress
+                            ? { text: item.sourceAddress, tone: "text-text-muted text-[10px]", hint }
+                            : blank,
                       ];
                     }}
                   />
@@ -2025,6 +2192,48 @@ const GridContext = createContext({
   setEditingValue: () => {},
   cancelEdit: () => {},
 });
+
+/**
+ * Per-section column captions.
+ *
+ * The frozen header says P&L | Tax Return | TR Variance, which is true of
+ * Sections 1, 2 and 6 only. Every other section reuses the same three slots for
+ * entirely different quantities, and leaving the global header to speak for them
+ * is what made correct figures read as fabricated tax-return ones — Section 5's
+ * ending Balance Sheet balance of 227,670 read as a claim about Schedule L line
+ * 2a, which is blank on that return. The export already emits these captions; the
+ * grid now shows the same ones, so the two cannot disagree.
+ */
+function CaptionRow({ captions }) {
+  const { activeYears } = useContext(GridContext);
+  return (
+    <tr className="border-b border-border bg-[#F4F9E9]/60">
+      <th
+        scope="row"
+        className={cn(LABEL_CELL_TINT, "bg-[#F4F9E9]/60 px-4 py-1.5 text-left")}
+      >
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-primary/50">
+          Columns
+        </span>
+      </th>
+      {activeYears.map((year, idx) => (
+        <Fragment key={year}>
+          {[0, 1, 2].map((slot) => (
+            <td
+              key={slot}
+              className={cn(
+                "px-4 py-1.5 text-right text-[10px] font-semibold uppercase leading-tight tracking-wide text-primary/60",
+                slot === 2 && yearDivider(idx, activeYears.length),
+              )}
+            >
+              {captions[slot] || ""}
+            </td>
+          ))}
+        </Fragment>
+      ))}
+    </tr>
+  );
+}
 
 /** A section banner spanning the whole grid. */
 function SectionRow({ section, note }) {

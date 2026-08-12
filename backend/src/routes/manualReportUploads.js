@@ -918,7 +918,11 @@ function enrichTaxYearWithStatus(yearObj) {
   };
   const reconstructed = {
     year:                 yearObj?.year || 0,
-    totalRevenue:         findVal("Total Revenue"),
+    // The "Total Revenue" ROW publishes Form 1120-S line 6 TOTAL income, not line 1c
+    // gross receipts — see taxPage1Rows. Reading it back into `totalRevenue` (which
+    // the extractor defines as gross receipts) would make the validator's gross-profit
+    // identity fail by exactly the other income on every such return.
+    totalIncome:          findVal("Total Revenue"),
     totalCostOfGoodsSold: findVal("Total Cost of Goods Sold"),
     grossProfit:          findVal("Gross Profit"),
     officerWages:         findVal("Officer Wages", "Guaranteed Payments"),
@@ -926,7 +930,16 @@ function enrichTaxYearWithStatus(yearObj) {
     amortization:         findVal("Amortization Expense"),
     interestExpense:      findVal("Total Interest Expense"),
     allOtherExpenses:     findVal("All Other Expenses"),
+    // Page-1 income above gross profit (Form 1120-S lines 4 and 5), carried on the
+    // "All Other Income" row. REQUIRED: validateTaxExtraction's net-income identity
+    // starts at TOTAL income, so omitting this makes every return that reports other
+    // income fail the check by exactly that amount and land on "Needs Review".
+    otherIncome:          findVal("All Other Income"),
     netIncome:            findVal("Net Income"),
+    // Gross receipts is NOT among the published rows, so it cannot be recovered.
+    // null (not 0) so the validator SKIPS the gross-receipts identity instead of
+    // reporting a fabricated failure against a zero it invented.
+    totalRevenue:         null,
   };
   const { status } = validateTaxExtraction(reconstructed);
   return { ...base, status };
@@ -1794,3 +1807,8 @@ module.exports = router;
 // Exposed for the Key Reports Generate flow to pre-warm the Tax Reconciliation
 // cache (same extraction + cache-key path the page uses).
 module.exports.runTaxExtraction = runTaxExtraction;
+// Pure helper, exposed so the published-row → validator round trip can be tested
+// directly. The two must agree on what each row means: when the "Total Revenue"
+// row changed from gross receipts to total income, reading it back into the
+// gross-receipts field silently failed the gross-profit identity.
+module.exports.enrichTaxYearWithStatus = enrichTaxYearWithStatus;

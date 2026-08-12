@@ -134,6 +134,37 @@ function overrideAmount(override) {
   return round2(num(raw));
 }
 
+/**
+ * A persisted override of exactly 0 sitting on a line the return PRINTS.
+ *
+ * ── WHY THIS IS NOT TREATED AS A USER'S FIGURE (a real, traced case) ────────
+ * The page used to render a Schedule K line the extraction had not read as `0`,
+ * and those zeros were saved into `tax_reconciliation_overrides`. They then
+ * outlive the fix: the extraction is corrected, the return's own 912 (Schedule K
+ * 16c / M-1 line 3) and −391,087 (Schedule K line 1) are read correctly — and a
+ * stored `0` overwrites both again. On the export that produced this rule,
+ * "Nondeductible Expenses 0" and "Ordinary Business Income (loss) 0" were still
+ * shown, tagged "manual entry", while Section 2 displayed the same nondeductible
+ * expenses as 912 — the report contradicting itself.
+ *
+ * A saved 0 against a line that prints a figure carries no information a user
+ * could have intended: "this line is nil" is expressed by REMOVING the row (the
+ * grid has a delete control, and a deletion is honoured permanently). So a
+ * placeholder zero is ignored in favour of the printed figure, and the row says
+ * so rather than the override being deleted behind the user's back.
+ *
+ * Deliberately narrow — an override is still authoritative when it is
+ *   • non-zero (any typed figure, including one that contradicts the return), or
+ *   • `userAdded` (a row the user created, which may legitimately sit at 0), or
+ *   • on a line the return does NOT print (nothing to prefer over it).
+ */
+function isPlaceholderZeroOverride(override, printedValue) {
+  if (!override || override.deleted || override.userAdded) return false;
+  const value = overrideAmount(override);
+  if (value == null || value !== 0) return false;
+  return printedValue != null && round2(num(printedValue)) !== 0;
+}
+
 /** A footing assertion: the actual signed difference is always preserved. */
 function foots(label, actual, expected, detail = null) {
   const difference = round2(num(actual) - num(expected));
@@ -571,9 +602,44 @@ export function resolveTaxReturnForYear(taxYears, fiscalYear) {
     fileName: entry.fileName || null,
     status: entry.status || null,
     scheduleM1: entry.scheduleM1 || entry.schedule_m1 || null,
+    // Schedule L (the return's own balance sheet) is carried when the extraction
+    // published it. It is the ONLY admissible source for a tax-return balance in
+    // the Cash/Accrual section — the book Balance Sheet is a different document
+    // and must never be presented as a return figure.
+    scheduleL: entry.scheduleL || entry.schedule_l || null,
     data,
     byLabel: new Map(data.map((row) => [normalizeLabel(row.label), row])),
     reason: null,
+  };
+}
+
+/**
+ * Read ONE line of the return, distinguishing "the return states x" from "the
+ * return does not state this line at all".
+ *
+ * The publisher marks a row it could not read on the form as
+ * `source.reported: false` and carries a display 0 (see manualReportUploadService
+ * `taxPage1Rows`/`buildTaxReturnResponseData`). Treating that 0 as a reading is
+ * how a blank form line becomes a confident tax-return figure on screen, so every
+ * consumer in this module goes through here instead of touching `row.taxReturn`:
+ *
+ *   { reported: true,  value: <number> }  the figure printed at that line
+ *   { reported: false, value: null }      blank / absent — rendered "Not Reported"
+ */
+export function readTaxReturnLine(taxReturn, label) {
+  if (!taxReturn?.available) {
+    return { reported: false, value: null, source: null, reason: taxReturn?.reason || 'No tax return available.' };
+  }
+  const row = taxReturn.byLabel.get(normalizeLabel(label));
+  if (!row) {
+    return { reported: false, value: null, source: null, reason: `The return states no "${label}" line.` };
+  }
+  const printed = row.source?.reported !== false && row.taxReturn != null && row.taxReturn !== '';
+  return {
+    reported: printed,
+    value: printed ? round2(num(row.taxReturn)) : null,
+    source: row.source || null,
+    reason: printed ? null : `"${label}" is blank on the return, so no figure is reported for it.`,
   };
 }
 
@@ -641,6 +707,13 @@ const M1_MAP = Object.freeze([
   { rx: /self employment|gross farming|gross nonfarm/, category: 'Self-Employment Items', effect: M1_EFFECTS.INFO, note: 'Self-employment disclosure — no effect on ordinary business income.', scheduleK: true },
   { rx: /guaranteed payment/, category: 'Guaranteed Payments', effect: M1_EFFECTS.INFO, note: 'Already reported on page 1 and shown as Officer Wages in the financial statement section.', scheduleK: true },
   { rx: /^other items and amounts$/, category: 'Other Items and Amounts', effect: M1_EFFECTS.INFO, note: 'Unclassified Schedule K disclosure — no stated income effect.', scheduleK: true },
+  // Schedule K line 1 / page 1 line 22. Listed so that every wording of it —
+  // "Ordinary business income (loss)", "Ordinary Business Income (Loss)" — lands
+  // on ONE category. Two rows differing only by the case of "(loss)" is the
+  // duplicate-category defect, and it was visible on a real export beside the
+  // correctly-read figure. It carries no income effect: it is the tax bottom line
+  // the reconciliation targets, not an adjustment to it.
+  { rx: /^ordinary business income( loss)?$/, category: 'Ordinary Business Income (Loss)', effect: M1_EFFECTS.INFO, note: 'Schedule K line 1 restates page 1 line 22 — the figure the reconciliation targets, not an adjustment to it.', scheduleK: true },
 ]);
 
 /**
@@ -801,6 +874,12 @@ export function buildM1Adjustments({ taxReturn, plValues = {}, overrides = {} })
 
   for (const row of taxReturn.data) {
     if (!row?.isReconcilingItem) continue;
+    // A line the extraction did not read carries no figure, so it cannot carry an
+    // adjustment either. Treating it as 0 would put a row claiming "the return
+    // adjusts nothing here" beside a Schedule K line that prints 912 — a zero
+    // nobody can distinguish from a preparer's nil. If another schedule states the
+    // same line (M-1 below), that reading creates the row instead.
+    if (row.source?.reported === false || row.taxReturn == null) continue;
     consider(row.label, row.taxReturn, 'schedule_k', 'sum');
   }
   // Schedule M-1 detail lines, when the return's M-1 was extracted. These are the
@@ -817,7 +896,10 @@ export function buildM1Adjustments({ taxReturn, plValues = {}, overrides = {} })
   for (const entry of byCategory.values()) {
     const override = overrides?.[entry.category];
     if (override?.deleted) continue;
-    const overrideValue = overrideAmount(override);
+    // A 0 saved against a line the return prints is residue from the era when an
+    // unread line was displayed as 0 — see isPlaceholderZeroOverride.
+    const ignoredOverride = isPlaceholderZeroOverride(override, entry.taxReturn);
+    const overrideValue = ignoredOverride ? null : overrideAmount(override);
     const taxValue = overrideValue != null ? overrideValue : entry.taxReturn;
 
     // P&L counterpart where one exists — interest income is the case the client
@@ -836,7 +918,14 @@ export function buildM1Adjustments({ taxReturn, plValues = {}, overrides = {} })
       pl: plValue,
       adjustment: round2(sign * taxValue),
       hasIncomeEffect: sign !== 0,
-      isOverride: Boolean(override && !override.deleted),
+      isOverride: Boolean(override && !override.deleted) && !ignoredOverride,
+      ignoredOverride,
+      ...(ignoredOverride
+        ? {
+          reason: `${entry.reason} A saved value of 0 for this line is ignored in favour of the `
+            + 'figure the return prints; delete the row if the line should not appear.',
+        }
+        : {}),
     };
     if (item.hasIncomeEffect) items.push(item);
     else informationalItems.push(item);
@@ -871,10 +960,63 @@ export function buildM1Adjustments({ taxReturn, plValues = {}, overrides = {} })
  * all three rows (Part 7).
  */
 const CASH_ACCRUAL_MAP = Object.freeze([
-  { rx: /(?:a\s*\/?\s*r|accounts? receivable).*(?:retention|retainage)|retention.*receivable|retainage receivable/, label: 'A/R Retentions', section: 'assets', sign: -1 },
-  { rx: /accounts? receivable|^a\s*\/?\s*r$|trade receivable/, label: 'Accounts Receivable', section: 'assets', sign: -1 },
-  { rx: /accounts? payable|^a\s*\/?\s*p$|trade payable/, label: 'Accounts Payable', section: 'liabilities', sign: +1 },
+  { rx: /(?:a\s*\/?\s*r|accounts? receivable).*(?:retention|retainage)|retention.*receivable|retainage receivable/, label: 'A/R Retentions', section: 'assets', sign: -1, scheduleLLine: null, scheduleLCaption: null },
+  { rx: /accounts? receivable|^a\s*\/?\s*r$|trade receivable/, label: 'Accounts Receivable', section: 'assets', sign: -1, scheduleLLine: '2a', scheduleLCaption: 'Trade notes and accounts receivable' },
+  { rx: /accounts? payable|^a\s*\/?\s*p$|trade payable/, label: 'Accounts Payable', section: 'liabilities', sign: +1, scheduleLLine: '16', scheduleLCaption: 'Accounts payable' },
 ]);
+
+/**
+ * The RETURN's own reading for a cash/accrual row, from Schedule L only.
+ *
+ * ── WHY THIS EXISTS (a real, traced misreading) ─────────────────────────────
+ * The three Cash/Accrual rows are computed from the BOOK Balance Sheet, and the
+ * grid's global column header says "Tax Return" over the middle slot. On a real
+ * export, Accounts Receivable therefore read "218,298 | 227,670" as if 227,670
+ * were Schedule L line 2a — which is BLANK on that return, because the return was
+ * filed on the cash basis. The balances were correctly sourced; presenting one of
+ * them under a tax-return heading was not.
+ *
+ * So the return's position on these lines is now read separately and only from
+ * Schedule L. When the extraction published no Schedule L (or the line is blank),
+ * the answer is NOT REPORTED — never the book balance, and never 0. A blank
+ * Schedule L line on a cash-basis return is a fact about the return, and it is
+ * the fact the reviewer needs to see next to a book-basis conversion.
+ *
+ * Accepts either shape the publisher may use:
+ *   [{ line: '2a', beginningValue: n|null, ending_value: n|null }, …]
+ *   { '2a': { beginning: n|null, ending: n|null } }
+ */
+export function readScheduleLLine(scheduleL, line) {
+  const notReported = (reason) => ({ reported: false, beginning: null, ending: null, reason });
+  if (!line) {
+    return notReported('This row has no single Schedule L line on the return; the return reports no equivalent.');
+  }
+  if (!scheduleL) {
+    return notReported(
+      `Schedule L was not published with this return, so its line ${line} cannot be read. `
+      + 'The adjustment is computed from the Balance Sheet, which is a separate document.',
+    );
+  }
+  const wanted = String(line).toLowerCase();
+  const entry = Array.isArray(scheduleL)
+    ? scheduleL.find((row) => String(row?.line ?? '').toLowerCase() === wanted)
+    : (scheduleL[line] ?? scheduleL[wanted] ?? null);
+  if (!entry) return notReported(`Schedule L line ${line} is not present in the published return data.`);
+
+  const pick = (...keys) => {
+    for (const key of keys) {
+      const v = entry[key];
+      if (v !== undefined && v !== null && v !== '') return round2(num(v));
+    }
+    return null;
+  };
+  const beginning = pick('beginningValue', 'beginning_value', 'beginning');
+  const ending = pick('endingValue', 'ending_value', 'ending');
+  if (beginning == null && ending == null) {
+    return notReported(`Schedule L line ${line} is blank on the return (both columns).`);
+  }
+  return { reported: true, beginning, ending, reason: null };
+}
 
 /** Row order the client's template uses. */
 export const CASH_ACCRUAL_ROWS = Object.freeze(['Accounts Receivable', 'A/R Retentions', 'Accounts Payable']);
@@ -1001,6 +1143,7 @@ export function buildCashAccrualAdjustments({
   fiscalYearEndMonth = 12,
   returnBasis = 'Cash',
   bookBasis = 'Accrual',
+  taxReturn = null,
   overrides = {},
 }) {
   const ending = resolveBsPeriod(periods, fiscalYear, { fiscalYearEndMonth });
@@ -1023,9 +1166,25 @@ export function buildCashAccrualAdjustments({
     const overrideValue = overrideAmount(override);
     const adjustment = overrideValue != null ? overrideValue : rawAdjustment;
 
+    // The return's own position on this line — Schedule L only, never the book
+    // Balance Sheet and never 0 for a blank line. See readScheduleLLine.
+    const onReturn = readScheduleLLine(
+      taxReturn?.available ? taxReturn.scheduleL : null,
+      entry.scheduleLLine,
+    );
+
     return {
       label,
       fiscalYear: Number(fiscalYear),
+      // ── Extracted tax-return values (kept separate from everything computed) ──
+      scheduleLLine: entry.scheduleLLine,
+      scheduleLCaption: entry.scheduleLCaption,
+      taxReturnReported: onReturn.reported,
+      taxReturnBeginning: onReturn.beginning,
+      taxReturnEnding: onReturn.ending,
+      taxReturnReason: taxReturn?.available === false
+        ? (taxReturn.reason || onReturn.reason)
+        : onReturn.reason,
       beginningPeriod: beginning.requiredPeriod,
       endingPeriod: ending.requiredPeriod,
       beginningAsOfDate: beginning.found ? beginning.asOfDate : null,
@@ -1074,70 +1233,90 @@ export function buildCashAccrualAdjustments({
  * Build Section 6 (Other Adjustments) for one fiscal year.
  *
  * The client's template rows are Other Depreciation Variance, Other Interest
- * Variance and Other. The first two are GENUINE residuals, computed rather than
- * guessed: the book-to-tax effect of the difference between the expense the
- * books recorded and the expense the return's PAGE 1 deducted.
+ * Variance and Other.
  *
- *   Other Depreciation Variance = book depreciation − tax depreciation
- *   Other Interest Variance     = book interest expense − tax interest expense
+ * ── WHY THE TWO VARIANCE ROWS CARRY NO INCOME EFFECT BY DEFAULT ─────────────
+ * They used to be computed INTO the chain as
+ *     adjustment = book expense − the return's page-1 expense
+ * and that produced a guaranteed unreconciled difference on any return whose
+ * presentation of an expense differs from the books'. Traced on a real 2023
+ * 1120-S: the P&L carries no separate interest line (interest sits inside its
+ * operating expenses, so `interestExpense` = 0) while page 1 line 13 states
+ * 240,911. The row therefore contributed −240,911 to the chain, and Section 7's
+ * Unreconciled Difference came out at exactly −240,911 — the whole of an expense
+ * the books HAD already deducted, counted a second time.
  *
- * Both carry the ADJUSTMENT sign documented at the top of this file: the books
- * deducting MORE than the return means tax income is higher, so the adjustment
- * is positive.
+ * Two independent reasons this row can never be an income adjustment here:
  *
- * These do NOT net off the Section 179 / investment-interest amounts already
- * adjusted in the M1 section, and must not: on Form 1120-S / 1065 the page-1
- * depreciation and interest lines EXCLUDE Section 179 (Schedule K line 11 / 12)
- * and investment interest (Schedule K line 12b / 13c) respectively. Those are
- * separately stated items that never entered the page-1 figure, so subtracting
- * them here would relieve the same amount twice — in opposite directions — and
- * introduce exactly the kind of drift the client reported.
+ *  1. It is a CLASSIFICATION difference, not a book-to-tax difference. The same
+ *     240,911 is inside book Net Income (within All Other Expenses) and inside
+ *     the return's deductions. Book income and tax income are both already net of
+ *     it, so nothing has to move. Section 1 shows the presentation difference as
+ *     that line's TR Variance, which is where it belongs.
+ *  2. Where a book-vs-tax expense difference IS real (tax depreciation ≠ book
+ *     depreciation), the return states it on Schedule M-1 — lines 3a and 6a are
+ *     literally captioned "Depreciation" — and Schedule M-1 is this chain's
+ *     anchor and feeds Section 2. Recomputing it here would relieve the same
+ *     amount twice.
+ *
+ * So both rows are DISPLAY rows: each shows the book figure, the figure the
+ * return actually states at its own page-1 line, and the resulting `variance` —
+ * and contributes 0 to the reconciliation unless a user explicitly overrides it
+ * (an override is a human assertion, and it is honoured and marked as one).
+ *
+ * `variance` remains `book − tax` in the adjustment convention documented at the
+ * top of this file, so an override typed to match it moves book income the way
+ * the reviewer expects.
  *
  * "Other" holds ONLY items that survived the whole Part 9 cascade. It is never
  * written as a plug: `plugged` is always false, and `unmappedItems` names every
  * amount inside it.
  */
 export function buildOtherAdjustments({ plValues = {}, taxReturn, m1, overrides = {} }) {
-  const taxOf = (label) => {
-    if (!taxReturn?.available) return null;
-    const row = taxReturn.byLabel.get(normalizeLabel(label));
-    return row ? round2(num(row.taxReturn)) : null;
-  };
-
-  const taxDepreciation = taxOf('Depreciation Expense');
-  const taxInterest = taxOf('Total Interest Expense');
+  const depreciation = readTaxReturnLine(taxReturn, 'Depreciation Expense');
+  const interest = readTaxReturnLine(taxReturn, 'Total Interest Expense');
   const bookDepreciation = round2(num(plValues.depreciation));
   const bookInterest = round2(num(plValues.interestExpense));
 
+  const varianceRow = (label, book, onReturn, whatItIs) => {
+    const variance = onReturn.reported ? round2(book - onReturn.value) : null;
+    return {
+      label,
+      // `available` describes the COMPARISON, which needs the return's figure.
+      available: onReturn.reported,
+      pl: book,
+      // Extracted, never derived: null means the return does not state the line.
+      taxReturn: onReturn.value,
+      taxReturnReported: onReturn.reported,
+      variance,
+      // Display-only in the chain. See the header above.
+      adjustment: 0,
+      hasIncomeEffect: false,
+      isDisplayOnly: true,
+      reason: !onReturn.reported
+        ? `${onReturn.reason} No variance can be shown, and nothing is assumed in its place.`
+        : `Book ${whatItIs} ${book} vs the return's page-1 ${whatItIs} ${onReturn.value} — a `
+          + `presentation difference of ${variance}. It is shown, not added: book income and tax `
+          + `income are both already net of this expense, and any genuine book-to-tax difference is `
+          + `stated on Schedule M-1 and adjusted in Section 2. Enter a value to override.`,
+    };
+  };
+
   const items = [
-    {
-      label: 'Other Depreciation Variance',
-      available: taxDepreciation != null,
-      pl: bookDepreciation,
-      taxReturn: taxDepreciation,
-      adjustment: taxDepreciation == null ? null : round2(bookDepreciation - taxDepreciation),
-      reason: taxDepreciation == null
-        ? 'The return states no depreciation line, so no residual can be computed.'
-        : `Book depreciation ${bookDepreciation} less the return's page-1 depreciation ` +
-        `${taxDepreciation}. Section 179 is separately stated on Schedule K and is adjusted in the ` +
-        `M1 section, so it is deliberately not netted here.`,
-    },
-    {
-      label: 'Other Interest Variance',
-      available: taxInterest != null,
-      pl: bookInterest,
-      taxReturn: taxInterest,
-      adjustment: taxInterest == null ? null : round2(bookInterest - taxInterest),
-      reason: taxInterest == null
-        ? 'The return states no interest expense line, so no residual can be computed.'
-        : `Book interest expense ${bookInterest} less the return's page-1 interest ${taxInterest}. ` +
-        `Investment interest is separately stated on Schedule K and is adjusted in the M1 section, ` +
-        `so it is deliberately not netted here.`,
-    },
+    varianceRow('Other Depreciation Variance', bookDepreciation, depreciation, 'depreciation'),
+    varianceRow('Other Interest Variance', bookInterest, interest, 'interest expense'),
   ].map((item) => {
     const overrideValue = overrideAmount(overrides?.[item.label]);
     if (overrideValue != null) {
-      return { ...item, adjustment: overrideValue, isOverride: true, available: true };
+      return {
+        ...item,
+        adjustment: overrideValue,
+        hasIncomeEffect: overrideValue !== 0,
+        isDisplayOnly: false,
+        isOverride: true,
+        available: true,
+        reason: `Manually overridden to ${overrideValue}. ${item.reason}`,
+      };
     }
     return { ...item, isOverride: false };
   });
@@ -1151,6 +1330,7 @@ export function buildOtherAdjustments({ plValues = {}, taxReturn, m1, overrides 
     pl: null,
     taxReturn: null,
     adjustment: otherOverrideValue != null ? otherOverrideValue : 0,
+    hasIncomeEffect: otherOverrideValue != null && otherOverrideValue !== 0,
     isOverride: otherOverrideValue != null,
     unmappedItems,
     reason: unmappedItems.length
@@ -1164,6 +1344,10 @@ export function buildOtherAdjustments({ plValues = {}, taxReturn, m1, overrides 
     items,
     total,
     plugged: false,
+    // A row whose comparison could not be shown (the return does not state that
+    // page-1 line) is reported as incomplete — it no longer withholds an
+    // adjustment, because it never contributes one, but the reviewer is still
+    // told the comparison is missing rather than shown a zero.
     complete: items.every((i) => i.available),
   };
 }
@@ -1249,6 +1433,12 @@ export function buildYearReconciliation({
   const taxReturn = resolveTaxReturnForYear(taxYears, fiscalYear);
 
   // Section 1 — the financial statement block with a TR Variance per row.
+  //
+  // `taxReturnReported` carries the publisher's own statement of whether the line
+  // was READ off the form. A page-1 line the return leaves blank (cost of goods
+  // sold and depreciation on the traced 2023 return) is published as a display 0;
+  // the flag and `taxReturnSource` are what let the page say so instead of
+  // presenting that 0 as a figure printed on the form.
   const statementRows = financial.lineItems.map((item) => {
     const taxRow = taxReturn.available ? taxReturn.byLabel.get(normalizeLabel(item.label)) : null;
     const taxValue = taxRow ? round2(num(taxRow.taxReturn)) : null;
@@ -1258,6 +1448,8 @@ export function buildYearReconciliation({
       subtotal: Boolean(item.subtotal),
       pl: item.value,
       taxReturn: taxValue,
+      taxReturnReported: taxRow ? taxRow.source?.reported !== false : false,
+      taxReturnSource: taxRow?.source || null,
       variance: taxValue == null ? null : trVariance(taxValue, item.value),
     };
   });
@@ -1273,6 +1465,9 @@ export function buildYearReconciliation({
     fiscalYear,
     fiscalYearEndMonth,
     returnBasis: accountingMethod,
+    // Only so each row can state what the RETURN reports for it (Schedule L).
+    // The adjustment itself is computed from the Balance Sheet, as it must be.
+    taxReturn,
     overrides: overrides.cashAccrual || {},
   });
 
@@ -1401,32 +1596,151 @@ export function buildYearReconciliation({
  * identity and tax year (Part 12). A user-added item is flagged `userAdded` and
  * is never replaced by regenerated source data (Part 18) — the caller merges
  * overrides on top, and `buildScheduleKSection` keeps the user's value.
+ *
+ * ── THE TAX RETURN IS THE ONLY SOURCE, AND A BLANK IS NOT A ZERO ────────────
+ * Three defects, all observed on one real 2023 1120-S export, all of the same
+ * kind — a figure the return states was published here as 0:
+ *
+ *  1. Nondeductible expenses. Schedule K line 16c prints 912. The row read 0,
+ *     while the SAME 912 came through correctly on Schedule M-1 line 3 (it is one
+ *     figure reported at two addresses — the M1 mapping table already says so).
+ *  2. Ordinary business income (loss). Schedule K line 1 prints −391,087 — the
+ *     line is captioned "(page 1, line 22)" on the form, i.e. it IS the page-1
+ *     bottom line the publisher already carries. The row read 0.
+ *  3. Every other line the extraction could not read published a 0 that was
+ *     indistinguishable from a preparer's nil assertion.
+ *
+ * The rules applied here, in order, are therefore:
+ *   • a line the extraction did not read is `taxReturn: null` / `reported: false`
+ *     and renders as "Not Reported" — never 0, and never a book figure;
+ *   • a value is taken only from an address that PRINTS it, and the address used
+ *     is recorded on the item as `sourceAddress`;
+ *   • Schedule M-1 supplies a line that Schedule K left unread only where the two
+ *     schedules state the same figure by definition (M-1's own itemised lines);
+ *   • the total covers reported, distributive-share items only — the bottom-line
+ *     row is a reference figure, not a reconciling item, so it is excluded.
  */
 export function buildScheduleKSection({ taxReturn, overrides = {} }) {
   const byCategory = new Map();
 
+  /**
+   * Record / merge one reading, keeping "not reported" distinct from 0.
+   *
+   * `fillOnly` marks a reading from a schedule that RESTATES a figure rather than
+   * adding to it (Schedule M-1's itemised lines against Schedule K's). It fills a
+   * category that has no printed figure yet and is otherwise ignored, so one
+   * amount reported at two addresses can never be summed into double.
+   */
+  const record = (category, reading, { fillOnly = false } = {}) => {
+    const existing = byCategory.get(category);
+    if (!existing) {
+      byCategory.set(category, { label: category, ...reading });
+      return;
+    }
+    if (!reading.reported) {
+      if (!existing.sourceLabels.includes(reading.sourceLabels[0])) {
+        existing.sourceLabels.push(reading.sourceLabels[0]);
+      }
+      return;
+    }
+    if (!existing.reported) {
+      // The category existed only as an unread line; adopt the address that
+      // actually prints a figure rather than leaving the 0/blank in place.
+      byCategory.set(category, {
+        ...reading,
+        label: category,
+        sourceLabels: [...new Set([...existing.sourceLabels, ...reading.sourceLabels])],
+      });
+      return;
+    }
+    if (fillOnly) {
+      if (!existing.sourceLabels.includes(reading.sourceLabels[0])) {
+        existing.sourceLabels.push(reading.sourceLabels[0]);
+      }
+      return;
+    }
+    // Two different source lines in one category (1065 13a cash + 13b noncash).
+    if (!existing.sourceLabels.includes(reading.sourceLabels[0])) {
+      existing.taxReturn = round2(existing.taxReturn + reading.taxReturn);
+      existing.sourceLabels.push(reading.sourceLabels[0]);
+    }
+  };
+
   if (taxReturn?.available) {
+    const address = (source, fallback) => {
+      if (!source) return fallback;
+      const parts = [source.form, source.line ? `line ${source.line}` : null].filter(Boolean);
+      return parts.length ? parts.join(' ') : fallback;
+    };
+
     for (const row of taxReturn.data) {
       if (!row?.isReconcilingItem) continue;
-      const category = canonicalScheduleKLabel(row.label);
-      const existing = byCategory.get(category);
-      if (existing) {
-        existing.taxReturn = round2(existing.taxReturn + num(row.taxReturn));
-        if (!existing.sourceLabels.includes(row.label)) existing.sourceLabels.push(row.label);
-        continue;
-      }
       const mapped = mapToM1(row.label);
-      byCategory.set(category, {
-        label: category,
+      const reported = row.source?.reported !== false && row.taxReturn != null && row.taxReturn !== '';
+      record(canonicalScheduleKLabel(row.label), {
         sourceLabels: [row.label],
         sourceDocument: taxReturn.fileName || null,
+        sourceAddress: address(row.source, 'Schedule K'),
         taxYear: taxReturn.fiscalYear,
-        taxReturn: round2(num(row.taxReturn)),
+        taxReturn: reported ? round2(num(row.taxReturn)) : null,
+        reported,
+        effect: mapped?.effect || null,
+        note: mapped?.note
+          || (reported ? null : 'This line was not read on the return, so no figure is reported for it.'),
+        userAdded: false,
+        isOverride: false,
+      });
+    }
+
+    // Schedule M-1's own itemised lines. They fill a Schedule K line only when
+    // Schedule K's reading is missing (see `record`), because the two schedules
+    // report ONE figure — the M1 mapping table treats them as one for exactly
+    // this reason. Nothing is summed across the two.
+    for (const line of taxReturn.scheduleM1?.lines || []) {
+      if (line?.amount == null) continue;
+      const mapped = mapToM1(line.label);
+      record(canonicalScheduleKLabel(line.label), {
+        sourceLabels: [line.label],
+        sourceDocument: taxReturn.fileName || null,
+        // `m1Line` already reads "M-1 line 3", so this renders "Schedule M-1 line 3".
+        sourceAddress: mapped?.m1Line ? `Schedule ${mapped.m1Line}` : 'Schedule M-1',
+        taxYear: taxReturn.fiscalYear,
+        taxReturn: round2(num(line.amount)),
+        reported: true,
         effect: mapped?.effect || null,
         note: mapped?.note || null,
         userAdded: false,
         isOverride: false,
-      });
+      }, { fillOnly: true });
+    }
+
+    // Ordinary business income (loss) — Schedule K line 1, which the form itself
+    // captions "(page 1, line 22)". The publisher carries that page-1 line as
+    // "Net Income"; it is read from there, at its printed address, and marked as
+    // the return's bottom line rather than a reconciling item so it can never be
+    // added into an adjustment total.
+    // A page-1 bottom line of exactly 0 is not shown, for the same reason a
+    // printed 0 is left out of the Schedule K rows above: this is a reference
+    // row, and a zero one tells a reviewer nothing.
+    const ordinary = readTaxReturnLine(taxReturn, 'Net Income');
+    if (ordinary.reported && ordinary.value !== 0) {
+      record('Ordinary Business Income (Loss)', {
+        sourceLabels: ['Ordinary business income (loss)'],
+        sourceDocument: taxReturn.fileName || null,
+        sourceAddress: 'Schedule K line 1',
+        // The page-1 line it is read from, kept for the tooltip/audit trail.
+        sourceDetail: address(ordinary.source, 'page 1'),
+        taxYear: taxReturn.fiscalYear,
+        taxReturn: ordinary.value,
+        reported: true,
+        effect: M1_EFFECTS.INFO,
+        isBottomLine: true,
+        note: 'Schedule K line 1 restates page 1 line 22. Shown for reference and excluded '
+          + 'from the Schedule K total — it is the figure the reconciliation targets, not an '
+          + 'adjustment to it.',
+        userAdded: false,
+        isOverride: false,
+      }, { fillOnly: true });
     }
   }
 
@@ -1440,14 +1754,30 @@ export function buildScheduleKSection({ taxReturn, overrides = {} }) {
     }
     const category = override.userAdded ? label : canonicalScheduleKLabel(label);
     const existing = byCategory.get(category);
+
+    // A saved 0 on a line the return prints does not replace the printed figure.
+    // The override is left in storage untouched — only its effect on this row is
+    // suspended, and the row states that. See isPlaceholderZeroOverride.
+    if (existing?.reported && isPlaceholderZeroOverride(override, existing.taxReturn)) {
+      existing.ignoredOverride = true;
+      existing.note = `${existing.note ? `${existing.note} ` : ''}A saved value of 0 for this line is `
+        + 'ignored in favour of the figure the return prints; delete the row if it should not appear.';
+      continue;
+    }
+
     byCategory.set(category, {
       label: category,
       sourceLabels: existing?.sourceLabels || [label],
       sourceDocument: existing?.sourceDocument || null,
+      sourceAddress: existing?.sourceAddress || null,
       taxYear: taxReturn?.fiscalYear ?? null,
       taxReturn: round2(num(override.taxReturn)),
+      // A typed value is a reading the user is asserting, so it IS reported —
+      // marked `isOverride` so the provenance stays visible.
+      reported: true,
       effect: existing?.effect || mapToM1(category)?.effect || null,
       note: existing?.note || null,
+      isBottomLine: Boolean(existing?.isBottomLine),
       userAdded: Boolean(override.userAdded),
       isOverride: true,
     });
@@ -1458,7 +1788,12 @@ export function buildScheduleKSection({ taxReturn, overrides = {} }) {
     available: Boolean(taxReturn?.available) || items.length > 0,
     reason: taxReturn?.available ? null : taxReturn?.reason || null,
     items,
-    total: round2(items.reduce((s, i) => s + i.taxReturn, 0)),
+    // Reported, distributive-share items only: an unread line contributes
+    // nothing (it is not a zero) and the bottom-line reference row is excluded.
+    total: round2(items.reduce(
+      (s, i) => s + (i.reported && !i.isBottomLine ? num(i.taxReturn) : 0), 0,
+    )),
+    notReported: items.filter((i) => !i.reported).map((i) => i.label),
   };
 }
 
