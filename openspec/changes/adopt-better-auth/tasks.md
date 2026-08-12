@@ -58,7 +58,7 @@
 - [x] 9.1 [ADR-0007](../../../docs/adr/0007-auth-library-vs-bespoke.md) flipped to **Accepted**; "implemented by → change `adopt-better-auth`"
 - [x] 9.2 `auth` capability spec synced: session issuance now cookie/DB-backed + ADDED revocation + credential-migration requirements (`openspec/specs/auth/spec.md`)
 - [x] 9.3 `docs/REARCH_LOG.md` updated; `auth-production-cutover` §6 re-pointed to retire legacy under this change
-- [~] 9.4 `openspec validate --strict` — **N/A here**: the `openspec` CLI is not installed on this machine; artifacts follow the spec-driven schema (delta headers `## ADDED/MODIFIED`, `### Requirement`, `#### Scenario`)
+- [x] 9.4 `openspec validate adopt-better-auth --strict` passes (via `@fission-ai/openspec` 1.8.0); `validate --all --strict` green (10/10 changes + specs)
 - [x] 9.5 Commit on `ba/rearch` with Conventional Commits
 
 ## Notes
