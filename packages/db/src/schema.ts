@@ -1,5 +1,7 @@
+import { sql } from "drizzle-orm";
 import {
   boolean,
+  check,
   date,
   integer,
   pgEnum,
@@ -7,6 +9,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 
@@ -109,14 +112,57 @@ export const emailVerifications = pgTable("email_verifications", {
   verifiedAt: timestamp("verified_at", { withTimezone: true }),
 });
 
-export const folders = pgTable("folders", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  companyId: uuid("company_id")
-    .notNull()
-    .references(() => companies.id, { onDelete: "cascade" }),
-  parentId: uuid("parent_id"),
-  name: text("name").notNull(),
-  color: text("color"),
-  createdBy: uuid("created_by").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const folders = pgTable(
+  "folders",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    parentId: uuid("parent_id"),
+    name: text("name").notNull(),
+    color: text("color"),
+    createdBy: uuid("created_by").notNull(),
+    // Soft-delete marker (folders-domain D5): archived when set, live when null.
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    // Idempotent default-folder provisioning relies on this uniqueness instead of
+    // the legacy in-process mutex (D2). `parent_id` NULLs are distinct in Postgres,
+    // so the coalesce keeps top-level names unique per company too.
+    companyParentName: uniqueIndex("folders_company_parent_name_uq").on(
+      t.companyId,
+      sql`coalesce(${t.parentId}, '00000000-0000-0000-0000-000000000000'::uuid)`,
+      t.name,
+    ),
+  }),
+);
+
+/**
+ * Per-folder access grants (folders-domain D4). Exactly one subject — a user OR a
+ * group — enforced by the CHECK below (and by the contract/service). Access rows
+ * cascade when their folder is deleted.
+ */
+export const folderAccess = pgTable(
+  "folder_access",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    folderId: uuid("folder_id")
+      .notNull()
+      .references(() => folders.id, { onDelete: "cascade" }),
+    userId: uuid("user_id"),
+    groupId: uuid("group_id"),
+    canRead: boolean("can_read").notNull().default(true),
+    canWrite: boolean("can_write").notNull().default(false),
+    canDownload: boolean("can_download").notNull().default(false),
+    createdBy: uuid("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    oneSubject: check(
+      "folder_access_one_subject",
+      sql`(${t.userId} IS NOT NULL) <> (${t.groupId} IS NOT NULL)`,
+    ),
+  }),
+);

@@ -40,3 +40,16 @@ export type {
   AssignedCompany,
   UserResponse,
 } from "./users.js";
+
+export * as folders from "./folders.js";
+export type {
+  FolderCreate,
+  FolderUpdate,
+  FolderMove,
+  FolderResponse,
+  FolderTreeNode,
+  FolderAccessCreate,
+  FolderAccessUpdate,
+  FolderAccessResponse,
+  FolderListQuery,
+} from "./folders.js";

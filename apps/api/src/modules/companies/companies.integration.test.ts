@@ -40,7 +40,8 @@ CREATE TABLE user_companies (
 );
 CREATE TABLE folders (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(), company_id uuid NOT NULL, parent_id uuid,
-  name text NOT NULL, color text, created_by uuid NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
+  name text NOT NULL, color text, created_by uuid NOT NULL, archived_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE folder_access (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), folder_id uuid NOT NULL);
 CREATE TABLE requests (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), company_id uuid NOT NULL, status text);

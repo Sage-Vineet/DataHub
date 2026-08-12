@@ -124,6 +124,15 @@ DataHub is a multi-tenant M&A / accounting platform (React/Vite SPA + Express/No
 - **Deviations (documented):** historical-company-inference shim (D5) not ported — `assignedCompaniesFor` unions `user_companies` + primary `company_id`, covering the observable behavior; reassignment is a transactional repo method rather than a separate port, to guarantee atomicity.
 - **Deferred (need a real env / later domains):** staging parity + legacy retirement (§9.1/9.2); swapping the reassignment/notification ports to real sibling services (§9.3).
 
+### 13. Phase 2 — `folders` domain (implementation) — core trio complete
+- **Change:** `folders-domain` (completes companies → users → **folders**). Owns the folder tree, default-folder provisioning, archiving, protected delete, and per-folder access grants.
+- **What:** contracts (`packages/contracts/folders.ts` — create/update/move + access create/update with the user-XOR-group rule + `include_archived`); `packages/db` gains `folders.archived_at`, the `folder_access` table (CHECK: exactly one subject), and a `(company_id, coalesce(parent_id), name)` unique index; `apps/api/src/modules/folders/` = `hierarchy.ts` (the default set as data) + ports + service + `repository.drizzle.ts` + `repository.memory.ts` + cross-domain adapters (`FileLinkPort`, `GroupRefPort`) + router; mounted under `/api` behind **`FOLDERS_MODULE_ENABLED`** (folder + access routes only; document sub-routes stay on legacy).
+- **Key rules ported:** tenant-scoped tree/list with archived filter, create/update/move, soft-delete archive/restore, **idempotent default-folder provisioning via a unique index + `onConflictDoNothing`** (replacing the legacy in-process mutex, D2), **file-link-protected hard delete** (409 if linked to a Key Report, else delete cascades access, D3/D5), and per-folder access grants (broker/admin only, exactly-one-subject, D4). Supabase/`pg` fallback dropped.
+- **Trio payoff (D6):** the real `FolderProvisioningPort` now backs `companies` — `createFolderProvisioningPort(db)` is injected into `createCompaniesModule` when both modules are enabled (server.ts §9.2).
+- **Verification:** api **115/115** tests (18 folders: 7 service w/ in-memory repo + fake ports, 4 integration incl. **real idempotent provisioning** + the **409 file-link guard** + access cascade against real Postgres/PGlite; +7 contract); coverage ≥90% on the module; contracts 23/23, db 8/8; typecheck + lint clean; `openspec validate --all --strict` green.
+- **Infra note:** the growing suite now runs test files **sequentially** (`vitest.config.ts fileParallelism:false`, 30s timeout) so many embedded-Postgres + Better Auth instances don't contend under load.
+- **Deferred:** staging parity + legacy folder/access retirement (§9.1/9.3) — legacy stays the rollback target; document handlers remain for the uploads phase.
+
 ## Decisions (ADR index)
 
 | ADR | Decision | Reason (one line) |

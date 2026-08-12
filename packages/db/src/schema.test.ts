@@ -1,5 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { brokerTeamInvites, companies, users, emailVerifications, userCompanies } from "./schema.js";
+import { brokerTeamInvites, companies, folderAccess, folders, users, emailVerifications, userCompanies } from "./schema.js";
+
+describe("@datahub/db schema (folders slice)", () => {
+  it("adds archived_at to folders", () => {
+    expect(folders.archivedAt.name).toBe("archived_at");
+  });
+  it("models the folder_access grant table", () => {
+    expect(folderAccess.folderId.name).toBe("folder_id");
+    expect(folderAccess.userId.name).toBe("user_id");
+    expect(folderAccess.groupId.name).toBe("group_id");
+    expect(folderAccess.canRead.name).toBe("can_read");
+    expect(folderAccess.canDownload.name).toBe("can_download");
+  });
+});
 
 describe("@datahub/db schema (users slice)", () => {
   it("models the multi-role + profile columns", () => {
