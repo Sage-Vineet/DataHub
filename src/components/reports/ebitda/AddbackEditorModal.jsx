@@ -42,6 +42,10 @@ export default function AddbackEditorModal({
   typeOptions = [],
   accountOptions = [],
   vendorOptions = [],
+  // Key Reports path: account -> vendor names, for dropdown narrowing ONLY.
+  // Kept separate from referenceIndex so it can never reach applyReferenceValues
+  // and change a calculated adjustment value.
+  vendorsByAccount = null,
   referenceIndex = null,
   fallbackLookup = null,
   isSaving = false,
@@ -52,14 +56,23 @@ export default function AddbackEditorModal({
 
   const vendorsForAccount = useMemo(() => {
     const accountName = draft.linkedAccountName || draft.name || "";
+    // Two narrowing sources, same meaning:
+    //   * referenceIndex.accountMap — the Manual GL path (unchanged);
+    //   * vendorsByAccount          — the Key Reports path, supplied as its own
+    //     prop precisely so it never reaches applyReferenceValues, which would
+    //     treat a referenceIndex as a source of transactions and rebuild
+    //     adjustment values from it.
     const accountEntry = referenceIndex?.accountMap?.get(accountName);
-    if (!accountEntry) return vendorOptions || [];
-    const accountVendorNames = Array.from(accountEntry.vendors?.keys?.() || []);
+    const accountVendorNames = accountEntry
+      ? Array.from(accountEntry.vendors?.keys?.() || [])
+      : (vendorsByAccount?.get?.(accountName) || []);
+    // No account selected, or an account with no vendor attribution: show the
+    // full list rather than an empty dropdown.
     if (!accountVendorNames.length) return vendorOptions || [];
     return (vendorOptions || []).filter((vendor) =>
       accountVendorNames.includes(vendor.label),
     );
-  }, [draft.linkedAccountName, draft.name, referenceIndex, vendorOptions]);
+  }, [draft.linkedAccountName, draft.name, referenceIndex, vendorsByAccount, vendorOptions]);
 
   const updateDraft = (updater) => {
     setDraft((current) => {

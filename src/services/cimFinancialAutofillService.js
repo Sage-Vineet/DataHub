@@ -1301,8 +1301,9 @@ function canonicalBalanceSheetMetricName(item) {
 }
 
 function rankBalanceSheetMetricItem(item) {
-  if (item?.hasChildren) return 5;
-  if (isBalanceSheetTotalItem(item)) return 4;
+  if (item?.type === "total" && !item?.hasChildren) return 6;
+  if (item?.hasChildren) return 4;
+  if (isBalanceSheetTotalItem(item)) return 5;
   if (item?.type === "leaf" || !item?.type || item?.type === "data") return 3;
   return 1;
 }

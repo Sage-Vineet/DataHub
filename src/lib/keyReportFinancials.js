@@ -30,7 +30,12 @@ const MONTHS_SHORT = [
 // v3: the Profit & Loss now renders from statement.statementBlocks. A cached v2
 // payload predates that field, so a tab holding one would render an empty P&L
 // for its whole session against a fully correct backend.
-const FINANCIALS_STORAGE_PREFIX = "datahub-key-reports-financials-v3";
+// v4: the Balance Sheet renders from anchor-stripped section hierarchies plus
+// the new sectionLabel/totalLabel/liabilitiesAndEquity fields. A cached v3
+// payload still carries the GAAP anchor containers, so a tab holding one would
+// keep drawing the duplicated "Total Liabilities and Equity"/"Total Equity"
+// rows for its whole session against fully fixed code.
+const FINANCIALS_STORAGE_PREFIX = "datahub-key-reports-financials-v4";
 
 function financialsKey(clientId, versionId) {
   return `${FINANCIALS_STORAGE_PREFIX}:${clientId || "default"}:${versionId}`;
@@ -369,27 +374,91 @@ function buildEntityIndex(entries, cols) {
   };
 }
 
+// ── Balance Sheet ────────────────────────────────────────────────────────────
+//
+// Structurally identical to buildProfitAndLoss below: each section is a
+// hierarchySectionNode — an expandable header, the client's OWN document-driven
+// category tree beneath it, and exactly ONE calculated total row closing it.
+//
+//   Assets                                 ← section header (no amount)
+//     Current Assets > … > Total Current Assets
+//     Other Assets   > … > Total Other Assets
+//     Total Assets                         ← the one calculated total
+//   Liabilities and Equity                 ← shared section header
+//     Liabilities > … > Total Liabilities
+//     Equity      > … > Total Equity
+//     Total Liabilities and Equity         ← the one calculated total
+//
+// The section trees arrive already stripped of their fixed GAAP anchors
+// (financialStatementService's BS_ANCHOR_DEPTH, the same treatment the P&L
+// sections have always had), so a structural COA anchor can no longer surface
+// as a report row at all — which is what previously rendered "Total
+// Liabilities and Equity" and "Total Equity" several times each: once as an
+// anchor header, once as that anchor's synthesized rollup child, and once more
+// per type because liabilities and equity share a root anchor but are built
+// independently.
+//
+// Every figure is read straight off the statement the backend already
+// computed. This function performs no accounting arithmetic, so no balance can
+// shift and nothing can be double-counted by a structural row appearing twice.
 function buildBalanceSheet(entries, cols) {
   const colKey = (i) => cols[i].key;
   const per = (pick) => entries.map((e, i) => ({ colKey: colKey(i), value: pick(e.statement || {}) }));
-
-  // The backend's hierarchy root is already self-describing (its own name
-  // comes straight from chart_of_accounts level_1, e.g. "Total Assets") and
-  // already carries its own rolled-up "Total …" child — used directly as the
-  // top-level row(s), with no extra hardcoded "Assets"/"Liabilities" wrapper
-  // or redundant appended total layered on top of it.
+  // Section labels come from the backend, which derives them from the anchor
+  // labels actually present in this client's own stored hierarchy — never
+  // hardcoded here. The fallbacks only apply to a period with no statement at
+  // all (a gap-filled empty column), where there is no anchor to read.
+  const label = (pick, fallback) => {
+    for (const e of entries) {
+      const v = pick(e.statement || {});
+      if (v) return v;
+    }
+    return fallback;
+  };
   // Balance Sheet accounts get the same counterparty sub-rows as P&L when the
   // period carries them — the payload shape is identical, so no separate path.
   const entityIndex = buildEntityIndex(entries, cols);
-  const assetRows  = mergeDynamicHierarchy(entries, colKey, (s) => s.assets?.hierarchy, "bs-a", entityIndex);
-  const liabRows   = mergeDynamicHierarchy(entries, colKey, (s) => s.liabilities?.hierarchy, "bs-l", entityIndex);
-  // Same genuine, arbitrary-depth merge as assets/liabilities above — equity's
-  // own document sub-headings (e.g. "Owner's Equity" > "Capital") survive as
-  // real nested rows instead of collapsing into one flat account list.
-  const equityRows = mergeDynamicHierarchy(entries, colKey, (s) => s.equity?.hierarchy, "bs-eq", entityIndex);
-  const tle = totalRow("bs-tle", "Total Liabilities and Equity", per((s) => s.totalLiabilitiesAndEquity));
 
-  return { rows: [...assetRows, ...liabRows, ...equityRows, tle], columns: { yearCols: cols } };
+  const assets = hierarchySectionNode(
+    "bs-a", label((s) => s.assets?.sectionLabel, "Assets"),
+    entries, colKey, (s) => s.assets?.hierarchy,
+    label((s) => s.assets?.totalLabel, "Total Assets"),
+    per((s) => s.totalAssets), entityIndex,
+  );
+  const liabilities = hierarchySectionNode(
+    "bs-l", label((s) => s.liabilities?.sectionLabel, "Liabilities"),
+    entries, colKey, (s) => s.liabilities?.hierarchy,
+    label((s) => s.liabilities?.totalLabel, "Total Liabilities"),
+    per((s) => s.totalLiabilities), entityIndex,
+  );
+  // Equity's own document sub-headings (e.g. "Marigold Partners Inc. (55%)")
+  // survive as real nested rows instead of collapsing into a flat account list.
+  const equity = hierarchySectionNode(
+    "bs-eq", label((s) => s.equity?.sectionLabel, "Equity"),
+    entries, colKey, (s) => s.equity?.hierarchy,
+    label((s) => s.equity?.totalLabel, "Total Equity"),
+    per((s) => s.totalEquity), entityIndex,
+  );
+  // Liabilities and Equity share ONE anchor in the COA, so they render as one
+  // section closing with the single accounting-equation total — not as two
+  // independent same-named roots.
+  const liabilitiesAndEquity = {
+    id: "bs-le",
+    name: label((s) => s.liabilitiesAndEquity?.sectionLabel, "Liabilities and Equity"),
+    type: "header",
+    amounts: {},
+    children: [
+      liabilities,
+      equity,
+      totalRow(
+        "bs-le-total",
+        label((s) => s.liabilitiesAndEquity?.totalLabel, "Total Liabilities and Equity"),
+        per((s) => s.totalLiabilitiesAndEquity),
+      ),
+    ],
+  };
+
+  return { rows: [assets, liabilitiesAndEquity], columns: { yearCols: cols } };
 }
 
 // Cash-flow activity section. Monthly items are plain {name, amount}; yearly

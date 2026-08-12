@@ -1892,6 +1892,25 @@ export function ignoreHierarchyRecommendation(recommendationId) {
   });
 }
 
+// Apply an AI reasonableness recommendation. Returns 409 when the account has
+// changed since the recommendation was generated — a stale proposal must be
+// regenerated, never applied over a newer user edit.
+export function applyHierarchyRecommendation(recommendationId) {
+  return request(`/key-reports/hierarchy-recommendations/${recommendationId}/apply`, {
+    method: 'POST',
+    body: {},
+  });
+}
+
+// Reject a recommendation. The Chart of Accounts is left untouched; only the
+// decision (and an optional reason) is recorded, for audit.
+export function rejectHierarchyRecommendation(recommendationId, reason = null) {
+  return request(`/key-reports/hierarchy-recommendations/${recommendationId}/reject`, {
+    method: 'POST',
+    body: reason ? { reason } : {},
+  });
+}
+
 // COA-mapped financial statements (monthly + yearly P&L and Balance Sheet).
 export function getFinancialStatements(versionId, { year, currency } = {}) {
   const params = new URLSearchParams();
@@ -1906,6 +1925,20 @@ export function getFinancialStatements(versionId, { year, currency } = {}) {
 // the full financial-statements payload.
 export function getKeyReportAvailablePeriods(versionId) {
   return request(`/key-reports/versions/${versionId}/available-periods`);
+}
+
+// Vendor reference data for a Key Reports version, read straight from
+// general_ledger_entries (see backend keyReportVendorService). Powers the EBITDA
+// adjustment editor's Vendor Scope control, which previously had no Key Reports
+// source at all and always showed "No vendors found".
+//   account — restrict to the vendors that posted to one account
+//   field   — "vendor" (default) or "customer"
+export function getKeyReportVendors(versionId, { account, field } = {}) {
+  const params = new URLSearchParams();
+  if (account) params.set("account", account);
+  if (field) params.set("field", field);
+  const qs = params.toString();
+  return request(`/key-reports/versions/${versionId}/vendors${qs ? `?${qs}` : ""}`);
 }
 
 export function listFolderAccess(folderId) {

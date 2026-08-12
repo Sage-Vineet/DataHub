@@ -3587,12 +3587,10 @@ function leafCategoryKey(levelsArr) {
  * before (pathArr/label/parentKey/depth/accountType/statementType) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the one
  * change is the key: normPathKey instead of a raw, case-sensitive join.
  */
-function buildCoaNodeTree(leaves) {
+function buildCoaNodeTree(leaves, extraCategoryPaths = []) {
   const nodes = new Map();
-  for (const leaf of leaves) {
-    const path = (leaf.levels || []).filter(Boolean);
-    if (path.length <= 1) continue;
-    const catLabels = path.slice(0, -1);
+
+  const addChain = (catLabels, accountType, statementType) => {
     for (let i = 0; i < catLabels.length; i += 1) {
       const prefixArr = catLabels.slice(0, i + 1);
       const key = normPathKey(prefixArr);
@@ -3602,11 +3600,37 @@ function buildCoaNodeTree(leaves) {
         label: prefixArr[prefixArr.length - 1],
         parentKey: i === 0 ? null : normPathKey(prefixArr.slice(0, -1)),
         depth: prefixArr.length,
-        accountType: leaf.accountType,
-        statementType: leaf.statementType,
+        accountType,
+        statementType,
       });
     }
+  };
+
+  // The generated, document-driven hierarchy: every category implied by an
+  // account's own resolved path. Processed FIRST so a category that both a
+  // leaf path and an explicit submission describe keeps the leaf's
+  // accountType/statementType -- the generated hierarchy stays the source of
+  // truth, and an explicit submission can only ever ADD to it.
+  for (const leaf of leaves) {
+    const path = (leaf.levels || []).filter(Boolean);
+    if (path.length <= 1) continue;
+    addChain(path.slice(0, -1), leaf.accountType, leaf.statementType);
   }
+
+  // Categories submitted explicitly by the client tree (deserializeApproved
+  // Tree). Every category that already holds an account is redundant here --
+  // the loop above produced it. This exists for the ONE case that loop cannot
+  // see: a parent the user created that holds no account yet. Nothing
+  // references it, so without this it would be silently dropped on Save and
+  // the user's edit would vanish. Represented as an ordinary is_group row in
+  // the SAME chart_of_accounts tree as every other category -- no parallel
+  // "custom parents" table, no duplicated hierarchy.
+  for (const cat of extraCategoryPaths || []) {
+    const pathArr = (cat?.pathArr || []).filter(Boolean);
+    if (!pathArr.length) continue;
+    addChain(pathArr, cat.accountType, cat.statementType);
+  }
+
   return nodes;
 }
 
@@ -3918,7 +3942,34 @@ function deserializeApprovedTree(nodes) {
       userEdited,
     });
   }
-  return { hierarchical, violations };
+
+  // CATEGORY nodes normally need no handling of their own: buildCoaNodeTree
+  // re-derives every one of them from its descendant accounts' resolved paths.
+  // The single exception is a parent the USER created that holds no account
+  // yet -- no leaf path mentions it, so it would be silently dropped on Save.
+  // Collecting each submitted category's own resolved path lets
+  // buildCoaNodeTree materialize that case too, while leaving the generated
+  // hierarchy exactly as the leaves describe it.
+  const categoryPaths = [];
+  for (const n of nodes || []) {
+    if (n.nodeType !== "CATEGORY") continue;
+    const { chain, error } = walkNodeAncestry(nodesByKey, n.key);
+    // An unreachable/cyclic/too-deep category simply isn't persisted; the
+    // ACCOUNT loop above already raises a violation for any account affected
+    // by the same broken ancestry, so this never hides a real problem.
+    if (error || chain.length > MAX_LEVELS) continue;
+    // A category can never live under a posting account (the "leaf used as a
+    // parent" rule validateCoaNodeTree enforces) -- skip rather than encode an
+    // impossible path.
+    if (chain.some((c) => c.nodeType === "ACCOUNT")) continue;
+    categoryPaths.push({
+      pathArr: chain.map((c) => c.label),
+      accountType: n.accountType || null,
+      statementType: n.statementType || null,
+    });
+  }
+
+  return { hierarchical, categoryPaths, violations };
 }
 
 /**
@@ -3962,13 +4013,13 @@ function validateFinalCoaTree(nodes) {
     }
   }
 
-  const { hierarchical, violations: graphViolations } = deserializeApprovedTree(nodes);
+  const { hierarchical, categoryPaths, violations: graphViolations } = deserializeApprovedTree(nodes);
   const violations = [...enumViolations, ...graphViolations];
   if (violations.length) {
-    return { valid: false, violations, hierarchical };
+    return { valid: false, violations, hierarchical, categoryPaths };
   }
 
-  const desiredCats = buildCoaNodeTree(hierarchical);
+  const desiredCats = buildCoaNodeTree(hierarchical, categoryPaths);
   const structural = validateCoaNodeTree(desiredCats, hierarchical);
   const consistencyIssues = validateHierarchyConsistency(hierarchical);
   const allViolations = [
@@ -3977,7 +4028,10 @@ function validateFinalCoaTree(nodes) {
       `"${i.accountName}" (${i.accountType}) is anchored under "${i.actualPrefix.filter(Boolean).join(" > ") || "(none)"}" -- expected to start with "${i.expectedPrefix.join(" > ")}".`),
   ];
   const valid = structural.hierarchyValid && consistencyIssues.length === 0;
-  return { valid, violations: allViolations, hierarchical, structural };
+  // categoryPaths travels with hierarchical so the caller can hand BOTH to
+  // persistApprovedCoaTree -- otherwise a user-created empty parent would
+  // validate cleanly here and then be dropped at persist time.
+  return { valid, violations: allViolations, hierarchical, categoryPaths, structural };
 }
 
 /**
@@ -5178,7 +5232,13 @@ async function persistApprovedCoaTree(companyId, versionId, hierarchical, opts =
     existingByKey.set(accountKey(row.account_number, row.account_name, row.metadata?.section_discriminator), row);
   }
 
-  const desiredCats = buildCoaNodeTree(hierarchical);
+  // opts.categoryPaths carries the categories the submitted tree stated
+  // explicitly (validateFinalCoaTree -> deserializeApprovedTree). It matters
+  // only for a user-created parent that holds no account yet -- every other
+  // category is re-derived from the leaves. Absent (e.g. the generate-time
+  // caller, which has no user edits) this is simply an empty list and the
+  // behaviour is byte-for-byte what it was.
+  const desiredCats = buildCoaNodeTree(hierarchical, opts.categoryPaths || []);
   const structuralValidation = validateCoaNodeTree(desiredCats, hierarchical);
   if (!structuralValidation.hierarchyValid) {
     return { rejected: true, code: "HIERARCHY_INVALID", violations: structuralValidation.violations, structuralValidation };

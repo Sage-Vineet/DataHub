@@ -108,6 +108,54 @@ function collapseConsecutive(arr) {
 }
 const PL_ANCHOR_DEPTH = collapseConsecutive(fixedPrefixFor("income")).length;
 
+// The SAME computation, per Balance Sheet account type. Every Balance Sheet
+// leaf's stored hierarchy_path begins with its type's fixed GAAP anchor
+// (chartOfAccountsService.fixedPrefixFor) — structural scaffolding the COA
+// needs for classification, NOT report rows:
+//
+//   asset      Total Assets
+//   liability  Total Liabilities and Equity > Total Liabilities
+//   equity     Total Liabilities and Equity > Total Equity > Equity
+//
+// Rendering those anchors as tree nodes is what produced the duplicated
+// "Total Liabilities and Equity" / "Total Equity" rows: mergeDynamicHierarchy
+// draws every container once as a header AND appends a synthesized rollup
+// child for it, so an anchor whose own name already states a total appeared
+// twice; and because liabilities and equity are built independently while
+// SHARING a root anchor, that shared root was drawn twice more as sibling
+// headers. The anchors carry no information the report doesn't already hold —
+// the section structure and every section total are computed separately in
+// buildBsStatement — so they are skipped here exactly as the Profit & Loss
+// already skips its own anchor via PL_ANCHOR_DEPTH. Nothing about the COA,
+// its levels, or any amount changes: this only stops the report from drawing
+// classification scaffolding as if it were financial totals.
+const BS_ANCHOR_DEPTH = {
+  asset: collapseConsecutive(fixedPrefixFor("asset")).length,
+  liability: collapseConsecutive(fixedPrefixFor("liability")).length,
+  equity: collapseConsecutive(fixedPrefixFor("equity")).length,
+};
+
+// Display labels for one report section, derived from the structural anchor
+// that buildDynamicHierarchy actually removed — never from scanning account
+// names for the word "total".
+//
+//   sectionLabel  the expandable group header      ("Assets", "Liabilities")
+//   totalLabel    the ONE calculated total row     ("Total Assets", …)
+//
+// A leading "Total " is dropped for the header and guaranteed for the total so
+// a section header and its own total row can never render as identical text —
+// which is the duplicate-row symptom itself. This is display FORMATTING of a
+// node already identified STRUCTURALLY as the anchor; the identification never
+// looks at the label, so a company using entirely different wording still gets
+// its own words, correctly split into a header and a total.
+const stripTotalPrefix = (s) => String(s || "").replace(/^\s*total\s+/i, "").trim();
+function anchorSectionLabels(anchorLabels, fallbackAnchor, index = -1) {
+  const src = (anchorLabels && anchorLabels.length ? anchorLabels : fallbackAnchor) || [];
+  const concept = (index < 0 ? src[src.length - 1] : src[index]) || "";
+  const base = stripTotalPrefix(concept) || concept;
+  return { sectionLabel: base, totalLabel: base ? `Total ${base}` : "" };
+}
+
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
 const safeNum = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
@@ -728,6 +776,12 @@ function buildDynamicHierarchy(accs, skipContainers = 0) {
   const roots = [];
   const rootIndex = new Map();
   const expectedByLeafId = new Map(); // leaf id -> { account, coaLevels, expectedPath }
+  // The anchor labels actually removed by skipContainers, taken from the DATA
+  // rather than the code-defined constant. They normally agree (validate
+  // HierarchyConsistency enforces the anchor), but the stored path is the more
+  // honest source for naming the report's sections — a client whose anchor
+  // reads differently still sees their own wording.
+  let anchorLabels = [];
 
   for (const n of accs) {
     const own = displayName(n);
@@ -759,7 +813,11 @@ function buildDynamicHierarchy(accs, skipContainers = 0) {
     // which stand in for the shared Total Liabilities and Equity > Total
     // Equity accounting-equation bridge) — everything AFTER the anchor is
     // still the untouched, document-driven category chain.
-    if (skipContainers > 0) containers = containers.slice(skipContainers);
+    if (skipContainers > 0) {
+      const removed = containers.slice(0, skipContainers);
+      if (removed.length > anchorLabels.length) anchorLabels = removed;
+      containers = containers.slice(skipContainers);
+    }
 
     let siblings = roots;
     let index = rootIndex;
@@ -826,7 +884,7 @@ function buildDynamicHierarchy(accs, skipContainers = 0) {
     rest.children = node.children.map(strip);
     return rest;
   };
-  return { tree: roots.map(strip), verification };
+  return { tree: roots.map(strip), verification, anchorLabels };
 }
 
 /**
@@ -913,9 +971,14 @@ function buildBsStatement(leaves, byId) {
   // function shared by every section of every statement (see its own doc
   // comment above) — chart_of_accounts level_1..level_15 is the only source
   // of truth for the Balance Sheet AND the Profit & Loss alike.
-  const assetHierarchyResult = buildDynamicHierarchy(assets);
-  const liabHierarchyResult = buildDynamicHierarchy(liabilities);
-  const equityHierarchyResult = buildDynamicHierarchy(equities);
+  // Anchor levels skipped per type (BS_ANCHOR_DEPTH above) so each section's
+  // tree starts at the client's OWN first real category — "Current Assets",
+  // "Current Liabilities", "Marigold Partners Inc. (55%)" — instead of at the
+  // shared GAAP scaffolding, which the report re-expresses itself as section
+  // headers plus exactly one calculated total each.
+  const assetHierarchyResult = buildDynamicHierarchy(assets, BS_ANCHOR_DEPTH.asset);
+  const liabHierarchyResult = buildDynamicHierarchy(liabilities, BS_ANCHOR_DEPTH.liability);
+  const equityHierarchyResult = buildDynamicHierarchy(equities, BS_ANCHOR_DEPTH.equity);
   logHierarchyRenderVerification("Balance Sheet Assets", assetHierarchyResult.verification);
   logHierarchyRenderVerification("Balance Sheet Liabilities", liabHierarchyResult.verification);
   logHierarchyRenderVerification("Balance Sheet Equity", equityHierarchyResult.verification);
@@ -939,9 +1002,25 @@ function buildBsStatement(leaves, byId) {
   const currentLiab = liabKpiBuckets["Current Liabilities"] || { label: "Current Liabilities", groups: {}, total: 0 };
   const longTermLiab = liabKpiBuckets["Long-Term Liabilities"] || { label: "Long-Term Liabilities", groups: {}, total: 0 };
 
+  // Section/total display labels for the report renderer, derived from the
+  // anchors that were just skipped (see anchorSectionLabels). Liabilities and
+  // Equity share a root anchor — index 0 of either type's anchor — which is
+  // what makes them ONE section closing with ONE accounting-equation total,
+  // instead of the two independent same-named roots that used to render.
+  const assetLabels = anchorSectionLabels(assetHierarchyResult.anchorLabels, fixedPrefixFor("asset"));
+  const liabLabels = anchorSectionLabels(liabHierarchyResult.anchorLabels, fixedPrefixFor("liability"));
+  const equityLabels = anchorSectionLabels(equityHierarchyResult.anchorLabels, fixedPrefixFor("equity"));
+  const leLabels = anchorSectionLabels(
+    liabHierarchyResult.anchorLabels.length ? liabHierarchyResult.anchorLabels : equityHierarchyResult.anchorLabels,
+    fixedPrefixFor("liability"),
+    0,
+  );
+
   return {
     assets: {
       label: assets[0]?.level_1 || "Total Assets",
+      sectionLabel: assetLabels.sectionLabel,
+      totalLabel: assetLabels.totalLabel,
       // Kept for keyReportReportService.js's KPI report (Current Ratio,
       // Working Capital) only — never used for display, see buildDynamicHierarchy.
       currentAssets: { label: currentAssets.label, groups: currentAssets.groups, total: currentAssets.total },
@@ -955,6 +1034,8 @@ function buildBsStatement(leaves, byId) {
     },
     liabilities: {
       label: "Liabilities",
+      sectionLabel: liabLabels.sectionLabel,
+      totalLabel: liabLabels.totalLabel,
       // Kept for the KPI report only — never used for display.
       currentLiabilities: { label: currentLiab.label, groups: currentLiab.groups, total: currentLiab.total },
       longTermLiabilities: { label: longTermLiab.label, groups: longTermLiab.groups, total: longTermLiab.total },
@@ -963,12 +1044,21 @@ function buildBsStatement(leaves, byId) {
     },
     equity: {
       label: "Equity",
+      sectionLabel: equityLabels.sectionLabel,
+      totalLabel: equityLabels.totalLabel,
       accounts: equityAccounts,
       // Genuine N-level tree, same convention as assets/liabilities above —
       // the frontend recurses through this for display; equityAccounts
       // (flat) stays only for the retained-earnings reconciliation.
       hierarchy: equityHierarchyResult.tree,
       total: totalEquity,
+    },
+    // The shared Liabilities-and-Equity section the two types hang under. Its
+    // total is the existing totalLiabilitiesAndEquity below — unchanged, still
+    // totalLiabilities + totalEquity, computed exactly as before.
+    liabilitiesAndEquity: {
+      sectionLabel: leLabels.sectionLabel,
+      totalLabel: leLabels.totalLabel,
     },
     totalAssets,
     totalLiabilities,
@@ -2630,7 +2720,11 @@ const FIN_STMT_CACHE_TYPE = "kr_financial_statements_v1";
 // statement blocks separated by calculated rows). A cached v3 payload has no
 // such field, so the P&L would render empty until the next sync — bump so those
 // entries are ignored rather than served.
-const FIN_STMT_PAYLOAD_VERSION = 4;
+// v5: Balance Sheet section hierarchies are now anchor-stripped (BS_ANCHOR_DEPTH)
+// and carry sectionLabel/totalLabel, plus a new liabilitiesAndEquity block. A
+// cached v4 payload still holds the anchor containers, so it would keep
+// rendering the duplicated total rows against fully fixed code.
+const FIN_STMT_PAYLOAD_VERSION = 5;
 
 /**
  * Is a cached financial-statements row safe to serve?
