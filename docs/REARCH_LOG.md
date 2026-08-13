@@ -155,6 +155,14 @@ DataHub is a multi-tenant M&A / accounting platform (React/Vite SPA + Express/No
 - **Verification:** api **139/139** tests (6 messages: 4 service w/ in-memory repo, 2 integration incl. group membership + watermark unread-count against real Postgres/PGlite); coverage ≥90% on the module; contracts 32/32, db 11/11; typecheck + lint clean; `openspec validate --strict` green.
 - **Deferred:** staging parity + legacy message retirement; group auto-creation; thread/contacts endpoints.
 
+### 17. Phase 2 — `reports` domain, first slice (implementation)
+- **Change:** `reports-domain` — the first slice of the program's biggest decomposition target (the 9,088-line `manualGlMultiYearService` GL engine + Key Reports). Scoped as a new OpenSpec change then built.
+- **What:** migrates the **key-report version lifecycle** (the backbone entity) and draws a clean seam for the compute engine. contracts (`packages/contracts/reports.ts` — version create/update + response); `packages/db` models `key_report_versions` with a **partial-unique active index** (one official version per company); `apps/api/src/modules/reports/` = ports + service + `repository.drizzle.ts` + `repository.memory.ts` + a **`ReportSyncPort` stub** + router mounted under `/api` behind **`REPORTS_MODULE_ENABLED`**.
+- **Key rules ported:** tenant-scoped list, **auto-numbered** create (draft), update, duplicate (→ new inactive draft), **activate** (the single-official-version invariant, transactional), and delete. Only the version-lifecycle routes are defined — **sync / mappings / chart-of-accounts / extracted-data fall through to legacy** (D2). The GL sync is a `ReportSyncPort` that returns **501 ("handled by the legacy engine")** — the explicit decomposition boundary (D5).
+- **Verification:** api **144/144** tests (5 reports: 3 service w/ in-memory repo, 2 integration incl. the transactional one-active-version invariant against real Postgres/PGlite); coverage ≥90% on the module; contracts 34/34, db 12/12; typecheck + lint clean; `openspec validate --strict` green.
+- **Explicit scope boundary:** this is the **first slice**, not the whole reports domain. The GL multi-year computation engine stays on legacy behind the port and is decomposed incrementally in later slices — the safe way to dismantle a 9k-line god-service.
+- **Deferred:** the GL compute/sync engine, chart-of-accounts, mappings, extracted-data; staging parity + legacy version-handler retirement.
+
 ## Decisions (ADR index)
 
 | ADR | Decision | Reason (one line) |

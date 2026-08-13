@@ -15,6 +15,7 @@ import { createFoldersModule, createFolderProvisioningPort } from "./modules/fol
 import { createUploadsModule } from "./modules/uploads/index.js";
 import { createRequestsModule } from "./modules/requests/index.js";
 import { createMessagesModule } from "./modules/messages/index.js";
+import { createReportsModule } from "./modules/reports/index.js";
 import { requireSession } from "./shared/session.js";
 import { parseRoutingTable } from "./routing.js";
 
@@ -68,7 +69,8 @@ function buildModules(): MountedModule[] {
     process.env.FOLDERS_MODULE_ENABLED === "true" ||
     process.env.UPLOADS_MODULE_ENABLED === "true" ||
     process.env.REQUESTS_MODULE_ENABLED === "true" ||
-    process.env.MESSAGES_MODULE_ENABLED === "true";
+    process.env.MESSAGES_MODULE_ENABLED === "true" ||
+    process.env.REPORTS_MODULE_ENABLED === "true";
   if (domainsEnabled) {
     const db = getDb();
     const auth = createBetterAuth({
@@ -114,6 +116,10 @@ function buildModules(): MountedModule[] {
     if (process.env.MESSAGES_MODULE_ENABLED === "true") {
       modules.push({ path: "/api", router: createMessagesModule({ db, requireAuth }).router });
       console.warn("[gateway] messages module ENABLED under /api (message routes)");
+    }
+    if (process.env.REPORTS_MODULE_ENABLED === "true") {
+      modules.push({ path: "/api", router: createReportsModule({ db, requireAuth }).router });
+      console.warn("[gateway] reports module ENABLED under /api (key-report version lifecycle)");
     }
   }
   return modules;

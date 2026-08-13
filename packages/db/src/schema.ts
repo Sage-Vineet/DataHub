@@ -5,6 +5,7 @@ import {
   customType,
   date,
   integer,
+  jsonb,
   pgEnum,
   pgTable,
   primaryKey,
@@ -361,4 +362,34 @@ export const groupMessageReads = pgTable(
     lastReadAt: timestamp("last_read_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({ pk: primaryKey({ columns: [t.groupId, t.userId] }) }),
+);
+
+
+/** Key Report versions (reports-domain). Exactly one active version per company (partial unique). */
+export const keyReportVersions = pgTable(
+  "key_report_versions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    versionNumber: integer("version_number").notNull(),
+    versionName: text("version_name"),
+    status: text("status").notNull().default("draft"),
+    isActive: boolean("is_active").notNull().default(false),
+    resolvedBatchId: uuid("resolved_batch_id"),
+    resolvedDatasetVersion: integer("resolved_dataset_version"),
+    lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
+    metadata: jsonb("metadata").notNull().default({}),
+    createdBy: uuid("created_by"),
+    updatedBy: uuid("updated_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    companyNumber: uniqueIndex("key_report_versions_company_number_uq").on(t.companyId, t.versionNumber),
+    oneActive: uniqueIndex("key_report_versions_one_active_uq")
+      .on(t.companyId)
+      .where(sql`${t.isActive}`),
+  }),
 );

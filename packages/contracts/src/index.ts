@@ -91,3 +91,11 @@ export type {
   GroupResponse,
   UnreadCountResponse,
 } from "./messages.js";
+
+export * as reports from "./reports.js";
+export type {
+  ReportVersionStatus,
+  ReportVersionCreate,
+  ReportVersionUpdate,
+  ReportVersionResponse,
+} from "./reports.js";

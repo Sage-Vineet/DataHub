@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { brokerTeamInvites, companies, companyMessages, directMessages, documentActivity, documents, folderAccess, folders, groupMessageReads, groupMessages, messageGroupMembers, messageGroups, requestDocuments, requestNarratives, requestReminders, requests, uploads, users, emailVerifications, userCompanies } from "./schema.js";
 
+import { keyReportVersions } from "./schema.js";
+describe("@datahub/db schema (reports slice)", () => {
+  it("models key_report_versions", () => {
+    expect(keyReportVersions.versionNumber.name).toBe("version_number");
+    expect(keyReportVersions.isActive.name).toBe("is_active");
+    expect(keyReportVersions.resolvedBatchId.name).toBe("resolved_batch_id");
+    expect(keyReportVersions.metadata.name).toBe("metadata");
+  });
+});
+
 describe("@datahub/db schema (messages slice)", () => {
   it("models the six message tables", () => {
     expect(companyMessages.senderId.name).toBe("sender_id");
