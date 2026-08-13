@@ -64,3 +64,18 @@ export type {
   DocumentActivityCreate,
   DocumentActivityResponse,
 } from "./uploads.js";
+
+export * as requests from "./requests.js";
+export { resolveReminderFrequencyDays } from "./requests.js";
+export type {
+  RequestPriority,
+  RequestCreate,
+  RequestUpdate,
+  RequestBulkCreate,
+  RequestApprove,
+  NarrativeUpdate,
+  RequestDocumentLink,
+  RequestListQuery,
+  RequestResponse,
+  ReminderResponse,
+} from "./requests.js";

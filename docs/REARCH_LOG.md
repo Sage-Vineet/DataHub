@@ -140,6 +140,14 @@ DataHub is a multi-tenant M&A / accounting platform (React/Vite SPA + Express/No
 - **Verification:** api **125/125** tests (10 uploads: 6 service w/ in-memory storage/repo/folder-ref, 4 integration incl. a **binary bytea store→stream round-trip** + document CRUD/archive + activity cascade against real Postgres/PGlite); coverage **91.5% stmts / 82% branch**; contracts 26/26, db 9/9; typecheck + lint clean; `openspec validate --all --strict` green.
 - **Deferred:** staging parity + legacy upload/document retirement (§9.1/9.2); object-store backend (behind `StoragePort`); manual-GL upload orchestration (reports/quickbooks phases).
 
+### 15. Phase 2 — `requests` domain (implementation)
+- **Change:** `requests-domain` (broker↔client work items). Scoped as a new OpenSpec change then built.
+- **What:** contracts (`packages/contracts/requests.ts` — enums + create/update/bulk/approve/narrative/reminder/doc-link + the priority→reminder-frequency helper); `packages/db` models `requests` (full), `request_reminders`, `request_narratives`, `request_documents`; `apps/api/src/modules/requests/` = ports + service + `repository.drizzle.ts` + `repository.memory.ts` + router mounted under `/api` behind **`REQUESTS_MODULE_ENABLED`**.
+- **Key rules ported:** validated create (enums + future due-date) with **priority-driven reminder frequency** (critical/high→1, medium→2, low→7, explicit override honored), single + **transactional bulk** create, update (re-derives frequency on priority change), approval flow, delete (cascades reminders/narrative/doc-links), 1:1 narrative upsert, append-only reminder log, and request→document links. Reminder *delivery* is out of scope. Drizzle-only (dual path dropped).
+- **Verification:** api **133/133** tests (8 requests: 6 service w/ in-memory repo, 2 integration incl. bulk + approve + narrative upsert + reminder + doc-link + cascade delete against real Postgres/PGlite); coverage ≥90% on the module; contracts 30/30, db 10/10; typecheck + lint clean; `openspec validate --strict` green.
+- **Infra:** vitest switched from fully-sequential to **bounded parallelism** (3 forks) — the growing suite finishes quickly without the embedded-Postgres contention that caused earlier flakes.
+- **Deferred:** staging parity + legacy request retirement; reminder delivery (email/cron).
+
 ## Decisions (ADR index)
 
 | ADR | Decision | Reason (one line) |

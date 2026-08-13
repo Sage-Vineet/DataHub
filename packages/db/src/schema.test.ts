@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { brokerTeamInvites, companies, documentActivity, documents, folderAccess, folders, uploads, users, emailVerifications, userCompanies } from "./schema.js";
+import { brokerTeamInvites, companies, documentActivity, documents, folderAccess, folders, requestDocuments, requestNarratives, requestReminders, requests, uploads, users, emailVerifications, userCompanies } from "./schema.js";
+
+describe("@datahub/db schema (requests slice)", () => {
+  it("models requests + reminders/narratives/documents", () => {
+    expect(requests.reminderFrequencyDays.name).toBe("reminder_frequency_days");
+    expect(requests.approvalStatus.name).toBe("approval_status");
+    expect(requests.dueDate.name).toBe("due_date");
+    expect(requestReminders.sentBy.name).toBe("sent_by");
+    expect(requestNarratives.requestId.name).toBe("request_id");
+    expect(requestDocuments.documentId.name).toBe("document_id");
+  });
+});
 
 describe("@datahub/db schema (uploads slice)", () => {
   it("models uploads (bytea blob), documents, and document_activity", () => {

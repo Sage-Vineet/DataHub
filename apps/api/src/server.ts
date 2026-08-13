@@ -13,6 +13,7 @@ import { createCompaniesModule } from "./modules/companies/index.js";
 import { createUsersModule } from "./modules/users/index.js";
 import { createFoldersModule, createFolderProvisioningPort } from "./modules/folders/index.js";
 import { createUploadsModule } from "./modules/uploads/index.js";
+import { createRequestsModule } from "./modules/requests/index.js";
 import { requireSession } from "./shared/session.js";
 import { parseRoutingTable } from "./routing.js";
 
@@ -64,7 +65,8 @@ function buildModules(): MountedModule[] {
     process.env.COMPANIES_MODULE_ENABLED === "true" ||
     process.env.USERS_MODULE_ENABLED === "true" ||
     process.env.FOLDERS_MODULE_ENABLED === "true" ||
-    process.env.UPLOADS_MODULE_ENABLED === "true";
+    process.env.UPLOADS_MODULE_ENABLED === "true" ||
+    process.env.REQUESTS_MODULE_ENABLED === "true";
   if (domainsEnabled) {
     const db = getDb();
     const auth = createBetterAuth({
@@ -102,6 +104,10 @@ function buildModules(): MountedModule[] {
     if (process.env.UPLOADS_MODULE_ENABLED === "true") {
       modules.push({ path: "/api", router: createUploadsModule({ db, requireAuth }).router });
       console.warn("[gateway] uploads module ENABLED under /api (upload + document routes)");
+    }
+    if (process.env.REQUESTS_MODULE_ENABLED === "true") {
+      modules.push({ path: "/api", router: createRequestsModule({ db, requireAuth }).router });
+      console.warn("[gateway] requests module ENABLED under /api (request routes)");
     }
   }
   return modules;

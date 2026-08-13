@@ -4,9 +4,11 @@ export default defineConfig({
   test: {
     include: ["src/**/*.test.ts"],
     // Integration tests spin up embedded Postgres (PGlite/WASM) + Better Auth
-    // crypto. Run test files sequentially with a generous timeout so many heavy
-    // instances don't contend for memory/CPU and time out under load.
-    fileParallelism: false,
+    // crypto. Bound worker concurrency (not fully sequential) so many heavy
+    // instances don't contend for memory/CPU and time out — while still finishing
+    // the growing suite quickly.
+    pool: "forks",
+    poolOptions: { forks: { minForks: 1, maxForks: 3 } },
     testTimeout: 30_000,
     hookTimeout: 30_000,
     coverage: {

@@ -219,3 +219,75 @@ export const documentActivity = pgTable("document_activity", {
   action: text("action").notNull(),
   at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const requestCategoryEnum = pgEnum("request_category", [
+  "Finance",
+  "Legal",
+  "Compliance",
+  "HR",
+  "Tax",
+  "M&A",
+  "Other",
+]);
+export const responseTypeEnum = pgEnum("response_type", ["Upload", "Narrative", "Both"]);
+export const requestPriorityEnum = pgEnum("request_priority", ["critical", "high", "medium", "low"]);
+export const requestStatusEnum = pgEnum("request_status", ["pending", "in-review", "completed", "blocked"]);
+export const approvalStatusEnum = pgEnum("approval_status", ["pending", "approved"]);
+
+/** Broker↔client requests (requests-domain). */
+export const requests = pgTable("requests", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  companyId: uuid("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  title: text("title").notNull(),
+  subLabel: text("sub_label"),
+  description: text("description").notNull(),
+  category: requestCategoryEnum("category").notNull(),
+  responseType: responseTypeEnum("response_type").notNull(),
+  priority: requestPriorityEnum("priority").notNull(),
+  status: requestStatusEnum("status").notNull().default("pending"),
+  dueDate: date("due_date").notNull(),
+  assignedTo: uuid("assigned_to"),
+  visible: boolean("visible").notNull().default(true),
+  reminderFrequencyDays: integer("reminder_frequency_days").notNull().default(7),
+  submissionSource: text("submission_source").notNull().default("broker"),
+  approvalStatus: approvalStatusEnum("approval_status").notNull().default("approved"),
+  approvedBy: uuid("approved_by"),
+  approvedAt: timestamp("approved_at", { withTimezone: true }),
+  createdBy: uuid("created_by").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const requestReminders = pgTable("request_reminders", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  requestId: uuid("request_id")
+    .notNull()
+    .references(() => requests.id, { onDelete: "cascade" }),
+  sentBy: uuid("sent_by").notNull(),
+  sentAt: timestamp("sent_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const requestNarratives = pgTable("request_narratives", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  requestId: uuid("request_id")
+    .notNull()
+    .unique()
+    .references(() => requests.id, { onDelete: "cascade" }),
+  content: text("content").notNull(),
+  updatedBy: uuid("updated_by").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const requestDocuments = pgTable("request_documents", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  requestId: uuid("request_id")
+    .notNull()
+    .references(() => requests.id, { onDelete: "cascade" }),
+  documentId: uuid("document_id")
+    .notNull()
+    .references(() => documents.id, { onDelete: "cascade" }),
+  visible: boolean("visible").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
