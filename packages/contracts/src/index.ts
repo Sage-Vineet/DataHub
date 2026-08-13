@@ -53,3 +53,14 @@ export type {
   FolderAccessResponse,
   FolderListQuery,
 } from "./folders.js";
+
+export * as uploads from "./uploads.js";
+export type {
+  DocumentStatus,
+  DocumentCreate,
+  DocumentListQuery,
+  UploadResponse,
+  DocumentResponse,
+  DocumentActivityCreate,
+  DocumentActivityResponse,
+} from "./uploads.js";

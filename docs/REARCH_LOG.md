@@ -133,6 +133,13 @@ DataHub is a multi-tenant M&A / accounting platform (React/Vite SPA + Express/No
 - **Infra note:** the growing suite now runs test files **sequentially** (`vitest.config.ts fileParallelism:false`, 30s timeout) so many embedded-Postgres + Better Auth instances don't contend under load.
 - **Deferred:** staging parity + legacy folder/access retirement (§9.1/9.3) — legacy stays the rollback target; document handlers remain for the uploads phase.
 
+### 14. Phase 2 — `uploads` domain (implementation)
+- **Change:** `uploads-domain` (next after the core trio). Owns file storage + the folder **documents** left on legacy when `folders` migrated. Newly scoped as an OpenSpec change (there was no prior proposal) then implemented.
+- **What:** contracts (`packages/contracts/uploads.ts` — document create/list + upload/document/activity responses); `packages/db` models `uploads` (blob as **`bytea`** via a drizzle `customType`), `documents`, `document_activity`; `apps/api/src/modules/uploads/` = ports + service + `repository.drizzle.ts` + `repository.memory.ts` + a **`StoragePort`** (bytea adapter) + `FolderRefPort`; router mounted under `/api` behind **`UPLOADS_MODULE_ENABLED`** (manual-GL upload sessions stay on legacy).
+- **Key rules ported:** store a blob / stream it back with its content-type, add/list/delete documents under a folder (tenant-guarded via the folder's company), soft-delete archive/restore, and an append-only document-activity log. **Dropped the Supabase-Storage large-file branch** — blobs live in Postgres `bytea` behind `StoragePort`, so an S3/GCS adapter swaps in later with no contract change (ADR-0002 direction).
+- **Verification:** api **125/125** tests (10 uploads: 6 service w/ in-memory storage/repo/folder-ref, 4 integration incl. a **binary bytea store→stream round-trip** + document CRUD/archive + activity cascade against real Postgres/PGlite); coverage **91.5% stmts / 82% branch**; contracts 26/26, db 9/9; typecheck + lint clean; `openspec validate --all --strict` green.
+- **Deferred:** staging parity + legacy upload/document retirement (§9.1/9.2); object-store backend (behind `StoragePort`); manual-GL upload orchestration (reports/quickbooks phases).
+
 ## Decisions (ADR index)
 
 | ADR | Decision | Reason (one line) |

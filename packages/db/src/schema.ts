@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   boolean,
   check,
+  customType,
   date,
   integer,
   pgEnum,
@@ -12,6 +13,13 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+
+/** Postgres `bytea` — file blobs are stored in-DB behind the uploads StoragePort. */
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType() {
+    return "bytea";
+  },
+});
 
 /**
  * Auth-slice schema, hand-authored from backend/sql/schema.sql (no reachable
@@ -166,3 +174,48 @@ export const folderAccess = pgTable(
     ),
   }),
 );
+
+export const documentStatus = pgEnum("document_status", ["active", "processing", "error"]);
+
+/** File blobs, stored in-DB as `bytea` behind the uploads StoragePort (uploads-domain D2). */
+export const uploads = pgTable("uploads", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  fileName: text("file_name").notNull(),
+  contentType: text("content_type").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  data: bytea("data").notNull(),
+  prefix: text("prefix"),
+  uploadedBy: uuid("uploaded_by").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Folder-scoped document metadata pointing at a stored upload (uploads-domain D3). */
+export const documents = pgTable("documents", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  companyId: uuid("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  folderId: uuid("folder_id")
+    .notNull()
+    .references(() => folders.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  fileUrl: text("file_url"),
+  uploadId: uuid("upload_id").references(() => uploads.id, { onDelete: "set null" }),
+  size: text("size").notNull(),
+  ext: text("ext").notNull(),
+  status: documentStatus("status").notNull().default("active"),
+  uploadedBy: uuid("uploaded_by").notNull(),
+  uploadedAt: timestamp("uploaded_at", { withTimezone: true }).notNull().defaultNow(),
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
+});
+
+/** Append-only document activity log (uploads-domain D5). */
+export const documentActivity = pgTable("document_activity", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  documentId: uuid("document_id")
+    .notNull()
+    .references(() => documents.id, { onDelete: "cascade" }),
+  actorId: uuid("actor_id"),
+  action: text("action").notNull(),
+  at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+});

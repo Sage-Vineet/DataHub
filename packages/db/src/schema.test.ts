@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { brokerTeamInvites, companies, folderAccess, folders, users, emailVerifications, userCompanies } from "./schema.js";
+import { brokerTeamInvites, companies, documentActivity, documents, folderAccess, folders, uploads, users, emailVerifications, userCompanies } from "./schema.js";
+
+describe("@datahub/db schema (uploads slice)", () => {
+  it("models uploads (bytea blob), documents, and document_activity", () => {
+    expect(uploads.data.name).toBe("data");
+    expect(uploads.sizeBytes.name).toBe("size_bytes");
+    expect(documents.folderId.name).toBe("folder_id");
+    expect(documents.uploadId.name).toBe("upload_id");
+    expect(documents.archivedAt.name).toBe("archived_at");
+    expect(documentActivity.documentId.name).toBe("document_id");
+    expect(documentActivity.action.name).toBe("action");
+  });
+});
 
 describe("@datahub/db schema (folders slice)", () => {
   it("adds archived_at to folders", () => {
