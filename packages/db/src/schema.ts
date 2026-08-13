@@ -291,3 +291,74 @@ export const requestDocuments = pgTable("request_documents", {
   visible: boolean("visible").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/** Per-company conversation messages (messages-domain). */
+export const companyMessages = pgTable("company_messages", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  companyId: uuid("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  senderId: uuid("sender_id").notNull(),
+  body: text("body").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** 1:1 direct messages within a company. */
+export const directMessages = pgTable("direct_messages", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  companyId: uuid("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  senderId: uuid("sender_id").notNull(),
+  recipientId: uuid("recipient_id").notNull(),
+  body: text("body").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Topic message-groups. */
+export const messageGroups = pgTable("message_groups", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  companyId: uuid("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  groupType: text("group_type").notNull(),
+  buyerUserId: uuid("buyer_user_id"),
+  autoCreated: boolean("auto_created").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const messageGroupMembers = pgTable(
+  "message_group_members",
+  {
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => messageGroups.id, { onDelete: "cascade" }),
+    userId: uuid("user_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.groupId, t.userId] }) }),
+);
+
+export const groupMessages = pgTable("group_messages", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  groupId: uuid("group_id")
+    .notNull()
+    .references(() => messageGroups.id, { onDelete: "cascade" }),
+  senderId: uuid("sender_id").notNull(),
+  body: text("body").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const groupMessageReads = pgTable(
+  "group_message_reads",
+  {
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => messageGroups.id, { onDelete: "cascade" }),
+    userId: uuid("user_id").notNull(),
+    lastReadAt: timestamp("last_read_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.groupId, t.userId] }) }),
+);

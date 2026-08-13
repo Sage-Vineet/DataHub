@@ -79,3 +79,15 @@ export type {
   RequestResponse,
   ReminderResponse,
 } from "./requests.js";
+
+export * as messages from "./messages.js";
+export type {
+  GroupType,
+  MessageSend,
+  GroupCreate,
+  GroupMemberAdd,
+  MessageResponse,
+  GroupMessageResponse,
+  GroupResponse,
+  UnreadCountResponse,
+} from "./messages.js";

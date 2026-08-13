@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { brokerTeamInvites, companies, documentActivity, documents, folderAccess, folders, requestDocuments, requestNarratives, requestReminders, requests, uploads, users, emailVerifications, userCompanies } from "./schema.js";
+import { brokerTeamInvites, companies, companyMessages, directMessages, documentActivity, documents, folderAccess, folders, groupMessageReads, groupMessages, messageGroupMembers, messageGroups, requestDocuments, requestNarratives, requestReminders, requests, uploads, users, emailVerifications, userCompanies } from "./schema.js";
+
+describe("@datahub/db schema (messages slice)", () => {
+  it("models the six message tables", () => {
+    expect(companyMessages.senderId.name).toBe("sender_id");
+    expect(directMessages.recipientId.name).toBe("recipient_id");
+    expect(messageGroups.groupType.name).toBe("group_type");
+    expect(messageGroupMembers.userId.name).toBe("user_id");
+    expect(groupMessages.groupId.name).toBe("group_id");
+    expect(groupMessageReads.lastReadAt.name).toBe("last_read_at");
+  });
+});
 
 describe("@datahub/db schema (requests slice)", () => {
   it("models requests + reminders/narratives/documents", () => {

@@ -148,6 +148,13 @@ DataHub is a multi-tenant M&A / accounting platform (React/Vite SPA + Express/No
 - **Infra:** vitest switched from fully-sequential to **bounded parallelism** (3 forks) — the growing suite finishes quickly without the embedded-Postgres contention that caused earlier flakes.
 - **Deferred:** staging parity + legacy request retirement; reminder delivery (email/cron).
 
+### 16. Phase 2 — `messages` domain (implementation)
+- **Change:** `messages-domain` (in-app communication). Scoped as a new OpenSpec change then built.
+- **What:** contracts (`packages/contracts/messages.ts` — send/group-create/member schemas + responses); `packages/db` models six tables (`company_messages`, `direct_messages`, `message_groups`, `message_group_members`, `group_messages`, `group_message_reads`); `apps/api/src/modules/messages/` = ports + service + `repository.drizzle.ts` + `repository.memory.ts` + router mounted under `/api` behind **`MESSAGES_MODULE_ENABLED`**.
+- **Key rules ported:** tenant-scoped **company conversations**, **symmetric 1:1 direct** messages, **message-groups** (explicit create, membership add/remove/list), **member-only** group read/post (or a broker/admin on the group's company), group messaging, and **unread tracking via a per-user read watermark**. Auto-created groups + thread/contacts aggregations stay on legacy (non-goals).
+- **Verification:** api **139/139** tests (6 messages: 4 service w/ in-memory repo, 2 integration incl. group membership + watermark unread-count against real Postgres/PGlite); coverage ≥90% on the module; contracts 32/32, db 11/11; typecheck + lint clean; `openspec validate --strict` green.
+- **Deferred:** staging parity + legacy message retirement; group auto-creation; thread/contacts endpoints.
+
 ## Decisions (ADR index)
 
 | ADR | Decision | Reason (one line) |
