@@ -1,6 +1,11 @@
 import { isSessionExpired, triggerSessionExpired } from './session';
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000').replace(/\/$/, '');
+// Default to the GATEWAY (:8080), not the legacy backend (:4000). The gateway is a
+// transparent reverse proxy — with every *_MODULE_ENABLED flag off it forwards 100%
+// of traffic to legacy, so this is behaviour-neutral. Pointing the SPA straight at
+// :4000 bypasses the cutover seam entirely, which is how a route-contract mismatch
+// went unnoticed: no flag flip could ever have taken effect. See ADR-0003.
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080').replace(/\/$/, '');
 const TOKEN_KEY = 'leo-auth-token';
 const LEGACY_TOKEN_KEY = 'leo-token';
 

@@ -48,7 +48,7 @@ pnpm install                 # installs the whole workspace
 # env files (copy the examples):
 #   apps/api/.env.example  -> apps/api/.env      (gateway: LEGACY_ORIGIN, PORT, GATEWAY_ROUTES)
 #   backend/.env.example   -> backend/.env       (DB, QuickBooks, Graph secrets)
-#   apps/web (VITE_API_BASE_URL) if the SPA targets a non-default API origin
+#   apps/web/.env.example  -> apps/web/.env.local (VITE_API_BASE_URL -> the gateway)
 
 pnpm dev:legacy              # start the legacy backend (default :4000)
 pnpm dev:api                 # start the gateway       (default :8080 -> legacy)
@@ -56,6 +56,12 @@ pnpm dev:web                 # start the SPA (Vite)
 # or run backend + gateway together:
 pnpm dev:stack
 ```
+
+The SPA talks to the **gateway** (:8080), which proxies to the legacy backend
+(:4000). That ordering matters: the gateway is the cutover seam, so a module flag
+only has an effect on traffic that actually passes through it. Module mount paths
+mirror `backend/src/app.js` for the same reason — `apps/api/src/route-contract.test.ts`
+fails the build if a module claims a path legacy does not serve.
 
 ## Quality gates (what CI enforces on `ba/rearch`)
 

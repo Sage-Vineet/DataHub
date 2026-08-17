@@ -35,6 +35,10 @@ in
     DATABASE_URL = databaseUrl;
     # Dev-only signing secret — NOT for any deployed environment.
     JWT_SECRET = "dev-only-insecure-secret-do-not-use-in-prod";
+    # The gateway forwards here by default; the SPA in turn talks to the gateway,
+    # so local dev exercises the same cutover seam a deployment does (ADR-0003).
+    LEGACY_ORIGIN = "http://127.0.0.1:4000";
+    VITE_API_BASE_URL = "http://localhost:8080";
     # NOTE: PGHOST/PGPORT/PGDATABASE are set by devenv's postgres module — do not
     # redefine them here (option-type conflict). AUTH_MODULE_ENABLED is left unset;
     # opt in per session:  AUTH_MODULE_ENABLED=true pnpm dev:api
