@@ -85,19 +85,9 @@ sequence. Layered against the product surface it needs two amendments:
    `financial-data`, which gates 39 downstream features. As long as it sits near the end of the order,
    everything above it is fed by hand-uploaded spreadsheets.
 
-Everything else in the plan's order holds. Proposed sequence:
-
-```
-foundation   access-control · activity-log · platform-services
-data spine   financial-data (DB-0001 first) · data-retrieve-wizard · reports
-analysis     qoe · deal-qa · projection-model · valuations (VL-0006 first)
-process      data-room (0001/0002 → 0006) · e-signature · cim · deal-marketing · deal-execution
-periphery    user-profiles · broker-workspace · buyer-workspace · company-portal · bank-portal
-             external-integrations (gated on the provider cost decision)
-```
-
-`periphery` is about sequence, not importance — those capabilities are thin until the spine exists,
-and several (`BY - 0005` deal sourcing, `BR - 0006` ERP) are the least-decided rows in the list.
+Everything else in the plan's order holds. The sequence itself is the topological layering computed in
+§D7 below — an earlier hand-grouped version of this section was wrong in three places and has been
+replaced by the computed order rather than patched.
 
 ### D6 — `reports` is one capability with two authors
 
@@ -107,7 +97,90 @@ are the same capability seen from the product side and the migration side. They 
 capability with the overlap stated, rather than split into `reports` and `reports-legacy`, which would
 guarantee two specs drifting against one implementation.
 
-### D7 — Cross-references are recorded as stated, then flagged
+### D7 — The dependency graph, and the build order computed from it
+
+`requires` means X cannot be built correctly without Y. It is distinguished from `feeds` — X produces
+data Y consumes — because the two point in opposite directions and conflating them is what made the
+first pass of §D5 wrong. 49 requires-edges across 21 capabilities; the graph is **acyclic**.
+
+| Capability | Requires |
+|---|---|
+| `access-control` | — |
+| `activity-log` | access-control |
+| `platform-services` | access-control |
+| `user-profiles` | access-control |
+| `financial-data` | access-control |
+| `deal-qa` | access-control |
+| `data-room` | access-control, activity-log |
+| `external-integrations` | access-control, platform-services |
+| `reports` | financial-data |
+| `data-retrieve-wizard` | data-room, financial-data |
+| `e-signature` | access-control, data-room, activity-log |
+| `bank-portal` | access-control, data-room, platform-services |
+| `qoe` | financial-data, reports, deal-qa, external-integrations (payroll) |
+| `projection-model` | qoe |
+| `cim` | qoe, reports, deal-qa |
+| `broker-workspace` | access-control, data-room, e-signature |
+| `valuations` | qoe, projection-model, external-integrations (market data) |
+| `buyer-workspace` | access-control, data-room, broker-workspace |
+| `deal-marketing` | broker-workspace, buyer-workspace, cim, e-signature, activity-log, data-room |
+| `deal-execution` | deal-marketing, e-signature, valuations, projection-model, buyer-workspace, platform-services |
+| `company-portal` | access-control, deal-marketing |
+
+**Feed edges (data flows back; not build dependencies):** `data-retrieve-wizard` → `financial-data`
+(pull output populates GL/COA/TB); `data-room` → `activity-log` (view/download events);
+`deal-execution` → `buyer-workspace` (retrade and dead-LOI history becomes BY-0007 track record);
+`buyer-workspace` → `valuations` (BY-0006 closed-deal multiples become the VL-0004 proprietary comps
+database); `cim` → `qoe` (QE-0008 compares the CIM against the recalculated bridge).
+
+**Computed layering** — each layer depends only on layers above it:
+
+```
+L0  access-control
+L1  activity-log · platform-services · financial-data · deal-qa · user-profiles
+L2  data-room · external-integrations · reports
+L3  e-signature · data-retrieve-wizard · qoe · bank-portal
+L4  broker-workspace · cim · projection-model
+L5  buyer-workspace · valuations
+L6  deal-marketing
+L7  deal-execution · company-portal
+```
+
+**Where this corrected the earlier hand-grouped order:**
+
+1. **`data-room` was in the fourth tier; it belongs in L2.** `data-retrieve-wizard`, `e-signature`,
+   `broker-workspace`, `buyer-workspace`, and `bank-portal` all require it — six dependents, second
+   only to `access-control`. Shipping the wizard before the templated file structure it writes into is
+   not possible.
+2. **`external-integrations` was called "periphery, gated on the provider cost decision"; it is L2.**
+   `qoe` needs payroll (`DR - 0007`) to substantiate add-backs at source level and `valuations` needs
+   market data for comps. Only the market-data half is gated on the cost decision — the payroll half is
+   not, and treating them as one deferred item would block the QoE add-back bridge for no reason. Build
+   payroll with `qoe`; defer market data with `valuations`.
+3. **`broker-workspace` and `buyer-workspace` were "periphery"; they are prerequisites for
+   `deal-marketing`.** The NDA template lives on the broker profile and the qualification grade
+   (`BY - 0007`) is the gate `BR - 0008` enforces — the sell-side process cannot be built over absent
+   counterparty records.
+4. **`deal-qa` was sequenced after `qoe`; it precedes it.** `QE - 0015` generates questions *into* the
+   Q&A surface, and `QE - 0006`/`QE - 0007` read commentary back out of it.
+
+**Critical chain: 8 deep, ending at `deal-execution`.** `access-control → financial-data → reports →
+qoe → projection-model → valuations → deal-marketing → deal-execution`. Offer comparison
+(`BR - 0014`) — the feature the product list makes the strongest claim for — sits at the end of the
+longest path in the product. Nothing shortens that chain except cutting scope from `BR - 0014` itself.
+
+**Most depended-upon:** `access-control` (12 dependents), `data-room` (6), then `activity-log`,
+`platform-services`, `financial-data`, `qoe`, `e-signature` (3 each). The first two are where a wrong
+decision is most expensive.
+
+**Blocked by the six features that have no row** (Register A): `deal-execution` is blocked on
+`VL - 0009` (deal structure engine), `VL - 0007` (SBA output), `VL - 0010` (version lock), and
+`QA - 0003` (diligence request list); `valuations` on `VL - 0008` (asset approach) and `VL - 0010`.
+Both sit at the deep end of the critical chain, so the decisions are not urgent by date — but
+`VL - 0009` is a modeling engine, not a screen, and it is the one most likely to be underestimated
+because no row exists to estimate.
+
+### D8 — Cross-references are recorded as stated, then flagged
 
 Where the source list references an identifier that does not exist in it, the requirement records the
 relationship in the terms the source used and the dangling ID goes into the register below. Silently

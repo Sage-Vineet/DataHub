@@ -12,8 +12,11 @@ changes backend behavior. The per-feature changes this map produces each carry t
 - [x] 1.7 Counterparties: `buyer-workspace` (BY-0001…0007), `bank-portal` (BK-0001), `company-portal` (CP-0001/0002)
 
 ## 2. Cross-cutting analysis
-- [x] 2.1 Dependency graph and the four gating capabilities (`design.md` §D4)
-- [x] 2.2 Recommended build order and its two departures from `docs/MODERNIZATION_PLAN.md` §5 (§D5)
+- [x] 2.1 Gating capabilities (`design.md` §D4)
+- [x] 2.2 Departures from `docs/MODERNIZATION_PLAN.md` §5 (§D5)
+- [x] 2.6 Full capability dependency graph — 49 requires-edges, feed edges separated, acyclic,
+      8-layer topological order, critical chain, blocked-by-missing (§D7). Corrected §D5's
+      hand-grouped order in four places
 - [x] 2.3 Register A — 15 dangling feature IDs with probable targets
 - [x] 2.4 Register B — 9 contradictions and capability gaps, each with what it blocks
 - [x] 2.5 DR-0003 carried to implementation fidelity as the separate `data-retrieve-wizard` change
@@ -45,4 +48,4 @@ changes backend behavior. The per-feature changes this map produces each carry t
 - [ ] 6.1 `openspec validate centuriuum-product-surface --strict` — the CLI is not installed in this
       worktree; artifact structure was checked by hand against the existing changes
 - [x] 6.2 No code, schema, or runtime touched; `main` untouched; Conventional Commits
-- [ ] 6.3 After review, open per-feature changes at `data-retrieve-wizard` fidelity in the §D5 order
+- [ ] 6.3 After review, open per-feature changes at `data-retrieve-wizard` fidelity in the §D7 layer order
