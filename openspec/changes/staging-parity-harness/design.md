@@ -136,3 +136,67 @@ misreading is what would authorize deleting a handler too early.
    weakens substantially and the trade-off needs restating.
 4. **Sink address domain** for D4's rewritten emails — needs a real domain that accepts and retains
    mail, so `auth-production-cutover` 4.3 stays checkable.
+
+
+## D8 — What actually shipped, after the collision
+
+A parity harness (`tools/parity`, `@datahub/parity`) landed independently on
+`ba/rearch` while this change was in progress. It is good, and in one respect
+better than what D1–D3 described: it replays against the **same gateway image**
+with the domain's flag off versus on, which isolates exactly the difference a
+cutover introduces — where this design compared two different origins, a coarser
+control. It also carries declared scenarios traceable to delta-spec requirements,
+personas, per-scenario normalization, and 53 tests.
+
+Two harnesses is worse than either, so this change kept theirs and folded in the
+four things it did not have. What shipped:
+
+1. **Target refusals** (`tools/parity/src/guards.ts`) — the production-host check
+   and the staging-marker check, both before any request is issued. Their
+   `scenario.ts` already said mutating scenarios are "safe on staging, never
+   against production data", but that was a property of the config someone typed
+   rather than something the tool enforced. Mutating runs now require the marker,
+   because that is when the harness starts writing.
+2. **Coverage against the derived surface** (`tools/parity/src/coverage.ts`) —
+   their report correctly said a clean run is "evidence for a flag flip, not proof
+   of one". This makes it a number. **The declared suite covers 22 of 68 comparable
+   endpoints** (`folders` 3/13, `uploads` 2/9), and every domain is partial. Both
+   states printed the same "PARITY CLEAN" before.
+3. **The staging seed** (`tools/parity/src/seed.ts`) — contact-identifier rewriting
+   and the marker, moved here because it is environment preparation for this
+   harness, not API code.
+4. **Schema drift reconciliation** (`packages/db/src/drift.ts`) and the
+   `schema.sql` findings — never harness-duplicative, unchanged.
+
+**Retired:** this change's own `harness.ts`, `comparator.ts`, `report.ts`,
+`guards.ts` and CLI under `apps/api/src/parity`. Kept there: `routes.ts` (the
+derivation the route-contract guard imports) and `schema-file.test.ts`.
+
+### The artifact seam, and why it is not a direct import
+
+`tools/parity` needs the comparable surface, but deriving it means instantiating
+every module router, which drags `apps/api`'s Express type augmentation into
+whichever package imports it — the first attempt failed typecheck for exactly that
+reason. So `apps/api` emits `tools/parity/route-surface.json`, and `tools/parity`
+reads it.
+
+The obvious objection to a generated file is staleness, which would understate the
+coverage gap silently — the precise failure the coverage report exists to prevent.
+So `route-contract.test.ts` asserts the committed artifact still matches the live
+derivation: adding a route to a module fails the build until
+`pnpm --filter @datahub/api route-surface` regenerates it. That is the same
+guarantee a direct import would have given, without the coupling.
+
+### Second finding from the coverage work
+
+`sync-is-deferred-to-legacy` requested `GET /key-reports/chart-of-accounts` — a
+path **neither** engine serves. Both returned the same 404, so the scenario
+reported "match" while proving nothing, and its stated purpose is to observe an
+*expected* difference (legacy answers, module returns 501). Legacy serves
+chart-of-accounts under `/key-reports/versions/:versionId/...`; the scenario now
+targets that and moves under the `reportVersionId` fixture guard.
+
+Two false alarms the coverage check initially raised are now classified rather
+than reported as gaps — a module-only endpoint and a deliberate fall-through
+assertion. Reporting those as problems is exactly the noise their design doc warns
+gets a harness ignored.

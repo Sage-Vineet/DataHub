@@ -1,6 +1,6 @@
 /**
  * Seed-time anonymization for a staging environment restored from a production
- * snapshot (design D4).
+ * snapshot, plus the staging marker the harness refuses to run without.
  *
  * The hazard being addressed is narrower and worse than "production data sits in a
  * lower environment": **staging runs a real Graph emailer**. A password-reset test,

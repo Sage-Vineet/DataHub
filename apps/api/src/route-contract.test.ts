@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { legacyRoutes, moduleSurfaces, routerRoutes } from "./parity/routes.js";
+import { buildRouteSurface, SURFACE_PATH } from "./parity/route-surface.js";
 
 /**
  * The route-contract guard.
@@ -73,5 +75,18 @@ describe("route contract — new modules answer on the legacy paths", () => {
     expect(qbo.length).toBeGreaterThan(0);
     const claimed = new Set(MODULES.flatMap((m) => routerRoutes(m.router, m.mount)));
     expect(qbo.filter((r) => claimed.has(r))).toEqual([]);
+  });
+});
+
+describe("the generated route surface stays fresh", () => {
+  // `tools/parity` reads this artifact to report how much of the comparable
+  // surface its scenarios actually cover. A stale artifact would understate the
+  // gap silently — exactly the failure the coverage report exists to prevent — so
+  // adding a route to a module fails here until it is regenerated:
+  //   pnpm --filter @datahub/api route-surface
+  it("matches the live derivation", () => {
+    const committed = readFileSync(SURFACE_PATH, "utf8");
+    const live = `${JSON.stringify(buildRouteSurface(), null, 2)}\n`;
+    expect(committed).toBe(live);
   });
 });

@@ -1,3 +1,12 @@
+> **Revised after a collision.** A parity harness landed independently on
+> `ba/rearch` (`tools/parity`, log §19) while this change was being built. Rather
+> than ship a second one, this change now **folds its differentiators into that
+> harness** and drops its own runner/comparator/report. What survives here is what
+> `tools/parity` did not have: target refusals, coverage against the derived route
+> surface, the staging seed, and the schema-drift reconciliation. The sections
+> below are kept as the original argument; `design.md` §D8 records what actually
+> shipped and why.
+
 ## Why
 
 Nine domains are built, tested, and merged. **None of them serves a production request.** Every domain

@@ -382,22 +382,32 @@ function reports(f: Fixtures): Scenario[] {
         query: { company_id: f.foreignCompanyId },
       },
     },
-    {
+  ];
+  if (f.reportVersionId) {
+    scenarios.push({
       /**
        * The decomposition boundary itself (reports-domain D5): the GL sync stays
        * on legacy behind `ReportSyncPort`. Legacy answers it for real; the module
        * returns 501. That difference is EXPECTED and the point of running it is
        * to see it stay confined to this route — if other report routes start
        * differing too, the boundary has moved without anyone deciding to move it.
+       *
+       * The path must be one legacy ACTUALLY serves, or the expected difference
+       * never materialises: this previously pointed at `/key-reports/chart-of-accounts`,
+       * which neither side serves, so both returned the same 404 and the scenario
+       * reported "match" while proving nothing about the boundary. Legacy serves
+       * chart-of-accounts under `/key-reports/versions/:versionId/...`, so the
+       * scenario needs the version fixture and moves under this guard.
        */
       id: "sync-is-deferred-to-legacy",
       domain: "reports",
       spec: "reports-domain > Deferred GL sync > Sync not yet migrated",
       persona: "broker",
-      request: { method: "GET", path: "/key-reports/chart-of-accounts", query: { company_id: f.companyId } },
-    },
-  ];
-  if (f.reportVersionId) {
+      request: {
+        method: "GET",
+        path: `/key-reports/versions/${f.reportVersionId}/chart-of-accounts`,
+      },
+    });
     scenarios.push({
       id: "read-version",
       domain: "reports",

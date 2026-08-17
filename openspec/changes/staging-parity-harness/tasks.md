@@ -88,3 +88,19 @@
 - [x] 10.4 File marked NOT AUTHORITATIVE with the evidence; `schema-file.test.ts` pins all of it
 - [ ] 10.5 **Follow-up:** `devenv.nix`'s `load-schema` script runs this file and therefore cannot work
       on an empty database. Left alone here — changing the dev environment is outside this change
+
+## 11. Reconciled with the harness that landed independently (`tools/parity`, log §19)
+
+- [x] 11.1 Kept `tools/parity` as **the** harness; retired this change's runner, comparator, report
+      and CLI. Two harnesses is worse than either
+- [x] 11.2 Folded in target refusals → `tools/parity/src/guards.ts` (production hosts + staging
+      marker, both before any request; mutating runs now REQUIRE the marker)
+- [x] 11.3 Folded in coverage against the derived surface → `tools/parity/src/coverage.ts`.
+      **Finding: the declared suite covers 22 of 68 comparable endpoints**, every domain partial
+- [x] 11.4 Moved the seed → `tools/parity/src/seed.ts` (environment prep belongs with the harness)
+- [x] 11.5 Artifact seam: `apps/api` emits `tools/parity/route-surface.json`; a direct import drags
+      Express type augmentation across packages. `route-contract.test.ts` fails if it goes stale
+- [x] 11.6 **Second finding:** `sync-is-deferred-to-legacy` targeted a path neither engine serves, so
+      both 404'd and it "matched" while proving nothing. Repointed at the route legacy really serves
+- [x] 11.7 Classified module-only and fall-through scenarios so they are not reported as coverage gaps
+- [x] 11.8 `@datahub/parity` 53 → 73 tests; workspace typecheck/lint/test green

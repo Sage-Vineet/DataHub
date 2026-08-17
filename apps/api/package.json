@@ -12,7 +12,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:cov": "vitest run --coverage",
-    "parity": "tsx --conditions=development src/parity/run.ts"
+    "route-surface": "tsx --conditions=development src/parity/write-route-surface.ts"
   },
   "dependencies": {
     "@better-auth/drizzle-adapter": "^1.6.27",

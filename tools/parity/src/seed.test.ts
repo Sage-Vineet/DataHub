@@ -9,7 +9,7 @@ import {
   seedSql,
   sinkAddressFor,
   stagingMarkerSql,
-} from "./anonymize.js";
+} from "./seed.js";
 
 const SINK = "sink.datahub-staging.test";
 
