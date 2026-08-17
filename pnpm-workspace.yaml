@@ -1,6 +1,8 @@
 packages:
   - "apps/*"
   - "packages/*"
+  # Operational tooling (parity harness). Not shipped with the app.
+  - "tools/*"
   # The legacy backend participates in the workspace (single install) but is
   # not edited — it is proxied to by apps/api and retired domain-by-domain.
   - "backend"
