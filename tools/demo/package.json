@@ -1,0 +1,17 @@
+{
+  "name": "@datahub/demo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local full-stack demo: brings up postgres + legacy + gateway + SPA with seeded data.",
+  "scripts": {
+    "backfill": "node backfill.mjs",
+    "lint": "echo \"demo: shell + SQL only\"",
+    "typecheck": "echo \"demo: no TypeScript\"",
+    "test": "echo \"demo: exercised by tools/demo/up.sh\""
+  },
+  "dependencies": {
+    "@datahub/api": "workspace:*",
+    "@datahub/db": "workspace:*"
+  }
+}

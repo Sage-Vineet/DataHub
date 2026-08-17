@@ -1,0 +1,121 @@
+# Local full-stack demo: SPA → gateway → legacy → Postgres, with seeded data.
+#
+#   ./tools/demo/up.sh
+#
+# Same shape as docker-compose.staging.yml, plus the SPA and a seeded database,
+# so the whole path a real user takes is exercised end to end. Cutover flags are
+# read from the environment and default OFF, which means the demo starts as
+# legacy-only — flip one and reload to watch a domain move.
+#
+# Ports are offset from the staging stack so both can run at once.
+
+name: datahub-demo
+
+services:
+  postgres:
+    # SSL-enabled: the legacy fallback pool demands it. See postgres.Dockerfile.
+    build:
+      context: .
+      dockerfile: tools/demo/postgres.Dockerfile
+    environment:
+      POSTGRES_USER: datahub
+      POSTGRES_PASSWORD: datahub
+      POSTGRES_DB: datahub
+    ports:
+      - "${DEMO_PG_PORT:-5435}:5432"
+    volumes:
+      - demo_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U datahub -d datahub"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  legacy:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgres://datahub:datahub@postgres:5432/datahub
+      JWT_SECRET: ${JWT_SECRET:-demo-only-insecure-secret}
+      FRONTEND_URL: http://localhost:${DEMO_WEB_PORT:-5173}
+      # Deliberately unreachable. Legacy reads through the Supabase client and
+      # only falls back to direct Postgres when that call returns an error — but
+      # with no credentials at all the client is `null` and the call THROWS first,
+      # so the fallback never runs and every login 500s.
+      #
+      # Port 9 (discard) on loopback refuses instantly, so the Supabase attempt
+      # fails in milliseconds and the Postgres path is taken. An unresolvable
+      # HOSTNAME is not equivalent: DNS there took ~28s per request, which the
+      # gateway then killed as a timeout. This is the dual data-access path
+      # ADR-0002 exists to delete — the demo just makes its failure mode fast.
+      SUPABASE_URL: http://127.0.0.1:9
+      SUPABASE_SERVICE_ROLE_KEY: demo-unreachable-not-a-real-key
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "4000"
+
+  gateway:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      # `development`, unlike the staging compose. Better Auth marks the session
+      # cookie `Secure` when NODE_ENV=production, and this demo is served over
+      # plain http://localhost. Browsers do treat localhost as a trustworthy
+      # origin, but there is no reason to depend on that for a local demo.
+      NODE_ENV: development
+      PORT: 8080
+      LEGACY_ORIGIN: http://legacy:4000
+      DATABASE_URL: postgres://datahub:datahub@postgres:5432/datahub
+      # Legacy and the gateway MUST share this, or a session minted by one is
+      # rejected by the other and a rollback logs everybody out.
+      JWT_SECRET: ${JWT_SECRET:-demo-only-insecure-secret}
+      BETTER_AUTH_URL: http://localhost:${DEMO_GATEWAY_PORT:-8080}
+      AUTH_TRUSTED_ORIGINS: http://localhost:${DEMO_WEB_PORT:-5173}
+      # Cutover flags — ON by default here, unlike the staging compose.
+      #
+      # The demo is of the modernised stack, and the modules talk to Postgres
+      # directly via Drizzle. Legacy instead reaches for Supabase first and only
+      # falls back to Postgres on error, so with no real Supabase a single client
+      # login takes ~49s of failing calls. That is the dual data-access path
+      # ADR-0002 exists to delete — and a fair illustration of why.
+      #
+      # Run `LEGACY_MODE=1 ./tools/demo/up.sh` to flip everything back to legacy
+      # and compare (slow without real Supabase credentials).
+      BETTER_AUTH_ENABLED: ${BETTER_AUTH_ENABLED:-true}
+      COMPANIES_MODULE_ENABLED: ${COMPANIES_MODULE_ENABLED:-true}
+      USERS_MODULE_ENABLED: ${USERS_MODULE_ENABLED:-true}
+      FOLDERS_MODULE_ENABLED: ${FOLDERS_MODULE_ENABLED:-true}
+      UPLOADS_MODULE_ENABLED: ${UPLOADS_MODULE_ENABLED:-true}
+      REQUESTS_MODULE_ENABLED: ${REQUESTS_MODULE_ENABLED:-true}
+      MESSAGES_MODULE_ENABLED: ${MESSAGES_MODULE_ENABLED:-true}
+      REPORTS_MODULE_ENABLED: ${REPORTS_MODULE_ENABLED:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      legacy:
+        condition: service_started
+    ports:
+      - "${DEMO_GATEWAY_PORT:-8080}:8080"
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        # Build-time, not runtime: the SPA points at the GATEWAY, never at legacy
+        # directly, so the cutover seam is in the path a real user takes.
+        VITE_API_BASE_URL: http://localhost:${DEMO_GATEWAY_PORT:-8080}
+    depends_on:
+      gateway:
+        condition: service_started
+    ports:
+      - "${DEMO_WEB_PORT:-5173}:5173"
+
+volumes:
+  demo_pgdata:
