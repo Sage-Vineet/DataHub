@@ -37,8 +37,14 @@ export function createFoldersRouter(deps: FoldersRouterDeps): Router {
         next(err);
       });
 
+  // Both spellings are forwarded: `includeArchived` is what legacy reads and what
+  // the SPA sends, so plucking only the snake_case key would leave the filter
+  // silently inert after cutover.
   const includeArchived = (req: Request): boolean =>
-    contracts.folderListQuery.parse({ include_archived: req.query.include_archived }).include_archived;
+    contracts.folderListQuery.parse({
+      include_archived: req.query.include_archived,
+      includeArchived: req.query.includeArchived,
+    }).include_archived;
 
   // ── Company-scoped folder routes ──────────────────────────────────────────
   router.get("/companies/:companyId/folders/tree", handle(async (req, res) => {

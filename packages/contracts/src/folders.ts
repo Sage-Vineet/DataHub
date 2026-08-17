@@ -3,6 +3,12 @@ import { z } from "zod";
 const uuid = z.string().uuid();
 const optionalColor = z.string().trim().max(32).optional();
 
+/** A boolean query flag, tolerant of the string form a URL always delivers. */
+const archivedFlag = z
+  .union([z.boolean(), z.enum(["true", "false"])])
+  .optional()
+  .transform((v) => v === true || v === "true");
+
 export const folderCreate = z.object({
   name: z.string().trim().min(1, "Folder name is required."),
   parent_id: uuid.nullable().optional(),
@@ -80,11 +86,19 @@ export const folderAccessResponse = z.object({
 });
 export type FolderAccessResponse = z.infer<typeof folderAccessResponse>;
 
-/** Query flag for including archived folders in a list/tree. */
+/**
+ * Query flag for including archived folders in a list/tree.
+ *
+ * The wire name is `includeArchived` — that is what legacy reads
+ * (`backend/src/controllers/folders.js`) and what the SPA sends
+ * (`apps/web/src/lib/api.js` builds `?includeArchived=true`). Accepting only the
+ * snake_case spelling used elsewhere in these contracts would leave the filter
+ * silently inert after cutover: the parameter is simply absent, so the query
+ * parses fine and returns the unfiltered list. The snake_case alias is still
+ * accepted so callers written against the module's own naming keep working.
+ */
 export const folderListQuery = z.object({
-  include_archived: z
-    .union([z.boolean(), z.enum(["true", "false"])])
-    .optional()
-    .transform((v) => v === true || v === "true"),
-});
+  include_archived: archivedFlag,
+  includeArchived: archivedFlag,
+}).transform((q) => ({ include_archived: q.includeArchived || q.include_archived }));
 export type FolderListQuery = z.infer<typeof folderListQuery>;

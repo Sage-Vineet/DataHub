@@ -106,6 +106,28 @@ describe("folders router — CRUD + archive (real Postgres)", () => {
     const all = await request(app).get(`/companies/${companyId}/folders?include_archived=true`);
     expect(all.body.map((f: { name: string }) => f.name)).toContain("Renamed");
   });
+
+  it("honours the ?includeArchived spelling the SPA actually sends", async () => {
+    // The test above asks using the module's own parameter name, which is why the
+    // mismatch went unnoticed: legacy and apps/web/src/lib/api.js send
+    // `includeArchived`. Reading only snake_case made the filter silently inert —
+    // the query parsed fine and returned the unfiltered list.
+    const folder = (
+      await request(app).post(`/companies/${companyId}/folders`).send({ name: "Archived Wire" })
+    ).body;
+    await request(app).post(`/folders/${folder.id}/archive`).expect(200);
+
+    const defaulted = await request(app).get(`/companies/${companyId}/folders`);
+    expect(defaulted.body.map((f: { name: string }) => f.name)).not.toContain("Archived Wire");
+
+    const camel = await request(app).get(`/companies/${companyId}/folders?includeArchived=true`);
+    expect(camel.body.map((f: { name: string }) => f.name)).toContain("Archived Wire");
+
+    const tree = await request(app).get(
+      `/companies/${companyId}/folders/tree?includeArchived=true`,
+    );
+    expect(JSON.stringify(tree.body)).toContain("Archived Wire");
+  });
 });
 
 describe("folders router — protected delete + access cascade (D3/D5)", () => {

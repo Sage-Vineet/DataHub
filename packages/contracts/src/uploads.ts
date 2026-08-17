@@ -17,12 +17,25 @@ export const documentCreate = z.object({
 });
 export type DocumentCreate = z.infer<typeof documentCreate>;
 
-export const documentListQuery = z.object({
-  include_archived: z
-    .union([z.boolean(), z.enum(["true", "false"])])
-    .optional()
-    .transform((v) => v === true || v === "true"),
-});
+/**
+ * Query flag for including archived documents.
+ *
+ * Same wire-name rule as `folderListQuery`: legacy reads `includeArchived`
+ * (`backend/src/controllers/folders.js`) and the SPA sends it, so that spelling
+ * must be honoured or the filter is silently inert after cutover. The snake_case
+ * alias is accepted too.
+ */
+const archivedFlag = z
+  .union([z.boolean(), z.enum(["true", "false"])])
+  .optional()
+  .transform((v) => v === true || v === "true");
+
+export const documentListQuery = z
+  .object({
+    include_archived: archivedFlag,
+    includeArchived: archivedFlag,
+  })
+  .transform((q) => ({ include_archived: q.includeArchived || q.include_archived }));
 export type DocumentListQuery = z.infer<typeof documentListQuery>;
 
 export const uploadResponse = z.object({

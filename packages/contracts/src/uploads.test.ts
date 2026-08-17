@@ -17,6 +17,11 @@ describe("documentListQuery", () => {
     expect(documentListQuery.parse({ include_archived: "true" }).include_archived).toBe(true);
     expect(documentListQuery.parse({}).include_archived).toBe(false);
   });
+
+  it("accepts the camelCase wire name legacy reads and the SPA sends", () => {
+    expect(documentListQuery.parse({ includeArchived: "true" }).include_archived).toBe(true);
+    expect(documentListQuery.parse({ includeArchived: "false" }).include_archived).toBe(false);
+  });
 });
 
 describe("documentActivityCreate", () => {

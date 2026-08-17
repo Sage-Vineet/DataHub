@@ -49,8 +49,13 @@ export function createUploadsRouter(deps: UploadsRouterDeps): Router {
         next(err);
       });
 
+  // Both spellings — see the note on `documentListQuery`. `includeArchived` is
+  // the wire name legacy reads and the SPA sends.
   const includeArchived = (req: Request): boolean =>
-    contracts.documentListQuery.parse({ include_archived: req.query.include_archived }).include_archived;
+    contracts.documentListQuery.parse({
+      include_archived: req.query.include_archived,
+      includeArchived: req.query.includeArchived,
+    }).include_archived;
 
   // ── Blobs ─────────────────────────────────────────────────────────────────
   router.post(

@@ -47,4 +47,17 @@ describe("folderListQuery", () => {
     expect(folderListQuery.parse({ include_archived: false }).include_archived).toBe(false);
     expect(folderListQuery.parse({}).include_archived).toBe(false);
   });
+
+  it("accepts the camelCase wire name legacy reads and the SPA sends", () => {
+    // apps/web/src/lib/api.js builds "?includeArchived=true"; legacy reads
+    // req.query.includeArchived. Honouring only snake_case would make the filter
+    // silently inert after cutover — it parses fine and returns everything.
+    expect(folderListQuery.parse({ includeArchived: "true" }).include_archived).toBe(true);
+    expect(folderListQuery.parse({ includeArchived: "false" }).include_archived).toBe(false);
+  });
+
+  it("treats either spelling as opt-in", () => {
+    expect(folderListQuery.parse({ includeArchived: "true", include_archived: "false" }).include_archived).toBe(true);
+    expect(folderListQuery.parse({ includeArchived: "false", include_archived: "true" }).include_archived).toBe(true);
+  });
 });
