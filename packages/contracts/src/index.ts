@@ -92,6 +92,19 @@ export type {
   UnreadCountResponse,
 } from "./messages.js";
 
+export * as activity from "./activity.js";
+export type {
+  ActivityKind,
+  ActivityEngine,
+  ActorKind,
+  ActivityEventType,
+  ActivityEnvelope,
+  ActivitySemanticEvent,
+  ActivityGapMarker,
+  ActivityRecordResponse,
+  ActivityVerification,
+} from "./activity.js";
+
 export * as reports from "./reports.js";
 export type {
   ReportVersionStatus,

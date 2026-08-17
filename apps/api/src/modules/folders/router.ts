@@ -4,6 +4,7 @@ import helmet from "helmet";
 import { pinoHttp } from "pino-http";
 import { folders as contracts } from "@datahub/contracts";
 import { HttpError } from "../../shared/errors.js";
+import { emitActivity } from "../../activity/capture.js";
 import { withCommonMiddleware } from "../../shared/router.js";
 import type { FoldersService } from "./service.js";
 
@@ -111,7 +112,15 @@ export function createFoldersRouter(deps: FoldersRouterDeps): Router {
       res.status(400).json({ error: firstError(parsed.error) });
       return;
     }
-    res.status(201).json(await service.createAccess(req.user!, req.params.id!, parsed.data));
+    const access = await service.createAccess(req.user!, req.params.id!, parsed.data);
+    // SE-0004: "who gave this party access to this folder" must have a definitive
+    // answer, so the granting user is recorded, not just the grant.
+    emitActivity(res, {
+      event_type: "access.granted",
+      subject_id: parsed.data.user_id,
+      payload: { folder_id: req.params.id, granted_by: req.user!.id },
+    });
+    res.status(201).json(access);
   }));
 
   router.patch("/folder-access/:id", handle(async (req, res) => {
@@ -120,11 +129,22 @@ export function createFoldersRouter(deps: FoldersRouterDeps): Router {
       res.status(400).json({ error: firstError(parsed.error) });
       return;
     }
-    res.json(await service.updateAccess(req.user!, req.params.id!, parsed.data));
+    const updated = await service.updateAccess(req.user!, req.params.id!, parsed.data);
+    emitActivity(res, {
+      event_type: "access.modified",
+      subject_id: req.params.id,
+      payload: { changed_by: req.user!.id },
+    });
+    res.json(updated);
   }));
 
   router.delete("/folder-access/:id", handle(async (req, res) => {
     await service.deleteAccess(req.user!, req.params.id!);
+    emitActivity(res, {
+      event_type: "access.revoked",
+      subject_id: req.params.id,
+      payload: { revoked_by: req.user!.id },
+    });
     res.status(204).send();
   }));
 

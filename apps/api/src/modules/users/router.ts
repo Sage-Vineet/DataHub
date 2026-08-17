@@ -4,6 +4,7 @@ import helmet from "helmet";
 import { pinoHttp } from "pino-http";
 import { users as contracts } from "@datahub/contracts";
 import { HttpError } from "../../shared/errors.js";
+import { emitActivity } from "../../activity/capture.js";
 import { withCommonMiddleware } from "../../shared/router.js";
 import type { UsersService } from "./service.js";
 
@@ -102,7 +103,13 @@ export function createUsersRouter(deps: UsersRouterDeps): Router {
       res.status(400).json({ error: firstError(parsed.error) });
       return;
     }
-    res.json(await service.addCompanies(req.user!, req.params.id!, parsed.data.company_ids));
+    const result = await service.addCompanies(req.user!, req.params.id!, parsed.data.company_ids);
+    emitActivity(res, {
+      event_type: "access.granted",
+      subject_id: req.params.id,
+      payload: { company_ids: parsed.data.company_ids, granted_by: req.user!.id },
+    });
+    res.json(result);
   }));
 
   router.delete("/:id/remove-companies", handle(async (req, res) => {
@@ -111,7 +118,13 @@ export function createUsersRouter(deps: UsersRouterDeps): Router {
       res.status(400).json({ error: firstError(parsed.error) });
       return;
     }
-    res.json(await service.removeCompanies(req.user!, req.params.id!, parsed.data.company_ids));
+    const result = await service.removeCompanies(req.user!, req.params.id!, parsed.data.company_ids);
+    emitActivity(res, {
+      event_type: "access.revoked",
+      subject_id: req.params.id,
+      payload: { company_ids: parsed.data.company_ids, revoked_by: req.user!.id },
+    });
+    res.json(result);
   }));
 
   return router;
