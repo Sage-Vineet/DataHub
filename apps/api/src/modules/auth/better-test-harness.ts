@@ -166,7 +166,7 @@ export async function makeHarness(seed: HarnessSeed): Promise<Harness> {
   const router = createBetterAuthRouter({ auth, repo, config });
 
   const app = express();
-  app.use("/api/auth", router);
+  app.use("/auth", router);
 
   return { app, router, db, emailer, close: () => client.close() };
 }

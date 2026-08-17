@@ -25,7 +25,7 @@ async function makeApp(env: NodeJS.ProcessEnv = {}) {
     env: { JWT_SECRET: SECRET, AUTH_LOGIN_RATE_MAX: "3", ...env },
   });
   const app = express();
-  app.use("/api/auth", mod.router);
+  app.use("/auth", mod.router);
 
   await repo.addUser({
     id: "11111111-1111-1111-1111-111111111111",
@@ -42,7 +42,7 @@ async function makeApp(env: NodeJS.ProcessEnv = {}) {
 describe("auth router", () => {
   it("logs in with valid credentials", async () => {
     const { app } = await makeApp();
-    const res = await request(app).post("/api/auth/login").send({
+    const res = await request(app).post("/auth/login").send({
       email: "user@example.com",
       password: "correct1horse",
     });
@@ -54,25 +54,25 @@ describe("auth router", () => {
 
   it("returns 401 for a wrong password and 400 for a malformed body", async () => {
     const { app } = await makeApp();
-    expect((await request(app).post("/api/auth/login").send({ email: "user@example.com", password: "no" })).status).toBe(401);
-    expect((await request(app).post("/api/auth/login").send({ email: "user@example.com" })).status).toBe(400);
+    expect((await request(app).post("/auth/login").send({ email: "user@example.com", password: "no" })).status).toBe(401);
+    expect((await request(app).post("/auth/login").send({ email: "user@example.com" })).status).toBe(400);
   });
 
   it("rate-limits repeated failed logins with 429", async () => {
     const { app } = await makeApp();
     for (let i = 0; i < 3; i++) {
-      await request(app).post("/api/auth/login").send({ email: "user@example.com", password: "wrong" });
+      await request(app).post("/auth/login").send({ email: "user@example.com", password: "wrong" });
     }
     const blocked = await request(app)
-      .post("/api/auth/login")
+      .post("/auth/login")
       .send({ email: "user@example.com", password: "wrong" });
     expect(blocked.status).toBe(429);
   });
 
   it("forgot-password returns an identical generic response for known and unknown emails", async () => {
     const { app } = await makeApp();
-    const known = await request(app).post("/api/auth/forgot-password").send({ email: "user@example.com" });
-    const unknown = await request(app).post("/api/auth/forgot-password").send({ email: "ghost@example.com" });
+    const known = await request(app).post("/auth/forgot-password").send({ email: "user@example.com" });
+    const unknown = await request(app).post("/auth/forgot-password").send({ email: "ghost@example.com" });
     expect(known.status).toBe(200);
     expect(unknown.status).toBe(200);
     expect(known.body).toEqual(unknown.body);
@@ -80,9 +80,9 @@ describe("auth router", () => {
 
   it("verifies an OTP and returns a verification token", async () => {
     const { app, emailer } = await makeApp();
-    await request(app).post("/api/auth/send-otp").send({ email: "user@example.com" }).expect(200);
+    await request(app).post("/auth/send-otp").send({ email: "user@example.com" }).expect(200);
     const verify = await request(app)
-      .post("/api/auth/verify-otp")
+      .post("/auth/verify-otp")
       .send({ email: "user@example.com", otp: emailer.last?.otp ?? "" });
     expect(verify.status).toBe(200);
     expect(verify.body.verified).toBe(true);
@@ -91,40 +91,40 @@ describe("auth router", () => {
 
   it("runs the send-otp → reset → login flow", async () => {
     const { app, emailer } = await makeApp();
-    await request(app).post("/api/auth/send-otp").send({ email: "user@example.com" }).expect(200);
+    await request(app).post("/auth/send-otp").send({ email: "user@example.com" }).expect(200);
     const otp = emailer.last?.otp ?? "";
 
     await request(app)
-      .post("/api/auth/reset-password")
+      .post("/auth/reset-password")
       .send({ email: "user@example.com", otp, new_password: "brandNew9" })
       .expect(200);
 
     await request(app)
-      .post("/api/auth/login")
+      .post("/auth/login")
       .send({ email: "user@example.com", password: "brandNew9" })
       .expect(200);
   });
 
   it("rejects a weak reset password with 400", async () => {
     const { app, emailer } = await makeApp();
-    await request(app).post("/api/auth/send-otp").send({ email: "user@example.com" });
+    await request(app).post("/auth/send-otp").send({ email: "user@example.com" });
     const otp = emailer.last?.otp ?? "";
     const res = await request(app)
-      .post("/api/auth/reset-password")
+      .post("/auth/reset-password")
       .send({ email: "user@example.com", otp, new_password: "weak" });
     expect(res.status).toBe(400);
   });
 
   it("returns the session user for /me with a valid token, 401 without", async () => {
     const { app } = await makeApp();
-    const login = await request(app).post("/api/auth/login").send({
+    const login = await request(app).post("/auth/login").send({
       email: "user@example.com",
       password: "correct1horse",
     });
     const token = login.body.token as string;
-    const me = await request(app).get("/api/auth/me").set("Authorization", `Bearer ${token}`);
+    const me = await request(app).get("/auth/me").set("Authorization", `Bearer ${token}`);
     expect(me.status).toBe(200);
     expect(me.body.user.email).toBe("user@example.com");
-    expect((await request(app).get("/api/auth/me")).status).toBe(401);
+    expect((await request(app).get("/auth/me")).status).toBe(401);
   });
 });

@@ -4,6 +4,7 @@ import helmet from "helmet";
 import { pinoHttp } from "pino-http";
 import { reports as contracts } from "@datahub/contracts";
 import { HttpError } from "../../shared/errors.js";
+import { withCommonMiddleware } from "../../shared/router.js";
 import type { ReportsService } from "./service.js";
 
 function firstError(err: { issues: ReadonlyArray<{ message?: string }> }): string {
@@ -23,10 +24,7 @@ export interface ReportsRouterDeps {
 export function createReportsRouter(deps: ReportsRouterDeps): Router {
   const { service, requireAuth } = deps;
   const router = express.Router();
-  router.use(helmet());
-  router.use(pinoHttp());
-  router.use(express.json());
-  router.use(requireAuth);
+  withCommonMiddleware(router, [helmet(), pinoHttp(), express.json(), requireAuth]);
 
   const handle =
     (fn: (req: Request, res: Response) => Promise<void>): RequestHandler =>

@@ -5,6 +5,7 @@ import helmet from "helmet";
 import { pinoHttp } from "pino-http";
 import { fromNodeHeaders } from "better-auth/node";
 import { auth as contracts } from "@datahub/contracts";
+import { withCommonMiddleware } from "../../shared/router.js";
 import type { AuthConfig } from "./config.js";
 import type { BetterAuth } from "./better-auth.js";
 import type { AuthRepository } from "./ports.js";
@@ -59,17 +60,18 @@ export interface BetterAuthRouterDeps {
 }
 
 /**
- * The `/api/auth` HTTP surface, served by Better Auth but preserving the legacy
- * JSON contract so the SPA is unaffected (ADR-0007). Sessions are established as
+ * The `/auth` HTTP surface, served by Better Auth but preserving the legacy JSON
+ * contract so the SPA is unaffected (ADR-0007). Sessions are established as
  * httpOnly cookies (M2/M3) and are revocable server-side (M1). helmet + pino are
  * scoped here so the gateway's legacy pass-through stays byte-identical.
+ *
+ * The chain is attached per-route (not via `router.use`) so sibling paths under the
+ * mount fall through to legacy untouched — see `withCommonMiddleware`.
  */
 export function createBetterAuthRouter(deps: BetterAuthRouterDeps): Router {
   const { auth, repo, config } = deps;
   const router = express.Router();
-  router.use(helmet());
-  router.use(pinoHttp());
-  router.use(express.json());
+  withCommonMiddleware(router, [helmet(), pinoHttp(), express.json()]);
 
   // H1 — rate-limit failed logins per IP+email. Successful logins don't count.
   const loginLimiter = rateLimit({

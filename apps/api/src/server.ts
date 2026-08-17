@@ -35,14 +35,23 @@ function dbFactory(): () => Db {
 }
 
 /**
- * Build the in-process modules to mount ahead of the proxy. Each `/api/*`
- * route-group is served by exactly one engine, chosen by env (cutover/rollback =
- * a flag, not a code deploy — ADR-0003/0007):
- *   - BETTER_AUTH_ENABLED=true → Better Auth serves /api/auth (ADR-0007; wins if both set)
- *   - AUTH_MODULE_ENABLED=true → the bespoke module serves /api/auth (rollback target)
- *   - COMPANIES_MODULE_ENABLED=true → the companies module serves /api/companies
+ * Build the in-process modules to mount ahead of the proxy. Each route-group is
+ * served by exactly one engine, chosen by env (cutover/rollback = a flag, not a
+ * code deploy — ADR-0003/0007):
+ *   - BETTER_AUTH_ENABLED=true → Better Auth serves /auth (ADR-0007; wins if both set)
+ *   - AUTH_MODULE_ENABLED=true → the bespoke module serves /auth (rollback target)
+ *   - COMPANIES_MODULE_ENABLED=true → the companies module serves /companies
  *   - otherwise → the route-group falls through to legacy.
  * Domain modules are protected by the shared Better Auth session guard.
+ *
+ * MOUNT PATHS ARE THE LEGACY CONTRACT. These mirror `backend/src/app.js` exactly —
+ * `/auth`, `/companies`, `/users`, and `/` for the modules that span several
+ * prefixes — because that is what the SPA calls (`apps/web/src/lib/api.js`). They
+ * are deliberately NOT under `/api`: in legacy, `/api/auth/*` belongs to the
+ * QuickBooks OAuth routes (`backend/src/routes/quickbooks/token.js`), so mounting
+ * there would both miss all real traffic and disturb QBO. Every module attaches its
+ * middleware per-route (`withCommonMiddleware`), so undefined paths under a mount
+ * fall through to the proxy untouched.
  */
 function buildModules(): MountedModule[] {
   const modules: MountedModule[] = [];
@@ -52,17 +61,17 @@ function buildModules(): MountedModule[] {
 
   if (process.env.BETTER_AUTH_ENABLED === "true") {
     const { router } = createBetterAuthModule({ db: getDb(), emailer: graphEmailer() });
-    modules.push({ path: "/api/auth", router });
-    console.warn("[gateway] Better Auth ENABLED at /api/auth (in-process, ADR-0007)");
+    modules.push({ path: "/auth", router });
+    console.warn("[gateway] Better Auth ENABLED at /auth (in-process, ADR-0007)");
   } else if (process.env.AUTH_MODULE_ENABLED === "true") {
     const repo = new DrizzleAuthRepository(getDb());
     const { router } = createAuthModule({ repo });
-    modules.push({ path: "/api/auth", router });
-    console.warn("[gateway] bespoke auth module ENABLED at /api/auth (in-process)");
+    modules.push({ path: "/auth", router });
+    console.warn("[gateway] bespoke auth module ENABLED at /auth (in-process)");
   }
 
   // Domain modules share one session guard: a Better Auth instance validates
-  // sessions (ADR-0007), even if /api/auth itself is still legacy.
+  // sessions (ADR-0007), even if /auth itself is still legacy.
   const domainsEnabled =
     process.env.COMPANIES_MODULE_ENABLED === "true" ||
     process.env.USERS_MODULE_ENABLED === "true" ||
@@ -86,40 +95,40 @@ function buildModules(): MountedModule[] {
       const folderProvisioning =
         process.env.FOLDERS_MODULE_ENABLED === "true" ? createFolderProvisioningPort(db) : undefined;
       modules.push({
-        path: "/api/companies",
+        path: "/companies",
         router: createCompaniesModule({ db, requireAuth, folderProvisioning }).router,
       });
-      console.warn("[gateway] companies module ENABLED at /api/companies (in-process)");
+      console.warn("[gateway] companies module ENABLED at /companies (in-process)");
     }
     if (process.env.USERS_MODULE_ENABLED === "true") {
-      modules.push({ path: "/api/users", router: createUsersModule({ db, requireAuth }).router });
-      console.warn("[gateway] users module ENABLED at /api/users (in-process)");
+      modules.push({ path: "/users", router: createUsersModule({ db, requireAuth }).router });
+      console.warn("[gateway] users module ENABLED at /users (in-process)");
     }
     // Folders spans several path prefixes (companies/:id/folders, folders/:id,
-    // folder-access/:id) so it mounts under /api and only defines its own routes;
+    // folder-access/:id) so it mounts at the API root and only defines its own routes;
     // document sub-routes fall through to legacy. Mounted last so the more-specific
-    // /api/companies and /api/users modules match first.
+    // /companies and /users modules match first.
     if (process.env.FOLDERS_MODULE_ENABLED === "true") {
-      modules.push({ path: "/api", router: createFoldersModule({ db, requireAuth }).router });
-      console.warn("[gateway] folders module ENABLED under /api (folder + access routes)");
+      modules.push({ path: "/", router: createFoldersModule({ db, requireAuth }).router });
+      console.warn("[gateway] folders module ENABLED at the API root (folder + access routes)");
     }
     // Uploads also spans several path prefixes (uploads, folders/:id/documents,
-    // documents/:id) → mounted under /api, only its own routes defined.
+    // documents/:id) → mounted at the API root, only its own routes defined.
     if (process.env.UPLOADS_MODULE_ENABLED === "true") {
-      modules.push({ path: "/api", router: createUploadsModule({ db, requireAuth }).router });
-      console.warn("[gateway] uploads module ENABLED under /api (upload + document routes)");
+      modules.push({ path: "/", router: createUploadsModule({ db, requireAuth }).router });
+      console.warn("[gateway] uploads module ENABLED at the API root (upload + document routes)");
     }
     if (process.env.REQUESTS_MODULE_ENABLED === "true") {
-      modules.push({ path: "/api", router: createRequestsModule({ db, requireAuth }).router });
-      console.warn("[gateway] requests module ENABLED under /api (request routes)");
+      modules.push({ path: "/", router: createRequestsModule({ db, requireAuth }).router });
+      console.warn("[gateway] requests module ENABLED at the API root (request routes)");
     }
     if (process.env.MESSAGES_MODULE_ENABLED === "true") {
-      modules.push({ path: "/api", router: createMessagesModule({ db, requireAuth }).router });
-      console.warn("[gateway] messages module ENABLED under /api (message routes)");
+      modules.push({ path: "/", router: createMessagesModule({ db, requireAuth }).router });
+      console.warn("[gateway] messages module ENABLED at the API root (message routes)");
     }
     if (process.env.REPORTS_MODULE_ENABLED === "true") {
-      modules.push({ path: "/api", router: createReportsModule({ db, requireAuth }).router });
-      console.warn("[gateway] reports module ENABLED under /api (key-report version lifecycle)");
+      modules.push({ path: "/", router: createReportsModule({ db, requireAuth }).router });
+      console.warn("[gateway] reports module ENABLED at the API root (key-report version lifecycle)");
     }
   }
   return modules;

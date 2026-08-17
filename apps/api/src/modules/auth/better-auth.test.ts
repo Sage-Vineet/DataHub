@@ -32,7 +32,7 @@ afterEach(async () => {
 describe("Better Auth module — credential login parity (D3)", () => {
   it("logs in a migrated user with their existing bcrypt hash and no reset", async () => {
     const res = await request(h.app)
-      .post("/api/auth/login")
+      .post("/auth/login")
       .send({ email: "broker@example.com", password: "correct1horse" });
     expect(res.status).toBe(200);
     expect(res.body.user.email).toBe("broker@example.com");
@@ -46,7 +46,7 @@ describe("Better Auth module — credential login parity (D3)", () => {
 
   it("persists the session as a DB row (revocable, not a stateless JWT)", async () => {
     await request(h.app)
-      .post("/api/auth/login")
+      .post("/auth/login")
       .send({ email: "broker@example.com", password: "correct1horse" })
       .expect(200);
     const rows = await h.db.select().from(schema.session);
@@ -55,19 +55,19 @@ describe("Better Auth module — credential login parity (D3)", () => {
 
   it("returns 401 for a wrong password and 400 for a malformed body", async () => {
     expect(
-      (await request(h.app).post("/api/auth/login").send({ email: "broker@example.com", password: "nope" })).status,
+      (await request(h.app).post("/auth/login").send({ email: "broker@example.com", password: "nope" })).status,
     ).toBe(401);
     expect(
-      (await request(h.app).post("/api/auth/login").send({ email: "broker@example.com" })).status,
+      (await request(h.app).post("/auth/login").send({ email: "broker@example.com" })).status,
     ).toBe(400);
   });
 
   it("rate-limits repeated failed logins with 429", async () => {
     for (let i = 0; i < 5; i++) {
-      await request(h.app).post("/api/auth/login").send({ email: "broker@example.com", password: "wrong" });
+      await request(h.app).post("/auth/login").send({ email: "broker@example.com", password: "wrong" });
     }
     const blocked = await request(h.app)
-      .post("/api/auth/login")
+      .post("/auth/login")
       .send({ email: "broker@example.com", password: "wrong" });
     expect(blocked.status).toBe(429);
   });
@@ -76,22 +76,22 @@ describe("Better Auth module — credential login parity (D3)", () => {
 describe("Better Auth module — session lookup (/me, D6)", () => {
   async function login() {
     const res = await request(h.app)
-      .post("/api/auth/login")
+      .post("/auth/login")
       .send({ email: "broker@example.com", password: "correct1horse" });
     return { cookie: sessionCookie(res.headers["set-cookie"]), token: res.body.token as string };
   }
 
   it("resolves the session user via the cookie, 401 without", async () => {
     const { cookie } = await login();
-    const me = await request(h.app).get("/api/auth/me").set("Cookie", cookie);
+    const me = await request(h.app).get("/auth/me").set("Cookie", cookie);
     expect(me.status).toBe(200);
     expect(me.body.user.email).toBe("broker@example.com");
-    expect((await request(h.app).get("/api/auth/me")).status).toBe(401);
+    expect((await request(h.app).get("/auth/me")).status).toBe(401);
   });
 
   it("also resolves the session via a Bearer token (bearer plugin)", async () => {
     const { token } = await login();
-    const me = await request(h.app).get("/api/auth/me").set("Authorization", `Bearer ${token}`);
+    const me = await request(h.app).get("/auth/me").set("Authorization", `Bearer ${token}`);
     expect(me.status).toBe(200);
     expect(me.body.user.email).toBe("broker@example.com");
   });
@@ -100,15 +100,15 @@ describe("Better Auth module — session lookup (/me, D6)", () => {
 describe("Better Auth module — revocation (audit M1)", () => {
   it("invalidates the session on logout so the next request is 401", async () => {
     const login = await request(h.app)
-      .post("/api/auth/login")
+      .post("/auth/login")
       .send({ email: "broker@example.com", password: "correct1horse" });
     const cookie = sessionCookie(login.headers["set-cookie"]);
 
-    expect((await request(h.app).get("/api/auth/me").set("Cookie", cookie)).status).toBe(200);
+    expect((await request(h.app).get("/auth/me").set("Cookie", cookie)).status).toBe(200);
 
-    await request(h.app).post("/api/auth/logout").set("Cookie", cookie).expect(204);
+    await request(h.app).post("/auth/logout").set("Cookie", cookie).expect(204);
 
-    expect((await request(h.app).get("/api/auth/me").set("Cookie", cookie)).status).toBe(401);
+    expect((await request(h.app).get("/auth/me").set("Cookie", cookie)).status).toBe(401);
     const rows = await h.db.select().from(schema.session);
     expect(rows.length).toBe(0);
   });
@@ -117,40 +117,40 @@ describe("Better Auth module — revocation (audit M1)", () => {
 describe("Better Auth module — password reset via email-otp (D5)", () => {
   it("runs forgot → (emailed OTP) → reset → login with the new password", async () => {
     await request(h.app)
-      .post("/api/auth/forgot-password")
+      .post("/auth/forgot-password")
       .send({ email: "broker@example.com" })
       .expect(200);
     const otp = (h.emailer as CaptureEmailer).last?.otp ?? "";
     expect(otp).toMatch(/^\d{6}$/);
 
     await request(h.app)
-      .post("/api/auth/reset-password")
+      .post("/auth/reset-password")
       .send({ email: "broker@example.com", otp, new_password: "brandNew9" })
       .expect(200);
 
     // Old password no longer works; new one does.
     expect(
-      (await request(h.app).post("/api/auth/login").send({ email: "broker@example.com", password: "correct1horse" })).status,
+      (await request(h.app).post("/auth/login").send({ email: "broker@example.com", password: "correct1horse" })).status,
     ).toBe(401);
     await request(h.app)
-      .post("/api/auth/login")
+      .post("/auth/login")
       .send({ email: "broker@example.com", password: "brandNew9" })
       .expect(200);
   });
 
   it("forgot-password is enumeration-safe (identical response for known and unknown emails)", async () => {
-    const known = await request(h.app).post("/api/auth/forgot-password").send({ email: "broker@example.com" });
-    const unknown = await request(h.app).post("/api/auth/forgot-password").send({ email: "ghost@example.com" });
+    const known = await request(h.app).post("/auth/forgot-password").send({ email: "broker@example.com" });
+    const unknown = await request(h.app).post("/auth/forgot-password").send({ email: "ghost@example.com" });
     expect(known.status).toBe(200);
     expect(unknown.status).toBe(200);
     expect(known.body).toEqual(unknown.body);
   });
 
   it("rejects a weak reset password with 400 before touching the OTP", async () => {
-    await request(h.app).post("/api/auth/forgot-password").send({ email: "broker@example.com" });
+    await request(h.app).post("/auth/forgot-password").send({ email: "broker@example.com" });
     const otp = (h.emailer as CaptureEmailer).last?.otp ?? "";
     const res = await request(h.app)
-      .post("/api/auth/reset-password")
+      .post("/auth/reset-password")
       .send({ email: "broker@example.com", otp, new_password: "weak" });
     expect(res.status).toBe(400);
   });
@@ -158,21 +158,21 @@ describe("Better Auth module — password reset via email-otp (D5)", () => {
 
 describe("Better Auth module — OTP verification endpoints", () => {
   it("sends a verification OTP and verifies it", async () => {
-    await request(h.app).post("/api/auth/send-otp").send({ email: "broker@example.com" }).expect(200);
+    await request(h.app).post("/auth/send-otp").send({ email: "broker@example.com" }).expect(200);
     const otp = (h.emailer as CaptureEmailer).last?.otp ?? "";
     expect(otp).toMatch(/^\d{6}$/);
     const verify = await request(h.app)
-      .post("/api/auth/verify-otp")
+      .post("/auth/verify-otp")
       .send({ email: "broker@example.com", otp });
     expect(verify.status).toBe(200);
     expect(verify.body.verified).toBe(true);
   });
 
   it("rejects a malformed OTP body with 400 and a wrong code without 200", async () => {
-    expect((await request(h.app).post("/api/auth/send-otp").send({})).status).toBe(400);
-    await request(h.app).post("/api/auth/send-otp").send({ email: "broker@example.com" });
+    expect((await request(h.app).post("/auth/send-otp").send({})).status).toBe(400);
+    await request(h.app).post("/auth/send-otp").send({ email: "broker@example.com" });
     const bad = await request(h.app)
-      .post("/api/auth/verify-otp")
+      .post("/auth/verify-otp")
       .send({ email: "broker@example.com", otp: "000000" });
     expect(bad.status).not.toBe(200);
   });
@@ -181,10 +181,10 @@ describe("Better Auth module — OTP verification endpoints", () => {
 describe("Better Auth module — multi-tenant boundary parity (D6)", () => {
   it("surfaces company memberships and enforces canAccessCompany", async () => {
     const login = await request(h.app)
-      .post("/api/auth/login")
+      .post("/auth/login")
       .send({ email: "broker@example.com", password: "correct1horse" });
     const me = await request(h.app)
-      .get("/api/auth/me")
+      .get("/auth/me")
       .set("Cookie", sessionCookie(login.headers["set-cookie"]));
     const user = me.body.user;
 

@@ -4,6 +4,7 @@ import helmet from "helmet";
 import { pinoHttp } from "pino-http";
 import { uploads as contracts } from "@datahub/contracts";
 import { HttpError } from "../../shared/errors.js";
+import { withCommonMiddleware } from "../../shared/router.js";
 import type { UploadsService } from "./service.js";
 
 function firstError(err: { issues: ReadonlyArray<{ message?: string }> }): string {
@@ -16,24 +17,26 @@ export interface UploadsRouterDeps {
 }
 
 /**
- * The upload + document + document-activity HTTP surface. Mounted broadly under
- * `/api`; only these routes are defined (manual-GL upload sub-routes stay on
+ * The upload + document + document-activity HTTP surface. Mounted broadly at the
+ * API root; only these routes are defined (manual-GL upload sub-routes stay on
  * legacy). `POST /uploads` takes a raw binary body; the rest are JSON.
+ *
+ * The chain is attached per-route (not via `router.use`) so paths this module does
+ * not define fall through to legacy untouched — see `withCommonMiddleware`. The
+ * binary route opts out of the JSON parser by declaring `rawBody` itself.
  */
 export function createUploadsRouter(deps: UploadsRouterDeps): Router {
   const { service, requireAuth } = deps;
   const router = express.Router();
-  router.use(helmet());
-  router.use(pinoHttp());
 
   // Raw body only for the binary upload; JSON for everything else.
   const rawBody = express.raw({ type: () => true, limit: process.env.UPLOAD_MAX_SIZE ?? "200mb" });
   const jsonBody = express.json();
-  router.use((req, res, next) => {
+  const bodyForRoute: RequestHandler = (req, res, next) => {
     if (req.method === "POST" && req.path === "/uploads") return next();
     jsonBody(req, res, next);
-  });
-  router.use(requireAuth);
+  };
+  withCommonMiddleware(router, [helmet(), pinoHttp(), bodyForRoute, requireAuth]);
 
   const handle =
     (fn: (req: Request, res: Response) => Promise<void>): RequestHandler =>

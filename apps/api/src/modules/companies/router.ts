@@ -4,6 +4,7 @@ import helmet from "helmet";
 import { pinoHttp } from "pino-http";
 import { companies as contracts } from "@datahub/contracts";
 import { HttpError } from "../../shared/errors.js";
+import { withCommonMiddleware } from "../../shared/router.js";
 import type { CompaniesService } from "./service.js";
 
 function firstError(err: { issues: ReadonlyArray<{ message?: string }> }): string {
@@ -17,17 +18,17 @@ export interface CompaniesRouterDeps {
 }
 
 /**
- * The `/api/companies` HTTP surface (parity with legacy shapes). helmet + pino
- * are scoped here; the shared `requireAuth` guard runs before every route so
+ * The `/companies` HTTP surface (parity with legacy shapes). helmet + pino are
+ * scoped here; the shared `requireAuth` guard runs before every route so
  * `req.user` is always present. Errors carrying an HTTP status map to it.
+ *
+ * The chain is attached per-route (not via `router.use`) so paths this module
+ * does not define fall through to legacy untouched — see `withCommonMiddleware`.
  */
 export function createCompaniesRouter(deps: CompaniesRouterDeps): Router {
   const { service, requireAuth } = deps;
   const router = express.Router();
-  router.use(helmet());
-  router.use(pinoHttp());
-  router.use(express.json());
-  router.use(requireAuth);
+  withCommonMiddleware(router, [helmet(), pinoHttp(), express.json(), requireAuth]);
 
   const handle =
     (fn: (req: Request, res: Response) => Promise<void>): RequestHandler =>

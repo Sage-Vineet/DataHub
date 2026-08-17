@@ -5,6 +5,7 @@ import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createGateway } from "./gateway.js";
 import { parseRoutingTable } from "./routing.js";
+import { withCommonMiddleware } from "./shared/router.js";
 
 interface Upstream {
   url: string;
@@ -135,13 +136,79 @@ describe("gateway", () => {
     expect(res.body.error).toBe("gateway_upstream_error");
   });
 
+  /**
+   * Regression: a mounted module must not disturb paths it does not define.
+   *
+   * Domain modules mount broadly (`/`, `/auth`) and own only some paths under that
+   * mount. If their helmet/body-parser/session chain were attached with
+   * `router.use()`, every unmatched path would be 401'd by the guard or have its
+   * body consumed before the proxy saw it — silently breaking unmigrated legacy
+   * neighbours such as the QuickBooks OAuth routes under `/api/auth/*`.
+   * `withCommonMiddleware` attaches the chain per-route so fall-through is clean.
+   */
+  describe("module fall-through", () => {
+    /** A domain-style router: per-route chain, with a guard that would 401 everything. */
+    function domainRouter() {
+      const router = express.Router();
+      const denyAll: express.RequestHandler = (_req, res) => {
+        res.status(401).json({ error: "unauthenticated" });
+      };
+      withCommonMiddleware(router, [express.json(), denyAll]);
+      router.get("/companies/:id/folders", (_req, res) => {
+        res.json({ served: "in-process" });
+      });
+      return router;
+    }
+
+    function gatewayWithModule() {
+      const table = parseRoutingTable({ LEGACY_ORIGIN: legacy.url });
+      return createGateway(table, {
+        modules: [{ path: "/", router: domainRouter() }],
+        proxyTimeoutMs: 800,
+      });
+    }
+
+    it("serves a path the module defines", async () => {
+      const res = await request(gatewayWithModule()).get("/companies/c1/folders");
+      expect(res.status).toBe(401); // the guard ran — proving the route is in-process
+    });
+
+    it("proxies an undefined path to legacy instead of 401ing it", async () => {
+      const res = await request(gatewayWithModule()).get("/api/auth/callback?code=abc");
+      expect(res.status).toBe(200);
+      expect(res.body.upstream).toBe("legacy");
+      expect(res.body.url).toBe("/api/auth/callback?code=abc");
+    });
+
+    it("leaves the body of an undefined path unconsumed for the proxy", async () => {
+      const res = await request(gatewayWithModule())
+        .post("/api/auth/transfer-confirm")
+        .send({ realmId: "9130347" });
+      expect(res.status).toBe(201);
+      expect(res.body.upstream).toBe("legacy");
+      // The decisive assertion: the body reached legacy intact.
+      expect(JSON.parse(res.body.body)).toEqual({ realmId: "9130347" });
+    });
+
+    it.each([
+      "/api/auth/quickbooks",
+      "/api/auth/callback",
+      "/api/auth/status",
+      "/api/auth/disconnect",
+    ])("keeps legacy QuickBooks OAuth route %s on legacy", async (path) => {
+      const res = await request(gatewayWithModule()).get(path);
+      expect(res.status).toBe(200);
+      expect(res.body.upstream).toBe("legacy");
+    });
+  });
+
   it("emits credentialed-CORS headers for allow-listed origins and answers preflight", async () => {
     const table = parseRoutingTable({ LEGACY_ORIGIN: legacy.url });
     const app = createGateway(table, { corsOrigins: ["https://app.datahub.test"] });
 
     // Preflight from an allowed origin → 204 with credentials allowed.
     const pre = await request(app)
-      .options("/api/auth/login")
+      .options("/auth/login")
       .set("Origin", "https://app.datahub.test");
     expect(pre.status).toBe(204);
     expect(pre.headers["access-control-allow-origin"]).toBe("https://app.datahub.test");

@@ -4,6 +4,7 @@ import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import { pinoHttp } from "pino-http";
 import { auth as contracts } from "@datahub/contracts";
+import { withCommonMiddleware } from "../../shared/router.js";
 import type { AuthConfig } from "./config.js";
 import { AuthError } from "./errors.js";
 import { requireAuth } from "./middleware.js";
@@ -31,13 +32,13 @@ function handle(fn: (req: Request, res: Response) => Promise<void> | void): Requ
 
 /**
  * The auth HTTP surface. helmet + pino-http are scoped HERE (not globally) so
- * the gateway's legacy pass-through stays byte-identical (design D6).
+ * the gateway's legacy pass-through stays byte-identical (design D6). The chain is
+ * attached per-route (not via `router.use`) so sibling paths under the mount fall
+ * through to legacy untouched — see `withCommonMiddleware`.
  */
 export function createAuthRouter(service: AuthService, config: AuthConfig): Router {
   const router = express.Router();
-  router.use(helmet());
-  router.use(pinoHttp());
-  router.use(express.json());
+  withCommonMiddleware(router, [helmet(), pinoHttp(), express.json()]);
 
   // H1 — rate-limit failed logins per IP+email. Successful logins don't count.
   const loginLimiter = rateLimit({
