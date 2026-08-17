@@ -18,6 +18,13 @@
 
 ## 4. Staging cutover
 
+> The parity checklist below is now runnable rather than hand-executed: the
+> `staging-parity-harness` change provides the seeded staging target (its refusals
+> mean this cannot be pointed at production) and `pnpm --filter @datahub/api parity`.
+> Flip/delete criteria: `docs/CUTOVER_FLIP_CRITERIA.md`. The auth-specific cases in
+> 4.3 stay as written — the harness runs them, it does not replace them.
+
+
 - [ ] 4.1 Deploy `apps/api` to staging with `AUTH_MODULE_ENABLED=false`; confirm 100% proxies to legacy unchanged
 - [ ] 4.2 Flip `AUTH_MODULE_ENABLED=true` in staging
 - [ ] 4.3 Run the parity checklist against real DB + real email: login, `/me` (200/401), wrong-password 401, forgot→**email received**→reset→login, rate-limit 429, cross-tenant denied

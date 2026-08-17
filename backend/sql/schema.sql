@@ -1,3 +1,36 @@
+-- ============================================================================
+-- NOT AUTHORITATIVE. This file cannot build the schema it appears to define.
+-- ============================================================================
+--
+-- Verified by `apps/api/src/parity/schema-file.test.ts`, which applies it to an
+-- empty database — something nothing in the repo previously did, which is why the
+-- following went unnoticed:
+--
+--   1. It is NOT self-contained. `ebitda_adjustments` (below) has a foreign key to
+--      `dataset_versions(id)`, and this file never creates that table. It exists
+--      only in the migration set, so applying this file to an empty database fails
+--      outright with `relation "dataset_versions" does not exist`.
+--   2. `dataset_versions` is created TWICE in the migrations with materially
+--      different definitions — `001_snapshot_dataset_versions.sql` (version_number,
+--      upload_job_id, batch_id, unique constraint) versus
+--      `019_snapshot_reporting_architecture.sql` (sync_source, source, finalized_by,
+--      sync_job_id). Both use CREATE TABLE IF NOT EXISTS, so which one wins depends
+--      on the order they ran in, and 001's ALTER TABLE backfills patch the result.
+--      There is therefore no way to know what production actually has WITHOUT
+--      introspecting production.
+--   3. `bank_transactions` omitted `client_id` while an index below referenced it —
+--      fixed (see the note at that table), since the running code settles it.
+--
+-- This is the audit's "no authoritative schema" finding in concrete form, and the
+-- reason `db:pull` reconciliation must come from a production snapshot rather than
+-- from this file (staging-parity-harness, design D6).
+--
+-- Do not treat this file as the source of truth, and do not extend it. The Drizzle
+-- schema in `packages/db` becomes the authority once reconciled against a snapshot.
+-- `devenv.nix`'s `load-schema` script runs this file and therefore cannot work on
+-- an empty database.
+-- ============================================================================
+
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 DO $$ BEGIN
@@ -246,9 +279,17 @@ CREATE TABLE IF NOT EXISTS direct_messages (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- `client_id` was missing from this declaration while line ~278 indexed it, so
+-- this file could not apply to a clean database. The running code settles which
+-- side was stale: bankVsBooks.js:483 filters `bank_transactions` on `client_id`
+-- (`.eq("client_id", req.clientId)`), and the sibling reconciliation_transactions
+-- table declares it — so the column exists in production and the DECLARATION was
+-- wrong, not the index. Confirm against the snapshot during db:pull reconciliation
+-- (staging-parity-harness task 2.x).
 CREATE TABLE IF NOT EXISTS bank_transactions (
   id bigserial PRIMARY KEY,
   txn_date date NOT NULL,
+  client_id uuid,
   narration text,
   amount numeric(14, 2) NOT NULL
 );
