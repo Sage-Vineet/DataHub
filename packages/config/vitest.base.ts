@@ -7,6 +7,11 @@ import { defineConfig } from "vitest/config";
  * program's 90% target is measured on new/migrated code only.
  */
 export default defineConfig({
+  // Workspace packages expose `development` → TS source and `default` → dist, so
+  // `node dist/server.js` resolves compiled output in production while tooling
+  // keeps reading source. Tests must ask for the source condition explicitly,
+  // otherwise they would resolve `dist` and require a build first.
+  resolve: { conditions: ["development"] },
   test: {
     environment: "node",
     coverage: {

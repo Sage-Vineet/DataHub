@@ -1,0 +1,105 @@
+# Staging: the real pair behind the cutover seam — SPA → gateway → legacy → Postgres.
+#
+#   docker compose -f docker-compose.staging.yml up --build
+#
+# Every domain flag is OFF by default, so this stack must behave EXACTLY like the
+# legacy backend alone. That equivalence is the first thing to verify in staging
+# (auth-production-cutover task 4.1) and the baseline every later flag flip is
+# measured against. Flip one flag, re-run the parity checks, soak, then delete the
+# corresponding legacy handlers (ADR-0003).
+
+name: datahub-staging
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-datahub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-datahub}
+      POSTGRES_DB: ${POSTGRES_DB:-datahub}
+    ports:
+      - "${POSTGRES_PORT:-5434}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Loads the legacy schema on FIRST start only (empty volume).
+      - ./backend/sql/schema.sql:/docker-entrypoint-initdb.d/00-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-datahub} -d ${POSTGRES_DB:-datahub}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  legacy:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgres://${POSTGRES_USER:-datahub}:${POSTGRES_PASSWORD:-datahub}@postgres:5432/${POSTGRES_DB:-datahub}
+      # Must equal the gateway's JWT_SECRET so tokens cross-validate during a flip
+      # and any rollback (auth-production-cutover task 3.2).
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Not published: staging traffic must reach legacy THROUGH the gateway, so the
+    # seam is exercised. Publish it temporarily only to A/B a parity difference.
+    expose:
+      - "4000"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4000/public/health/db').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  gateway:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      LEGACY_ORIGIN: http://legacy:4000
+      DATABASE_URL: postgres://${POSTGRES_USER:-datahub}:${POSTGRES_PASSWORD:-datahub}@postgres:5432/${POSTGRES_DB:-datahub}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:8080}
+      AUTH_TRUSTED_ORIGINS: ${AUTH_TRUSTED_ORIGINS:-http://localhost:5173}
+      # ── Cutover flags. All off = transparent proxy. Flip ONE at a time, in the
+      # order auth → companies → users → folders → uploads → requests → messages
+      # → reports, verifying parity between each (MODERNIZATION_PLAN.md §5).
+      BETTER_AUTH_ENABLED: ${BETTER_AUTH_ENABLED:-false}
+      COMPANIES_MODULE_ENABLED: ${COMPANIES_MODULE_ENABLED:-false}
+      USERS_MODULE_ENABLED: ${USERS_MODULE_ENABLED:-false}
+      FOLDERS_MODULE_ENABLED: ${FOLDERS_MODULE_ENABLED:-false}
+      UPLOADS_MODULE_ENABLED: ${UPLOADS_MODULE_ENABLED:-false}
+      REQUESTS_MODULE_ENABLED: ${REQUESTS_MODULE_ENABLED:-false}
+      MESSAGES_MODULE_ENABLED: ${MESSAGES_MODULE_ENABLED:-false}
+      REPORTS_MODULE_ENABLED: ${REPORTS_MODULE_ENABLED:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      legacy:
+        condition: service_started
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    # /healthz is served by the gateway itself and never proxied, so this reports
+    # the gateway's own liveness rather than the legacy backend's.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  pgdata:

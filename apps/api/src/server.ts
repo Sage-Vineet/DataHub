@@ -18,6 +18,7 @@ import { createMessagesModule } from "./modules/messages/index.js";
 import { createReportsModule } from "./modules/reports/index.js";
 import { requireSession } from "./shared/session.js";
 import { parseRoutingTable } from "./routing.js";
+import { loadGatewayEnv, type GatewayEnv } from "./env.js";
 
 /** Lazily create a single shared Drizzle client for all in-process modules. */
 function dbFactory(): () => Db {
@@ -53,17 +54,17 @@ function dbFactory(): () => Db {
  * middleware per-route (`withCommonMiddleware`), so undefined paths under a mount
  * fall through to the proxy untouched.
  */
-function buildModules(): MountedModule[] {
+function buildModules(flags: GatewayEnv["flags"]): MountedModule[] {
   const modules: MountedModule[] = [];
   const getDb = dbFactory();
   const graphEmailer = () =>
     process.env.GRAPH_TENANT_ID ? GraphEmailer.fromEnv(process.env) : new ConsoleEmailer();
 
-  if (process.env.BETTER_AUTH_ENABLED === "true") {
+  if (flags.BETTER_AUTH_ENABLED) {
     const { router } = createBetterAuthModule({ db: getDb(), emailer: graphEmailer() });
     modules.push({ path: "/auth", router });
     console.warn("[gateway] Better Auth ENABLED at /auth (in-process, ADR-0007)");
-  } else if (process.env.AUTH_MODULE_ENABLED === "true") {
+  } else if (flags.AUTH_MODULE_ENABLED) {
     const repo = new DrizzleAuthRepository(getDb());
     const { router } = createAuthModule({ repo });
     modules.push({ path: "/auth", router });
@@ -73,13 +74,13 @@ function buildModules(): MountedModule[] {
   // Domain modules share one session guard: a Better Auth instance validates
   // sessions (ADR-0007), even if /auth itself is still legacy.
   const domainsEnabled =
-    process.env.COMPANIES_MODULE_ENABLED === "true" ||
-    process.env.USERS_MODULE_ENABLED === "true" ||
-    process.env.FOLDERS_MODULE_ENABLED === "true" ||
-    process.env.UPLOADS_MODULE_ENABLED === "true" ||
-    process.env.REQUESTS_MODULE_ENABLED === "true" ||
-    process.env.MESSAGES_MODULE_ENABLED === "true" ||
-    process.env.REPORTS_MODULE_ENABLED === "true";
+    flags.COMPANIES_MODULE_ENABLED ||
+    flags.USERS_MODULE_ENABLED ||
+    flags.FOLDERS_MODULE_ENABLED ||
+    flags.UPLOADS_MODULE_ENABLED ||
+    flags.REQUESTS_MODULE_ENABLED ||
+    flags.MESSAGES_MODULE_ENABLED ||
+    flags.REPORTS_MODULE_ENABLED;
   if (domainsEnabled) {
     const db = getDb();
     const auth = createBetterAuth({
@@ -89,18 +90,18 @@ function buildModules(): MountedModule[] {
     });
     const requireAuth = requireSession(auth, new DrizzleAuthRepository(db));
 
-    if (process.env.COMPANIES_MODULE_ENABLED === "true") {
+    if (flags.COMPANIES_MODULE_ENABLED) {
       // When folders is also enabled, companies provisions via the real folders
       // service (folders-domain D6) instead of its own basic adapter.
       const folderProvisioning =
-        process.env.FOLDERS_MODULE_ENABLED === "true" ? createFolderProvisioningPort(db) : undefined;
+        flags.FOLDERS_MODULE_ENABLED ? createFolderProvisioningPort(db) : undefined;
       modules.push({
         path: "/companies",
         router: createCompaniesModule({ db, requireAuth, folderProvisioning }).router,
       });
       console.warn("[gateway] companies module ENABLED at /companies (in-process)");
     }
-    if (process.env.USERS_MODULE_ENABLED === "true") {
+    if (flags.USERS_MODULE_ENABLED) {
       modules.push({ path: "/users", router: createUsersModule({ db, requireAuth }).router });
       console.warn("[gateway] users module ENABLED at /users (in-process)");
     }
@@ -108,25 +109,25 @@ function buildModules(): MountedModule[] {
     // folder-access/:id) so it mounts at the API root and only defines its own routes;
     // document sub-routes fall through to legacy. Mounted last so the more-specific
     // /companies and /users modules match first.
-    if (process.env.FOLDERS_MODULE_ENABLED === "true") {
+    if (flags.FOLDERS_MODULE_ENABLED) {
       modules.push({ path: "/", router: createFoldersModule({ db, requireAuth }).router });
       console.warn("[gateway] folders module ENABLED at the API root (folder + access routes)");
     }
     // Uploads also spans several path prefixes (uploads, folders/:id/documents,
     // documents/:id) → mounted at the API root, only its own routes defined.
-    if (process.env.UPLOADS_MODULE_ENABLED === "true") {
+    if (flags.UPLOADS_MODULE_ENABLED) {
       modules.push({ path: "/", router: createUploadsModule({ db, requireAuth }).router });
       console.warn("[gateway] uploads module ENABLED at the API root (upload + document routes)");
     }
-    if (process.env.REQUESTS_MODULE_ENABLED === "true") {
+    if (flags.REQUESTS_MODULE_ENABLED) {
       modules.push({ path: "/", router: createRequestsModule({ db, requireAuth }).router });
       console.warn("[gateway] requests module ENABLED at the API root (request routes)");
     }
-    if (process.env.MESSAGES_MODULE_ENABLED === "true") {
+    if (flags.MESSAGES_MODULE_ENABLED) {
       modules.push({ path: "/", router: createMessagesModule({ db, requireAuth }).router });
       console.warn("[gateway] messages module ENABLED at the API root (message routes)");
     }
-    if (process.env.REPORTS_MODULE_ENABLED === "true") {
+    if (flags.REPORTS_MODULE_ENABLED) {
       modules.push({ path: "/", router: createReportsModule({ db, requireAuth }).router });
       console.warn("[gateway] reports module ENABLED at the API root (key-report version lifecycle)");
     }
@@ -135,13 +136,15 @@ function buildModules(): MountedModule[] {
 }
 
 function main(): void {
+  // Validate our own env before anything else, so a mistyped cutover flag is a
+  // startup error rather than a route-group that silently stayed on legacy.
+  const env = loadGatewayEnv(process.env);
   const table = parseRoutingTable(process.env);
-  const corsOrigins = (process.env.AUTH_TRUSTED_ORIGINS ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const app = createGateway(table, { modules: buildModules(), corsOrigins });
-  const port = Number(process.env.PORT ?? 8080);
+  const app = createGateway(table, {
+    modules: buildModules(env.flags),
+    corsOrigins: env.corsOrigins,
+  });
+  const port = env.port;
 
   app.listen(port, () => {
     const routes =

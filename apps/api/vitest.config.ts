@@ -1,6 +1,9 @@
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  // @datahub/contracts and @datahub/db expose `development` → TS source and
+  // `default` → dist. Tests read the source; only the built server reads dist.
+  resolve: { conditions: ["development"] },
   test: {
     include: ["src/**/*.test.ts"],
     // Integration tests spin up embedded Postgres (PGlite/WASM) + Better Auth
