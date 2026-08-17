@@ -62,7 +62,9 @@ beforeEach(async () => {
   db = drizzle(client, { schema }) as unknown as Db;
   companyId = randomUUID();
   await db.insert(schema.companies).values({ id: companyId, name: "Acme" });
-  current = { ...BROKER };
+  // Membership is what grants access — brokers are not unscoped (parity with
+  // legacy permissionService), so the test broker must belong to this company.
+  current = { ...BROKER, company_ids: [companyId] };
 
   const requireAuth = (req: Request, _res: Response, next: NextFunction) => {
     req.user = current;

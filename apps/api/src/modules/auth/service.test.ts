@@ -162,10 +162,28 @@ describe("AuthService OTP + reset", () => {
 
 describe("canAccessCompany", () => {
   const base = { id: "u", name: "n", email: "e@x.com", status: "active" as const };
-  it("lets brokers/admins access any company", () => {
-    expect(canAccessCompany({ ...base, role: "broker", company_id: null }, "c1")).toBe(true);
+
+  it("lets admins access any company", () => {
     expect(canAccessCompany({ ...base, role: "admin", company_id: null }, "c1")).toBe(true);
   });
+
+  it("confines brokers to companies they are associated with", () => {
+    // Parity with legacy permissionService.canAccessCompany, where only isAdmin is
+    // unscoped. A blanket broker grant would expose every tenant to every broker.
+    const unassociated = { ...base, role: "broker" as const, company_id: null };
+    expect(canAccessCompany(unassociated, "c1")).toBe(false);
+
+    const associated = {
+      ...base,
+      role: "broker" as const,
+      company_id: "c1",
+      company_ids: ["c1", "c2"],
+    };
+    expect(canAccessCompany(associated, "c1")).toBe(true);
+    expect(canAccessCompany(associated, "c2")).toBe(true);
+    expect(canAccessCompany(associated, "c3")).toBe(false);
+  });
+
   it("confines buyers to their own companies", () => {
     const buyer = { ...base, role: "buyer" as const, company_id: "c1", company_ids: ["c1"] };
     expect(canAccessCompany(buyer, "c1")).toBe(true);

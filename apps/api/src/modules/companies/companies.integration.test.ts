@@ -128,6 +128,10 @@ describe("companies router — CRUD (real Postgres)", () => {
 
   it("reads with stats, updates safe fields, and blocks cross-tenant (403) / missing (404)", async () => {
     const created = (await request(app).post("/api/companies").send({ name: "Acme" })).body;
+    // Creating associates the broker with the company (user_companies); the fake
+    // session guard has to reflect that, because membership — not the broker role
+    // — is what grants access.
+    current = { ...current, company_ids: [created.id] };
     // Seed request rows for stats.
     await db.execute(sql`INSERT INTO requests (company_id, status) VALUES (${created.id}, 'pending'), (${created.id}, 'completed'), (${created.id}, 'pending')`);
 
@@ -147,7 +151,7 @@ describe("companies router — CRUD (real Postgres)", () => {
     // Cross-tenant client → 403; unknown id → 404.
     current = { ...BROKER, role: "buyer", company_ids: [] };
     expect((await request(app).get(`/api/companies/${created.id}`)).status).toBe(403);
-    current = { ...BROKER };
+    current = { ...BROKER, company_ids: [created.id] };
     expect((await request(app).get(`/api/companies/${randomUUID()}`)).status).toBe(404);
   });
 });
@@ -156,6 +160,7 @@ describe("companies router — transactional cascade delete (design D4)", () => 
   it("removes the company and every dependent record atomically, nulling users.company_id", async () => {
     const created = (await request(app).post("/api/companies").send({ name: "Acme" })).body;
     const id = created.id;
+    current = { ...current, company_ids: [id] };
 
     // Seed dependents across the cascade surface.
     const folder = (await db.insert(schema.folders).values({ companyId: id, name: "F", createdBy: BROKER.id }).returning())[0]!;

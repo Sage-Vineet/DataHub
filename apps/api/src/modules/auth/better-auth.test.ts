@@ -192,8 +192,13 @@ describe("Better Auth module — multi-tenant boundary parity (D6)", () => {
     expect(user.company_ids).toContain(COMPANY_A);
     expect(user.company_ids).not.toContain(COMPANY_B);
 
-    // A broker may access any company; a scoped user only their own.
-    expect(canAccessCompany(user, COMPANY_B)).toBe(true); // broker override
+    // Membership is what grants access — for brokers too. A broker who is not a
+    // member of company B must not reach it (parity with legacy; only admins are
+    // unscoped).
+    expect(canAccessCompany(user, COMPANY_A)).toBe(true);
+    expect(canAccessCompany(user, COMPANY_B)).toBe(false);
+    expect(canAccessCompany({ ...user, role: "admin" }, COMPANY_B)).toBe(true);
+
     const client = { ...user, role: "buyer", company_id: COMPANY_A, company_ids: [COMPANY_A] };
     expect(canAccessCompany(client, COMPANY_A)).toBe(true);
     expect(canAccessCompany(client, COMPANY_B)).toBe(false);
