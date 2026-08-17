@@ -2803,7 +2803,7 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
   const fileInputRef = useRef(null);
   const undoTimerRef = useRef(null);
   const pendingDeleteRef = useRef(null);
-  const [loadingTree, setLoadingTree] = useState(false);
+  const [loadingTree, setLoadingTree] = useState(!!companyId);
   const [treeError, setTreeError] = useState('');
   const [dragCounter, setDragCounter] = useState(0);
   const [duplicateWarnings, setDuplicateWarnings] = useState([]);
@@ -3270,6 +3270,14 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     await syncFolderAccessToApi(shareFolder.id, normalizedEntries);
     setFolderAccess(shareFolder.id, normalizedEntries);
   };
+
+  if (loadingTree) {
+    return (
+      <div className="flex items-center justify-center bg-[#f4f6fb] rounded-2xl border border-gray-200 shadow-sm overflow-hidden h-full">
+        <Loader2 size={28} className="animate-spin text-[#A5A5A5]" />
+      </div>
+    );
+  }
 
   return (
     <div className="flex bg-[#f4f6fb] rounded-2xl border border-gray-200 shadow-sm overflow-hidden h-full">

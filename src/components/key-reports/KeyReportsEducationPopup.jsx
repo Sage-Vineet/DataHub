@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { Info, X } from "lucide-react";
 
 // First-visit educational popup. Shown until the user dismisses it permanently
@@ -11,7 +12,12 @@ export default function KeyReportsEducationPopup({ onClose, onDismissForever }) 
     onClose?.();
   };
 
-  return (
+  // Portalled to <body> — the page content wrapper it would otherwise sit
+  // inside animates in with a `transform` (animate-fadeIn), which makes that
+  // wrapper the containing block for `position: fixed` descendants instead of
+  // the viewport. Without the portal this popup centers on the full page
+  // height rather than the screen, landing off-screen on long pages.
+  return createPortal(
     <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/40 p-4">
       <div className="w-full max-w-md rounded-2xl border border-border bg-white p-6 shadow-2xl">
         <div className="flex items-start gap-3">
@@ -45,6 +51,7 @@ export default function KeyReportsEducationPopup({ onClose, onDismissForever }) 
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
