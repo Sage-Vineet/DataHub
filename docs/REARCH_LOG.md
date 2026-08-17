@@ -204,6 +204,8 @@ DataHub is a multi-tenant M&A / accounting platform (React/Vite SPA + Express/No
 
 ## Reference map
 - Program target & roadmap: `docs/MODERNIZATION_PLAN.md`
+- Next phase plan: `docs/PHASE_C_PLAN.md` (expands §18's "Next: Phase C onward")
+- Product surface & capability dependency graph: `openspec/changes/centuriuum-product-surface/`
 - Decisions: `docs/adr/`
 - Change specs: `openspec/changes/phase-0-harness/`
 - Audit evidence: `DataHub_Engineering_Audit.docx`, `DataHub_Executive_Overview.odt`
