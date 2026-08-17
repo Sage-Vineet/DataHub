@@ -21,8 +21,19 @@ services:
       - "${POSTGRES_PORT:-5434}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # Loads the legacy schema on FIRST start only (empty volume).
-      - ./backend/sql/schema.sql:/docker-entrypoint-initdb.d/00-schema.sql:ro
+      # NOTE: backend/sql/schema.sql is deliberately NOT auto-loaded — it does not
+      # apply to a clean database. Line 278 indexes `bank_transactions(client_id)`,
+      # a column the table definition above it does not declare, so psql aborts.
+      # The file is stale relative to the 76 ad-hoc migrations that followed it,
+      # which is the same "no authoritative schema" finding the audit records.
+      #
+      # Seed staging from a production snapshot instead — that is also what makes
+      # `pnpm --filter @datahub/db db:pull` meaningful (ADR-0002):
+      #   pg_dump --schema-only "$PROD_URL" > staging-schema.sql
+      #   docker compose -f docker-compose.staging.yml exec -T postgres \
+      #     psql -U datahub -d datahub < staging-schema.sql
+      # The stack starts fine without it: the gateway proxies to legacy regardless,
+      # so the flags-off parity baseline can be verified before any data is loaded.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-datahub} -d ${POSTGRES_DB:-datahub}"]
       interval: 5s
