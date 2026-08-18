@@ -34,3 +34,9 @@ The TypeScript auth module (`phase-1-auth`) is built, tested, and **locally** so
 - JWT refresh/rotation/revocation (audit M1) — a later hardening change.
 - CORS/token-storage hardening (M2/M3).
 - Standing up a shared rate-limit store unless the API runs multi-instance (see design).
+
+## Status
+
+**Not started — 0/23 tasks (18 Aug 2026).** Not stalled and not abandoned: the module
+itself is built, tested, and locally soaked, and this change is the production cutover
+event rather than the build. It needs a scheduled window and an owner, not more code.

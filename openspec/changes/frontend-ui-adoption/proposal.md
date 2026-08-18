@@ -25,3 +25,9 @@
 - **No big-bang page rewrites** — god-components are decomposed only as they're touched.
 - **No forced full-app TS conversion in one pass** — strict mode is the *last* step, not the first.
 - **No backend/API changes.**
+
+## Status
+
+**Not started — 0/19 tasks (18 Aug 2026).** `@datahub/ui` exists and is proven on one
+migrated modal; what remains is the adoption sweep. No blocker recorded — this is
+unscheduled rather than blocked, and can start whenever frontend capacity exists.

@@ -86,8 +86,9 @@
 - [x] 10.3 `bank_transactions.client_id` resolved from the running code (`bankVsBooks.js:483` filters
       on it) rather than guessed; declaration fixed
 - [x] 10.4 File marked NOT AUTHORITATIVE with the evidence; `schema-file.test.ts` pins all of it
-- [ ] 10.5 **Follow-up:** `devenv.nix`'s `load-schema` script runs this file and therefore cannot work
-      on an empty database. Left alone here — changing the dev environment is outside this change
+- **Deferred (out of scope for this change):** `devenv.nix`'s `load-schema` script runs this file and
+  therefore cannot work on an empty database. Changing the dev environment is outside this change;
+  tracked as its own change at `openspec/changes/devenv-schema-bootstrap/`.
 
 ## 11. Reconciled with the harness that landed independently (`tools/parity`, log §19)
 

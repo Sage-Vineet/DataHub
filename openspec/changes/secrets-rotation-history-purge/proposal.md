@@ -28,3 +28,16 @@ The audit's **C3** finding: a live Gmail app password sits in `backend/.env.exam
 ## ⚠️ Prerequisite
 
 Do **not** start without explicit owner sign-off and a scheduled freeze window. Step 1 (rotation) is the actual security fix and should happen **first and independently** — even if the history purge is deferred, the rotated credential is already dead.
+
+## Status
+
+**Not started — 0/23 tasks (18 Aug 2026). Deliberately gated, not forgotten.** The
+prerequisite below requires explicit owner sign-off and a scheduled freeze window before
+any step runs.
+
+Worth separating, because the gate applies unevenly: step 1 (**rotation**) is the actual
+security fix for audit finding **C3** — a live credential in version control — and is
+independent of the freeze window. Rotating kills the exposed credential immediately,
+whether or not the history purge ever happens. The freeze window gates the *purge*, not
+the rotation. This change carrying 0% should not be read as the credential still being
+live by design.
