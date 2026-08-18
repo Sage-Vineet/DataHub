@@ -11,6 +11,14 @@ validation of the retrieved data.
 **Traceability:** requirements below carry the source spec's identifiers (`FR-n` = §3 functional
 requirement, `AC-n` = §10 acceptance criterion).
 
+**Reconciliation note (2026-08-17).** A revised `DR - 0003` feature specification (Josh Tonnesen,
+14 Aug 2026) has since been issued. It is unnumbered, so the `FR-n` / `AC-n` traceability above refers
+to the earlier revision. Four behaviours in the revised document were not in the earlier one and are
+added below: a user-selectable report subset per run, user selection of the destination folder, stored
+QuickBooks Desktop backup credentials, and a retrieval-date suffix on saved report sets. Two of them
+narrow existing requirements rather than extend them, and those requirements are amended in place and
+marked. Where the two revisions disagree, the newer document governs.
+
 ## ADDED Requirements
 
 ### Requirement: Wizard launch is gated on Data Room upload permission
@@ -78,6 +86,79 @@ never store, log, or display the user's QuickBooks username or password. (FR-3, 
   authorization
 - **THEN** no QuickBooks username or password is present in any of them
 
+### Requirement: Reports are selected from a pre-checked list before retrieval
+
+The wizard SHALL present the registry's reports as a checkbox list with a default subset pre-checked,
+and SHALL allow the user to add or remove individual reports from that default before starting
+retrieval. The selected set SHALL be recorded on the resulting pull version. (revised `DR - 0003` §3)
+
+#### Scenario: Default subset is pre-checked and editable
+- **WHEN** a user reaches the report-selection step
+- **THEN** a default subset is pre-checked and any report may be checked or unchecked before the run
+  starts
+
+#### Scenario: Selection is recorded on the pull
+- **WHEN** a pull completes
+- **THEN** the report set selected for that run is readable from the pull version's metadata
+
+### Requirement: The user selects the destination folder before retrieval
+
+The wizard SHALL require the user to select a destination folder within the current deal's data room
+before starting retrieval, browsing the templated tree (`DR - 0002`) to do so. (revised `DR - 0003` §3;
+*supersedes* the auto-created-subfolder behaviour below, which the revised specification replaces with
+an explicit user choice)
+
+#### Scenario: Retrieval cannot start without a destination
+- **WHEN** a user has selected a source, reports, and a date range but no destination folder
+- **THEN** the run cannot be started
+
+#### Scenario: Files land in the chosen folder
+- **WHEN** a pull completes
+- **THEN** every saved report file is in the folder the user selected
+
+### Requirement: All four selections are confirmed before the job begins
+
+The wizard SHALL require the user to confirm source, report set, date range, and destination together
+before the retrieval job begins. (revised `DR - 0003` §3)
+
+#### Scenario: One confirmation covers the whole configuration
+- **WHEN** a user reaches the final step
+- **THEN** source, reports, date range, and destination are shown together for a single confirmation,
+  and no report request is issued until it is given
+
+### Requirement: QuickBooks Desktop backup credentials are prompted, stored, and manageable
+
+Where an uploaded QuickBooks Desktop backup is password-protected, the system SHALL prompt for the
+QuickBooks Desktop username and password, SHALL store them encrypted at rest so they need not be
+re-entered on subsequent retrievals for the same connection, and SHALL allow the user to update or
+remove the stored credentials at any time. These credentials SHALL be held in the same access-scoped
+connection store as the OAuth token set and SHALL be subject to the same non-readability rule.
+(revised `DR - 0003` §3, AC-6)
+
+#### Scenario: Password-protected backup prompts once
+- **WHEN** a password-protected `.qbb` is uploaded for a connection with no stored credentials
+- **THEN** the user is prompted, and a subsequent retrieval for the same connection does not prompt
+  again
+
+#### Scenario: Stored credentials are manageable
+- **WHEN** a user updates or removes the stored QuickBooks Desktop credentials
+- **THEN** the change takes effect for the next retrieval on that connection
+
+#### Scenario: Desktop credentials are never returned
+- **WHEN** any wizard, connection, or pull API response is inspected
+- **THEN** it contains no QuickBooks Desktop username or password
+
+### Requirement: Saved report sets carry a visible retrieval date
+
+The system SHALL append a retrieval-date-based suffix to each saved report file name or version label,
+and SHALL display the retrieval date alongside each saved report set, so multiple retrievals for the
+same deal are visually distinguishable. (revised `DR - 0003` §3)
+
+#### Scenario: Two pulls are distinguishable at a glance
+- **WHEN** a company has two completed pulls taken on different dates
+- **THEN** each saved set carries its retrieval date in its file name or version label and displays it
+  alongside the set
+
 ### Requirement: Date range is confirmed before any data is retrieved
 
 The wizard SHALL prompt for the reporting date range and SHALL NOT issue any report request until the
@@ -99,21 +180,24 @@ user confirms it. The confirmed range SHALL be stored as metadata on the resulti
 
 ### Requirement: Configured key-report set is retrieved for the confirmed range
 
-For the QBO path the system SHALL retrieve, for the confirmed date range, the reports named in the
-**key-report registry**. The registry SHALL be configuration rather than a hardcoded list, and SHALL
-launch containing at minimum: Profit & Loss, Balance Sheet, General Ledger, Chart of Accounts, Trial
-Balance, AR Aging (Summary and Detail), and AP Aging (Summary and Detail). Adding a report to the
-registry SHALL cause subsequent pulls to include it without a code change to the wizard flow. (FR-5)
+For the QBO path the system SHALL retrieve, for the confirmed date range, the reports the user
+selected for that run from the **key-report registry**. The registry SHALL be configuration rather than
+a hardcoded list, and SHALL launch containing at minimum: Profit & Loss, Balance Sheet, General Ledger,
+Chart of Accounts, Trial Balance, Bank Reconciliation, AR Aging (Summary and Detail), and AP Aging
+(Summary and Detail). Adding a report to the registry SHALL cause subsequent pulls to offer it without
+a code change to the wizard flow. (FR-5; *amended* — the registry defines what is **offered**, and the
+revised `DR - 0003` makes the per-run set user-selected rather than the whole registry; Bank
+Reconciliation added from the revised report list)
 
-#### Scenario: Launch report set is pulled
+#### Scenario: Selected report set is pulled
 - **WHEN** a QBO pull runs for a confirmed range
-- **THEN** each report in the key-report registry is requested for that range and accounted for in the
-  completion summary as either saved or failed
+- **THEN** each report the user selected is requested for that range and accounted for in the
+  completion summary as either saved or failed, and no unselected report is requested
 
 #### Scenario: Registry is extended
 - **WHEN** a report is added to the key-report registry
-- **THEN** the next pull includes it, and pulls taken before the change remain valid with their
-  original report set recorded
+- **THEN** the next run offers it for selection, and pulls taken before the change remain valid with
+  their original report set recorded
 
 #### Scenario: Report unavailable for the selected range
 - **WHEN** the source reports that a required report cannot be produced for the confirmed range
@@ -148,9 +232,10 @@ failing silently or appearing to succeed. (FR-6, FR-7, AC-3)
 
 ### Requirement: Retrieved reports are saved as static individual files in the templated tree
 
-On completion the system SHALL save each retrieved report as its own static file into the company's
-Data Room file tree, under a dedicated auto-created subfolder (e.g. "Key Reports") consistent with the
-templated file structure (`DR - 0002`). The saved files SHALL be point-in-time artifacts — not live or
+On completion the system SHALL save each retrieved report as its own static file into the destination
+folder the user selected within the company's Data Room file tree, consistent with the templated file
+structure (`DR - 0002`). Where no destination has been selected — a configuration the revised
+`DR - 0003` no longer permits — the earlier auto-created "Key Reports" subfolder behaviour applies. The saved files SHALL be point-in-time artifacts — not live or
 refreshing links — and the system SHALL maintain no ongoing connection to the source after the pull
 completes unless the user explicitly re-runs the wizard. (FR-8, FR-9, AC-2)
 
@@ -159,10 +244,9 @@ completes unless the user explicitly re-runs the wizard. (FR-8, FR-9, AC-2)
 - **THEN** every retrieved report exists as a separate file in the Data Room, openable and downloadable
   under the Data Room's normal permission model
 
-#### Scenario: Destination subfolder is created if absent
-- **WHEN** a company's tree has no Key Reports subfolder at pull time
-- **THEN** the subfolder is created at the location the templated structure specifies and the files
-  land inside it
+#### Scenario: Chosen destination is created if absent
+- **WHEN** the destination the user selected does not yet exist in the company's tree at pull time
+- **THEN** it is created at the location the templated structure specifies and the files land inside it
 
 #### Scenario: Files do not change after the pull
 - **WHEN** the underlying data in the source system changes after a completed pull

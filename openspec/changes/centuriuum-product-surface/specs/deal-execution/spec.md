@@ -7,11 +7,21 @@ negotiation support (`BR - 0016`). The source list identifies the post-LOI windo
 of lower-middle-market deals die — roughly half of signed LOIs never close — which makes `BR - 0015`
 the highest-marginal-value feature in this capability.
 
-**Fidelity: sketch.** Blocked in part by four referenced-but-nonexistent features: `VL - 0009` (the
-deal structure engine that `BR - 0012` and `BR - 0014` both compute from), `VL - 0007` (SBA output),
-`VL - 0010` (version lock), and `QA - 0003` (diligence request list) — see `design.md` Register A. The
-UPL exposure noted in `BR - 0016` needs an owner outside engineering (Register B §7). Referenced
-elsewhere in the source list as `LO - 0001` … `LO - 0003`.
+**Fidelity: sketch.** No `BR` feature specification document exists; every requirement below restates a
+product-list summary. The four features this capability previously recorded as blocked by
+referenced-but-nonexistent rows now all exist: `VL - 0007`, `VL - 0009`, and `VL - 0010` are product-list
+rows specified in `valuations`, and `QA - 0003` is a specified feature in `deal-qa`. `VL - 0009` (the
+deal structure engine `BR - 0012` and `BR - 0014` both compute from) remains the binding constraint —
+it has a row and a detailed summary but no specification document, so `BR - 0014` is still not buildable
+against a settled contract. The UPL exposure noted in `BR - 0016` needs an owner outside engineering
+(`design.md` Register B §7).
+
+**ID note.** `BR - 0013` and `BR - 0014` were previously `LO - 0001` and `LO - 0002`; the product list's
+own summaries still use those numbers, and refer to the e-signature service as `IN - 0005` (now
+`SY - 0007`), to referral fee tracking as `SY - 0003` (now `SY - 0006`), to the outreach pipeline as
+`BO - 0003` (now `BR - 0009`), to the seller status report as `BO - 0006` (now `BR - 0011`), and to a
+notification and task service as `SY - 0004`, which is metered usage in the current numbering. See
+`design.md` Register A.
 
 ## ADDED Requirements
 

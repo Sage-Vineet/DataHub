@@ -7,9 +7,19 @@ data spine: buyer list builder and tiering (`BR - 0007`), teaser distribution an
 describes in the most detail, and where the platform replaces the spreadsheet every broker maintains by
 hand.
 
-**Fidelity: sketch.** Depends on `activity-log` (`SE - 0004`) for all of `BR - 0010`, on `e-signature`
-for NDA execution, and on a notification capability that does not exist in the source list — see
-`design.md` Register B §2. Referenced elsewhere in the source list as `BO - 0001` … `BO - 0006`.
+**Fidelity: sketch.** No `BR` feature specification document exists; every requirement below restates a
+product-list summary. Depends on `activity-log` (`SY - 0003`) for all of `BR - 0010`, on the
+`SY - 0007` e-signature service for NDA execution, on `CM - 0005` for the released teaser it
+distributes, and on a notification capability that still has no feature ID — see `design.md` Register B
+§2.
+
+**ID note.** These five features were previously the `BO` (Buyer Outreach) module. The product list's
+own summaries still carry the old numbers: `BO - 0001` → `BR - 0007`, `BO - 0002` → `BR - 0008`,
+`BO - 0003` → `BR - 0009`, `BO - 0004` → `BR - 0010`, `BO - 0005` → `BR - 0015`, `BO - 0006` →
+`BR - 0011`. They also refer to the e-signature service as `IN - 0005` (now `SY - 0007`), to the
+activity log as `SE - 0004` (now `SY - 0003`), to the permission model as `SE - 0002` (now `SY - 0002`),
+and to a notification and task service as `SY - 0004` — which in the current numbering is metered usage,
+not notifications. See `design.md` Register A.
 
 ## ADDED Requirements
 
@@ -181,7 +191,7 @@ diligence). (`BR - 0009`)
 The system SHALL surface, per buyer: teaser opens and forwards, time from NDA issue to execution, first
 data room login and login frequency, session duration, which documents were opened and for how long,
 download and print activity, how many individuals from that buyer's team are credentialed and active,
-and question volume submitted through Q&A. (`BR - 0010`, built on `SE - 0004`)
+and question volume submitted through Q&A. (`BR - 0010`, built on `SY - 0003`)
 
 #### Scenario: Telemetry assembled per buyer
 - **WHEN** a broker opens a buyer's engagement view

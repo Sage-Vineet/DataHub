@@ -72,3 +72,18 @@
 - [ ] 12.2 typecheck + lint + test green; module coverage ≥90%
 - [ ] 12.3 `main` untouched; Conventional Commits; update `docs/REARCH_LOG.md`
 - [ ] 12.4 Close or carry the six open questions in `design.md`; the `.qbb` spike is a separate change
+
+## Reconciliation with the revised `DR - 0003` specification (2026-08-17)
+- [x] R.1 Compared this change against the revised `DR - 0003` feature specification (Josh Tonnesen,
+      14 Aug 2026) delivered with the 59-document feature set
+- [x] R.2 Added four behaviours absent from the earlier revision: per-run report selection from a
+      pre-checked list, user-selected destination folder, stored QuickBooks Desktop backup
+      credentials with update/remove, and a retrieval-date suffix on saved report sets
+- [x] R.3 Amended two requirements the revised document narrows — the key-report registry now defines
+      what is **offered** rather than what is pulled, and the destination is chosen rather than
+      auto-created; both amendments are marked in place
+- [x] R.4 Added Bank Reconciliation to the launch registry per the revised report list
+- [ ] R.5 Confirm with Josh that the revised document supersedes the earlier revision this change was
+      written from — the `FR-n` / `AC-n` traceability markers refer to the earlier one and the newer
+      document is unnumbered
+- [ ] R.6 Add vitest/supertest coverage for the four added behaviours when this change is implemented

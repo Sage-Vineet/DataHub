@@ -1,6 +1,6 @@
 ## Purpose
 
-The **capture half** of `SE - 0004`: recording activity as it happens, across both the legacy backend
+The **capture half** of `SY - 0003`: recording activity as it happens, across both the legacy backend
 and the migrated modules, into storage whose immutability is demonstrable. The read half — search,
 filter, export, alerting, and the log's own access control — is specified in the `activity-log`
 capability sketch (`centuriuum-product-surface`) and deliberately deferred: it can be built over

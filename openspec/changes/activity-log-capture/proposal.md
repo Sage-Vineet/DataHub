@@ -1,11 +1,17 @@
 ## Why
 
-`SE - 0004` (Activity & Audit Log) is the only capability in the product surface whose value **expires**.
+> **ID note (reconciliation, 2026-08-17).** This change was written when the activity log was numbered
+> `SE - 0004` and e-signature `SY - 0004`. The `SE` module has since been folded into `SY`: the audit
+> log is now `SY - 0003` and e-signature `SY - 0007`. Identifiers below have been updated; the
+> `SY - 0003` feature specification document (Josh Tonnesen, 14 Aug 2026) is now the authority for the
+> read/query half of this capability and should be checked against the capture design here.
+
+`SY - 0003` (Activity & Audit Log) is the only capability in the product surface whose value **expires**.
 Every other feature can be built later at the same cost. An audit log cannot: it is a capture problem,
 and activity that was not recorded when it happened is gone. The product list says so directly —
 "build early rather than retrofitted" — and the dependency graph agrees, placing it at L1 with document
 control (`DR - 0006`), buyer engagement analytics (`BR - 0010`), the seller status report
-(`BR - 0011`), and e-signature audit certificates (`SY - 0004`) all downstream of it.
+(`BR - 0011`), and e-signature audit certificates (`SY - 0007`) all downstream of it.
 
 `BR - 0010` is the sharpest case. It is described in the product list as a key demo feature, and it is
 built **entirely** from history: which documents a buyer opened, for how long, how often they returned.

@@ -6,10 +6,21 @@ information capture toward pre-approval (`BY - 0002`), criteria-matched deal not
 off-market deal sourcing (`BY - 0005`), post-close cross-sell (`BY - 0006`), and buyer qualification
 and KYC (`BY - 0007`).
 
-**Fidelity: sketch.** `BY - 0007` is described in the source list as the highest-leverage time saver in
+**Fidelity: sketch.** No `BY` feature specification document exists; every requirement below restates a
+product-list summary. `BY - 0007` is described in the source list as the highest-leverage time saver in
 the entire product for a sell-side broker; `BY - 0005` is explicitly a "super end game" ambition and its
 requirement is written narrowly on purpose (`design.md` §D2). Notifications (`BY - 0003`) depend on a
-notification capability that does not exist in the source list — Register B §2.
+notification capability that still has no feature ID — Register B §2.
+
+**Overlap note.** The buyer-side *profile* is now specified: `US - 0003` (Business Buyer Profile) in
+`user-profiles` owns Buy Boxes, the lending profile, the qualification progress wheel, and the three
+dashboard views — Browse Active Listings, Matched for You, and My Active Deals. This capability covers
+the deal-facing behaviour behind those surfaces. Where the two touch, `US - 0003` is authoritative for
+what the buyer sees and this capability for what produces it. `US - 0003` is explicit that the buyer
+profile grants no data room access — all access changes originate from `BR - 0008`.
+
+**ID note.** `BK - 0005` appears against `BY - 0006` only as a retired identifier available for reuse,
+not a reference to a missing feature.
 
 ## ADDED Requirements
 

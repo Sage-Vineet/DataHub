@@ -1,112 +1,144 @@
 ## Purpose
 
-Third-party data brought into the platform: payroll provider connections (`DR - 0007`) and the market
-and transaction data provider layer (`DR - 0008`). Both sit in the Data Room module in the source list
-but are really shared inputs — payroll substantiates QoE add-backs, market data feeds the comps half of
-the valuation module. Grouped here so the provider abstraction is specified once rather than negotiated
-separately inside each consuming feature, which is exactly what `DR - 0008` asks for.
+The two outward-facing data integrations that serve several capabilities each and must therefore be
+specified once rather than negotiated separately inside every consumer: `DR - 0007` (Payroll System
+Integrations) and `DR - 0008` (Market & Transaction Data Provider Integration). Both are pulled out of
+the Data Room module because their consumers are elsewhere — QoE, valuations, projections, and deal
+sourcing.
 
-**Fidelity: sketch.** Gated on an unmade commercial decision: the market data provider is the largest
-recurring cost in the platform — see `design.md` Register B §6.
+**Fidelity: mixed.** `DR - 0007` is at specified fidelity, drawn from its feature specification (Josh
+Tonnesen, 14 Aug 2026). `DR - 0008` has no feature specification document and remains at sketch fidelity
+from the product-list summary; it is also the platform's largest recurring-cost decision and is
+unresolved — see `design.md` Register B.
 
 ## ADDED Requirements
 
-### Requirement: Payroll provider connections
+### Requirement: Payroll connections are initiated from the Data Retrieve Wizard
 
-The system SHALL connect to payroll providers — Gusto, ADP (Run and Workforce Now), Paychex, Paylocity,
-Rippling, QuickBooks Payroll — and SHALL provide a mapped file import for providers outside that set.
+The system SHALL allow a user to initiate a payroll connection through the Data Retrieve Wizard
+(`DR - 0003`), with payroll providers presented as a connection type alongside financial data sources,
+reusing the same wizard framework and connection UI. (`DR - 0007`)
+
+#### Scenario: Payroll appears as a wizard connection type
+- **WHEN** a user opens the Data Retrieve Wizard
+- **THEN** payroll providers are offered alongside financial data sources
+
+### Requirement: Six OAuth payroll providers plus a mapped import path
+
+The system SHALL support OAuth-based connection to Gusto, ADP (Run and Workforce Now), Paychex,
+Paylocity, Rippling, and QuickBooks Payroll using each provider's official API — never browser
+automation and never stored credentials — and SHALL support a mapped file import path for providers
+outside that set, allowing manual upload of an exported report mapped to a standard template.
 (`DR - 0007`)
 
-#### Scenario: Provider connected and pulled
-- **WHEN** a user connects a supported payroll provider for a company
-- **THEN** compensation data for the requested periods is retrieved into the platform
+#### Scenario: Supported provider connects by OAuth
+- **WHEN** a user selects one of the six supported providers
+- **THEN** the connection is established through that provider's official OAuth flow
 
-#### Scenario: Unsupported provider falls back to mapped import
-- **WHEN** a company's provider is not directly supported
-- **THEN** the user can import a file and map its columns to the same internal structure
+#### Scenario: Unsupported provider uses mapped import
+- **WHEN** a user's payroll provider is outside the supported set
+- **THEN** they can upload an exported report and map it to the standard template
 
-### Requirement: Employee-level compensation detail
+### Requirement: Payroll retrieval is static, versioned, and filed by template
 
-Payroll retrieval SHALL capture, by period: base wages, bonus, commission, owner draws and distributions
-where processed through payroll, employer payroll taxes, benefits and retirement contributions, headcount
-by period and department, and hire and termination dates. (`DR - 0007`)
+The system SHALL retrieve standard payroll reports — payroll summary, payroll detail, tax liability
+report — for a user-specified date range and SHALL save them as static files in the data room folder
+defined for payroll documentation per `DR - 0002`, subject to standard folder-level permissions.
+Retrieved reports SHALL NOT maintain a live or refreshing connection to the payroll source. Re-running a
+pull for the same connection SHALL create a new version of the retrieved report set rather than
+overwriting the prior pull. (`DR - 0007`)
 
-#### Scenario: Owner compensation is separable
-- **WHEN** payroll data is retrieved
-- **THEN** owner and family-member compensation is identifiable at the level needed to substantiate an
-  add-back, rather than aggregated into total wages
+#### Scenario: Reports land in the payroll folder
+- **WHEN** a retrieval completes for a selected date range
+- **THEN** the reports are saved as static files in the correct data room folder
 
-### Requirement: Payroll data serves add-backs, projections, and diligence
+#### Scenario: Re-pull versions rather than overwrites
+- **WHEN** a retrieval is re-run for the same connection
+- **THEN** a new version is created and the prior pull is retained
 
-Retrieved payroll data SHALL be available to substantiate officer compensation, family payroll, and
-personal benefit add-backs in `QE - 0004` with source-level support; to support headcount and labor cost
-assumptions in `PJ - 0002`; to identify related-party and non-arm's-length compensation; and to produce
-the employee census a buyer requests in diligence. (`DR - 0007`)
+#### Scenario: Folder permissions govern payroll documents
+- **WHEN** a user without access to the payroll folder attempts to view the documents
+- **THEN** access is refused, while users with folder access can view them
 
-#### Scenario: Add-back cites payroll source
-- **WHEN** an add-back is supported by payroll detail
-- **THEN** the QoE artifact references the underlying payroll record rather than management assertion
+### Requirement: Retrieval metadata and error reporting
 
-### Requirement: Payroll data is restricted and never buyer-facing at name level
+The system SHALL record which payroll provider, connection account, date range, and user initiated each
+retrieval, and SHALL make that metadata viewable. The system SHALL notify the initiating user of
+retrieval success or failure with a clear, actionable message, including authentication errors and
+provider-side rate limits or outages. (`DR - 0007`)
 
-Payroll data SHALL be permission-restricted to the QoE and valuation team under the role model in
-`SE - 0001`, SHALL NOT be exposed at individual-name level in the data room or CIM, and SHALL be
-aggregated or anonymized in any buyer-facing output. (`DR - 0007`)
+#### Scenario: Provenance is visible
+- **WHEN** a payroll retrieval completes
+- **THEN** provider, account, date range, initiating user, and timestamp are recorded and viewable
 
-#### Scenario: Buyer-facing output is aggregated
-- **WHEN** payroll-derived figures appear in a buyer-facing document
-- **THEN** they are aggregated or anonymized, with no individual names or individual compensation
+#### Scenario: Failures are actionable
+- **WHEN** authentication fails or the provider is rate-limited or down
+- **THEN** the initiating user receives a clear, actionable message
 
-#### Scenario: Access is restricted by role
-- **WHEN** a user outside the QoE and valuation team requests payroll detail
-- **THEN** the request is denied
+### Requirement: Payroll parsing is explicitly out of scope
 
-### Requirement: Market and transaction data as one integration serving many features
+The system SHALL NOT parse retrieved payroll reports into structured, employee-level data fields as part
+of this capability. Extracting employee-level compensation detail is a separate, not-yet-specified
+feature that consumes this one's output. (`DR - 0007`)
 
-The system SHALL provide a single market and transaction data integration serving public comparables
-(`VL - 0003`), precedent transactions (`VL - 0004`), and deal sourcing (`BR - 0005`, `BY - 0005`),
-rather than a provider integration built separately inside each. (`DR - 0008`)
+#### Scenario: Retrieval only
+- **WHEN** payroll reports are retrieved
+- **THEN** they are stored as files and no employee-level structured extraction occurs
 
-#### Scenario: One integration, multiple consumers
-- **WHEN** any of those features requests external data
-- **THEN** it goes through the same integration and the same internal record model
+### Requirement: One market and transaction data layer serving several features
 
-### Requirement: Provider schemas normalize to internal records
+The system SHALL provide a single external market and transaction data integration serving the public
+comparables set in `VL - 0003`, the precedent transaction set in `VL - 0004`, and the off-market deal
+sourcing ambition in `BR - 0005` and `BY - 0005` — specified as one integration rather than negotiated
+separately inside each consumer. Candidate providers span institutional sources (Capital IQ, PitchBook,
+FactSet, Refinitiv), private-transaction specialists suited to lower middle market work (DealStats and
+the BVR data sets, Pratt's Stats, IBA Market Data, BIZCOMPS), industry benchmark sources (RMA Annual
+Statement Studies, IBISWorld), and lower-cost market data APIs for public company pricing and
+fundamentals. (`DR - 0008`)
 
-Each provider's schema SHALL be normalized into a single internal comparable record and transaction
-record, so downstream valuation logic is provider-agnostic and a provider can be swapped without
-rebuilding `VL - 0003` and `VL - 0004`. (`DR - 0008`)
+**Fidelity: sketch** — no feature specification document exists for `DR - 0008`.
 
-#### Scenario: Provider swapped without valuation changes
-- **WHEN** the configured provider changes
-- **THEN** comparables and precedent transactions continue to resolve against the same internal records
-  and the valuation logic is unchanged
+#### Scenario: Consumers read one integration
+- **WHEN** `VL - 0003`, `VL - 0004`, `BR - 0005`, or `BY - 0005` needs external market or transaction data
+- **THEN** it reads through this integration rather than its own provider connection
+
+### Requirement: Provider schemas normalize to one internal record
+
+The system SHALL normalize each provider's schema into a single internal comparable record and
+transaction record, so downstream valuation logic is provider-agnostic and a provider can be swapped
+without rebuilding `VL - 0003` and `VL - 0004`. (`DR - 0008`)
+
+#### Scenario: Provider swap does not reach the consumers
+- **WHEN** the underlying data provider is changed
+- **THEN** `VL - 0003` and `VL - 0004` continue to operate against the same internal record shapes
 
 ### Requirement: Every pulled record is cached and timestamped with provenance
 
-The system SHALL cache each pulled record with the provider name and as-of date, to support the
-valuation version snapshot and to respect redistribution limits. (`DR - 0008`)
+The system SHALL cache and timestamp every pulled record with the provider name and as-of date, both to
+satisfy the version snapshot required by `VL - 0010` and to respect provider redistribution limits.
+(`DR - 0008`)
 
-#### Scenario: Record carries provenance
-- **WHEN** a comparable is used in a valuation
-- **THEN** the provider and as-of date are recorded with it and reproduce with the snapshot
+#### Scenario: A valuation snapshot can be reconstructed
+- **WHEN** a valuation version is locked under `VL - 0010`
+- **THEN** the provider name and as-of date of every underlying record are available
 
-### Requirement: Provider licensing terms are enforced on redistribution
+### Requirement: Provider usage is metered through the shared metering layer
 
-The system SHALL record and enforce each provider's redistribution terms — some data may be used in an
-internal analysis but not reproduced in a client-delivered document — and the report generator SHALL be
-aware of that restriction. (`DR - 0008`)
+The system SHALL meter market and transaction data usage per user and per engagement through the shared
+metering layer in `SY - 0004` rather than building its own, since several candidate providers price per
+query or per seat. (`DR - 0008`, depends on `SY - 0004`)
 
-#### Scenario: Restricted data is withheld from a client deliverable
-- **WHEN** a report is generated containing data whose license forbids redistribution
-- **THEN** that data is withheld or suppressed in the delivered output, with the restriction surfaced to
-  the author
+#### Scenario: Provider queries produce usage events
+- **WHEN** a metered provider query executes
+- **THEN** a Usage Event is recorded through `SY - 0004` with user, engagement, provider, and cost
 
-### Requirement: Provider usage is metered
+### Requirement: Licensing terms on redistribution are enforced
 
-External data usage SHALL be metered per user and per engagement through the metering service, since
-several providers price per query or per seat. (`DR - 0008`, uses `SY - 0001`)
+The system SHALL enforce each provider's licensing terms on redistribution. Where data may be used in an
+internal analysis but not reproduced in a client-delivered document, the report generator SHALL be aware
+of that restriction and honour it. (`DR - 0008`)
 
-#### Scenario: Query attributed to an engagement
-- **WHEN** a provider query runs
-- **THEN** it is recorded against the requesting user and the engagement
+#### Scenario: Restricted data does not reach a client deliverable
+- **WHEN** a report is generated for external delivery containing data whose licence forbids
+  redistribution
+- **THEN** the generator withholds or suppresses that data rather than reproducing it

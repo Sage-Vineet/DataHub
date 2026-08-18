@@ -1,107 +1,166 @@
 ## Purpose
 
-The platform-wide, append-only record of who did what, when, and from where (`SE - 0004`). It is two
-things at once: the legal necessity for a confidential M&A data room, and the data source that makes
-buyer engagement analytics (`BR - 0010`), document control (`DR - 0006`), and the seller status report
-(`BR - 0011`) possible at all. The source row is explicit that it must be built early rather than
-retrofitted — and it is right, because this is a **capture** problem: activity that was not logged when
-it happened cannot be recovered later.
+The platform-wide, append-only record of who did what, when, and from where, surfaced per company /
+deal. Covers `SY - 0003` (Activity & Audit Log). It exists both as a legal and confidentiality safeguard
+for a sensitive M&A data room — proving who accessed or changed what when a dispute or a leak occurs —
+and as the data source several later features are built from: buyer engagement analytics (`BR - 0010`),
+document control and watermarking (`DR - 0006`), and valuation version history (`VL - 0010`). The source
+specification is explicit that it is "intentionally built early rather than retrofitted".
 
-**Fidelity: sketch.** Not currently scheduled in the modernization cutover order; `design.md` §D5
-recommends moving it forward.
+**Fidelity: specified.** Requirements are drawn from the `SY - 0003` feature specification (Josh
+Tonnesen, 14 Aug 2026).
+
+**ID note.** This feature was previously numbered `SE - 0004`; the `SE` module was folded into `SY`. The
+source document's dependency table still refers to `SY - 0004` for the e-signature service (now
+`SY - 0007`, `SY - 0004` being metered usage) and to `BO - 0004` for buyer engagement analytics (now
+`BR - 0010`).
 
 ## ADDED Requirements
 
-### Requirement: Authentication events are logged
+### Requirement: Every logged event carries a common attribution envelope
 
-The system SHALL log successful logins, failed attempts, password and multi-factor changes, and session
-terminations, each with IP address, geolocation, device, and browser. (`SE - 0004`)
+The system SHALL record an activity log entry for every event in the categories below, capturing at
+minimum: acting user, event type, object or entity affected, module, timestamp in UTC (displayed in the
+viewer's local time zone), IP address, and device/browser where applicable. (`SY - 0003`)
 
-#### Scenario: Failed login is recorded
-- **WHEN** a login attempt fails
-- **THEN** an entry records the identifier attempted, the outcome, and the originating IP, device, and
-  browser
+#### Scenario: Entry carries the full envelope
+- **WHEN** any logged event occurs
+- **THEN** the resulting entry records acting user, event type, affected object, module, UTC timestamp,
+  IP address, and device/browser where applicable
 
-### Requirement: Document events are logged per user and per file version
+#### Scenario: Timestamps display locally
+- **WHEN** a user views the log
+- **THEN** UTC timestamps are rendered in that user's local time zone
 
-The system SHALL log document views with duration, downloads, prints, and every **denied** access
-attempt, attributed to the user and to the specific file version. (`SE - 0004`, feeds `DR - 0006`,
-`BR - 0010`)
+### Requirement: Event categories covered
 
-#### Scenario: View duration is captured
-- **WHEN** a user opens a document in the viewer and closes it
-- **THEN** an entry records the user, the file version, and how long it was open
+The system SHALL log, at minimum:
 
-#### Scenario: Denied access is logged, not silently dropped
-- **WHEN** a user attempts to open a file they lack permission for
-- **THEN** the denial is logged with the same fidelity as a successful access
+- **Authentication** — successful logins, failed login attempts, password and multi-factor changes, and
+  session termination, each with IP address, geolocation, device, and browser.
+- **Document** — view (with duration), download, print, and denied access attempts, per user and per
+  file version.
+- **Permission** — every grant, modification, and revocation of company, folder, or file access,
+  identifying the granting user.
+- **Data** — financial data uploads and refreshes, chart of accounts reclassifications, QoE adjustment
+  and add-back changes, and valuation assumption changes.
+- **Workflow** — deal stage changes, offer receipt, NDA and signature execution, and report generation
+  or external release.
+- **Administrative** — user creation, role changes, and integration connection or disconnection.
+- **Q&A** — questions asked and answered, including the asking and answering user and the module
+  context.
 
-### Requirement: Permission, data, workflow, and administrative events are logged
+(`SY - 0003`)
 
-The system SHALL log: permission grants, modifications, and revocations with the granting user;
-financial data uploads and refreshes, chart-of-accounts reclassifications, QoE adjustment and add-back
-changes, and valuation assumption changes; deal stage changes, offer receipt, NDA and signature
-execution, and report generation and external release; and user creation, role changes, and integration
-connection or disconnection. (`SE - 0004`)
+#### Scenario: Each category generates entries
+- **WHEN** an event in any of the seven categories occurs
+- **THEN** a corresponding log entry is generated with the required fields for that category
 
-#### Scenario: An add-back change is attributable
-- **WHEN** a user changes a QoE add-back
-- **THEN** an entry records the user, the deal, the prior and new value, and the time
+#### Scenario: Denied access is logged
+- **WHEN** a user is denied access to a document
+- **THEN** the denial is recorded as a document event, not silently dropped
 
-#### Scenario: An integration disconnect is recorded
-- **WHEN** a source system connection is disconnected
-- **THEN** an entry records who disconnected it and when
+### Requirement: Log entries are scoped to one deal and filtered to the viewer's own permissions
 
-### Requirement: Records are append-only and tamper-evident
+The system SHALL scope every log entry to a single company/deal, and SHALL NOT make an entry visible to
+any user outside that company's granted access. Within a deal, the system SHALL further filter each
+user's view by their role-based and folder-level permissions: a user SHALL NEVER see a log entry
+referencing a folder, file, or record they do not themselves have access to, even where they otherwise
+have visibility into the log. (`SY - 0003`, depends on `SY - 0001`, `SY - 0002`)
 
-Log records SHALL be append-only and tamper-evident, with **no** user-level delete or edit capability —
-including for administrators. (`SE - 0004`)
+#### Scenario: No cross-deal visibility
+- **WHEN** a user with access to company A views the log
+- **THEN** no entry from any other company appears
 
-#### Scenario: No delete path exists
-- **WHEN** any user, including a platform administrator, attempts to delete or modify a log entry
-- **THEN** the operation is unavailable, and the attempt is itself logged
+#### Scenario: Object-level filtering inside a deal
+- **WHEN** a buyer views the log on a deal they have access to
+- **THEN** entries referencing folders, files, or actions outside that buyer's permission scope are not
+  shown — including a broker's action on a folder the buyer cannot access
 
-### Requirement: Retention outlives the engagement
+### Requirement: Role-differentiated log visibility
 
-Log records SHALL be retained per a defined policy that survives the closure of the engagement they
-relate to, because disputes surface years later. (`SE - 0004`)
+The system SHALL grant log visibility by role: Broker (full log for their deals), Company (scoped to
+what they have been granted visibility into), Accountant / QoE reviewer (scoped to their granted
+access), and Platform Admin (full log, with the admin's own access also logged). Buyer and Bank roles
+SHALL see only their own activity and any activity explicitly surfaced to them, and SHALL NOT see other
+parties' activity on the deal. (`SY - 0003`)
 
-#### Scenario: Closed deal retains its log
-- **WHEN** a deal is closed or archived
-- **THEN** its activity log remains queryable under the retention policy
+#### Scenario: Buyers see only their own activity
+- **WHEN** a buyer opens their activity view
+- **THEN** only that buyer's own events appear, with no other party's activity on the deal
 
-### Requirement: Search, filter, and defensible export
+### Requirement: Filtering, search, and export
 
-The system SHALL make the log searchable and filterable by user, deal, date range, event type, and
-object, and SHALL export records in a format usable as evidence. (`SE - 0004`)
+The system SHALL provide filtering by user, date range, module/event category, and object type, plus a
+free-text search across entry descriptions. The system SHALL support export of the **currently filtered**
+view to CSV and to PDF; an export SHALL reflect the applied filters, not the full unfiltered log.
+(`SY - 0003`)
 
-#### Scenario: Per-deal log view
-- **WHEN** a broker opens the log for one deal
-- **THEN** only that deal's events are shown, filterable by user, date range, and event type
+#### Scenario: Filters compose
+- **WHEN** a broker filters by user, date range, module, and a free-text term
+- **THEN** results update to satisfy all applied filters together
 
-#### Scenario: Export preserves integrity
-- **WHEN** a filtered set is exported
-- **THEN** the export includes the tamper-evidence needed to present it as evidence
+#### Scenario: Export honours the filter
+- **WHEN** a filtered view is exported to CSV or PDF
+- **THEN** the export contains only the filtered rows
 
-### Requirement: Anomaly alerting
+### Requirement: The log is append-only and retained
 
-The system SHALL support configurable alerting on anomalous patterns — mass download, access from an
-unexpected geography, off-hours activity, and access attempts by a party whose access has ended.
-(`SE - 0004`)
+The system SHALL store all log records append-only. No user role, including administrators, SHALL be
+able to edit or delete a log entry through the application. Records SHALL be retained indefinitely as
+part of the company profile's data, pending a formal retention policy. (`SY - 0003`)
+
+#### Scenario: No edit or delete path exists
+- **WHEN** any role, including a platform administrator, attempts to modify or remove a log entry
+- **THEN** no application path permits it
+
+### Requirement: Access to the log is itself logged
+
+The system SHALL log all access to the activity log view — who viewed the log, when, and with what
+filters. (`SY - 0003`)
+
+#### Scenario: Viewing the log leaves a trace
+- **WHEN** a user opens the activity log
+- **THEN** an entry records that user, the time, and the filters applied
+
+### Requirement: Security anomaly alerts, and only security alerts
+
+The system SHALL generate a security-relevant alert — visible to the broker and/or platform admin per
+role — for: mass or bulk downloads within a short window, access from an unexpected or new geography,
+repeated failed login attempts, and any access attempt by a user whose access has been revoked or who
+has been marked "passed" on the deal. The system SHALL NOT generate operational or business-process
+alerts from this log — buyer stalling in a pipeline stage, deal inactivity, and similar belong to the
+owning business feature (for example `BR - 0009`), not to the audit log. (`SY - 0003`)
 
 #### Scenario: Mass download raises an alert
-- **WHEN** a user's download volume exceeds the configured threshold within the configured window
-- **THEN** an alert is raised to the deal's owner
+- **WHEN** a user downloads documents in bulk within a short window
+- **THEN** a visible security alert is raised to the configured recipients
 
-#### Scenario: Passed buyer attempts entry
-- **WHEN** a buyer whose access was revoked attempts to open a data room file
-- **THEN** the attempt is denied, logged, and raised as an alert
+#### Scenario: Revoked user's access attempt raises an alert
+- **WHEN** a user whose access has been revoked attempts to access the deal
+- **THEN** a security alert is raised
 
-### Requirement: Access to the log is itself restricted and logged
+#### Scenario: Business-process events raise no audit-log alert
+- **WHEN** a buyer stalls in a pipeline stage
+- **THEN** the audit log raises no alert; the pipeline feature owns that notification
 
-Access to the activity log SHALL be permission-restricted, and every access to it SHALL be logged.
-(`SE - 0004`)
+### Requirement: The log is a source for downstream features
 
-#### Scenario: Reading the log is recorded
-- **WHEN** a user views or exports log records
-- **THEN** that access is itself written to the log
+Document view, download, print, and denied-access telemetry SHALL be available to document control and
+watermarking (`DR - 0006`) and to buyer engagement analytics (`BR - 0010`); signature execution events
+from `SY - 0007` and valuation assumption changes from `VL - 0010` SHALL be recorded here, with
+`VL - 0010` retaining its own detailed version snapshots. (`SY - 0003`)
+
+#### Scenario: Engagement scoring reads document telemetry
+- **WHEN** buyer engagement analytics computes a score
+- **THEN** it reads document access telemetry from this log rather than a parallel store
+
+### Requirement: Usage metering is a sibling stream, not part of this log
+
+Usage events captured by `SY - 0004` SHALL share this capability's event-capture conventions — user,
+company/deal, timestamp, IP where applicable — so the two can be correlated later, but SHALL NOT be
+written into the audit log or surfaced in its UI. (`SY - 0003`, `SY - 0004`)
+
+#### Scenario: Metering does not pollute the audit log
+- **WHEN** metered AI, OCR, or third-party provider usage is recorded
+- **THEN** no entry appears in the activity log UI as a result

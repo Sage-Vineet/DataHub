@@ -4,8 +4,16 @@ The lender's entry point (`BK - 0001`): banks log in to see the deals sent their
 The commercial intent behind it is explicit in the source list — controlling lead flow and the referral
 base so that referral fees can be paid — which makes attribution, not the UI, the load-bearing part.
 
-**Fidelity: sketch, thin by source.** One feature row. Depends on `access-control` for what a bank user
-may see, and on `platform-services` for referral tracking.
+**Fidelity: sketch, thin by source.** `BK - 0001` is a placeholder row with no specification document —
+the product list describes it as "placeholder for future functionality around the banks". What a bank
+user *is* on the platform is now specified: `US - 0002` (Bank Profile) in `user-profiles` defines the
+role's invitation-only access model, its profile fields, and the hard rule that no buyer directory is
+ever exposed to a bank user. This capability covers the deal-side surface those users land on. Depends
+on `access-control` for what a bank user may see, and on `platform-services` (`SY - 0006`) for referral
+tracking.
+
+**ID note.** `BK - 0005` appears in the product list only as a retired identifier available for reuse
+("can be recycled with `BK - 0005`"), not as a reference to a missing feature.
 
 ## ADDED Requirements
 
@@ -35,7 +43,7 @@ prompt login where needed. A bank user SHALL see only the deals routed to them. 
 
 A bank user's access to a deal's documents SHALL follow an explicit grant under the per-company
 permission model, and the financing request alone SHALL NOT grant document access. (`BK - 0001`, gated
-by `SE - 0002`)
+by `SY - 0002`)
 
 #### Scenario: Request without document access
 - **WHEN** a financing request is routed to a bank user

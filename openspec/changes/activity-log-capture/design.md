@@ -56,7 +56,7 @@ retained.
 The gateway has no session guard, so attribution needs the actor without a database round trip on every
 request. The bearer token is decoded — signature verified, no lookup — and the subject claim recorded;
 requests with no or invalid token are recorded as anonymous, which is itself a signal worth having
-(`SE - 0004` requires failed and denied attempts, and an unauthenticated probe is one).
+(`SY - 0003` requires failed and denied attempts, and an unauthenticated probe is one).
 
 **Trade-off:** the decoded subject is what the token asserts, not what a session lookup would confirm.
 For a *log* that is the correct bar — we are recording what was presented. Where certainty matters, the
@@ -102,7 +102,7 @@ liability. The gap marker is what makes the degradation honest rather than invis
 
 ### D7 — Partition by month from the start
 
-`SE - 0004` requires retention that outlives the engagement, and tier 1 writes on every request, so this
+`SY - 0003` requires retention that outlives the engagement, and tier 1 writes on every request, so this
 table becomes the largest in the system. Monthly partitioning from day one costs almost nothing now and
 is expensive to introduce once the table is large. Retention policy then operates on partitions.
 
@@ -148,7 +148,7 @@ silent hole discovered when someone asks the log a question it cannot answer.
 
 ## Open Questions
 
-1. **Retention period.** `SE - 0004` says it must outlive engagement closure; the actual number is a
+1. **Retention period.** `SY - 0003` says it must outlive engagement closure; the actual number is a
    legal/commercial decision, not an engineering one. Partitioning (D7) makes any answer implementable,
    so this does not block the build.
 2. **Does tier 1 log query strings?** They can carry identifiers useful to an investigation and
