@@ -1,3 +1,7 @@
+## Purpose
+
+Authentication for DataHub, re-based onto Better Auth: how a session is established, stored, presented, and revoked. This delta replaces the stateless signed-token model from `phase-1-auth` with server-side, database-backed sessions delivered as httpOnly cookies (audit M1/M2/M3), and records the credential-migration parity the engine change must preserve.
+
 ## MODIFIED Requirements
 
 ### Requirement: Session token issuance and verification
