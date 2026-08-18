@@ -70,6 +70,8 @@ Labels carry the structure, since a team-managed project has no components.
 | `unscheduled` | Ready to build, no position in the plan |
 | `blocked-by-esignature` | Waiting on `SY - 0007` |
 | `blocked-by-sketch` | Specified feature resting on unspecified dependencies |
+| `queue-now` | Next up — unblocked and worth starting now |
+| `queue-next` | Follows the `queue-now` set |
 
 Useful queries:
 
@@ -79,6 +81,26 @@ project = CEN AND labels = "gate" ORDER BY status
 project = CEN AND labels = "decision"
 project = CEN AND labels = "delivery" AND "Start date" >= 2026-08-17
 project = CEN AND labels = "fidelity-specified" AND issuetype = Feature
+project = CEN AND labels in ("queue-now", "queue-next") ORDER BY labels
+```
+
+## Board membership vs status
+
+The board at `/boards/156` keeps a **Backlog** list separate from the board columns,
+and membership of that list is independent of status. Issues created through the REST
+API land in the Backlog regardless of their status — so the 45 issues that are
+genuinely `Done` still sit in the Backlog until moved.
+
+There is no Agile/board endpoint in the Atlassian MCP tooling, so this cannot be
+scripted from here. To fix it in the UI: open the Backlog, select the issues (click
+the first, shift-click the last), right-click → **Move to board**. Done issues drop
+straight into the Done column because their status is already correct.
+
+`statusCategory` is the reliable signal in JQL either way:
+
+```jql
+project = CEN AND statusCategory = Done        -- 45
+project = CEN AND statusCategory != Done       -- 119
 ```
 
 ## Fidelity reconciliation
