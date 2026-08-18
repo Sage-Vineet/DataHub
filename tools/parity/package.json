@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Shadow-diff parity harness: replays a request against legacy and the new module and reports behavioural differences.",
-  "bin": { "parity": "./dist/cli.js" },
+  "bin": {
+    "parity": "./dist/cli.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "parity": "tsx src/cli.ts",
@@ -14,6 +16,8 @@
   },
   "devDependencies": {
     "@datahub/config": "workspace:*",
+    "@datahub/db": "workspace:*",
+    "@electric-sql/pglite": "^0.2.17",
     "@eslint/js": "^9.39.4",
     "@types/express": "^4.17.21",
     "@types/node": "^22.10.2",

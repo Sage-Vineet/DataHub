@@ -4,6 +4,7 @@ import helmet from "helmet";
 import { pinoHttp } from "pino-http";
 import { uploads as contracts } from "@datahub/contracts";
 import { HttpError } from "../../shared/errors.js";
+import { emitActivity } from "../../activity/capture.js";
 import { withCommonMiddleware } from "../../shared/router.js";
 import type { UploadsService } from "./service.js";
 
@@ -75,6 +76,13 @@ export function createUploadsRouter(deps: UploadsRouterDeps): Router {
     "/uploads/:id/content",
     handle(async (req, res) => {
       const blob = await service.getUploadContent(req.params.id!);
+      // DR-0006 needs per-file, per-user access history; view *duration* waits on
+      // the secure viewer, which does not exist yet (design D8).
+      emitActivity(res, {
+        event_type: "document.downloaded",
+        subject_id: req.params.id,
+        payload: { file_name: blob.fileName },
+      });
       res.setHeader("Content-Type", blob.contentType);
       res.setHeader("Content-Disposition", `inline; filename="${blob.fileName.replace(/"/g, "")}"`);
       res.send(blob.bytes);
@@ -83,7 +91,12 @@ export function createUploadsRouter(deps: UploadsRouterDeps): Router {
 
   // ── Folder documents ────────────────────────────────────────────────────
   router.get("/folders/:id/documents", handle(async (req, res) => {
-    res.json(await service.listDocuments(req.user!, req.params.id!, includeArchived(req)));
+    const documents = await service.listDocuments(req.user!, req.params.id!, includeArchived(req));
+    // After the guard, never before: emitting first would record an access that
+    // was then denied, which is worse than not recording it — the envelope
+    // already captures the denied attempt.
+    emitActivity(res, { event_type: "document.opened", subject_id: req.params.id });
+    res.json(documents);
   }));
 
   router.post("/folders/:id/documents", handle(async (req, res) => {

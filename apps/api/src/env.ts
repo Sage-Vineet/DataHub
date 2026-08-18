@@ -33,6 +33,10 @@ export const MODULE_FLAGS = [
   "REQUESTS_MODULE_ENABLED",
   "MESSAGES_MODULE_ENABLED",
   "REPORTS_MODULE_ENABLED",
+  // Not a cutover flag: activity capture has no legacy predecessor to fall back
+  // to. It is parsed here so it gets the same strict validation — a mistyped
+  // value silently meaning "off" would be an audit log nobody notices is absent.
+  "ACTIVITY_LOG_ENABLED",
 ] as const;
 
 export type ModuleFlag = (typeof MODULE_FLAGS)[number];

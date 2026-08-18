@@ -1,4 +1,10 @@
+import type { RequestHandler } from "express";
 import { createDb, type Db } from "@datahub/db";
+import {
+  ActivityWriter,
+  createActivityCapture,
+  DrizzleActivityRepository,
+} from "./activity/index.js";
 import { createGateway, type MountedModule } from "./gateway.js";
 import {
   createAuthModule,
@@ -135,6 +141,29 @@ function buildModules(flags: GatewayEnv["flags"]): MountedModule[] {
   return modules;
 }
 
+/**
+ * Tier-1 activity capture (SE-0004). Built here so the writer is a singleton for
+ * the process — one buffer, one chain-head contender — and handed to the gateway
+ * as a plain middleware. Disabled → `undefined`, and the request path is exactly
+ * what it was before.
+ */
+function buildActivityCapture(enabled: boolean): RequestHandler | undefined {
+  if (!enabled) return undefined;
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    throw new Error("ACTIVITY_LOG_ENABLED=true requires DATABASE_URL.");
+  }
+  const writer = new ActivityWriter(new DrizzleActivityRepository(createDb(databaseUrl)));
+  // Flush what is buffered on the way down instead of dropping it.
+  const drain = (): void => {
+    void writer.close();
+  };
+  process.once("SIGTERM", drain);
+  process.once("SIGINT", drain);
+  console.warn("[gateway] activity capture ENABLED (tier 1: every request, both engines)");
+  return createActivityCapture({ writer, jwtSecret: process.env.JWT_SECRET });
+}
+
 function main(): void {
   // Validate our own env before anything else, so a mistyped cutover flag is a
   // startup error rather than a route-group that silently stayed on legacy.
@@ -143,6 +172,7 @@ function main(): void {
   const app = createGateway(table, {
     modules: buildModules(env.flags),
     corsOrigins: env.corsOrigins,
+    activityCapture: buildActivityCapture(env.flags.ACTIVITY_LOG_ENABLED),
   });
   const port = env.port;
 

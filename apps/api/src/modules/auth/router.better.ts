@@ -5,6 +5,7 @@ import helmet from "helmet";
 import { pinoHttp } from "pino-http";
 import { fromNodeHeaders } from "better-auth/node";
 import { auth as contracts } from "@datahub/contracts";
+import { emitActivity } from "../../activity/capture.js";
 import { withCommonMiddleware } from "../../shared/router.js";
 import type { AuthConfig } from "./config.js";
 import type { BetterAuth } from "./better-auth.js";
@@ -115,9 +116,17 @@ export function createBetterAuthRouter(deps: BetterAuthRouterDeps): Router {
         const companyIds = await repo.listCompanyIdsForUser(user.id);
         // A bearer token (bearer plugin) is returned for non-cookie API clients.
         const token = headers.get("set-auth-token") ?? (response as { token?: string }).token ?? "";
+        // Tier 2 carries the session-validated identity; tier 1 cannot attribute a
+        // Better Auth login, because the credential is only valid after this call.
+        emitActivity(res, { event_type: "auth.login.succeeded", actor_id: user.id });
         res.json({ token, user: toSessionUser(user, companyIds) });
       } catch {
-        // Enumeration-safe: any failure is a generic 401.
+        // The response stays enumeration-safe; the log records the attempt, which
+        // is what SE-0004 asks for and what brute-force review needs.
+        emitActivity(res, {
+          event_type: "auth.login.failed",
+          payload: { email: parsed.data.email },
+        });
         res.status(401).json({ error: "Invalid credentials" });
       }
     }),
@@ -143,6 +152,7 @@ export function createBetterAuthRouter(deps: BetterAuthRouterDeps): Router {
       } catch {
         /* already logged out — still clear client state */
       }
+      emitActivity(res, { event_type: "auth.session.terminated" });
       res.status(204).send();
     }),
   );
@@ -180,6 +190,10 @@ export function createBetterAuthRouter(deps: BetterAuthRouterDeps): Router {
             otp: parsed.data.otp,
             password: parsed.data.new_password,
           },
+        });
+        emitActivity(res, {
+          event_type: "auth.password.changed",
+          payload: { email: parsed.data.email },
         });
         res.json({ success: true, message: "Your password has been reset. You can now sign in." });
       } catch (err) {

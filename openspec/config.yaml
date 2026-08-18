@@ -33,6 +33,23 @@ context: |
     - 0 automated tests; 0% TypeScript; backend lint is a no-op; 863 raw console calls;
       31 swallowed catch blocks; 112 scattered process.env reads.
 
+  PRODUCT SOURCE (docs/product/ — authoritative, vendored):
+    - The whole intended product surface: 98 features across 14 modules in the
+      `Centuriuum Product Listing`, plus 59 per-feature specification documents
+      (Josh Tonnesen, 14 Aug 2026) in a fixed 10-section format.
+    - source/ holds the originals and is authoritative; markdown/ holds deterministic
+      text conversions for reading and diffing and is NEVER cited as the source of a
+      requirement. Where a spec and its source document disagree, the document governs.
+    - Cite the feature ID (e.g. `QE - 0004`, `SY - 0003`) in any requirement derived
+      from this material, so it can be checked back against source/ in one step.
+    - The whole-surface capability map is openspec/changes/centuriuum-product-surface/.
+      Its design.md §D3 records which features are specified vs. sketch fidelity, and
+      Register A reconciles the identifiers that changed between product list revisions.
+    - IDs have been renumbered twice. The SE module folded into SY (SE-0001/0002 ->
+      SY-0001/0002, SE-0004 -> SY-0003, SE-0003 -> DR-0009), System shifted by three,
+      and e-signature is SY-0007. The source documents still use the OLD numbers inside
+      their own bodies — trust the header ID, and check Register A before citing one.
+
   WORKING CONVENTIONS:
     - Active branch is `ba/rearch` (main is FROZEN at e56ff1b — never commit to main).
     - Conventional Commits (feat:/fix:/chore:/refactor:/docs:).

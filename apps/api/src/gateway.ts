@@ -1,7 +1,8 @@
 import type { ServerResponse } from "node:http";
 import express from "express";
-import type { Express, RequestHandler, Router } from "express";
+import type { Express, RequestHandler, Response, Router } from "express";
 import { createProxyMiddleware } from "http-proxy-middleware";
+import { markProxiedToLegacy } from "./activity/capture.js";
 import { resolveTarget, type RoutingTable } from "./routing.js";
 
 /** An in-process module mounted ahead of the proxy (e.g. the auth module). */
@@ -37,6 +38,12 @@ export interface GatewayOptions {
   /** Upstream timeout in ms before a request is failed as 504. */
   proxyTimeoutMs?: number;
   /**
+   * Tier-1 activity capture (SE-0004). Runs ahead of everything so it sees every
+   * request — including the ones that proxy to legacy, which is most of them
+   * during the cutover. Omitted → no capture, and no request-path change at all.
+   */
+  activityCapture?: RequestHandler;
+  /**
    * In-process modules mounted BEFORE the catch-all proxy. Requests matching a
    * module path are served in-process; everything else falls through to legacy.
    */
@@ -67,6 +74,13 @@ export function createGateway(table: RoutingTable, options: GatewayOptions = {})
     app.use(corsMiddleware(options.corsOrigins));
   }
 
+  // Capture attaches before the modules and the proxy so one envelope covers the
+  // request whichever engine ends up serving it. It reads no body and writes
+  // nothing to the response — see `activity/capture.ts`.
+  if (options.activityCapture) {
+    app.use(options.activityCapture);
+  }
+
   // Liveness — independent of upstream availability, never proxied.
   app.get("/healthz", (_req, res) => {
     res.status(200).json({ status: "ok", service: "gateway" });
@@ -87,6 +101,11 @@ export function createGateway(table: RoutingTable, options: GatewayOptions = {})
     proxyTimeout: options.proxyTimeoutMs ?? 30_000,
     router: (req) => resolveTarget(table, req.url ?? "/"),
     on: {
+      // The one place that knows legacy is serving this request. Modules are
+      // mounted ahead of the proxy, so "the proxy ran" is exactly the signal.
+      proxyReq: (_proxyReq, _req, res) => {
+        markProxiedToLegacy(res as Response);
+      },
       error: (err, _req, res) => {
         const code = (err as NodeJS.ErrnoException).code ?? "UNKNOWN";
         const status = code === "ETIMEDOUT" || code === "ESOCKETTIMEDOUT" ? 504 : 502;

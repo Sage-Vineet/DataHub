@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   check,
   customType,
@@ -393,3 +394,70 @@ export const keyReportVersions = pgTable(
       .where(sql`${t.isActive}`),
   }),
 );
+
+/**
+ * ── Activity log (SE-0004, capture half) ──────────────────────────────────────
+ *
+ * One append-only table holds all three record kinds (envelope / event / gap) so
+ * they share a single hash chain — a chain per kind would let a whole category be
+ * removed without breaking anything.
+ *
+ * Partitioned monthly by `occurred_at` (design D7): tier-1 writes on every request,
+ * so this becomes the largest table in the system, and introducing partitioning
+ * later is expensive. A DEFAULT partition always exists, so an insert whose month
+ * has no partition still lands rather than erroring — capture must never fail a
+ * write because an operator forgot to roll a partition forward.
+ *
+ * The primary key must include the partition key, hence `(seq, occurred_at)`.
+ * `seq` is assigned by the chain head (below), not by a sequence, because the
+ * chain and the ordering have to agree.
+ *
+ * Drizzle has no declarative partitioning, so the physical DDL lives in
+ * `activity-ddl.ts`; this declaration is the read/write model over it.
+ */
+export const activityEvents = pgTable(
+  "activity_events",
+  {
+    seq: bigint("seq", { mode: "number" }).notNull(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    kind: text("kind").notNull(),
+    correlationId: uuid("correlation_id"),
+    actorId: text("actor_id"),
+    actorKind: text("actor_kind").notNull(),
+    engine: text("engine"),
+    method: text("method"),
+    rawPath: text("raw_path"),
+    path: text("path"),
+    status: integer("status"),
+    durationMs: integer("duration_ms"),
+    ip: text("ip"),
+    userAgent: text("user_agent"),
+    eventType: text("event_type"),
+    subjectId: text("subject_id"),
+    companyId: uuid("company_id"),
+    payload: jsonb("payload"),
+    droppedCount: integer("dropped_count"),
+    gapFrom: timestamp("gap_from", { withTimezone: true }),
+    gapTo: timestamp("gap_to", { withTimezone: true }),
+    reason: text("reason"),
+    contentHash: text("content_hash").notNull(),
+    prevHash: text("prev_hash"),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.seq, t.occurredAt] }),
+  }),
+);
+
+/**
+ * The single-row chain head. Appends lock this row `FOR UPDATE`, so concurrent
+ * writers serialize and produce ONE well-formed chain instead of forking it.
+ *
+ * A row-level lock rather than an advisory lock: it works identically in Postgres
+ * and in the PGlite instances the tests run against, and it keeps the chain's
+ * state and its mutex in the same place.
+ */
+export const activityChainHead = pgTable("activity_chain_head", {
+  id: integer("id").primaryKey(),
+  lastSeq: bigint("last_seq", { mode: "number" }).notNull(),
+  lastHash: text("last_hash"),
+});
