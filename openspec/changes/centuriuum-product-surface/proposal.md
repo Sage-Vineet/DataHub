@@ -1,3 +1,12 @@
+> **Scope note (18 Aug 2026).** The capability specs and the design analysis this change
+> produced now live in the **product surface register** at `openspec/product/`, which is
+> deliberately outside `openspec/changes/` so that no archive path can sync 448 requirements
+> of unbuilt intent into the baseline. See `openspec/product/README.md`.
+>
+> What remains here is the part that genuinely resolves: the open decisions in `tasks.md`
+> (§4.x scope questions and §5.x sequencing calls). This change closes when those are
+> answered — not when the surface is fully specified.
+
 ## Why
 
 The `Centuriuum Product Listing` (now **98 features across 14 modules**) together with **59 per-feature

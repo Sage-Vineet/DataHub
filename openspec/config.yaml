@@ -42,13 +42,28 @@ context: |
       requirement. Where a spec and its source document disagree, the document governs.
     - Cite the feature ID (e.g. `QE - 0004`, `SY - 0003`) in any requirement derived
       from this material, so it can be checked back against source/ in one step.
-    - The whole-surface capability map is openspec/changes/centuriuum-product-surface/.
-      Its design.md §D3 records which features are specified vs. sketch fidelity, and
-      Register A reconciles the identifiers that changed between product list revisions.
+    - The whole-surface capability map is the PRODUCT SURFACE REGISTER at openspec/product/
+      (see its README.md). Its design.md §D3 records which features are specified vs. sketch
+      fidelity, and Register A reconciles the identifiers that changed between list revisions.
     - IDs have been renumbered twice. The SE module folded into SY (SE-0001/0002 ->
       SY-0001/0002, SE-0004 -> SY-0003, SE-0003 -> DR-0009), System shifted by three,
       and e-signature is SY-0007. The source documents still use the OLD numbers inside
       their own bodies — trust the header ID, and check Register A before citing one.
+
+  CAPABILITY TAXONOMY (decided 18 Aug 2026 — two registers, never merged):
+    - openspec/specs/ is the BASELINE: what the system does today, in shipped code. It is
+      keyed by MIGRATION-DOMAIN name (auth, users, companies, folders, uploads, requests,
+      messages, reports, activity-log, platform/*). A change adds to it; archiving a change
+      syncs it. Nothing enters it that is not built.
+    - openspec/product/ is the PRODUCT SURFACE REGISTER: what the product should eventually
+      be, keyed by PRODUCT-MODULE name (access-control, qoe, cim, data-room, valuations,
+      financial-data, ...). It is outside changes/ on purpose and is NEVER synced — 448
+      requirements of mostly-unbuilt intent would make the baseline ~90% aspiration.
+    - Names overlap across the two registers and that is expected; they are different views
+      of one product. activity-log and reports appear in both; users <-> user-profiles,
+      folders+uploads <-> data-room, auth+companies <-> access-control, platform/* <->
+      platform-services. Growing the built system toward the surface is an explicit change,
+      reconciled per capability — product/design.md §D6 is the worked example for reports.
 
   WORKING CONVENTIONS:
     - Active branch is `ba/rearch` (main is FROZEN at e56ff1b — never commit to main).
@@ -64,3 +79,10 @@ rules:
     - Include a "Non-goals" section and call out any main-branch/legacy impact.
   tasks:
     - Every task that adds or changes backend behavior must include a vitest/supertest task.
+  spec:
+    - Delta specs live under a change and use ADDED/MODIFIED/REMOVED Requirements headers.
+      Baseline specs under openspec/specs/ use a plain "## Requirements" header and carry no
+      operation headers — strip them on sync.
+    - Every spec, delta or baseline, opens with a "## Purpose" section.
+    - A change at 100% of its tasks must be synced and archived. Leaving completed changes
+      unarchived is what stranded 44 requirements of shipped behaviour in Aug 2026.
