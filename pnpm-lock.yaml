@@ -429,9 +429,6 @@ importers:
 
   tools/parity:
     devDependencies:
-      '@datahub/api':
-        specifier: workspace:*
-        version: link:../../apps/api
       '@datahub/config':
         specifier: workspace:*
         version: link:../../packages/config
