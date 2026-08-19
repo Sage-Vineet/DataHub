@@ -66,3 +66,17 @@ export function setAccountRole(versionId, accountId, ebitdaRole, options = {}) {
     { method: "PUT", body: { ebitda_role: ebitdaRole }, ...options },
   );
 }
+
+/**
+ * Classify the chart of accounts.
+ *
+ * `dryRun` reports what would happen without writing — the review panel reads
+ * that before the user commits, so nothing moves the earnings figure until
+ * someone has seen why.
+ */
+export function classifyAccounts(versionId, { dryRun = false } = {}, options = {}) {
+  return request(
+    `/qoe/versions/${encodeURIComponent(versionId)}/classify${dryRun ? "?dry_run=true" : ""}`,
+    { method: "POST", ...options },
+  );
+}

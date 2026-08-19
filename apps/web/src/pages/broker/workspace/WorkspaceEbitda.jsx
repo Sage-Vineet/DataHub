@@ -2,14 +2,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import BridgeTable from "../../../components/qoe/BridgeTable";
 import AddbackWizard from "../../../components/qoe/AddbackWizard";
+import ClassificationPanel from "../../../components/qoe/ClassificationPanel";
 import { money, periodKey } from "../../../components/qoe/format";
 import {
+  classifyAccounts,
   createAddback,
   deleteAddback,
   draftCommentary,
   fetchBridge,
   listAddbacks,
   saveCommentary,
+  setAccountRole,
 } from "../../../services/qoeApi";
 import { getCompanyRequest } from "../../../lib/api";
 import { useKeyReportContextStore } from "../../../store/useKeyReportContextStore";
@@ -198,6 +201,9 @@ export default function WorkspaceEbitda() {
   const [dataSource, setDataSource] = useState("company_financials");
   const [selectedLine, setSelectedLine] = useState(null);
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [classifyOpen, setClassifyOpen] = useState(false);
+  const [report, setReport] = useState(null);
+  const [classifying, setClassifying] = useState(false);
   const [error, setError] = useState("");
 
   // The available-year list is discovered from the first response and then left
@@ -247,6 +253,38 @@ export default function WorkspaceEbitda() {
   useEffect(() => {
     if (clientId) getCompanyRequest(clientId).then(setCompany).catch(() => {});
   }, [clientId]);
+
+  // A dry run: report what the classifier sees without writing anything.
+  const refreshReport = useCallback(async () => {
+    if (!versionId) return null;
+    const next = await classifyAccounts(versionId, { dryRun: true }, { clientId });
+    setReport(next);
+    return next;
+  }, [versionId, clientId]);
+
+  const openClassification = useCallback(async () => {
+    setClassifyOpen(true);
+    setClassifying(true);
+    try {
+      await refreshReport();
+    } finally {
+      setClassifying(false);
+    }
+  }, [refreshReport]);
+
+  // The only call that writes. Applies high-confidence roles, then reloads both
+  // the bridge and the report so the panel reflects what actually landed.
+  const runClassification = useCallback(async () => {
+    setClassifying(true);
+    try {
+      await classifyAccounts(versionId, {}, { clientId });
+      await Promise.all([load(), refreshReport()]);
+    } catch (err) {
+      setError(err?.message || "Could not classify the chart of accounts.");
+    } finally {
+      setClassifying(false);
+    }
+  }, [versionId, clientId, load, refreshReport]);
 
   const toggleYear = (year) =>
     setSelectedYears((prev) => {
@@ -350,24 +388,30 @@ export default function WorkspaceEbitda() {
             onSelectLine={setSelectedLine}
           />
 
-          {bridge?.unflaggedAccounts?.length > 0 && (
-            <details className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm">
-              <summary className="cursor-pointer font-medium text-amber-900">
-                {bridge.unflaggedAccounts.length} P&amp;L accounts carry no EBITDA classification
-              </summary>
-              <p className="mt-2 text-amber-800">
-                These contribute nothing to Reported EBITDA. That is deliberate — an
-                unclassified account is left out rather than guessed at. Classify any that
-                belong on the bridge from the Chart of Accounts.
-              </p>
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {bridge.unflaggedAccounts.map((name) => (
-                  <span key={name} className="rounded bg-white px-2 py-0.5 text-xs text-amber-900 ring-1 ring-amber-200">
-                    {name}
-                  </span>
-                ))}
-              </div>
-            </details>
+          {bridge && (
+            <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
+              <span className="text-slate-700">
+                <strong>{bridge.ebitLines.length}</strong> account
+                {bridge.ebitLines.length === 1 ? "" : "s"} classified into EBIT lines
+                {bridge.unflaggedAccounts.length > 0 && (
+                  <>
+                    {" · "}
+                    <strong>{bridge.unflaggedAccounts.length}</strong> left out
+                  </>
+                )}
+              </span>
+              <button
+                onClick={openClassification}
+                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+              >
+                Review classification
+              </button>
+              {bridge.ebitLines.length === 0 && (
+                <span className="text-xs text-amber-700">
+                  Nothing is classified yet, so Reported EBITDA equals net income.
+                </span>
+              )}
+            </div>
           )}
         </div>
 
@@ -414,6 +458,24 @@ export default function WorkspaceEbitda() {
       </div>
 
       )}
+
+      <ClassificationPanel
+        open={classifyOpen}
+        onClose={() => setClassifyOpen(false)}
+        report={report}
+        loading={classifying}
+        busy={classifying}
+        onClassify={runClassification}
+        onSetRole={async (accountId, role) => {
+          setClassifying(true);
+          try {
+            await setAccountRole(versionId, accountId, role, { clientId });
+            await Promise.all([load(), refreshReport()]);
+          } finally {
+            setClassifying(false);
+          }
+        }}
+      />
 
       <AddbackWizard
         open={wizardOpen}
