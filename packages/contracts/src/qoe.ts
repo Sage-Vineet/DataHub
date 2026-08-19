@@ -185,6 +185,7 @@ export type StatementQuery = z.infer<typeof statementQuery>;
 export const classification = z.object({
   accountId: z.string(),
   accountName: z.string(),
+  accountType: z.string().nullable(),
   role: ebitdaRole.nullable(),
   confidence: z.enum(["high", "low"]),
   rule: z.string(),
@@ -200,6 +201,13 @@ export const classificationReport = z.object({
   dry_run: z.boolean(),
 });
 export type ClassificationReport = z.infer<typeof classificationReport>;
+
+export const accountType = z.enum(["asset", "liability", "equity", "income", "cogs", "expense"]);
+export type AccountType = z.infer<typeof accountType>;
+
+/** Reclassify an account. `statement_type` is derived server-side, never sent. */
+export const accountClassificationUpdate = z.object({ account_type: accountType });
+export type AccountClassificationUpdate = z.infer<typeof accountClassificationUpdate>;
 
 /** Account-level EBITDA role assignment — the flag that replaces label matching. */
 export const accountRoleUpdate = z.object({

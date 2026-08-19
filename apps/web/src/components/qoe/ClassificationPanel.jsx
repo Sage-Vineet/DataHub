@@ -20,15 +20,43 @@ const ROLE_LABELS = {
 
 const ROLE_OPTIONS = [["", "Not classified"], ...Object.entries(ROLE_LABELS)];
 
-function Row({ entry, onSetRole, busy }) {
+/**
+ * What the account IS, as distinct from the part it plays on the bridge.
+ * UAT #2: "I can't edit the Chart of Accounts classification, only the name."
+ */
+const TYPE_OPTIONS = [
+  ["asset", "Asset"],
+  ["liability", "Liability"],
+  ["equity", "Equity"],
+  ["income", "Income"],
+  ["cogs", "COGS"],
+  ["expense", "Expense"],
+];
+
+function Row({ entry, onSetRole, onSetType, busy }) {
   return (
     <tr className="border-t border-slate-100 align-top">
       <td className="px-3 py-2 text-sm text-slate-800">{entry.accountName}</td>
       <td className="px-3 py-2">
         <select
           className="rounded border border-slate-300 px-2 py-1 text-xs disabled:opacity-50"
+          value={entry.accountType || ""}
+          disabled={busy}
+          aria-label={`Classification for ${entry.accountName}`}
+          onChange={(e) => onSetType(entry.accountId, e.target.value)}
+        >
+          {!entry.accountType && <option value="">—</option>}
+          {TYPE_OPTIONS.map(([value, label]) => (
+            <option key={value} value={value}>{label}</option>
+          ))}
+        </select>
+      </td>
+      <td className="px-3 py-2">
+        <select
+          className="rounded border border-slate-300 px-2 py-1 text-xs disabled:opacity-50"
           value={entry.role || ""}
           disabled={busy}
+          aria-label={`EBITDA role for ${entry.accountName}`}
           onChange={(e) => onSetRole(entry.accountId, e.target.value || null)}
         >
           {ROLE_OPTIONS.map(([value, label]) => (
@@ -42,7 +70,7 @@ function Row({ entry, onSetRole, busy }) {
 }
 
 export default function ClassificationPanel({
-  open, onClose, report, loading, onClassify, onSetRole, busy,
+  open, onClose, report, loading, onClassify, onSetRole, onSetType, busy,
 }) {
   // The selected tab persists across opens on purpose: a reviewer working
   // through the "Left out" list should return to it, not to the top.
@@ -120,13 +148,20 @@ export default function ClassificationPanel({
               <thead>
                 <tr className="text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
                   <th className="px-3 pb-2">Account</th>
-                  <th className="px-3 pb-2">Role</th>
+                  <th className="px-3 pb-2">Classification</th>
+                  <th className="px-3 pb-2">EBITDA role</th>
                   <th className="px-3 pb-2">Why</th>
                 </tr>
               </thead>
               <tbody>
                 {active.rows.map((entry) => (
-                  <Row key={entry.accountId} entry={entry} onSetRole={onSetRole} busy={busy} />
+                  <Row
+                    key={entry.accountId}
+                    entry={entry}
+                    onSetRole={onSetRole}
+                    onSetType={onSetType}
+                    busy={busy}
+                  />
                 ))}
               </tbody>
             </table>

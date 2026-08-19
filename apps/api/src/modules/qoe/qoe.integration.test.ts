@@ -433,6 +433,37 @@ describe("QoE bridge over HTTP (real Postgres, real ledger)", () => {
     expect(bridge.reportedEbitda["2024"]).toBeCloseTo(347403.35 + 37820.18, 2);
   });
 
+  it("reclassifies an account and derives its statement (UAT #2)", async () => {
+    await classify();
+    const mealsTax = accountUuid.get("meals-tax")!;
+
+    await request(app)
+      .put(`/qoe/versions/${versionId}/accounts/${mealsTax}/classification`)
+      .send({ account_type: "asset" })
+      .expect(204);
+
+    // Reclassified to a balance-sheet account, it must leave the P&L entirely:
+    // FY2024 expenses drop by its full amount and net income rises to match.
+    const bridge = (await request(app).get(`/qoe/bridge?version_id=${versionId}&years=2024`)).body;
+    expect(bridge.netIncome.amounts["2024"]).toBeCloseTo(47568.23 + 37820.18, 2);
+
+    // And it is no longer offered as a P&L account to classify.
+    const report = (await request(app)
+      .post(`/qoe/versions/${versionId}/classify?dry_run=true`)).body;
+    const names = [
+      ...report.applied, ...report.suggested, ...report.unclassified,
+    ].map((c: { accountName: string }) => c.accountName);
+    expect(names).not.toContain("Meals Tax");
+  });
+
+  it("refuses a classification that is not a real account type", async () => {
+    const mealsTax = accountUuid.get("meals-tax")!;
+    await request(app)
+      .put(`/qoe/versions/${versionId}/accounts/${mealsTax}/classification`)
+      .send({ account_type: "revenue-ish" })
+      .expect(400);
+  });
+
   it("blocks a company the user cannot access", async () => {
     current = { ...BROKER, company_ids: [] };
     await request(app).get(`/qoe/bridge?version_id=${versionId}`).expect(403);

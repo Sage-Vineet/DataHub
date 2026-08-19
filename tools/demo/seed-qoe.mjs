@@ -33,9 +33,12 @@ try {
   await client.query("BEGIN");
 
   await client.query(
-    `INSERT INTO key_report_versions (id, company_id, version_number, version_name, status, is_active)
-     VALUES ($1, $2, 1, $3, 'synced', true)
-     ON CONFLICT (id) DO UPDATE SET version_name = EXCLUDED.version_name, is_active = true`,
+    // `last_synced_at` is what opens the Chart of Accounts step in the wizard —
+    // this version genuinely is synced, so it carries the timestamp.
+    `INSERT INTO key_report_versions (id, company_id, version_number, version_name, status, is_active, last_synced_at)
+     VALUES ($1, $2, 1, $3, 'synced', true, now())
+     ON CONFLICT (id) DO UPDATE SET version_name = EXCLUDED.version_name,
+       is_active = true, last_synced_at = now()`,
     [VERSION_ID, COMPANY_ID, `${engagementFixture.company.name} — QoE`],
   );
 

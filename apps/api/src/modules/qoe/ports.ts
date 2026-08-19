@@ -47,6 +47,16 @@ export interface QoeRepository {
   deleteAddback(id: string): Promise<void>;
   getAddback(id: string): Promise<AddbackRecord | null>;
   updateCommentary(id: string, commentary: string): Promise<AddbackRecord | null>;
+  /**
+   * Reclassify an account (asset / liability / equity / income / cogs /
+   * expense). `statementType` follows from the type and is derived, never
+   * passed in — the two cannot then disagree.
+   */
+  setAccountClassification(
+    versionId: string,
+    accountId: string,
+    accountType: string,
+  ): Promise<void>;
   /** Assign or clear an account's EBITDA role — the flag that drives the EBIT lines. */
   setAccountRole(versionId: string, accountId: string, role: EbitdaRole | null): Promise<void>;
   /** Apply many role assignments at once, as one classification run. */

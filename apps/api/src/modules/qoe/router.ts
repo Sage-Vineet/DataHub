@@ -173,6 +173,29 @@ export function createQoeRouter(deps: QoeRouterDeps): Router {
     }),
   );
 
+  /**
+   * Reclassify an account (UAT #2). The legacy equivalent exists but sits
+   * behind a JWT the gateway's session does not issue, so it is unreachable
+   * from a Better Auth login.
+   */
+  router.put(
+    "/qoe/versions/:versionId/accounts/:accountId/classification",
+    handle(async (req, res) => {
+      const parsed = contracts.accountClassificationUpdate.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: firstError(parsed.error) });
+        return;
+      }
+      await service.setAccountClassification(
+        req.user!,
+        req.params.versionId!,
+        req.params.accountId!,
+        parsed.data.account_type,
+      );
+      res.status(204).end();
+    }),
+  );
+
   router.put(
     "/qoe/versions/:versionId/accounts/:accountId/role",
     handle(async (req, res) => {

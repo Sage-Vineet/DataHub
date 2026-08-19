@@ -60,6 +60,20 @@ export function saveCommentary(id, commentary, options = {}) {
   });
 }
 
+/**
+ * Reclassify an account (asset / liability / equity / income / cogs / expense).
+ *
+ * Served by the QoE module rather than the legacy chart-of-accounts route,
+ * which sits behind a JWT the gateway session does not issue and returns
+ * "Invalid token" for any Better Auth login.
+ */
+export function setAccountClassification(versionId, accountId, accountType, options = {}) {
+  return request(
+    `/qoe/versions/${encodeURIComponent(versionId)}/accounts/${encodeURIComponent(accountId)}/classification`,
+    { method: "PUT", body: { account_type: accountType }, ...options },
+  );
+}
+
 export function setAccountRole(versionId, accountId, ebitdaRole, options = {}) {
   return request(
     `/qoe/versions/${encodeURIComponent(versionId)}/accounts/${encodeURIComponent(accountId)}/role`,

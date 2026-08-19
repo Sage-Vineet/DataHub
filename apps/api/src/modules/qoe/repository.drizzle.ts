@@ -282,6 +282,23 @@ export class DrizzleQoeRepository implements QoeRepository {
     return row ? DrizzleQoeRepository.toRecord(row) : null;
   }
 
+  async setAccountClassification(
+    versionId: string,
+    accountId: string,
+    accountType: string,
+  ): Promise<void> {
+    // The statement follows from the type. Deriving it here means a
+    // reclassification cannot leave the two contradicting each other.
+    const statementType =
+      accountType === "income" || accountType === "cogs" || accountType === "expense"
+        ? "profit_loss"
+        : "balance_sheet";
+    await this.db
+      .update(chartOfAccounts)
+      .set({ accountType, statementType, updatedAt: new Date() })
+      .where(and(eq(chartOfAccounts.versionId, versionId), eq(chartOfAccounts.id, accountId)));
+  }
+
   async setAccountRole(
     versionId: string,
     accountId: string,

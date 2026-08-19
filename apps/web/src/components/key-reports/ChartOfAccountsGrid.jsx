@@ -46,6 +46,24 @@ for (const sec of SECTION_DEFS) {
   }
 }
 
+/**
+ * The classifications an account can be reassigned to.
+ *
+ * UAT #2, Critical: "I can't edit the Chart of Accounts classification, only
+ * the name." The backend has always supported this — `updateAccountHierarchy`
+ * takes `accountType` and derives `statementType` from it, writing the change
+ * to `coa_account_adjustments` and `coa_classification_history`. Only the grid
+ * never offered it.
+ */
+const ACCOUNT_TYPE_OPTIONS = [
+  { value: "asset", label: "Asset", statement: "balance_sheet" },
+  { value: "liability", label: "Liability", statement: "balance_sheet" },
+  { value: "equity", label: "Equity", statement: "balance_sheet" },
+  { value: "income", label: "Income", statement: "profit_loss" },
+  { value: "cogs", label: "COGS", statement: "profit_loss" },
+  { value: "expense", label: "Expense", statement: "profit_loss" },
+];
+
 // Total column count (must stay in sync with the <thead> below)
 // systemId + acctNum + acctName + acctIdName + stmt + 15 levels + path + method + adjustedName + actions
 const TOTAL_COLS = 5 + MAX_LEVELS + 4;
@@ -113,6 +131,31 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
       notify?.("Account renamed.", "success");
     } catch (e) { notify?.(e.message || "Failed to rename account.", "error"); }
   };
+  /**
+   * Reclassify an account. The backend recomputes `statementType`, the
+   * hierarchy path and the base account from the new type, and logs the change
+   * with its previous value — so this is reversible per account.
+   */
+  const [savingTypeId, setSavingTypeId] = useState(null);
+  const changeAccountType = async (row, accountType) => {
+    if (!accountType || accountType === row.accountType) return;
+    setSavingTypeId(row.id);
+    try {
+      await updateChartOfAccount(row.id, { accountType });
+      await load();
+      notify?.(
+        `Reclassified "${row.sourceName}" as ${
+          ACCOUNT_TYPE_OPTIONS.find((o) => o.value === accountType)?.label ?? accountType
+        }.`,
+        "success",
+      );
+    } catch (e) {
+      notify?.(e.message || "Failed to reclassify account.", "error");
+    } finally {
+      setSavingTypeId(null);
+    }
+  };
+
   const resetRow = async (row) => {
     try {
       await resetChartOfAccount(row.id);
@@ -409,17 +452,34 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
                       {row.accountIdName || row.sourceName || "—"}
                     </td>
 
-                    {/* Statement Type */}
+                    {/* Classification — editable (UAT #2) */}
                     <td className="whitespace-nowrap px-3 py-1.5 border-r border-border/30">
-                      <span
-                        className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold ${
-                          row.statementType === "profit_loss"
-                            ? "bg-amber-200 text-amber-900"
-                            : "bg-blue-200 text-blue-900"
-                        }`}
-                      >
-                        {STATEMENT_LABELS[row.statementType] || row.statementType || "—"}
-                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                            row.statementType === "profit_loss"
+                              ? "bg-amber-200 text-amber-900"
+                              : "bg-blue-200 text-blue-900"
+                          }`}
+                          title={STATEMENT_LABELS[row.statementType] || row.statementType || ""}
+                        >
+                          {STATEMENT_LABELS[row.statementType] || row.statementType || "—"}
+                        </span>
+                        <select
+                          className="rounded border border-border bg-bg-card px-1 py-0.5 text-[11px] text-text-primary disabled:opacity-50"
+                          value={row.accountType || ""}
+                          disabled={savingTypeId === row.id}
+                          onChange={(e) => changeAccountType(row, e.target.value)}
+                          aria-label={`Classification for ${row.sourceName}`}
+                        >
+                          {!row.accountType && <option value="">—</option>}
+                          {ACCOUNT_TYPE_OPTIONS.map((opt) => (
+                            <option key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
                     </td>
 
                     {/* Level 1 – Level 15 */}

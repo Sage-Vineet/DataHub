@@ -12,6 +12,7 @@ import {
   fetchBridge,
   listAddbacks,
   saveCommentary,
+  setAccountClassification,
   setAccountRole,
 } from "../../../services/qoeApi";
 import { getCompanyRequest } from "../../../lib/api";
@@ -470,6 +471,15 @@ export default function WorkspaceEbitda() {
           setClassifying(true);
           try {
             await setAccountRole(versionId, accountId, role, { clientId });
+            await Promise.all([load(), refreshReport()]);
+          } finally {
+            setClassifying(false);
+          }
+        }}
+        onSetType={async (accountId, accountType) => {
+          setClassifying(true);
+          try {
+            await setAccountClassification(versionId, accountId, accountType, { clientId });
             await Promise.all([load(), refreshReport()]);
           } finally {
             setClassifying(false);

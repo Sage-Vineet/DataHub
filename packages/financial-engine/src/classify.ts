@@ -27,6 +27,8 @@ export type Confidence = "high" | "low";
 export interface Classification {
   accountId: string;
   accountName: string;
+  /** What the account is, so a reviewer can correct it in the same place. */
+  accountType: string | null;
   /** Null when nothing matched, or when only an exclusion did. */
   role: EbitdaRole | null;
   confidence: Confidence;
@@ -180,7 +182,11 @@ function containsAny(haystack: string, phrases: string[]): string | null {
 
 /** Classify one account. Never throws; an unmatched account is a valid result. */
 export function classifyAccount(account: Account): Classification {
-  const base = { accountId: account.id, accountName: account.name };
+  const base = {
+    accountId: account.id,
+    accountName: account.name,
+    accountType: account.accountType ?? null,
+  };
   const name = normalizeAccountName(account.name);
 
   if (account.statementType !== "profit_loss") {

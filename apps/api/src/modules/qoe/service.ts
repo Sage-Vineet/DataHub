@@ -216,6 +216,16 @@ export class QoeService {
     return { ...report, applied_count: dryRun ? 0 : report.applied.length, dry_run: dryRun };
   }
 
+  async setAccountClassification(
+    user: SessionUser,
+    versionId: string,
+    accountId: string,
+    accountType: string,
+  ): Promise<void> {
+    await this.engagement(user, versionId);
+    await this.deps.repo.setAccountClassification(versionId, accountId, accountType);
+  }
+
   async setAccountRole(
     user: SessionUser,
     versionId: string,

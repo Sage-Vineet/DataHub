@@ -129,4 +129,6 @@ export type {
   Classification,
   ClassificationReport,
   StatementQuery,
+  AccountType,
+  AccountClassificationUpdate,
 } from "./qoe.js";

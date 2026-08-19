@@ -56,6 +56,27 @@ export class InMemoryQoeRepository implements QoeRepository {
     return updated;
   }
 
+  async setAccountClassification(
+    versionId: string,
+    accountId: string,
+    accountType: string,
+  ): Promise<void> {
+    const data = this.engagements.get(versionId);
+    if (!data) return;
+    const statementType =
+      accountType === "income" || accountType === "cogs" || accountType === "expense"
+        ? "profit_loss"
+        : "balance_sheet";
+    this.engagements.set(versionId, {
+      ...data,
+      accounts: data.accounts.map((a) =>
+        a.id === accountId
+          ? { ...a, accountType: accountType as typeof a.accountType, statementType }
+          : a,
+      ),
+    });
+  }
+
   async setAccountRole(
     versionId: string,
     accountId: string,
