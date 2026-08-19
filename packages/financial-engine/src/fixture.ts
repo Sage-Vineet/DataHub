@@ -21,6 +21,17 @@ export interface EngagementFixture {
   fiscalYears: number[];
   accounts: Account[];
   glEntries: GlEntry[];
+  /** The two anchor statements, as parsed from the workbook. */
+  balanceSheets: Array<{
+    anchor: "starting" | "ending";
+    asOf: string;
+    rows: Array<{
+      name: string;
+      section: string;
+      group: string | null;
+      amount: number;
+    }>;
+  }>;
 }
 
 export const engagementFixture = raw as unknown as EngagementFixture;

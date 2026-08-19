@@ -128,4 +128,5 @@ export type {
   AccountRoleUpdate,
   Classification,
   ClassificationReport,
+  StatementQuery,
 } from "./qoe.js";

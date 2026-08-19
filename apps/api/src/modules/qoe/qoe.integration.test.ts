@@ -57,6 +57,14 @@ CREATE TABLE general_ledger_entries (
   account_number text NOT NULL, account_name text NOT NULL, coa_id uuid,
   row_type text NOT NULL DEFAULT 'TRANSACTION', amount numeric(18,2),
   vendor_name text, memo_description text);
+CREATE TABLE balance_sheet_entries (
+  id bigint PRIMARY KEY, version_id uuid NOT NULL,
+  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  source_file_id uuid, as_of_date date NOT NULL, fiscal_year integer,
+  account_name text, account_number text, account_type text,
+  section text, sub_section text, amount numeric(18,2),
+  hierarchy_level integer, sort_order integer,
+  is_total boolean DEFAULT false, is_generated boolean DEFAULT false, coa_id uuid);
 CREATE TABLE qoe_addbacks (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -142,6 +150,38 @@ beforeEach(async () => {
     await db.insert(schema.generalLedgerEntries).values(rows.slice(i, i + 500));
   }
 
+  // ── load both balance-sheet statements ────────────────────────────────────
+  // Section names are the plural form the extractor writes, so the repository's
+  // mapping to the engine's singular is exercised rather than assumed.
+  const PLURAL: Record<string, string> = {
+    asset: "assets",
+    liability: "liabilities",
+    equity: "equity",
+  };
+  let bsId = 1;
+  for (const sheet of engagementFixture.balanceSheets) {
+    const asOf = sheet.anchor === "starting" ? "2021-12-31" : "2025-12-31";
+    for (const [order, row] of sheet.rows.entries()) {
+      await db.insert(schema.balanceSheetEntries).values({
+        id: bsId++,
+        versionId,
+        companyId,
+        asOfDate: asOf,
+        fiscalYear: Number(asOf.slice(0, 4)),
+        accountName: row.name,
+        section: PLURAL[row.section] ?? row.section,
+        subSection: row.group,
+        amount: String(row.amount),
+        sortOrder: order,
+        isTotal: false,
+        isGenerated: false,
+        coaId: accountUuid.get(
+          row.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
+        ) ?? null,
+      });
+    }
+  }
+
   current = { ...BROKER, company_ids: [companyId] };
   const requireAuth = (req: Request, _res: Response, next: NextFunction) => {
     req.user = current;
@@ -214,6 +254,66 @@ describe("classification (real Postgres, unclassified chart of accounts)", () =>
     expect(second.applied_count).toBe(3);
     const bridge = (await request(app).get(`/qoe/bridge?version_id=${versionId}&years=2024`)).body;
     expect(bridge.reportedEbitda["2024"]).toBeCloseTo(347403.35, 2);
+  });
+});
+
+describe("balance sheet and trial balance over HTTP", () => {
+  it("balances in every period, rolled from the ingested statements", async () => {
+    const res = await request(app)
+      .get(`/qoe/balance-sheet?version_id=${versionId}`)
+      .expect(200);
+
+    const broken = res.body.checks
+      .filter((c: { balances: boolean }) => !c.balances)
+      .map((c: { period: string; outOfBalance: number }) => `${c.period}: ${c.outOfBalance}`);
+    expect(broken, "every period must satisfy A = L + E").toEqual([]);
+    expect(res.body.balances).toBe(true);
+    expect(res.body.periods).toHaveLength(48);
+  });
+
+  it("ties to the closing statement it was not rolled from", async () => {
+    const res = await request(app).get(`/qoe/balance-sheet?version_id=${versionId}`);
+    expect(res.body.tieOut).not.toBeNull();
+    expect(res.body.tieOut.differences).toEqual({});
+    expect(res.body.tieOut.ties).toBe(true);
+  });
+
+  it("closes retained earnings to the stated ending figure", async () => {
+    const res = await request(app).get(`/qoe/balance-sheet?version_id=${versionId}`);
+    expect(res.body.retainedEarnings["2025-12"]).toBeCloseTo(112021.03, 2);
+    expect(res.body.netIncome["2025-12"]).toBeCloseTo(169495.9, 2);
+  });
+
+  it("gives balance-sheet accounts real openings and P&L accounts zero", async () => {
+    const res = await request(app)
+      .get(`/qoe/trial-balance?version_id=${versionId}`)
+      .expect(200);
+
+    expect(res.body.balances, "debits must equal credits in every period").toBe(true);
+
+    const y2024 = res.body.entries.find((e: { period: string }) => e.period === "2024");
+    const pl = y2024.rows.filter(
+      (r: { statementType: string; openingBalance: number }) =>
+        r.statementType === "profit_loss" && r.openingBalance !== 0,
+    );
+    expect(pl, "P&L accounts open at zero each fiscal year").toEqual([]);
+
+    const inventory = y2024.rows.find(
+      (r: { accountName: string }) => r.accountName === "Inventory",
+    );
+    expect(inventory.openingBalance).not.toBe(0);
+    expect(inventory.closingBalance).toBeCloseTo(
+      inventory.openingBalance + inventory.movement,
+      2,
+    );
+  });
+
+  it("refuses when no balance sheet has been ingested", async () => {
+    await db.delete(schema.balanceSheetEntries);
+    const res = await request(app)
+      .get(`/qoe/balance-sheet?version_id=${versionId}`)
+      .expect(409);
+    expect(res.body.error).toMatch(/No balance sheet has been ingested/);
   });
 });
 

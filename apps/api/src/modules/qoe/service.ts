@@ -1,12 +1,16 @@
 import {
   buildBridge,
+  buildTrialBalance,
   classifyAccounts,
+  rollForwardBalanceSheet,
   type Addback,
   type Aggregation,
   type BridgeResult,
+  type BalanceSheetResult,
   type ClassificationReport,
   type DataSource,
   type EarningsMetric,
+  type TrialBalanceResult,
 } from "@datahub/financial-engine";
 import type { EbitdaRole, SessionUser } from "@datahub/contracts";
 import { canAccessCompany } from "../../shared/access.js";
@@ -129,6 +133,60 @@ export class QoeService {
     const updated = await this.deps.repo.updateCommentary(id, commentary);
     if (!updated) throw new HttpError(404, "Add-back not found.");
     return updated;
+  }
+
+  /**
+   * The rolled balance sheet.
+   *
+   * Needs at least one ingested balance-sheet statement to anchor on — the
+   * position cannot be derived from ledger movement alone, and saying so is
+   * better than returning a sheet anchored at zero.
+   */
+  async balanceSheet(
+    user: SessionUser,
+    versionId: string,
+    options: { years?: number[] } = {},
+  ): Promise<BalanceSheetResult> {
+    const data = await this.engagement(user, versionId);
+    if (data.anchors.length === 0) {
+      throw new HttpError(
+        409,
+        "No balance sheet has been ingested for this version. Link a starting or " +
+          "ending balance sheet and re-run the sync.",
+      );
+    }
+    return rollForwardBalanceSheet({
+      accounts: data.accounts,
+      entries: data.entries,
+      anchors: data.anchors,
+      fiscalYears: options.years?.length ? options.years : data.fiscalYears,
+    });
+  }
+
+  /**
+   * The trial balance, with openings read from the same roll-forward the
+   * balance sheet uses so the two cannot disagree.
+   */
+  async trialBalance(
+    user: SessionUser,
+    versionId: string,
+    options: { years?: number[]; aggregation?: Aggregation } = {},
+  ): Promise<TrialBalanceResult> {
+    const data = await this.engagement(user, versionId);
+    if (data.anchors.length === 0) {
+      throw new HttpError(
+        409,
+        "No balance sheet has been ingested for this version, so balance-sheet " +
+          "accounts have no opening balances to carry.",
+      );
+    }
+    return buildTrialBalance({
+      accounts: data.accounts,
+      entries: data.entries,
+      anchors: data.anchors,
+      fiscalYears: options.years?.length ? options.years : data.fiscalYears,
+      aggregation: options.aggregation ?? "annual",
+    });
   }
 
   /**

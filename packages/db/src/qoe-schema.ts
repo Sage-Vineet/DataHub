@@ -78,6 +78,41 @@ export const generalLedgerEntries = pgTable(
   (t) => [index("idx_gl_version_year").on(t.versionId, t.fiscalYear)],
 );
 
+/**
+ * Extracted balance-sheet statements.
+ *
+ * The QoE engine reads these as roll-forward *anchors*: a statement is a source
+ * of accounts and their stated balances at a date, not merely of numbers. Rows
+ * where `isTotal` or `isGenerated` is set are subtotals or previously-derived
+ * output and must never be fed back in as an anchor.
+ */
+export const balanceSheetEntries = pgTable(
+  "balance_sheet_entries",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey(),
+    versionId: uuid("version_id").notNull(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    sourceFileId: uuid("source_file_id"),
+    asOfDate: date("as_of_date").notNull(),
+    fiscalYear: integer("fiscal_year"),
+    accountName: text("account_name"),
+    accountNumber: text("account_number"),
+    accountType: text("account_type"),
+    /** assets | liabilities | equity */
+    section: text("section"),
+    subSection: text("sub_section"),
+    amount: numeric("amount", { precision: 18, scale: 2 }),
+    hierarchyLevel: integer("hierarchy_level"),
+    sortOrder: integer("sort_order"),
+    isTotal: boolean("is_total"),
+    isGenerated: boolean("is_generated"),
+    coaId: uuid("coa_id"),
+  },
+  (t) => [index("idx_bs_entries_version_date").on(t.versionId, t.asOfDate)],
+);
+
 export const qoeAddbacks = pgTable(
   "qoe_addbacks",
   {

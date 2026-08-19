@@ -59,6 +59,39 @@ export function createQoeRouter(deps: QoeRouterDeps): Router {
   );
 
   router.get(
+    "/qoe/balance-sheet",
+    handle(async (req, res) => {
+      const parsed = contracts.statementQuery.safeParse(req.query);
+      if (!parsed.success) {
+        res.status(400).json({ error: firstError(parsed.error) });
+        return;
+      }
+      res.json(
+        await service.balanceSheet(req.user!, parsed.data.version_id, {
+          years: parsed.data.years,
+        }),
+      );
+    }),
+  );
+
+  router.get(
+    "/qoe/trial-balance",
+    handle(async (req, res) => {
+      const parsed = contracts.statementQuery.safeParse(req.query);
+      if (!parsed.success) {
+        res.status(400).json({ error: firstError(parsed.error) });
+        return;
+      }
+      res.json(
+        await service.trialBalance(req.user!, parsed.data.version_id, {
+          years: parsed.data.years,
+          aggregation: parsed.data.aggregation,
+        }),
+      );
+    }),
+  );
+
+  router.get(
     "/qoe/addbacks",
     handle(async (req, res) => {
       const versionId = String(req.query.version_id ?? "");

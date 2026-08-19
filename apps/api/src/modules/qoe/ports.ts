@@ -1,4 +1,4 @@
-import type { Account, GlEntry } from "@datahub/financial-engine";
+import type { Account, BalanceSheetAnchor, GlEntry } from "@datahub/financial-engine";
 import type { AddbackKind, DataSource, EbitdaRole, EntryGranularity } from "@datahub/contracts";
 
 /** Everything the bridge needs for one key-report version. */
@@ -10,6 +10,11 @@ export interface EngagementData {
   fiscalYears: number[];
   accounts: Account[];
   entries: GlEntry[];
+  /**
+   * Balance-sheet statements to roll from, earliest first. Empty when none has
+   * been ingested — the balance sheet cannot be derived without at least one.
+   */
+  anchors: BalanceSheetAnchor[];
 }
 
 export interface AddbackRecord {

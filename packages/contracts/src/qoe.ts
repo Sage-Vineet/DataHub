@@ -167,6 +167,14 @@ export const addbackResponse = addbackBase.extend({
 });
 export type AddbackResponse = z.infer<typeof addbackResponse>;
 
+/** Query for the balance sheet or trial balance. */
+export const statementQuery = z.object({
+  version_id: z.string().min(1),
+  years: yearList.optional(),
+  aggregation: aggregation.default("annual"),
+});
+export type StatementQuery = z.infer<typeof statementQuery>;
+
 /**
  * Result of classifying a chart of accounts.
  *

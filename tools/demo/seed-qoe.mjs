@@ -42,6 +42,7 @@ try {
   // Re-running the seed resets the engagement, add-backs included, so the demo
   // always opens from the same state.
   await client.query(`DELETE FROM qoe_addbacks WHERE version_id = $1`, [VERSION_ID]);
+  await client.query(`DELETE FROM balance_sheet_entries WHERE version_id = $1`, [VERSION_ID]);
   await client.query(`DELETE FROM general_ledger_entries WHERE version_id = $1`, [VERSION_ID]);
   await client.query(`DELETE FROM chart_of_accounts WHERE version_id = $1`, [VERSION_ID]);
 
@@ -125,9 +126,42 @@ try {
     );
   }
 
+  // ── balance-sheet statements, the roll-forward anchors ────────────────────
+  // Stored exactly as the extractor writes them: plural section names, the
+  // sub-heading each account sits under, and no subtotal rows.
+  const PLURAL = { asset: "assets", liability: "liabilities", equity: "equity" };
+  let bsId = (Date.now() % 1_000_000) * 100;
+  for (const sheet of engagementFixture.balanceSheets) {
+    const asOf = sheet.anchor === "starting" ? "2021-12-31" : "2025-12-31";
+    for (const [order, row] of sheet.rows.entries()) {
+      await client.query(
+        `INSERT INTO balance_sheet_entries
+           (id, version_id, company_id, source_file_id, as_of_date, fiscal_year,
+            account_name, section, sub_section, amount, sort_order,
+            is_total, is_generated, coa_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,false,false,$12)`,
+        [
+          bsId++,
+          VERSION_ID,
+          COMPANY_ID,
+          SOURCE_FILE_ID,
+          asOf,
+          Number(asOf.slice(0, 4)),
+          row.name,
+          PLURAL[row.section] ?? row.section,
+          row.group,
+          String(row.amount),
+          order,
+          accountId.get(row.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")) ?? null,
+        ],
+      );
+    }
+  }
+
   await client.query("COMMIT");
 
-  console.log(`qoe seed: ${engagementFixture.accounts.length} accounts, ${engagementFixture.glEntries.length} ledger rows`);
+  const bsRows = engagementFixture.balanceSheets.reduce((n, s) => n + s.rows.length, 0);
+  console.log(`qoe seed: ${engagementFixture.accounts.length} accounts, ${engagementFixture.glEntries.length} ledger rows, ${bsRows} balance-sheet rows`);
   console.log(`qoe seed: company ${COMPANY_ID}, version ${VERSION_ID}`);
 } catch (err) {
   await client.query("ROLLBACK");

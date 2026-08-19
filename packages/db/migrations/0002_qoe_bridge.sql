@@ -30,6 +30,26 @@ ALTER TABLE general_ledger_entries
 CREATE INDEX IF NOT EXISTS idx_gl_entries_coa
   ON general_ledger_entries (version_id, coa_id);
 
+-- The same drift on the balance-sheet side. `sub_section` and `coa_id` appear
+-- in the 25 Jul 2026 UAT dump and in no migration here; `is_generated` is
+-- declared by legacy 054, which a database built from packages/db never runs.
+--
+-- The QoE engine reads these statements as roll-forward ANCHORS, so it has to
+-- be able to tell an extracted row from one this system previously generated —
+-- feeding a derived figure back in as an anchor would compound whatever
+-- produced it. `sub_section` carries the sub-heading each account sits under
+-- ("Bank Accounts", "Fixed Assets"), which is the hierarchy the uploaded
+-- statement already has and extraction currently flattens (UAT #7).
+ALTER TABLE balance_sheet_entries
+  ADD COLUMN IF NOT EXISTS sub_section  text;
+ALTER TABLE balance_sheet_entries
+  ADD COLUMN IF NOT EXISTS coa_id       uuid;
+ALTER TABLE balance_sheet_entries
+  ADD COLUMN IF NOT EXISTS is_generated boolean NOT NULL DEFAULT false;
+
+CREATE INDEX IF NOT EXISTS idx_bs_entries_coa
+  ON balance_sheet_entries (version_id, coa_id);
+
 COMMENT ON COLUMN chart_of_accounts.ebitda_role IS
   'interest_income | interest_expense | income_tax | depreciation | amortization | owner_compensation. NULL = unflagged, contributes nothing to Reported EBITDA.';
 

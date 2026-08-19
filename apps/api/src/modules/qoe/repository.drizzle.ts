@@ -1,7 +1,7 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@datahub/db";
 import { schema } from "@datahub/db";
-import type { Account, GlEntry } from "@datahub/financial-engine";
+import type { Account, BalanceSheetAnchor, GlEntry } from "@datahub/financial-engine";
 import type { EbitdaRole } from "@datahub/contracts";
 import type {
   AddbackRecord,
@@ -10,10 +10,32 @@ import type {
   QoeRepository,
 } from "./ports.js";
 
-const { chartOfAccounts, generalLedgerEntries, qoeAddbacks, companies, keyReportVersions } = schema;
+const {
+  chartOfAccounts,
+  generalLedgerEntries,
+  balanceSheetEntries,
+  qoeAddbacks,
+  companies,
+  keyReportVersions,
+} = schema;
 
 /** P&L account types that behave as income. Everything else on the P&L is expense. */
 const INCOME_TYPES = new Set(["income", "revenue", "other_income"]);
+
+/** `balance_sheet_entries.section` uses plurals; the engine uses the singular. */
+const SECTION_TO_TYPE: Record<string, "asset" | "liability" | "equity"> = {
+  assets: "asset",
+  asset: "asset",
+  liabilities: "liability",
+  liability: "liability",
+  equity: "equity",
+};
+
+/** Fiscal year and month from an `as_of_date`. */
+function periodOf(asOf: string): { fiscalYear: number; month: number } {
+  const [year, month] = asOf.split("-");
+  return { fiscalYear: Number(year), month: Number(month ?? "12") };
+}
 
 function toNumber(value: unknown): number {
   const n = typeof value === "number" ? value : Number(value ?? 0);
@@ -52,12 +74,16 @@ export class DrizzleQoeRepository implements QoeRepository {
         id: row.id,
         name: row.accountName,
         statementType,
+        // Balance-sheet accounts carry a real type too. Returning null here
+        // made every liability and equity account fall back to "asset" in the
+        // roll-forward's balance check, and put the debit/credit split in the
+        // trial balance on the wrong side of the ledger.
         accountType:
           statementType === "profit_loss"
             ? INCOME_TYPES.has(String(row.accountType))
               ? "income"
               : "expense"
-            : null,
+            : (SECTION_TO_TYPE[String(row.accountType ?? "").toLowerCase()] ?? null),
         ebitdaRole: (row.ebitdaRole as EbitdaRole | null) ?? null,
       };
     });
@@ -97,6 +123,8 @@ export class DrizzleQoeRepository implements QoeRepository {
       });
     }
 
+    const anchors = await this.loadAnchors(versionId);
+
     return {
       companyId: version.companyId,
       companyName: company?.name ?? "",
@@ -105,7 +133,70 @@ export class DrizzleQoeRepository implements QoeRepository {
       fiscalYears: [...years].sort((a, b) => a - b),
       accounts,
       entries,
+      anchors,
     };
+  }
+
+  /**
+   * Balance-sheet statements usable as roll-forward anchors.
+   *
+   * Subtotal rows (`is_total`) and rows this system previously generated
+   * (`is_generated`) are excluded: feeding a derived figure back in as an
+   * anchor would compound whatever produced it. Statements are returned
+   * earliest-first, so the earliest is rolled from and any later one becomes a
+   * tie-out.
+   */
+  private async loadAnchors(versionId: string): Promise<BalanceSheetAnchor[]> {
+    const rows = await this.db
+      .select({
+        asOfDate: balanceSheetEntries.asOfDate,
+        accountName: balanceSheetEntries.accountName,
+        section: balanceSheetEntries.section,
+        subSection: balanceSheetEntries.subSection,
+        amount: balanceSheetEntries.amount,
+        coaId: balanceSheetEntries.coaId,
+      })
+      .from(balanceSheetEntries)
+      .where(
+        and(
+          eq(balanceSheetEntries.versionId, versionId),
+          or(isNull(balanceSheetEntries.isTotal), ne(balanceSheetEntries.isTotal, true)),
+          or(isNull(balanceSheetEntries.isGenerated), ne(balanceSheetEntries.isGenerated, true)),
+        ),
+      )
+      .orderBy(asc(balanceSheetEntries.asOfDate), asc(balanceSheetEntries.sortOrder));
+
+    const byDate = new Map<string, BalanceSheetAnchor>();
+    for (const row of rows) {
+      if (!row.asOfDate || !row.accountName) continue;
+      const section = SECTION_TO_TYPE[String(row.section ?? "").toLowerCase()];
+      if (!section) continue;
+
+      let anchor = byDate.get(row.asOfDate);
+      if (!anchor) {
+        const { fiscalYear, month } = periodOf(row.asOfDate);
+        anchor = { kind: "starting", fiscalYear, month, rows: [] };
+        byDate.set(row.asOfDate, anchor);
+      }
+      anchor.rows.push({
+        accountId: row.coaId ?? row.accountName,
+        accountName: row.accountName,
+        section,
+        group: row.subSection ?? null,
+        amount: toNumber(row.amount),
+      });
+    }
+
+    const anchors = [...byDate.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([, anchor]) => anchor);
+
+    // The earliest statement is the one rolled FROM; anything later states a
+    // closing position and is only used to check against.
+    return anchors.map((anchor, index) => ({
+      ...anchor,
+      kind: index === 0 ? "starting" : "ending",
+    }));
   }
 
   private static toRecord(row: typeof qoeAddbacks.$inferSelect): AddbackRecord {

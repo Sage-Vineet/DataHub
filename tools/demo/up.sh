@@ -149,6 +149,25 @@ check "QoE FY2024 net income"      "47568.23"  "$(jqn "d['netIncome']['amounts']
 check "QoE FY2024 revenue"         "2511740.83" "$(jqn "d['revenue']['2024']")"
 check "QoE FY2024 Reported EBITDA" "347403.35" "$(jqn "d['reportedEbitda']['2024']")"
 
+# The balance sheet is rolled from the ingested statements: it must balance in
+# every one of the 48 monthly periods, and tie to the closing statement it was
+# not rolled from. The extracted sheet was out by exactly the unclassified
+# retained-earnings account, every year.
+BS=$(curl -s "$GW/qoe/balance-sheet?version_id=${QOE_VERSION_ID}" -b "$JAR")
+jqb() { printf '%s' "$BS" | python3 -c "import json,sys;d=json.load(sys.stdin);print(eval(sys.argv[1],{},{'d':d}))" "$1" 2>/dev/null || echo "n/a"; }
+check "QoE balance sheet balances"        "True" "$(jqb "d['balances']")"
+check "QoE periods out of balance"        "0"    "$(jqb "len([c for c in d['checks'] if not c['balances']])")"
+check "QoE ties to the closing statement" "True" "$(jqb "d['tieOut']['ties']")"
+check "QoE Dec-2025 retained earnings"    "112021.03" "$(jqb "round(d['retainedEarnings']['2025-12'],2)")"
+
+# Openings are real: balance-sheet accounts carry the prior closing, P&L
+# accounts genuinely open at zero. Both were zero before.
+TB=$(curl -s "$GW/qoe/trial-balance?version_id=${QOE_VERSION_ID}" -b "$JAR")
+jqt() { printf '%s' "$TB" | python3 -c "import json,sys;d=json.load(sys.stdin);print(eval(sys.argv[1],{},{'d':d}))" "$1" 2>/dev/null || echo "n/a"; }
+check "QoE trial balance balances"     "True" "$(jqt "d['balances']")"
+check "QoE P&L accounts open at zero"  "0"    "$(jqt "len([r for e in d['entries'] for r in e['rows'] if r['statementType']=='profit_loss' and r['openingBalance']!=0])")"
+check "QoE BS accounts have openings"  "True" "$(jqt "any(r['openingBalance']!=0 for e in d['entries'] for r in e['rows'] if r['statementType']=='balance_sheet')")"
+
 if [[ "$FAILED" != "0" ]]; then
   echo
   echo "   Some checks failed — see above." >&2
