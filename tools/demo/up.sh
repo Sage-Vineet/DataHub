@@ -159,6 +159,10 @@ check "QoE balance sheet balances"        "True" "$(jqb "d['balances']")"
 check "QoE periods out of balance"        "0"    "$(jqb "len([c for c in d['checks'] if not c['balances']])")"
 check "QoE ties to the closing statement" "True" "$(jqb "d['tieOut']['ties']")"
 check "QoE Dec-2025 retained earnings"    "112021.03" "$(jqb "round(d['retainedEarnings']['2025-12'],2)")"
+# UAT #7: the sheet must be organised into bank accounts, fixed assets, credit
+# cards and so on — not one flat list.
+check "QoE balance sheet lines grouped"   "0"    "$(jqb "len([l for l in d['lines'] if not l['group']])")"
+check "QoE asset sub-headings"            "True" "$(jqb "len({l['group'] for l in d['lines'] if l['section']=='asset'}) >= 3")"
 
 # Openings are real: balance-sheet accounts carry the prior closing, P&L
 # accounts genuinely open at zero. Both were zero before.

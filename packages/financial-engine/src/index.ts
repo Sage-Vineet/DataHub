@@ -8,3 +8,4 @@ export { engagementFixture, type EngagementFixture } from "./fixture.js";
 export * from "./classify.js";
 export * from "./balance-sheet.js";
 export * from "./trial-balance.js";
+export * from "./balance-sheet-hierarchy.js";

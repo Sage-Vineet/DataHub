@@ -159,6 +159,40 @@ describe("roll backward from the ending balance sheet (UAT #6)", () => {
   });
 });
 
+describe("hierarchy on the rolled sheet (UAT #7)", () => {
+  const result = rollForwardBalanceSheet({
+    accounts,
+    entries,
+    anchors: [anchor("starting"), anchor("ending")],
+    fiscalYears: years,
+  });
+
+  it("gives every line a sub-heading", () => {
+    const ungrouped = result.lines.filter((l) => !l.group).map((l) => l.accountName);
+    expect(ungrouped).toEqual([]);
+  });
+
+  it("produces the depth the statement has, not a single bucket", () => {
+    const assetGroups = new Set(
+      result.lines.filter((l) => l.section === "asset").map((l) => l.group),
+    );
+    expect(assetGroups.size).toBeGreaterThanOrEqual(3);
+    expect(assetGroups).toContain("Bank Accounts");
+    expect(assetGroups).toContain("Fixed Assets");
+
+    const liabilityGroups = new Set(
+      result.lines.filter((l) => l.section === "liability").map((l) => l.group),
+    );
+    expect(liabilityGroups).toContain("Credit Cards");
+  });
+
+  it("marks a grouping taken from the statement as certain", () => {
+    const bank = result.lines.find((l) => l.accountName === "Community Bank Operating")!;
+    expect(bank.group).toBe("Bank Accounts");
+    expect(bank.groupCertain).toBe(true);
+  });
+});
+
 describe("guards", () => {
   it("refuses to roll with no anchor at all", () => {
     expect(() =>

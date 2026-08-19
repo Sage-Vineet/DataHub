@@ -1,3 +1,4 @@
+import { assignGroup } from "./balance-sheet-hierarchy.js";
 import { buildIncomeStatement } from "./income-statement.js";
 import { buildPeriods, periodKey, round2 } from "./periods.js";
 import type { Account, GlEntry, Period } from "./types.js";
@@ -77,7 +78,14 @@ export interface BalanceSheetLine {
   accountName: string;
   /** asset | liability | equity */
   section: string;
+  /**
+   * The sub-heading the account presents under — "Bank Accounts", "Fixed
+   * Assets", "Credit Cards". Taken from the uploaded statement where it
+   * survived ingestion, derived from the account otherwise (UAT #7).
+   */
   group: string | null;
+  /** False where the grouping was a convention the statement could contradict. */
+  groupCertain: boolean;
   /** Closing balance per period key. */
   balances: Record<string, number>;
 }
@@ -154,14 +162,23 @@ function rollForwardAccounts(accounts: Account[], anchors: BalanceSheetAnchor[])
   for (const anchor of anchors) {
     for (const row of anchor.rows) {
       if (isDerivedEquity(row.accountName)) continue;
-      if (universe.has(row.accountId)) continue;
-      universe.set(row.accountId, {
-        id: row.accountId,
-        name: row.accountName,
-        statementType: "balance_sheet",
-        accountType: row.section as Account["accountType"],
-        group: row.group ?? null,
-      });
+      const existing = universe.get(row.accountId);
+      if (!existing) {
+        universe.set(row.accountId, {
+          id: row.accountId,
+          name: row.accountName,
+          statementType: "balance_sheet",
+          accountType: row.section as Account["accountType"],
+          group: row.group ?? null,
+        });
+        continue;
+      }
+      // The chart of accounts knows the account exists; only the statement
+      // knows which sub-heading it presents under, and whether debt is current
+      // or long-term. Carry that across rather than losing it to derivation.
+      if (!existing.group && row.group) {
+        universe.set(row.accountId, { ...existing, group: row.group });
+      }
     }
   }
   return [...universe.values()];
@@ -262,11 +279,13 @@ export function rollForwardBalanceSheet(input: BalanceSheetInput): BalanceSheetR
     const balances: Record<string, number> = {};
     for (const key of keys) balances[key] = round2(opening + (cumulative[key] ?? 0));
 
+    const grouping = assignGroup(account);
     lines.push({
       accountId: account.id,
       accountName: account.name,
       section: account.accountType ?? "asset",
-      group: account.group ?? null,
+      group: grouping?.group ?? null,
+      groupCertain: grouping?.certain ?? false,
       balances,
     });
   }
