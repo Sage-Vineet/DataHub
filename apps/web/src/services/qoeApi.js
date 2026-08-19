@@ -80,3 +80,16 @@ export function classifyAccounts(versionId, { dryRun = false } = {}, options = {
     { method: "POST", ...options },
   );
 }
+
+/** The rolled balance sheet — monthly balances, grouped, with the balance check. */
+export function fetchBalanceSheet({ versionId, years } = {}, options = {}) {
+  return request(`/qoe/balance-sheet${query({ version_id: versionId, years })}`, options);
+}
+
+/** The trial balance, with real opening balances on balance-sheet accounts. */
+export function fetchTrialBalance({ versionId, years, aggregation } = {}, options = {}) {
+  return request(
+    `/qoe/trial-balance${query({ version_id: versionId, years, aggregation })}`,
+    options,
+  );
+}

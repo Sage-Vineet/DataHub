@@ -55,6 +55,7 @@ import WorkspaceKeyReports from "./pages/broker/workspace/WorkspaceKeyReports";
 import WorkspaceCimPrep from "./pages/broker/workspace/WorkspaceCimPrep";
 import Support from "./pages/Support";
 import WorkspaceEbitda from "./pages/broker/workspace/WorkspaceEbitda";
+import WorkspaceStatements from "./pages/broker/workspace/WorkspaceStatements";
 import BrokerProfile from "./pages/broker/BrokerProfile";
 import { getCompanyRequest, listCompaniesRequest } from "./lib/api";
 
@@ -340,6 +341,7 @@ function AppRoutes() {
           element={<WorkspaceTaxReconciliation />}
         />
         <Route path="ebitda" element={<WorkspaceEbitda />} />
+        <Route path="statements" element={<WorkspaceStatements />} />
         <Route path="dataroom" element={<Navigate to="deal-tracker" replace />} />
         <Route path="dataroom/connections" element={<WorkspaceConnections />} />
         <Route path="dataroom/key-reports" element={<WorkspaceKeyReports />} />

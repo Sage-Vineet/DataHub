@@ -164,6 +164,7 @@ function WorkspaceSidebar({ company, onClose }) {
       label: "Quality of Earnings Report",
       icon: Scale,
       children: [
+        { label: "Financial Statements", icon: BarChart3, to: `${basePath}/statements` },
         { label: "Bank Reconciliation", icon: Scale, to: `${basePath}/reconciliation` },
         { label: "Tax Reconciliation", icon: FileCheck, to: `${basePath}/tax-reconciliation` },
       ],
