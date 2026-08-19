@@ -3,13 +3,10 @@ import { loadManualUploadDashboard } from "./manualUploadDashboardService";
 import { loadQMSDashboard } from "./qmsManualDashboardService";
 import { getCashflow } from "./cashflowService";
 import {
-  extractEbitdaFromManualPLRows,
-  getEbitdaData,
-} from "./ebitdaService";
-import {
-  calculateAdjustmentTotalsByYear,
-  loadAdjustmentWorkspaceData,
-} from "./ebitdaAdjustmentService";
+  bridgeToAdjustmentTotals,
+  bridgeToEbitdaByYear,
+} from "./qoeBridgeAdapter";
+import { fetchBridge } from "./qoeApi";
 import {
   getAllManualUploadedReports,
   getAllQMSUploadedReports,
@@ -233,80 +230,36 @@ async function loadKpisForDateRange({
   }));
 }
 
-async function loadUploadedEbitdaByYear({ clientId, getReports }) {
-  const result = await getReports("profit_and_loss", { clientId }).catch(() => null);
-  const files = (result?.files || []).filter((file) => Array.isArray(file?.data?.rows) && file.data.rows.length);
-  const fileByYear = new Map();
-
-  files.forEach((file) => {
-    const year = detectReportFileYear(file);
-    if (!year) return;
-    const existing = fileByYear.get(year);
-    if (!existing || new Date(file.updatedAt || 0) > new Date(existing.updatedAt || 0)) {
-      fileByYear.set(year, file);
-    }
-  });
-
-  const entries = {};
-  fileByYear.forEach((file, year) => {
-    entries[year] = extractEbitdaFromManualPLRows(
-      normalizeUploadedProfitLossRows(file),
-      file.data?.asOfDate || file.data?.periodEnd || null,
+/**
+ * EBITDA now comes from one place: the server-side QoE bridge.
+ *
+ * Every source path previously re-derived it in the browser from P&L row
+ * labels, which meant the CIM and the QoE tab could disagree about the same
+ * company. `QE - 0004` requires the CIM to reference the same Add-Back Library
+ * records, so both screens now read `/qoe/bridge`.
+ */
+async function loadEbitdaByYear({ clientId, years, datasetVersion }) {
+  if (!datasetVersion) return {};
+  try {
+    const bridge = await fetchBridge(
+      { versionId: String(datasetVersion), years, aggregation: "annual" },
+      { clientId },
     );
+    return bridgeToEbitdaByYear(bridge);
+  } catch {
+    return {};
+  }
+}
+
+/** A single fiscal year off the same bridge — periods are selected discretely. */
+async function loadEbitdaForDateRange({ clientId, fiscalYear, datasetVersion }) {
+  if (!datasetVersion || !fiscalYear) return null;
+  const entries = await loadEbitdaByYear({
+    clientId,
+    years: [fiscalYear],
+    datasetVersion,
   });
-  return entries;
-}
-
-async function loadEbitdaByYear({ clientId, sourceKey, sourceMode, years, datasetVersion }) {
-  if (sourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) {
-    return loadUploadedEbitdaByYear({ clientId, getReports: getAllManualUploadedReports });
-  }
-  if (sourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
-    return loadUploadedEbitdaByYear({ clientId, getReports: getAllQMSUploadedReports });
-  }
-
-  const ebitdaSourceMode = sourceKey === REPORT_SOURCE_KEYS.MANUAL_GL ? "manual" : "quickbooks";
-  const entries = {};
-  await Promise.all(
-    years.map(async (year) => {
-      const range = getFiscalYearRange(year);
-      try {
-        entries[year] = await getEbitdaData(
-          range.start,
-          range.end,
-          "Accrual",
-          ebitdaSourceMode || sourceMode,
-          datasetVersion,
-        );
-      } catch {
-        entries[year] = null;
-      }
-    }),
-  );
-  return entries;
-}
-
-async function loadEbitdaForDateRange({
-  clientId,
-  sourceKey,
-  sourceMode,
-  startDate,
-  endDate,
-  fiscalYear,
-  datasetVersion,
-}) {
-  if (sourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD || sourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
-    const uploaded = await loadUploadedEbitdaByYear({
-      clientId,
-      getReports: sourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD
-        ? getAllManualUploadedReports
-        : getAllQMSUploadedReports,
-    });
-    return uploaded[fiscalYear] || null;
-  }
-
-  const ebitdaSourceMode = sourceKey === REPORT_SOURCE_KEYS.MANUAL_GL ? "manual" : "quickbooks";
-  return getEbitdaData(startDate, endDate, "Accrual", ebitdaSourceMode || sourceMode, datasetVersion);
+  return entries[fiscalYear] || null;
 }
 
 function getLocalAdjustmentTotals(clientId, years) {
@@ -334,23 +287,17 @@ function getLocalAdjustmentTotals(clientId, years) {
   }
 }
 
-async function loadAdjustmentTotals({ clientId, sourceKey, years, datasetVersion }) {
-  if (sourceKey === REPORT_SOURCE_KEYS.MANUAL_GL && datasetVersion) {
-    try {
-      const { adjustments } = await loadAdjustmentWorkspaceData({
-        clientId,
-        versionId: String(datasetVersion),
-        sourceKey,
-      });
-      const totals = calculateAdjustmentTotalsByYear(adjustments || [], years, "approved");
-      const count = (adjustments || []).filter((adjustment) => adjustment?.status !== "deleted").length;
-      return { totals, count };
-    } catch {
-      return { totals: {}, count: 0 };
-    }
+async function loadAdjustmentTotals({ clientId, years, datasetVersion }) {
+  if (!datasetVersion) return getLocalAdjustmentTotals(clientId, years);
+  try {
+    const bridge = await fetchBridge(
+      { versionId: String(datasetVersion), years, aggregation: "annual" },
+      { clientId },
+    );
+    return bridgeToAdjustmentTotals(bridge, years);
+  } catch {
+    return getLocalAdjustmentTotals(clientId, years);
   }
-
-  return getLocalAdjustmentTotals(clientId, years);
 }
 
 function flattenRows(rows = []) {
