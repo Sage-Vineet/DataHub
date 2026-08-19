@@ -112,3 +112,18 @@ export type {
   ReportVersionUpdate,
   ReportVersionResponse,
 } from "./reports.js";
+
+export * as qoe from "./qoe.js";
+export type {
+  DataSource,
+  EarningsMetric,
+  Aggregation,
+  AddbackKind,
+  EntryGranularity,
+  EbitdaRole,
+  BridgeQuery,
+  BridgeResponse,
+  AddbackCreate,
+  AddbackResponse,
+  AccountRoleUpdate,
+} from "./qoe.js";
