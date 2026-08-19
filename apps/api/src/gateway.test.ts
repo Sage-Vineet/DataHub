@@ -214,6 +214,16 @@ describe("gateway", () => {
     expect(pre.headers["access-control-allow-origin"]).toBe("https://app.datahub.test");
     expect(pre.headers["access-control-allow-credentials"]).toBe("true");
 
+    // Every header the SPA actually sends must be allowed, or the preflight
+    // fails and the app dies with a bare "Failed to fetch". `Cache-Control` is
+    // the easy one to miss: apps/web/src/lib/api.js sets it on EVERY request.
+    const allowed = String(pre.headers["access-control-allow-headers"])
+      .split(",")
+      .map((h) => h.trim().toLowerCase());
+    for (const header of ["content-type", "authorization", "x-client-id", "cache-control"]) {
+      expect(allowed).toContain(header);
+    }
+
     // An origin NOT on the list gets no CORS headers.
     const other = await request(app).get("/healthz").set("Origin", "https://evil.example.com");
     expect(other.headers["access-control-allow-origin"]).toBeUndefined();

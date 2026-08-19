@@ -23,7 +23,16 @@ function corsMiddleware(origins: ReadonlyArray<string>): RequestHandler {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Access-Control-Allow-Credentials", "true");
       res.setHeader("Vary", "Origin");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Client-Id");
+      // Cache-Control is on this list because the SPA sends `Cache-Control:
+      // no-store` on EVERY request (apps/web/src/lib/api.js). Omitting it fails
+      // the preflight with HeaderDisallowedByPreflightResponse, which surfaces
+      // in the UI as a bare "Failed to fetch" on login — i.e. the whole app is
+      // dead on any cross-origin deploy, which is every deploy where the SPA
+      // and gateway are on different hosts.
+      res.setHeader(
+        "Access-Control-Allow-Headers",
+        "Content-Type, Authorization, X-Client-Id, Cache-Control",
+      );
       res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
       if (req.method === "OPTIONS") {
         res.status(204).end();
