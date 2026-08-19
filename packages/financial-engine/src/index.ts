@@ -5,3 +5,4 @@ export * from "./income-statement.js";
 export * from "./addbacks.js";
 export * from "./bridge.js";
 export { engagementFixture, type EngagementFixture } from "./fixture.js";
+export * from "./classify.js";

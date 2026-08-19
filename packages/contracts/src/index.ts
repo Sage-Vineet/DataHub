@@ -126,4 +126,6 @@ export type {
   AddbackCreate,
   AddbackResponse,
   AccountRoleUpdate,
+  Classification,
+  ClassificationReport,
 } from "./qoe.js";

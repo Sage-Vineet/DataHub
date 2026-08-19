@@ -167,6 +167,32 @@ export const addbackResponse = addbackBase.extend({
 });
 export type AddbackResponse = z.infer<typeof addbackResponse>;
 
+/**
+ * Result of classifying a chart of accounts.
+ *
+ * `applied` was written; `suggested` matched but wants a human before it moves
+ * the number; `unclassified` was deliberately left out, and `reason` says why —
+ * an operating tax reads as a decision rather than an oversight.
+ */
+export const classification = z.object({
+  accountId: z.string(),
+  accountName: z.string(),
+  role: ebitdaRole.nullable(),
+  confidence: z.enum(["high", "low"]),
+  rule: z.string(),
+  reason: z.string(),
+});
+export type Classification = z.infer<typeof classification>;
+
+export const classificationReport = z.object({
+  applied: z.array(classification),
+  suggested: z.array(classification),
+  unclassified: z.array(classification),
+  applied_count: z.number().int(),
+  dry_run: z.boolean(),
+});
+export type ClassificationReport = z.infer<typeof classificationReport>;
+
 /** Account-level EBITDA role assignment — the flag that replaces label matching. */
 export const accountRoleUpdate = z.object({
   ebitda_role: ebitdaRole.nullable(),
