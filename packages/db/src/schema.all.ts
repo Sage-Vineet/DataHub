@@ -5,3 +5,4 @@
 // does not load this barrel, which keeps its CJS loader off the re-export path.
 export * from "./schema.js";
 export * from "./auth-schema.js";
+export * from "./qoe-schema.js";

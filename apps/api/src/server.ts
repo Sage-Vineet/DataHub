@@ -22,6 +22,7 @@ import { createUploadsModule } from "./modules/uploads/index.js";
 import { createRequestsModule } from "./modules/requests/index.js";
 import { createMessagesModule } from "./modules/messages/index.js";
 import { createReportsModule } from "./modules/reports/index.js";
+import { createQoeModule } from "./modules/qoe/index.js";
 import { requireSession } from "./shared/session.js";
 import { parseRoutingTable } from "./routing.js";
 import { loadGatewayEnv, type GatewayEnv } from "./env.js";
@@ -86,7 +87,8 @@ function buildModules(flags: GatewayEnv["flags"]): MountedModule[] {
     flags.UPLOADS_MODULE_ENABLED ||
     flags.REQUESTS_MODULE_ENABLED ||
     flags.MESSAGES_MODULE_ENABLED ||
-    flags.REPORTS_MODULE_ENABLED;
+    flags.REPORTS_MODULE_ENABLED ||
+    flags.QOE_MODULE_ENABLED;
   if (domainsEnabled) {
     const db = getDb();
     const auth = createBetterAuth({
@@ -136,6 +138,22 @@ function buildModules(flags: GatewayEnv["flags"]): MountedModule[] {
     if (flags.REPORTS_MODULE_ENABLED) {
       modules.push({ path: "/", router: createReportsModule({ db, requireAuth }).router });
       console.warn("[gateway] reports module ENABLED at the API root (key-report version lifecycle)");
+    }
+    // QoE serves /qoe, a prefix legacy does not define, so it adds surface
+    // rather than shadowing it. QOE_DEMO_VERSION_ID swaps the Drizzle repo for
+    // the anonymized walkthrough engagement (see modules/qoe/fixture.ts).
+    if (flags.QOE_MODULE_ENABLED) {
+      const demoVersionId = process.env.QOE_DEMO_VERSION_ID;
+      const demoCompanyId = process.env.QOE_DEMO_COMPANY_ID;
+      modules.push({
+        path: "/",
+        router: createQoeModule({
+          db,
+          requireAuth,
+          ...(demoVersionId && demoCompanyId ? { demoVersionId, demoCompanyId } : {}),
+        }).router,
+      });
+      console.warn("[gateway] QoE module ENABLED at /qoe (SDE/EBITDA bridge)");
     }
   }
   return modules;

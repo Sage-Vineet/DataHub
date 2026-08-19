@@ -26,7 +26,8 @@
     "helmet": "^8.0.0",
     "http-proxy-middleware": "^3.0.3",
     "jsonwebtoken": "^9.0.2",
-    "pino-http": "^10.3.0"
+    "pino-http": "^10.3.0",
+    "@datahub/financial-engine": "workspace:*"
   },
   "devDependencies": {
     "@datahub/config": "workspace:*",

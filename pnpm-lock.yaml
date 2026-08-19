@@ -26,6 +26,9 @@ importers:
       '@datahub/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@datahub/financial-engine':
+        specifier: workspace:*
+        version: link:../../packages/financial-engine
       bcryptjs:
         specifier: ^2.4.3
         version: 2.4.3
@@ -321,6 +324,31 @@ importers:
         specifier: ^2.1.9
         version: 2.1.9(@types/node@22.20.1)(jsdom@25.0.1)
 
+  packages/financial-engine:
+    dependencies:
+      '@datahub/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+    devDependencies:
+      '@datahub/config':
+        specifier: workspace:*
+        version: link:../config
+      '@eslint/js':
+        specifier: ^9.39.4
+        version: 9.39.5
+      eslint:
+        specifier: ^9.39.4
+        version: 9.39.5(jiti@1.21.7)
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      typescript-eslint:
+        specifier: ^8.18.1
+        version: 8.66.0(eslint@9.39.5(jiti@1.21.7))(typescript@5.9.3)
+      vitest:
+        specifier: ^2.1.9
+        version: 2.1.9(@types/node@22.20.1)(jsdom@25.0.1)
+
   packages/ui:
     dependencies:
       '@radix-ui/react-dialog':
@@ -426,6 +454,12 @@ importers:
       '@datahub/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@datahub/financial-engine':
+        specifier: workspace:*
+        version: link:../../packages/financial-engine
+      pg:
+        specifier: ^8.13.1
+        version: 8.22.0
 
   tools/parity:
     devDependencies:

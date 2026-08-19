@@ -15,6 +15,7 @@ COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json ./
 COPY packages/config/package.json packages/config/
 COPY packages/contracts/package.json packages/contracts/
 COPY packages/db/package.json packages/db/
+COPY packages/financial-engine/package.json packages/financial-engine/
 COPY packages/ui/package.json packages/ui/
 COPY apps/api/package.json apps/api/
 COPY apps/web/package.json apps/web/
@@ -26,6 +27,7 @@ FROM deps AS builder
 COPY packages/config packages/config
 COPY packages/contracts packages/contracts
 COPY packages/db packages/db
+COPY packages/financial-engine packages/financial-engine
 COPY apps/api apps/api
 RUN pnpm --filter @datahub/api... build
 
@@ -46,12 +48,15 @@ ENV PORT=8080
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=prod-deps /app/packages/contracts/node_modules ./packages/contracts/node_modules
 COPY --from=prod-deps /app/packages/db/node_modules ./packages/db/node_modules
+COPY --from=prod-deps /app/packages/financial-engine/node_modules ./packages/financial-engine/node_modules
 COPY --from=prod-deps /app/apps/api/node_modules ./apps/api/node_modules
 
 COPY --from=builder /app/packages/contracts/package.json ./packages/contracts/
 COPY --from=builder /app/packages/contracts/dist ./packages/contracts/dist
 COPY --from=builder /app/packages/db/package.json ./packages/db/
 COPY --from=builder /app/packages/db/dist ./packages/db/dist
+COPY --from=builder /app/packages/financial-engine/package.json ./packages/financial-engine/
+COPY --from=builder /app/packages/financial-engine/dist ./packages/financial-engine/dist
 COPY --from=builder /app/apps/api/package.json ./apps/api/
 COPY --from=builder /app/apps/api/dist ./apps/api/dist
 
