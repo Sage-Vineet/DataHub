@@ -120,6 +120,64 @@ def cell(row, i):
     return str(row[i]).strip() if i < len(row) else ""
 
 
+# Top-level sections of a QuickBooks balance sheet, in the order they appear.
+BS_SECTIONS = {
+    "Assets": "asset",
+    "Liabilities and Equity": None,   # a banner, not a section
+    "Liabilities": "liability",
+    "Equity": "equity",
+}
+
+
+def parse_balance_sheet(z, shared, sheets, name):
+    """
+    Read a balance-sheet statement into anchor rows.
+
+    A data row is one with a label AND a numeric value; sub-headers ("Bank
+    Accounts", "Fixed Assets") carry a label and no value, and are captured as
+    the row's `group`. That grouping is the hierarchy UAT #7 says is missing —
+    it exists in the source document and is discarded at extraction time.
+    """
+    section = None
+    group = None
+    as_of = None
+    rows_out = []
+
+    for row in sheet_rows(z, shared, sheets[name]):
+        label = cell(row, 0)
+        raw = cell(row, 1)
+        if not label:
+            continue
+        if label.startswith("As of "):
+            as_of = label[len("As of "):].strip()
+            continue
+        if label in BS_SECTIONS:
+            section = BS_SECTIONS[label]
+            group = None
+            continue
+        if label.startswith("Total"):
+            continue
+        if "Basis" in label and ("AM" in label or "PM" in label or "GMT" in label):
+            continue
+        if raw == "":
+            group = label        # a sub-header
+            continue
+        try:
+            amount = float(raw)
+        except ValueError:
+            continue
+        if section is None:
+            continue
+        rows_out.append({
+            "name": label,
+            "section": section,
+            "group": group,
+            "amount": round(amount, 2),
+        })
+
+    return as_of, rows_out
+
+
 def classify_pl_accounts(z, shared, sheets):
     """Income vs expense, read from each year's own P&L section headers."""
     kind = {}
@@ -144,6 +202,17 @@ def classify_pl_accounts(z, shared, sheets):
 def main(downloads):
     z, shared, sheets = load_workbook(os.path.join(downloads, WALKTHROUGH))
     pl_kind = classify_pl_accounts(z, shared, sheets)
+
+    start_as_of, start_rows = parse_balance_sheet(z, shared, sheets, "Starting Balance Sheet")
+    end_as_of, end_rows = parse_balance_sheet(z, shared, sheets, "Ending Balance Sheet")
+
+    # Section per balance-sheet account, taken from the statements themselves.
+    bs_section = {}
+    bs_group = {}
+    for row in start_rows + end_rows:
+        bs_section[row["name"]] = row["section"]
+        if row["group"]:
+            bs_group[row["name"]] = row["group"]
 
     # ── staged GL → (account, year, month, vendor) buckets ────────────────────
     raw = defaultdict(float)
@@ -183,7 +252,10 @@ def main(downloads):
             "id": aid,
             "name": alias,
             "statementType": statement,
-            "accountType": pl_kind.get(name) if statement == "profit_loss" else None,
+            "accountType": (
+                pl_kind.get(name) if statement == "profit_loss" else bs_section.get(name)
+            ),
+            "group": ACCOUNT_ALIASES.get(bs_group.get(name), bs_group.get(name)),
             "ebitdaRole": EBITDA_ROLES.get(name),
         })
 
@@ -236,6 +308,28 @@ def main(downloads):
         "fiscalYears": [2022, 2023, 2024, 2025],
         "accounts": accounts,
         "glEntries": entries,
+        # Either anchor alone is enough to roll the balance sheet — UAT #6 asks
+        # for the opening sheet to be derived backwards from the 2022 GL.
+        "balanceSheets": [
+            {
+                "anchor": "starting",
+                "asOf": start_as_of,
+                "rows": [
+                    {**r, "name": ACCOUNT_ALIASES.get(r["name"], r["name"]),
+                     "group": ACCOUNT_ALIASES.get(r["group"], r["group"])}
+                    for r in start_rows
+                ],
+            },
+            {
+                "anchor": "ending",
+                "asOf": end_as_of,
+                "rows": [
+                    {**r, "name": ACCOUNT_ALIASES.get(r["name"], r["name"]),
+                     "group": ACCOUNT_ALIASES.get(r["group"], r["group"])}
+                    for r in end_rows
+                ],
+            },
+        ],
     }
 
     out = os.path.join(os.path.dirname(__file__), "..", "src", "__fixtures__", "engagement.json")
@@ -246,6 +340,16 @@ def main(downloads):
     print(f"accounts          : {len(accounts)} "
           f"({sum(1 for a in accounts if a['statementType'] == 'profit_loss')} P&L)")
     print(f"vendors anonymized: {len(vendor_alias):,}")
+    for sheet in fixture["balanceSheets"]:
+        rows_ = sheet["rows"]
+        totals = {}
+        for r in rows_:
+            totals[r["section"]] = totals.get(r["section"], 0) + r["amount"]
+        assets = round(totals.get("asset", 0), 2)
+        le = round(totals.get("liability", 0) + totals.get("equity", 0), 2)
+        status = "balances" if abs(assets - le) < 0.01 else f"OUT BY {assets - le:,.2f}"
+        print(f"{sheet['anchor']:>9} BS as of {sheet['asOf']}: "
+              f"{len(rows_)} rows, assets {assets:,.2f} vs L+E {le:,.2f} — {status}")
     print(f"wrote             : {os.path.normpath(out)}")
     print("all four fiscal years tie to the expected revenue / expense / net income")
 

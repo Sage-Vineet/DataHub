@@ -7,8 +7,14 @@
 
 export type StatementType = "profit_loss" | "balance_sheet";
 
-/** Income-statement side of a P&L account. Null for balance-sheet accounts. */
-export type AccountType = "income" | "expense" | null;
+/**
+ * What the account is.
+ *
+ * `income`/`expense` for profit-and-loss accounts; `asset`/`liability`/`equity`
+ * for balance-sheet accounts. Null only when the account has not been
+ * classified, which is a hard error anywhere it matters.
+ */
+export type AccountType = "income" | "expense" | "asset" | "liability" | "equity" | null;
 
 /**
  * The centralized account-level classification `QE - 0004` requires in place of
@@ -28,6 +34,12 @@ export interface Account {
   name: string;
   statementType: StatementType;
   accountType: AccountType;
+  /**
+   * The sub-heading the account sits under on its source statement — "Bank
+   * Accounts", "Fixed Assets", "Credit Cards". Present in the uploaded
+   * document and currently discarded at extraction, which is UAT #7.
+   */
+  group?: string | null;
   ebitdaRole?: EbitdaRole | null;
 }
 
