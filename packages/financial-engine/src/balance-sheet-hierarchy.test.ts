@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import fixture from "./__fixtures__/engagement.json" with { type: "json" };
-import { assignGroup, deriveGroup, groupBalanceSheet, GROUP_ORDER } from "./balance-sheet-hierarchy.js";
+import {
+  assignGroup,
+  deriveGroup,
+  groupBalanceSheet,
+  isStatementCaption,
+  GROUP_ORDER,
+} from "./balance-sheet-hierarchy.js";
 import type { Account } from "./types.js";
 
 const accounts = fixture.accounts as Account[];
@@ -169,5 +175,53 @@ describe("presentation", () => {
   it("gives assets real depth — several groups, not one bucket", () => {
     const assets = sections.find((s) => s.section === "asset")!;
     expect(assets.groups.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe("statement captions are structure, not accounts (UAT #4)", () => {
+  it("recognises a parent caption by name", () => {
+    for (const name of [
+      "Bank Accounts",
+      "Fixed Assets",
+      "Credit Cards",
+      "Current Assets",
+      "Liabilities and Equity",
+      "Accounts Payable",
+    ]) {
+      expect(isStatementCaption({ accountName: name }), name).toBe(true);
+    }
+  });
+
+  it("recognises subtotals and section headers by their flags", () => {
+    expect(isStatementCaption({ accountName: "Total for Bank Accounts" })).toBe(true);
+    expect(isStatementCaption({ accountName: "Anything", isTotal: true })).toBe(true);
+    expect(
+      isStatementCaption({ accountName: "Anything", hierarchyLevel: 0 }, { levelsAreMeaningful: true }),
+    ).toBe(true);
+  });
+
+  it("does not treat a defaulted hierarchy level as a section header", () => {
+    /**
+     * `hierarchy_level` is `integer DEFAULT 0`. A statement where nothing set
+     * it is all zeros, and trusting that dropped an entire 80-row balance sheet
+     * the first time this ran — the endpoint reported "no balance sheet has
+     * been ingested" for a version that had one.
+     */
+    expect(isStatementCaption({ accountName: "Inventory", hierarchyLevel: 0 })).toBe(false);
+    expect(
+      isStatementCaption({ accountName: "Inventory", hierarchyLevel: 0 }, { levelsAreMeaningful: false }),
+    ).toBe(false);
+  });
+
+  it("leaves real accounts alone", () => {
+    for (const name of [
+      "Community Bank Operating",
+      "Inventory",
+      "Accumulated Depreciation- M&E",
+      "Accrued Meals Tax",
+      "Loan Payable - Community Bank",
+    ]) {
+      expect(isStatementCaption({ accountName: name, hierarchyLevel: 1 }), name).toBe(false);
+    }
   });
 });

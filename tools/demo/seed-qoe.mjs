@@ -141,8 +141,8 @@ try {
         `INSERT INTO balance_sheet_entries
            (id, version_id, company_id, source_file_id, as_of_date, fiscal_year,
             account_name, section, sub_section, amount, sort_order,
-            is_total, is_generated, coa_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,false,false,$12)`,
+            hierarchy_level, is_total, is_generated, coa_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,1,false,false,$12)`,
         [
           bsId++,
           VERSION_ID,

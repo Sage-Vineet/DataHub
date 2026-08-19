@@ -308,6 +308,35 @@ describe("balance sheet and trial balance over HTTP", () => {
     );
   });
 
+  it("ignores parent captions that extraction leaves in the statement (UAT #4)", async () => {
+    // Extraction filters subtotals but not headings, so a parent like "Bank
+    // Accounts" arrives carrying the total of the accounts beneath it. Counting
+    // it would double those balances and break the sheet.
+    const before = (await request(app).get(`/qoe/balance-sheet?version_id=${versionId}`)).body;
+
+    await db.insert(schema.balanceSheetEntries).values([
+      {
+        id: 900001, versionId, companyId, asOfDate: "2021-12-31", fiscalYear: 2021,
+        accountName: "Bank Accounts", section: "assets", amount: "331021.02",
+        sortOrder: 999, isTotal: false, isGenerated: false, hierarchyLevel: 0,
+      },
+      {
+        id: 900002, versionId, companyId, asOfDate: "2021-12-31", fiscalYear: 2021,
+        accountName: "Fixed Assets", section: "assets", amount: "1010393.10",
+        sortOrder: 998, isTotal: false, isGenerated: false, hierarchyLevel: 1,
+      },
+    ]);
+
+    const after = (await request(app).get(`/qoe/balance-sheet?version_id=${versionId}`)).body;
+
+    expect(after.balances, "the sheet must still balance").toBe(true);
+    expect(after.lines).toHaveLength(before.lines.length);
+    expect(after.lines.map((l: { accountName: string }) => l.accountName)).not.toContain(
+      "Bank Accounts",
+    );
+    expect(after.checks.at(-1).assets).toBeCloseTo(before.checks.at(-1).assets, 2);
+  });
+
   it("refuses when no balance sheet has been ingested", async () => {
     await db.delete(schema.balanceSheetEntries);
     const res = await request(app)

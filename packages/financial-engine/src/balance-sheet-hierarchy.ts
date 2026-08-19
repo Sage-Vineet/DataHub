@@ -172,3 +172,62 @@ export function groupBalanceSheet(
     };
   });
 }
+
+/**
+ * Captions a balance sheet prints as structure, not as accounts.
+ *
+ * UAT #4: *"why do we still have the parents in the Chart of Accounts table,
+ * and why are there duplicates?"* Extraction filters subtotal rows but not
+ * parent rows, so a heading like "Bank Accounts" survives as a leaf account —
+ * and then renders as a group node AND as a leaf inside itself, sitting beside
+ * the real accounts it is meant to contain.
+ */
+const CAPTION_NAMES = new Set(
+  [
+    ...GROUP_ORDER,
+    "Assets",
+    "Liabilities",
+    "Equity",
+    "Liabilities and Equity",
+    "Current Assets",
+    "Current Liabilities",
+    "Long-term Assets",
+    "Long Term Liabilities",
+    "Property, Plant and Equipment",
+    "Cash and Cash Equivalents",
+    "Payroll Liabilities",
+    "Accounts Payable",
+  ].map((n) => n.toLowerCase()),
+);
+
+/**
+ * True when a row is structure rather than an account.
+ *
+ * `isTotal` marks a subtotal, and the caption list catches headings the
+ * extractor leaves unflagged.
+ *
+ * `hierarchyLevel` is deliberately NOT trusted on its own. The column is
+ * `integer DEFAULT 0`, so a row that was never assigned a level is
+ * indistinguishable from a genuine section header — treating 0 as a heading
+ * silently discarded an entire 80-row statement the first time this ran. It
+ * only counts as a signal when the caller can see that levels actually vary,
+ * which it passes as `levelsAreMeaningful`.
+ *
+ * A real account that happens to share a caption's name is indistinguishable
+ * from the caption itself, which is why the chart of accounts — not this list —
+ * is where a wrong call gets corrected.
+ */
+export function isStatementCaption(
+  row: {
+    accountName: string;
+    hierarchyLevel?: number | null;
+    isTotal?: boolean | null;
+  },
+  options: { levelsAreMeaningful?: boolean } = {},
+): boolean {
+  if (row.isTotal) return true;
+  if (options.levelsAreMeaningful && row.hierarchyLevel === 0) return true;
+  const name = normalize(row.accountName);
+  if (CAPTION_NAMES.has(name)) return true;
+  return /^total\b/.test(name);
+}

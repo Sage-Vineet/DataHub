@@ -1,6 +1,7 @@
 import { and, asc, eq, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@datahub/db";
 import { schema } from "@datahub/db";
+import { isStatementCaption } from "@datahub/financial-engine";
 import type { Account, BalanceSheetAnchor, GlEntry } from "@datahub/financial-engine";
 import type { EbitdaRole } from "@datahub/contracts";
 import type {
@@ -155,6 +156,8 @@ export class DrizzleQoeRepository implements QoeRepository {
         subSection: balanceSheetEntries.subSection,
         amount: balanceSheetEntries.amount,
         coaId: balanceSheetEntries.coaId,
+        hierarchyLevel: balanceSheetEntries.hierarchyLevel,
+        isTotal: balanceSheetEntries.isTotal,
       })
       .from(balanceSheetEntries)
       .where(
@@ -166,11 +169,32 @@ export class DrizzleQoeRepository implements QoeRepository {
       )
       .orderBy(asc(balanceSheetEntries.asOfDate), asc(balanceSheetEntries.sortOrder));
 
+    // `hierarchy_level` only tells us anything when it actually varies — the
+    // column defaults to 0, so a statement where nothing set it would otherwise
+    // look like nothing but section headers.
+    const levelsAreMeaningful = new Set(rows.map((r) => r.hierarchyLevel)).size > 1;
+
     const byDate = new Map<string, BalanceSheetAnchor>();
     for (const row of rows) {
       if (!row.asOfDate || !row.accountName) continue;
       const section = SECTION_TO_TYPE[String(row.section ?? "").toLowerCase()];
       if (!section) continue;
+      // A parent caption is structure, not an account. Extraction filters
+      // subtotals but not headings, so "Bank Accounts" arrives looking like a
+      // balance and would be double-counted against the accounts beneath it
+      // (UAT #4).
+      if (
+        isStatementCaption(
+          {
+            accountName: row.accountName,
+            hierarchyLevel: row.hierarchyLevel,
+            isTotal: row.isTotal,
+          },
+          { levelsAreMeaningful },
+        )
+      ) {
+        continue;
+      }
 
       let anchor = byDate.get(row.asOfDate);
       if (!anchor) {
