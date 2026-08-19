@@ -33,6 +33,17 @@ purely to distinguish product-surface items from delivery work at a glance.
 **Product surface (CEN-53 … CEN-66)** — one per product module: `SY`, `DB`, `DR`,
 `QE`, `BR`, `VL`, `CM`, `BY`, `CP`, `PJ`, `QA`, `RP`, `US`, `BK`.
 
+**CEN-165 — QoE program, Sept 1 1.0.** Added 19 Aug from the 12–18 Aug check-ins.
+17 stories and the 8 open UAT defects as bugs, sequenced foundation-first. The
+`qoe-program` label selects the whole programme; `sept1` marks anything in the
+1.0 scope; `foundation` marks the six items that close six of the eight UAT
+defects and unblock four of the five modules.
+
+```jql
+project = CEN AND labels = "qoe-program" ORDER BY key
+project = CEN AND labels = "foundation" AND statusCategory != Done
+```
+
 ## The backdating constraint
 
 Jira stamps `created` on insert and it **cannot** be set through the REST API — it is
@@ -92,7 +103,10 @@ API land in the Backlog regardless of their status — so the 45 issues that are
 genuinely `Done` still sit in the Backlog until moved.
 
 There is no Agile/board endpoint in the Atlassian MCP tooling, so this cannot be
-scripted from here. To fix it in the UI: open the Backlog, select the issues (click
+scripted from here — and neither can **sprint assignment**. This is a team-managed
+project with no `sprint` field exposed on the issue, so putting the `queue-now` set
+into a sprint is a UI action. Status, labels, story points, start dates, parents and
+links are all scriptable and are kept correct from here. To fix it in the UI: open the Backlog, select the issues (click
 the first, shift-click the last), right-click → **Move to board**. Done issues drop
 straight into the Done column because their status is already correct.
 
