@@ -18,6 +18,10 @@
 #   3. better-auth migration    identity tables (ADR-0007).
 #   4. seed.sql + backfill      demo rows, then the users → auth_user/account
 #                               backfill so login works with the flag either way.
+#   5. QoE engagement           key-report entry tables (legacy 049/050), the QoE
+#                               bridge migration, and the anonymized walkthrough
+#                               engagement loaded into chart_of_accounts +
+#                               general_ledger_entries.
 #
 # That sequence is itself the finding: standing up a database from this repo takes
 # a bespoke script. Phase C replaces steps 1–2 with a production snapshot and a
@@ -35,8 +39,12 @@ COMPOSE="docker compose -f docker-compose.demo.yml"
 if [[ "${LEGACY_MODE:-0}" == "1" ]]; then
   export BETTER_AUTH_ENABLED=false COMPANIES_MODULE_ENABLED=false USERS_MODULE_ENABLED=false \
          FOLDERS_MODULE_ENABLED=false UPLOADS_MODULE_ENABLED=false REQUESTS_MODULE_ENABLED=false \
-         MESSAGES_MODULE_ENABLED=false REPORTS_MODULE_ENABLED=false
+         MESSAGES_MODULE_ENABLED=false REPORTS_MODULE_ENABLED=false QOE_MODULE_ENABLED=false
 fi
+# The QoE bridge has no legacy predecessor at /qoe, so it defaults ON — there is
+# nothing to fall back to and nothing it can shadow.
+export QOE_MODULE_ENABLED="${QOE_MODULE_ENABLED:-true}"
+QOE_VERSION_ID="${QOE_DEMO_VERSION_ID:-d0000000-0000-4000-8000-000000000001}"
 PG_PORT="${DEMO_PG_PORT:-5435}"
 GATEWAY_PORT="${DEMO_GATEWAY_PORT:-8080}"
 WEB_PORT="${DEMO_WEB_PORT:-5173}"
@@ -59,22 +67,30 @@ for _ in $(seq 1 60); do
 done
 psql_demo -c 'select 1' >/dev/null
 
-step "1/4 Loading the legacy schema (tolerating its one known-bad statement)"
+step "1/5 Loading the legacy schema (tolerating its one known-bad statement)"
 # No ON_ERROR_STOP: psql reports the bad index and carries on. Anything else that
 # fails here is new and worth reading in the output.
 if psql_demo < backend/sql/schema.sql 2>&1 | grep -E '^(ERROR|psql:)' ; then
   echo "   ^ expected: bank_transactions(client_id) does not exist (schema.sql:278)"
 fi
 
-step "2/4 Applying the module schema migration (0001_module_schema)"
+step "2/5 Applying the module schema migration (0001_module_schema)"
 psql_demo -v ON_ERROR_STOP=1 < packages/db/migrations/0001_module_schema.sql >/dev/null
 
-step "3/4 Applying the Better Auth identity migration"
+step "3/5 Applying the Better Auth identity migration"
 psql_demo -v ON_ERROR_STOP=1 < packages/db/migrations/0000_better_auth_identity.sql >/dev/null
 
-step "4/4 Seeding demo data and backfilling Better Auth identities"
+step "4/5 Seeding demo data and backfilling Better Auth identities"
 psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed.sql >/dev/null
 DATABASE_URL="$DB_URL" pnpm --filter @datahub/demo backfill
+
+step "5/5 Loading the QoE engagement (key-report tables + bridge + ledger)"
+# 049/050 create general_ledger_entries and its raw-row columns; both are
+# idempotent. 0002 adds chart_of_accounts.ebitda_role and qoe_addbacks.
+psql_demo -v ON_ERROR_STOP=1 < backend/sql/migrations/049_key_reports_entry_tables.sql >/dev/null
+psql_demo -v ON_ERROR_STOP=1 < backend/sql/migrations/050_general_ledger_entries_new_columns.sql >/dev/null
+psql_demo -v ON_ERROR_STOP=1 < packages/db/migrations/0002_qoe_bridge.sql >/dev/null
+DATABASE_URL="$DB_URL" pnpm --filter @datahub/demo seed-qoe
 
 step "Verifying the stack"
 GW="http://127.0.0.1:${GATEWAY_PORT}"
@@ -113,6 +129,15 @@ check "archived folder shown with ?includeArchived" 1 "$arch"
 check "QuickBooks OAuth still reaches legacy" 401 "$(curl -s -o /dev/null -w '%{http_code}' "$GW/api/auth/status")"
 
 check "SPA is served" 200 "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${WEB_PORT}/")"
+
+# The QoE bridge, asserted against the engagement workbook over live HTTP. These
+# are the same figures packages/financial-engine's golden suite asserts, so a
+# mismatch here means the pipeline disagrees with the arithmetic.
+BRIDGE=$(curl -s "$GW/qoe/bridge?version_id=${QOE_VERSION_ID}" -b "$JAR")
+jqn() { printf '%s' "$BRIDGE" | python3 -c "import json,sys;d=json.load(sys.stdin);print(f\"{eval(sys.argv[1],{},{'d':d}):.2f}\")" "$1" 2>/dev/null || echo "n/a"; }
+check "QoE FY2024 net income"      "47568.23"  "$(jqn "d['netIncome']['amounts']['2024']")"
+check "QoE FY2024 revenue"         "2511740.83" "$(jqn "d['revenue']['2024']")"
+check "QoE FY2024 Reported EBITDA" "347403.35" "$(jqn "d['reportedEbitda']['2024']")"
 
 if [[ "$FAILED" != "0" ]]; then
   echo

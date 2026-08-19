@@ -8,10 +8,13 @@
     "backfill": "node backfill.mjs",
     "lint": "echo \"demo: shell + SQL only\"",
     "typecheck": "echo \"demo: no TypeScript\"",
-    "test": "echo \"demo: exercised by tools/demo/up.sh\""
+    "test": "echo \"demo: exercised by tools/demo/up.sh\"",
+    "seed-qoe": "node seed-qoe.mjs"
   },
   "dependencies": {
     "@datahub/api": "workspace:*",
-    "@datahub/db": "workspace:*"
+    "@datahub/db": "workspace:*",
+    "@datahub/financial-engine": "workspace:*",
+    "pg": "^8.13.1"
   }
 }

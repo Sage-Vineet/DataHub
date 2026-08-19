@@ -76,7 +76,8 @@ services:
       # rejected by the other and a rollback logs everybody out.
       JWT_SECRET: ${JWT_SECRET:-demo-only-insecure-secret}
       BETTER_AUTH_URL: http://localhost:${DEMO_GATEWAY_PORT:-8080}
-      AUTH_TRUSTED_ORIGINS: http://localhost:${DEMO_WEB_PORT:-5173}
+      # Overridable so a local `vite dev` on another port can talk to this gateway.
+      AUTH_TRUSTED_ORIGINS: ${AUTH_TRUSTED_ORIGINS:-http://localhost:${DEMO_WEB_PORT:-5173}}
       # Cutover flags — ON by default here, unlike the staging compose.
       #
       # The demo is of the modernised stack, and the modules talk to Postgres
@@ -95,6 +96,7 @@ services:
       REQUESTS_MODULE_ENABLED: ${REQUESTS_MODULE_ENABLED:-true}
       MESSAGES_MODULE_ENABLED: ${MESSAGES_MODULE_ENABLED:-true}
       REPORTS_MODULE_ENABLED: ${REPORTS_MODULE_ENABLED:-true}
+      QOE_MODULE_ENABLED: ${QOE_MODULE_ENABLED:-true}
     depends_on:
       postgres:
         condition: service_healthy
