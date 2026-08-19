@@ -53,6 +53,19 @@ export function flowToReportSource(flowType) {
 let lastMappings = null;
 let lastAvailability = null;
 
+/**
+ * Shared empty mappings object.
+ *
+ * `selectKeyReportContext` is a `useSyncExternalStore` snapshot: it MUST return
+ * the same references when nothing changed. Writing `mappingsByCategory || {}`
+ * minted a fresh object on every call, so `useShallow` never matched, React
+ * re-rendered on every store read, and the page died with "Maximum update depth
+ * exceeded" (preceded by React's own "The result of getSnapshot should be
+ * cached to avoid an infinite loop"). Frozen so a caller cannot make it a
+ * shared mutable singleton by accident.
+ */
+const EMPTY_MAPPINGS = Object.freeze({});
+
 export function deriveAvailability(mappingsByCategory) {
   if (mappingsByCategory === lastMappings && lastAvailability) {
     return lastAvailability;
@@ -205,7 +218,7 @@ export function selectKeyReportContext(state) {
     mappingsByCategory,
     availability,
     // Add raw mappings for document-driven pages (e.g. resolve which PDF to render)
-    documents: mappingsByCategory || {},
+    documents: mappingsByCategory || EMPTY_MAPPINGS,
     loading: state.loading,
     loadingDetail: state.loadingDetail,
     error: state.error,

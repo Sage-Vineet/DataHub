@@ -118,7 +118,7 @@ export function setStoredToken(token) {
 }
 
 
-async function request(path, options = {}) {
+export async function request(path, options = {}) {
   const token = options.token ?? getStoredToken();
 
   // Reject every authenticated request once the 8-hour session window has closed.
@@ -1418,8 +1418,11 @@ export function listDocumentActivity(documentId) {
 // ---- Key Reports -----------------------------------------------------------
 // The X-Client-Id header is attached automatically from the workspace URL.
 
-export function getKeyReportVersions() {
-  return request('/key-reports/versions');
+export function getKeyReportVersions(clientId) {
+  // The company travels as X-Client-Id, which `request` sets from the argument
+  // or the current route. Passing it explicitly keeps the call correct when it
+  // is made outside a /client/:id route.
+  return request('/key-reports/versions', clientId ? { clientId } : {});
 }
 
 export function createKeyReportVersion(companyId, payload = {}) {

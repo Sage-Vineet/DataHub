@@ -51,15 +51,34 @@ describe("reports router — version lifecycle (real Postgres)", () => {
   it("creates (auto-numbered), lists, updates, duplicates, and enforces one active version", async () => {
     const v1 = (await request(app).post("/key-reports/versions").send({ company_id: companyId, version_name: "First" })).body;
     const v2 = (await request(app).post("/key-reports/versions").send({ company_id: companyId })).body;
-    expect([v1.version_number, v2.version_number]).toEqual([1, 2]);
+    // Legacy wire shape is camelCase — the SPA reads these names directly.
+    expect([v1.versionNumber, v2.versionNumber]).toEqual([1, 2]);
 
-    expect((await request(app).get(`/key-reports/versions?company_id=${companyId}`)).body.length).toBe(2);
+    // Legacy envelope: { success, versions, activeVersionId }.
+    const listed = (await request(app).get(`/key-reports/versions?company_id=${companyId}`)).body;
+    expect(listed.success).toBe(true);
+    expect(listed.versions.length).toBe(2);
+    expect(listed.activeVersionId).toBeNull();
+
+    // The SPA sends the company as X-Client-Id, never as ?company_id.
+    const viaHeader = await request(app)
+      .get("/key-reports/versions")
+      .set("X-Client-Id", companyId);
+    expect(viaHeader.status).toBe(200);
+    expect(viaHeader.body.versions.length).toBe(2);
 
     await request(app).put(`/key-reports/versions/${v1.id}`).send({ status: "synced", metadata: { note: "x" } }).expect(200);
 
+    // Legacy envelope for the detail read — the SPA store reads `detail.version`.
+    const detail = (await request(app).get(`/key-reports/versions/${v1.id}`)).body;
+    expect(detail.success).toBe(true);
+    expect(detail.version.id).toBe(v1.id);
+    expect(detail.version.versionName).toBe("First");
+
     const dup = (await request(app).post(`/key-reports/versions/${v1.id}/duplicate`)).body;
-    expect(dup.version_number).toBe(3);
-    expect(dup.is_active).toBe(false);
+    expect(dup.versionNumber).toBe(3);
+    expect(dup.isActive).toBe(false);
+    expect(dup.versionName).toBe("First");
 
     // Activate v1, then v2 — the partial-unique index means only one stays active.
     await request(app).post(`/key-reports/versions/${v1.id}/activate`).expect(200);
