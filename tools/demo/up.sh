@@ -133,6 +133,16 @@ check "SPA is served" 200 "$(curl -s -o /dev/null -w '%{http_code}' "http://127.
 # The QoE bridge, asserted against the engagement workbook over live HTTP. These
 # are the same figures packages/financial-engine's golden suite asserts, so a
 # mismatch here means the pipeline disagrees with the arithmetic.
+# The chart of accounts is seeded UNCLASSIFIED, exactly as a fresh ingest leaves
+# it. Classifying is the step that has to work on a customer's account names —
+# in particular it must not mistake this company's four operating-tax accounts
+# for income tax, which is what the previous implementation did.
+CLASSIFY=$(curl -s -X POST "$GW/qoe/versions/${QOE_VERSION_ID}/classify" -b "$JAR")
+jqc() { printf '%s' "$CLASSIFY" | python3 -c "import json,sys;d=json.load(sys.stdin);print(eval(sys.argv[1],{},{'d':d}))" "$1" 2>/dev/null || echo "n/a"; }
+check "QoE classified account count" "3" "$(jqc "d['applied_count']")"
+check "QoE income tax accounts found" "0" "$(jqc "len([c for c in d['applied'] if c['role']=='income_tax'])")"
+check "QoE operating taxes excluded" "4" "$(jqc "len([c for c in d['unclassified'] if c['rule']=='exclude.operating-tax'])")"
+
 BRIDGE=$(curl -s "$GW/qoe/bridge?version_id=${QOE_VERSION_ID}" -b "$JAR")
 jqn() { printf '%s' "$BRIDGE" | python3 -c "import json,sys;d=json.load(sys.stdin);print(f\"{eval(sys.argv[1],{},{'d':d}):.2f}\")" "$1" 2>/dev/null || echo "n/a"; }
 check "QoE FY2024 net income"      "47568.23"  "$(jqn "d['netIncome']['amounts']['2024']")"

@@ -42,6 +42,37 @@ Reported EBITDA. (`QE - 0004`)
 - **WHEN** an account is classified as income tax
 - **THEN** Reported EBITDA increases by exactly that account's ledger amount
 
+### Requirement: The chart of accounts is classified by the system, with reasons
+
+The system SHALL classify a company's profit-and-loss accounts into EBITDA roles
+server-side, from the account record, so an engagement does not require every account to be flagged
+by hand. Classification SHALL match a whole phrase and SHALL NOT act on a single word appearing
+anywhere in an account name. Each result SHALL carry a reason stating what decided it.
+
+The system SHALL apply only high-confidence results automatically; a lower-confidence match SHALL be
+reported as a suggestion and SHALL NOT affect the bridge until a user accepts it. The system SHALL
+offer classification without writing, so the result can be reviewed before it changes any figure, and
+running it again SHALL produce the same outcome. A user SHALL be able to override any assignment.
+(`QE - 0004`, `DB - 0003`)
+
+#### Scenario: An operating tax is excluded, and says so
+- **WHEN** an account named "Meals Tax", "Real estate taxes", "Payroll taxes" or "Taxes & Licenses"
+  is classified
+- **THEN** it receives no role, and its reason states that it is an operating tax rather than income
+  tax
+
+#### Scenario: A genuine income tax is classified
+- **WHEN** an account named "Provision for Income Taxes" is classified
+- **THEN** it receives the income tax role
+
+#### Scenario: Review before it counts
+- **WHEN** classification is requested without applying
+- **THEN** the full result is returned and no account's role changes
+
+#### Scenario: Classifying an ingested engagement produces the bridge
+- **WHEN** a newly ingested engagement with no classification is classified
+- **THEN** its EBIT lines populate and Reported EBITDA moves from net income to the correct figure
+
 ### Requirement: Unclassified profit-and-loss accounts are disclosed
 
 The system SHALL report, alongside the bridge, every profit-and-loss account carrying no EBITDA

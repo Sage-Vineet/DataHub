@@ -79,18 +79,13 @@ try {
     const id = randomUUID();
     accountId.set(account.id, id);
     await client.query(
+      // ebitda_role is deliberately NOT seeded. A freshly ingested engagement
+      // has no classification; the demo runs the real classifier over it, which
+      // is the step that has to work on a customer's chart of accounts.
       `INSERT INTO chart_of_accounts
          (id, version_id, company_id, account_name, account_type, statement_type, is_active, ebitda_role)
-       VALUES ($1, $2, $3, $4, $5, $6, true, $7)`,
-      [
-        id,
-        VERSION_ID,
-        COMPANY_ID,
-        account.name,
-        account.accountType,
-        account.statementType,
-        account.ebitdaRole ?? null,
-      ],
+       VALUES ($1, $2, $3, $4, $5, $6, true, NULL)`,
+      [id, VERSION_ID, COMPANY_ID, account.name, account.accountType, account.statementType],
     );
   }
 

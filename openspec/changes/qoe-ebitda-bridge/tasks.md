@@ -8,6 +8,9 @@
 - [x] 1.5 `coa-roles.ts` — role→line mapping, display order, default EBIT commentary.
 - [x] 1.6 `addbacks.ts` — the four sourcing kinds, vendor scope, smoothing, duplicate detection.
 - [x] 1.7 `bridge.ts` — Reported EBITDA, grouping, owner-comp rule, Adjusted EBITDA/SDE, margin.
+- [x] 1.7a `classify.ts` — assign EBITDA roles from the account record. Phrase matching only, an
+      operating-tax exclusion list checked before income tax, high/low confidence, and a reason on
+      every result. 34 tests, including all four of this engagement's tax accounts and 14 more.
 - [x] 1.8 `scripts/build-fixture.py` — anonymize the engagement, asserting every year's revenue,
       expenses and net income before writing.
 - [x] 1.9 **vitest**: golden suite against the workbook — the FY table, FY2024 Reported EBITDA
@@ -39,8 +42,10 @@
 - [x] 4.4 Wire `QOE_MODULE_ENABLED` into `env.ts` and `server.ts`.
 - [x] 4.5 **vitest**: service tests over the in-memory repo. (9 tests)
 - [x] 4.6 **supertest + pglite**: load the engagement into the real `chart_of_accounts` and
-      `general_ledger_entries` tables, read it back through the Drizzle repository, and assert the
-      workbook figures over HTTP. (7 tests)
+      `general_ledger_entries` tables **with no classification**, classify it through the API, read
+      it back through the Drizzle repository, and assert the workbook figures over HTTP. (12 tests)
+- [x] 4.6a `POST /qoe/versions/:id/classify` with `?dry_run=true`; bulk role assignment in one
+      transaction.
 - [x] 4.7 Regenerate `tools/parity/route-surface.json`.
 
 ## 5. Frontend — `apps/web`
@@ -52,6 +57,8 @@
 - [x] 5.4 `components/qoe/AddbackWizard.jsx` — gates on sourcing kind, enforces the per-kind rules.
 - [x] 5.5 Rewrite `WorkspaceEbitda.jsx` — period selection, source toggle, commentary, unflagged
       disclosure.
+- [x] 5.5a `ClassificationPanel.jsx` — review what was classified, what needs confirming, and what
+      was left out with the reason; re-run and override from the same place.
 - [x] 5.6 Repoint `cimFinancialAutofillService.js` at the bridge via `qoeBridgeAdapter.js`.
 - [ ] 5.7 Convert the new components `.jsx → .tsx` under `frontend-ui-adoption`.
 
@@ -65,6 +72,8 @@
 - [x] 6.5 `selectKeyReportContext` minted a fresh object per snapshot — "Maximum update depth
       exceeded".
 - [x] 6.6 An infinite render loop in the new page: `load` both depended on and set `selectedYears`.
+- [x] 6.7 Dialogs centred inside a mis-parented fixed overlay, putting the header above the top edge
+      where it could not be reached. Anchored to the top instead.
 
 ## 7. Demo / verification
 
@@ -77,7 +86,8 @@
 
 ## 8. Follow-ups (not this change)
 
-- [ ] 8.1 Backfill `ebitda_role` for existing report versions.
+- [x] 8.1 Backfill `ebitda_role` for existing report versions — `tools/ops/classify-accounts.mjs`,
+      dry-run by default since it changes the earnings figure on every engagement it touches.
 - [ ] 8.2 Retire the legacy `/ebitda-adjustments` routes and `ebitda_adjustments*` tables after soak.
 - [ ] 8.3 The financial-foundation change: balance-sheet Retained Earnings/Net Income classification
       and trial-balance opening balances.
