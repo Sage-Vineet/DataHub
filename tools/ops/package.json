@@ -1,0 +1,17 @@
+{
+  "name": "@datahub/ops",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Operational scripts run against a database directly, outside the request path.",
+  "scripts": {
+    "classify-accounts": "node classify-accounts.mjs",
+    "lint": "echo \"ops: scripts only\"",
+    "typecheck": "echo \"ops: no TypeScript\"",
+    "test": "echo \"ops: exercised against a real database\""
+  },
+  "dependencies": {
+    "@datahub/financial-engine": "workspace:*",
+    "pg": "^8.13.1"
+  }
+}

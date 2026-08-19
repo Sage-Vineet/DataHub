@@ -1,8 +1,10 @@
 import {
   buildBridge,
+  classifyAccounts,
   type Addback,
   type Aggregation,
   type BridgeResult,
+  type ClassificationReport,
   type DataSource,
   type EarningsMetric,
 } from "@datahub/financial-engine";
@@ -127,6 +129,33 @@ export class QoeService {
     const updated = await this.deps.repo.updateCommentary(id, commentary);
     if (!updated) throw new HttpError(404, "Add-back not found.");
     return updated;
+  }
+
+  /**
+   * Classify the chart of accounts and, unless this is a dry run, persist the
+   * high-confidence results.
+   *
+   * Only `applied` is written. `suggested` is returned for a human to confirm
+   * through `setAccountRole`, and `unclassified` carries the reason each
+   * account was left out — an operating tax says so, rather than looking like
+   * an oversight.
+   */
+  async classify(
+    user: SessionUser,
+    versionId: string,
+    { dryRun = false }: { dryRun?: boolean } = {},
+  ): Promise<ClassificationReport & { applied_count: number; dry_run: boolean }> {
+    const data = await this.engagement(user, versionId);
+    const report = classifyAccounts(data.accounts);
+
+    if (!dryRun && report.applied.length > 0) {
+      await this.deps.repo.setAccountRoles(
+        versionId,
+        report.applied.map((c) => ({ accountId: c.accountId, role: c.role! })),
+      );
+    }
+
+    return { ...report, applied_count: dryRun ? 0 : report.applied.length, dry_run: dryRun };
   }
 
   async setAccountRole(

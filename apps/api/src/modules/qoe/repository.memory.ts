@@ -61,11 +61,21 @@ export class InMemoryQoeRepository implements QoeRepository {
     accountId: string,
     role: EbitdaRole | null,
   ): Promise<void> {
+    await this.setAccountRoles(versionId, [{ accountId, role }]);
+  }
+
+  async setAccountRoles(
+    versionId: string,
+    updates: Array<{ accountId: string; role: EbitdaRole | null }>,
+  ): Promise<void> {
     const data = this.engagements.get(versionId);
     if (!data) return;
+    const byId = new Map(updates.map((u) => [u.accountId, u.role]));
     this.engagements.set(versionId, {
       ...data,
-      accounts: data.accounts.map((a) => (a.id === accountId ? { ...a, ebitdaRole: role } : a)),
+      accounts: data.accounts.map((a) =>
+        byId.has(a.id) ? { ...a, ebitdaRole: byId.get(a.id)! } : a,
+      ),
     });
   }
 }

@@ -201,4 +201,20 @@ export class DrizzleQoeRepository implements QoeRepository {
       .set({ ebitdaRole: role, updatedAt: new Date() })
       .where(and(eq(chartOfAccounts.versionId, versionId), eq(chartOfAccounts.id, accountId)));
   }
+
+  /** One transaction, so a classification run either lands whole or not at all. */
+  async setAccountRoles(
+    versionId: string,
+    updates: Array<{ accountId: string; role: EbitdaRole | null }>,
+  ): Promise<void> {
+    if (updates.length === 0) return;
+    await this.db.transaction(async (tx) => {
+      for (const { accountId, role } of updates) {
+        await tx
+          .update(chartOfAccounts)
+          .set({ ebitdaRole: role, updatedAt: new Date() })
+          .where(and(eq(chartOfAccounts.versionId, versionId), eq(chartOfAccounts.id, accountId)));
+      }
+    });
+  }
 }

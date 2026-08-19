@@ -461,6 +461,15 @@ importers:
         specifier: ^8.13.1
         version: 8.22.0
 
+  tools/ops:
+    dependencies:
+      '@datahub/financial-engine':
+        specifier: workspace:*
+        version: link:../../packages/financial-engine
+      pg:
+        specifier: ^8.13.1
+        version: 8.22.0
+
   tools/parity:
     devDependencies:
       '@datahub/config':

@@ -127,6 +127,19 @@ export function createQoeRouter(deps: QoeRouterDeps): Router {
     }),
   );
 
+  /**
+   * Classify the chart of accounts. `?dry_run=true` reports what would happen
+   * without writing, which is what the review panel reads before the user
+   * commits to it.
+   */
+  router.post(
+    "/qoe/versions/:versionId/classify",
+    handle(async (req, res) => {
+      const dryRun = String(req.query.dry_run ?? "") === "true";
+      res.json(await service.classify(req.user!, req.params.versionId!, { dryRun }));
+    }),
+  );
+
   router.put(
     "/qoe/versions/:versionId/accounts/:accountId/role",
     handle(async (req, res) => {

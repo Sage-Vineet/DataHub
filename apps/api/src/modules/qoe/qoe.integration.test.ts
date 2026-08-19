@@ -104,6 +104,9 @@ beforeEach(async () => {
   );
 
   // ── load the chart of accounts ────────────────────────────────────────────
+  // `ebitdaRole` is deliberately NOT seeded. A freshly ingested engagement has
+  // no classification, and the classifier has to produce it — seeding the flag
+  // would test the fixture rather than the system.
   accountUuid = new Map();
   for (const account of engagementFixture.accounts) {
     const id = randomUUID();
@@ -115,7 +118,7 @@ beforeEach(async () => {
       accountName: account.name,
       accountType: account.accountType ?? null,
       statementType: account.statementType,
-      ebitdaRole: account.ebitdaRole ?? null,
+      ebitdaRole: null,
     });
   }
 
@@ -153,8 +156,70 @@ afterEach(async () => {
   await client.close();
 });
 
+/** The step a real engagement takes first: classify, then read the bridge. */
+async function classify() {
+  return request(app).post(`/qoe/versions/${versionId}/classify`).expect(200);
+}
+
+describe("classification (real Postgres, unclassified chart of accounts)", () => {
+  it("assigns the roles this engagement needs, and no income tax", async () => {
+    const report = (await classify()).body;
+    const applied = report.applied.map((c: { accountName: string; role: string }) =>
+      `${c.accountName} → ${c.role}`).sort();
+    expect(applied).toEqual([
+      "Depreciation → depreciation",
+      "Interest Income → interest_income",
+      "Interest Paid → interest_expense",
+    ]);
+    expect(report.applied_count).toBe(3);
+  });
+
+  it("records why each operating tax was left out", async () => {
+    const report = (await classify()).body;
+    for (const name of ["Meals Tax", "Real estate taxes", "Taxes & Licenses", "Payroll taxes"]) {
+      const entry = report.unclassified.find(
+        (c: { accountName: string }) => c.accountName === name,
+      );
+      expect(entry, name).toBeDefined();
+      expect(entry.rule).toBe("exclude.operating-tax");
+    }
+  });
+
+  it("a dry run reports without writing", async () => {
+    const dry = (await request(app)
+      .post(`/qoe/versions/${versionId}/classify?dry_run=true`)
+      .expect(200)).body;
+    expect(dry.applied.length).toBe(3);
+    expect(dry.applied_count).toBe(0);
+
+    // The bridge is still unclassified, so Reported EBITDA is still net income.
+    const bridge = (await request(app).get(`/qoe/bridge?version_id=${versionId}&years=2024`)).body;
+    expect(bridge.ebitLines).toHaveLength(0);
+    expect(bridge.reportedEbitda["2024"]).toBeCloseTo(47568.23, 2);
+  });
+
+  it("turns an unclassified engagement into the workbook's figures", async () => {
+    const before = (await request(app).get(`/qoe/bridge?version_id=${versionId}&years=2024`)).body;
+    expect(before.reportedEbitda["2024"]).toBeCloseTo(47568.23, 2);
+
+    await classify();
+
+    const after = (await request(app).get(`/qoe/bridge?version_id=${versionId}&years=2024`)).body;
+    expect(after.reportedEbitda["2024"]).toBeCloseTo(347403.35, 2);
+  });
+
+  it("is idempotent", async () => {
+    await classify();
+    const second = (await classify()).body;
+    expect(second.applied_count).toBe(3);
+    const bridge = (await request(app).get(`/qoe/bridge?version_id=${versionId}&years=2024`)).body;
+    expect(bridge.reportedEbitda["2024"]).toBeCloseTo(347403.35, 2);
+  });
+});
+
 describe("QoE bridge over HTTP (real Postgres, real ledger)", () => {
   it("reproduces the engagement workbook figures from the general ledger", async () => {
+    await classify();
     const res = await request(app).get(`/qoe/bridge?version_id=${versionId}`).expect(200);
     const bridge = res.body;
 
@@ -172,6 +237,7 @@ describe("QoE bridge over HTTP (real Postgres, real ledger)", () => {
   });
 
   it("itemizes the EBIT lines from the chart of accounts, not from labels", async () => {
+    await classify();
     const bridge = (await request(app).get(`/qoe/bridge?version_id=${versionId}`)).body;
     const line = (key: string) =>
       bridge.ebitLines.find((l: { key: string }) => l.key === key);
@@ -189,6 +255,7 @@ describe("QoE bridge over HTTP (real Postgres, real ledger)", () => {
   });
 
   it("selects periods discretely and aggregates monthly on request", async () => {
+    await classify();
     const annual = (
       await request(app).get(`/qoe/bridge?version_id=${versionId}&years=2023,2025`)
     ).body;
@@ -206,6 +273,7 @@ describe("QoE bridge over HTTP (real Postgres, real ledger)", () => {
   });
 
   it("runs the add-back through the ledger and into the metric", async () => {
+    await classify();
     const created = await request(app)
       .post("/qoe/addbacks")
       .send({
@@ -252,6 +320,7 @@ describe("QoE bridge over HTTP (real Postgres, real ledger)", () => {
   });
 
   it("moves Reported EBITDA when an account role is assigned", async () => {
+    await classify();
     const mealsTax = accountUuid.get("meals-tax")!;
     await request(app)
       .put(`/qoe/versions/${versionId}/accounts/${mealsTax}/role`)

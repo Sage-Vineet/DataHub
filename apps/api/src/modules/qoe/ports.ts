@@ -44,6 +44,11 @@ export interface QoeRepository {
   updateCommentary(id: string, commentary: string): Promise<AddbackRecord | null>;
   /** Assign or clear an account's EBITDA role — the flag that drives the EBIT lines. */
   setAccountRole(versionId: string, accountId: string, role: EbitdaRole | null): Promise<void>;
+  /** Apply many role assignments at once, as one classification run. */
+  setAccountRoles(
+    versionId: string,
+    updates: Array<{ accountId: string; role: EbitdaRole | null }>,
+  ): Promise<void>;
 }
 
 /** Narrative drafting. Always returns an unsaved draft (`QE - 0004`). */
