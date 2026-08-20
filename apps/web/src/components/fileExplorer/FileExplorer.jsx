@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Folder, FolderOpen, File, FileText, Search, Download, Eye, Upload,
   ChevronRight, ChevronDown, Trash2, Home, Archive, X, ArrowLeft, Check,
@@ -2328,6 +2329,7 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     setDragOver, moveItemsTo, clearDrag, newFolderParentId, folderAccess, setFolderAccess,
     hydrateFromApi, setCompanyId, setCreatedBy, loadFolderAccessFromApi, syncFolderAccessToApi,
     showPreview, detailDocument, closeDocumentDetail, setCapabilities,
+    navigateTo, selectItem,
   } = useFileExplorerStore();
 
   // The store cannot call a hook, so the answer is pushed in once. Both default
@@ -2674,6 +2676,60 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     recordActivity(item.id, 'view');
     showPreview(item);
   }, [recordActivity, showPreview]);
+
+  /**
+   * Open a document someone linked to from elsewhere in the app.
+   *
+   *   /dataroom/documents?doc=<documentId>&folder=<folderId>
+   *
+   * Navigates to the folder, selects the file and opens the PREVIEW rather than
+   * the detail drawer: a link from a Q&A answer is making a claim about what the
+   * file says, and the drawer shows metadata about the file instead of the file.
+   * Closing the preview then leaves the reader in the right folder with the right
+   * row highlighted.
+   *
+   * `folder` is only a fallback. `getPathTo` gives the real ancestor chain, which
+   * stays correct if the document has since been moved.
+   */
+  const [searchParams, setSearchParams] = useSearchParams();
+  const deepLinkDoc = searchParams.get('doc');
+  const consumedDeepLink = useRef(null);
+
+  useEffect(() => {
+    // Wait for the real tree. This store persists `tree` to localStorage, so a
+    // stale one from the last session is present before hydrateFromApi resolves —
+    // acting on it navigates somewhere that made sense yesterday.
+    if (!deepLinkDoc || loadingTree) return;
+    // Once per link, whatever the outcome. The detail drawer's onChanged re-runs
+    // hydrateFromApi, and without this the preview would spring back open on
+    // every version restore.
+    if (consumedDeepLink.current === deepLinkDoc) return;
+    consumedDeepLink.current = deepLinkDoc;
+
+    // Drop the params so a refresh or a back-navigation does not replay this.
+    const next = new URLSearchParams(searchParams);
+    next.delete('doc');
+    next.delete('folder');
+    setSearchParams(next, { replace: true });
+
+    const node = findById(tree, deepLinkDoc);
+    if (!node) {
+      // Deliberately does not confirm the document exists — a stranger following
+      // a stale link should not learn a filename from the error message.
+      setTreeError('That file is not in this data room — it may have been moved or removed.');
+      setTimeout(() => setTreeError(''), 6000);
+      return;
+    }
+
+    const path = getPathTo(tree, deepLinkDoc);
+    const folderId = path?.[path.length - 2] ?? searchParams.get('folder');
+    if (folderId) navigateTo(folderId);
+    selectItem(deepLinkDoc, false);
+    previewFile(node);
+  }, [
+    deepLinkDoc, loadingTree, tree, searchParams, setSearchParams,
+    navigateTo, selectItem, previewFile,
+  ]);
 
   const downloadFile = useCallback(async (item, existingBlobUrl = '') => {
     if (!item || item.type !== 'file' || !item.fileUrl) return;

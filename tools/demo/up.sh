@@ -157,8 +157,12 @@ check "folder tree" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$GW/companies
 
 # The archived folder must be hidden by default and visible with the flag the SPA
 # actually sends. This is the parity defect the harness found, asserted live.
-live=$(curl -s "$GW/companies/$ACME/folders" -b "$JAR" | grep -c '"Legal"' || true)
-arch=$(curl -s "$GW/companies/$ACME/folders?includeArchived=true" -b "$JAR" | grep -c '"Legal"' || true)
+#
+# The subject is a dedicated empty folder. It used to be Legal, which holds the Q&A
+# evidence document — so the one link the demo is built around pointed into a folder
+# the normal view filters out.
+live=$(curl -s "$GW/companies/$ACME/folders" -b "$JAR" | grep -c '"Superseded"' || true)
+arch=$(curl -s "$GW/companies/$ACME/folders?includeArchived=true" -b "$JAR" | grep -c '"Superseded"' || true)
 check "archived folder hidden by default" 0 "$live"
 check "archived folder shown with ?includeArchived" 1 "$arch"
 

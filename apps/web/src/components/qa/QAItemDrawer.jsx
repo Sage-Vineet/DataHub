@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
-import { History, Loader2, Lock, Send, Sparkles, X } from 'lucide-react';
+import { Link, useParams } from 'react-router-dom';
+import { ExternalLink, History, Loader2, Lock, Paperclip, Send, Sparkles, X } from 'lucide-react';
 import { getQaAuditRequest } from '../../lib/api';
 import { useQaStore } from '../../store/qaStore';
 import { useFeature } from '../../context/useFeature';
@@ -15,6 +16,47 @@ import { useFeature } from '../../context/useFeature';
 
 const TAP = 'min-h-[44px] px-4';
 
+/**
+ * A document attached as evidence for an answer.
+ *
+ * Links into the data room and opens the file, because the claim the chip makes —
+ * "here is the lease that says that" — is only worth anything if the reader can
+ * check it. Both ids come with the item detail, so the link needs no lookup.
+ *
+ * Falls back to a plain chip where the data room is switched off or there is no
+ * company in the route (the seller's view). A link to a "coming soon" page is
+ * worse than no link.
+ */
+function AttachmentChip({ attachment, clientId, linkable }) {
+  const label = attachment.name ?? 'Attachment';
+  const base =
+    'inline-flex items-center gap-1.5 rounded-full bg-[#EFF6FF] px-2.5 py-1 text-xs text-[#1D4ED8]';
+
+  if (!linkable || !clientId || !attachment.document_id) {
+    return (
+      <span className={base}>
+        <Paperclip size={11} />
+        {label}
+      </span>
+    );
+  }
+
+  const params = new URLSearchParams({ doc: attachment.document_id });
+  if (attachment.folder_id) params.set('folder', attachment.folder_id);
+
+  return (
+    <Link
+      to={`/broker/client/${clientId}/dataroom/documents?${params}`}
+      className={`${base} hover:bg-[#DBEAFE] hover:underline`}
+      title={`Open ${label} in the data room`}
+    >
+      <Paperclip size={11} />
+      {label}
+      <ExternalLink size={10} />
+    </Link>
+  );
+}
+
 function timestamp(value) {
   if (!value) return '';
   return new Date(value).toLocaleString(undefined, {
@@ -28,6 +70,8 @@ function timestamp(value) {
 export default function QAItemDrawer({ detail, onClose, currentUser }) {
   const { answer, reword, setStatus } = useQaStore();
   const canReword = useFeature('qaPresentation');
+  const canLink = useFeature('dataroom');
+  const { clientId } = useParams();
   const [reply, setReply] = useState('');
   const [rewording, setRewording] = useState(null);
   const [rewordText, setRewordText] = useState('');
@@ -148,11 +192,8 @@ export default function QAItemDrawer({ detail, onClose, currentUser }) {
                 {response.attachments.length > 0 && (
                   <ul className="mt-2 flex flex-wrap gap-2">
                     {response.attachments.map((a) => (
-                      <li
-                        key={a.document_id}
-                        className="rounded-full bg-[#EFF6FF] px-2 py-0.5 text-xs text-[#1D4ED8]"
-                      >
-                        {a.name ?? 'Attachment'}
+                      <li key={a.document_id}>
+                        <AttachmentChip attachment={a} clientId={clientId} linkable={canLink} />
                       </li>
                     ))}
                   </ul>

@@ -486,6 +486,72 @@ describe("attachments", () => {
     expect(detail.responses[0]!.attachments[0]!.name).toBe("aging.xlsx");
   });
 
+  it("attaches to the current answer when no response is named", async () => {
+    // The contract makes response_id optional; the read path does not — an
+    // attachment with no response is stored and then never returned. Resolving it
+    // here is what stops a caller silently losing evidence.
+    const item = await ask({ requestee_ids: [seller.id] });
+    await service.postResponse(seller, item.id, { body: "see attached", kind: "answer" });
+    store.addDocument({
+      id: "dddddddd-0000-4000-8000-000000000011",
+      companyId: CO,
+      folderId: "eeeeeeee-0000-4000-8000-000000000001",
+      name: "lease.pdf",
+    });
+
+    await service.attach(seller, item.id, {
+      document_id: "dddddddd-0000-4000-8000-000000000011",
+      folder_id: "eeeeeeee-0000-4000-8000-000000000001",
+    });
+
+    const detail = await service.getItem(broker, item.id);
+    expect(detail.responses[0]!.attachments.map((a) => a.name)).toEqual(["lease.pdf"]);
+  });
+
+  it("attaches to the newest answer after a correction, not the superseded one", async () => {
+    const item = await ask({ requestee_ids: [seller.id] });
+    const v1 = await service.postResponse(seller, item.id, { body: "first", kind: "answer" });
+    const v2 = await service.postResponse(seller, item.id, {
+      body: "corrected",
+      kind: "answer",
+      supersedes_id: v1.id,
+    });
+    store.addDocument({
+      id: "dddddddd-0000-4000-8000-000000000012",
+      companyId: CO,
+      folderId: "eeeeeeee-0000-4000-8000-000000000001",
+      name: "revised.pdf",
+    });
+
+    await service.attach(seller, item.id, {
+      document_id: "dddddddd-0000-4000-8000-000000000012",
+      folder_id: "eeeeeeee-0000-4000-8000-000000000001",
+    });
+
+    const detail = await service.getItem(broker, item.id);
+    const withFile = detail.responses.find((r) => r.attachments.length > 0)!;
+    expect(withFile.id).toBe(v2.id);
+  });
+
+  it("still records evidence attached before anyone has answered", async () => {
+    // Not lost — it becomes visible once the first answer lands and is linked.
+    const item = await ask({ requestee_ids: [seller.id] });
+    store.addDocument({
+      id: "dddddddd-0000-4000-8000-000000000013",
+      companyId: CO,
+      folderId: "eeeeeeee-0000-4000-8000-000000000001",
+      name: "early.pdf",
+    });
+
+    await expect(
+      service.attach(seller, item.id, {
+        document_id: "dddddddd-0000-4000-8000-000000000013",
+        folder_id: "eeeeeeee-0000-4000-8000-000000000001",
+      }),
+    ).resolves.toBeUndefined();
+    expect(store.attachments).toHaveLength(1);
+  });
+
   it("refuses a document belonging to a different deal", async () => {
     const item = await ask({ requestee_ids: [seller.id] });
     store.addDocument({

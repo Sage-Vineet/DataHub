@@ -597,9 +597,30 @@ export class QaService {
     if (doc.companyId !== item.companyId) {
       throw new ForbiddenError("That document belongs to a different deal.");
     }
+
+    /**
+     * Attach to a response, always — never to the item alone.
+     *
+     * The contract makes `response_id` optional, but the read path does not: an
+     * attachment is returned nested under the response it belongs to, so a row
+     * with no response is stored and then silently never surfaces. Resolving the
+     * current answer here fixes that for every caller at once, rather than asking
+     * each one to remember.
+     *
+     * Where there is no answer yet — evidence attached to a question before anyone
+     * has replied — the row is still written. It is not lost, and it becomes
+     * visible as soon as the first answer lands and is linked.
+     */
+    let responseId = input.response_id ?? null;
+    if (!responseId) {
+      const responses = await this.deps.responses.listFor(itemId);
+      const current = responses.filter((r) => r.kind === "answer" && r.isCurrent).at(-1);
+      responseId = current?.id ?? null;
+    }
+
     await this.deps.responses.attach({
       itemId,
-      responseId: input.response_id ?? null,
+      responseId,
       documentId: input.document_id,
       folderId: input.folder_id,
       createdBy: user.id,
