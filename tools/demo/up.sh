@@ -226,6 +226,49 @@ if [[ "${QA_MODULE_ENABLED}" == "true" ]]; then
         "$(printf '%s' "$DETAIL" | jq_get "len([p for p in d['presentations'] if p['status']=='published'])")"
     fi
   fi
+
+  # The evidence loop. The seeded answer carries a document, and that document is
+  # in a folder the normal view can actually reach — Legal used to be archived, so
+  # the one link the demo is built around pointed somewhere invisible.
+  EVIDENCE_FOLDER=""
+  QA3=$(curl -s "$GW/qa/companies/$ACME/items" -b "$JAR" \
+    | python3 -c "import json,sys;print(next(i['id'] for i in json.load(sys.stdin) if i['reference']=='QA-003'))" 2>/dev/null || echo "")
+  if [[ -n "$QA3" ]]; then
+    DETAIL3=$(curl -s "$GW/qa/items/$QA3" -b "$JAR")
+    check "Q&A: the answer carries its evidence" "Lease Agreement.txt" \
+      "$(printf '%s' "$DETAIL3" | jq_get "[a['name'] for r in d['responses'] for a in r['attachments']][0]")"
+    EVIDENCE_FOLDER=$(printf '%s' "$DETAIL3" | jq_get "[a['folder_id'] for r in d['responses'] for a in r['attachments']][0]")
+    check "Q&A: the evidence sits in a folder you can navigate to" 1 \
+      "$(curl -s "$GW/companies/$ACME/folders" -b "$JAR" | jq_get "len([f for f in d if f['id']=='$EVIDENCE_FOLDER'])")"
+  fi
+
+  # The seller's path, driven over HTTP exactly as the tablet drives it: answer,
+  # upload through the chunked route, link. This is the check most likely to catch
+  # a regression on demo morning.
+  # Guarded on EVIDENCE_FOLDER as well as the flag: under `set -u` an unresolved
+  # folder would abort the whole bringup, and a check that cannot run should be
+  # skipped and said so, never turned into a crash.
+  if [[ "${DATAROOM_CHUNKED_UPLOAD_ENABLED}" == "true" && -n "$EVIDENCE_FOLDER" && "$EVIDENCE_FOLDER" != "n/a" ]]; then
+    OPEN_ITEM=$(curl -s "$GW/qa/companies/$ACME/items?status=open" -b "$JAR" | jq_get "d[0]['id']")
+    NEW_RESP=$(curl -s -X POST "$GW/qa/items/$OPEN_ITEM/responses" -H 'Content-Type: application/json' \
+      -b "$JAR" -d '{"body":"Attached, see the data room.","kind":"answer"}' | jq_get "d['id']")
+    EV_BYTES="demo evidence"
+    EV_SESSION=$(curl -s -X POST "$GW/dataroom/uploads/sessions" -H 'Content-Type: application/json' -b "$JAR" \
+      -d "{\"folder_id\":\"$EVIDENCE_FOLDER\",\"file_name\":\"Evidence.txt\",\"content_type\":\"text/plain\",\"total_bytes\":${#EV_BYTES},\"chunk_size\":1048576}" \
+      | jq_get "d['id']")
+    printf '%s' "$EV_BYTES" | curl -s -X PUT "$GW/dataroom/uploads/sessions/$EV_SESSION/chunks/0" \
+      -H 'Content-Type: application/octet-stream' -b "$JAR" --data-binary @- -o /dev/null
+    EV_DOC=$(curl -s -X POST "$GW/dataroom/uploads/sessions/$EV_SESSION/complete" -b "$JAR" | jq_get "d['document_id']")
+    check "seller path: attach lands" 204 \
+      "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$GW/qa/items/$OPEN_ITEM/attachments" \
+         -H 'Content-Type: application/json' -b "$JAR" \
+         -d "{\"document_id\":\"$EV_DOC\",\"folder_id\":\"$EVIDENCE_FOLDER\",\"response_id\":\"$NEW_RESP\"}")"
+    check "seller path: the broker sees the file on the answer" "True" \
+      "$(curl -s "$GW/qa/items/$OPEN_ITEM" -b "$JAR" \
+         | jq_get "'Evidence.txt' in [a['name'] for r in d['responses'] for a in r['attachments']]")"
+  elif [[ "${DATAROOM_CHUNKED_UPLOAD_ENABLED}" == "true" ]]; then
+    printf '   - %-46s %s\n' "seller path" "skipped: no seeded evidence folder"
+  fi
 fi
 
 if [[ "${CIM_MODULE_ENABLED}" == "true" ]]; then

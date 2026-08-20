@@ -2716,7 +2716,15 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     if (!node) {
       // Deliberately does not confirm the document exists — a stranger following
       // a stale link should not learn a filename from the error message.
-      setTreeError('That file is not in this data room — it may have been moved or removed.');
+      //
+      // Both sets are deferred (the idiom this file already uses for upload
+      // failures) so neither runs synchronously in the effect body. No cleanup
+      // cancels them: setSearchParams above re-runs this effect on the very next
+      // render, and a cleanup would clear the banner before it was ever painted.
+      setTimeout(
+        () => setTreeError('That file is not in this data room — it may have been moved or removed.'),
+        0,
+      );
       setTimeout(() => setTreeError(''), 6000);
       return;
     }

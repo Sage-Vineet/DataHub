@@ -80,10 +80,18 @@ export const useQaStore = create((set, get) => ({
     await get().load(companyId);
   },
 
+  /**
+   * Post a response, and hand it back.
+   *
+   * The created response is returned rather than discarded because attaching a
+   * file to the answer just posted needs its id, and the caller has no other way
+   * to learn it.
+   */
   async answer(itemId, body, opts = {}) {
-    await postQaResponseRequest(itemId, body, opts);
+    const response = await postQaResponseRequest(itemId, body, opts);
     await get().refreshDetail();
     await get().load(get().companyId);
+    return response;
   },
 
   /** The broker's reworded version. Written and published in one step from the UI. */
