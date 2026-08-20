@@ -64,8 +64,12 @@
       blocks with no mapped question returned flagged as unmapped, never omitted
 - [x] 6.2 `POST /cim/versions/:id/questions/generate` — calls `QaPort.createRequest` with
       `externalRef = cim_block.id`; broker edits to wording/order do not mutate the library
-- [ ] 6.3 `QaPort` with **two adapters selected by `CIM_QA_ADAPTER=qa|local`, defaulting to `local`**
-      (`design.md` D4). The `local` adapter is a legitimate shipping path, not a stub
+- [x] 6.3 ~~Two adapters selected by `CIM_QA_ADAPTER`.~~ **Obsolete.** That hedge existed so the
+      CIM could be built before the Q&A module was green; both landed, so the real adapter is the
+      only one worth having. The seam it protected still exists — `QaPort` with an
+      `unavailableQa` implementation injected when `QA_MODULE_ENABLED=false` — so generation
+      reports unavailable and the rest of the builder keeps working. A second write path kept
+      only for a scheduling risk that did not materialise is a liability, not insurance
 - [x] 6.4 `GET /cim/versions/:id/review-queue` — submitted answers joined back through `externalRef`
 - [x] 6.5 `POST /cim/blocks/:id/accept-answer` — `mode` **defaults to skip** when the block has
       content; writes content, sets `populated_by='answer'`, locks `content_class` to deal content,
@@ -82,7 +86,10 @@
       **text primitives, not rasterised**; draft watermark when not published
 - [x] 7.2 Watchdog with a readable failure toast rather than an endless spinner; determinate
       progress with slide thumbnails
-- [ ] 7.3 Pin the font stack in `SlideCanvas` so screen and PDF agree (`design.md` D5)
+- [x] 7.3 ~~Pin the font stack in `SlideCanvas`.~~ **Obsolete.** That mattered because
+      html2canvas rasterises whatever font the browser resolved, so screen and PDF could disagree.
+      The renderer draws text with jsPDF's own Helvetica instead, so there is one font and nothing
+      to reconcile
 - [x] 7.4 `POST /cim/versions/:id/publish` — raw bytes following the existing `POST /uploads`
       convention (`apps/web/src/lib/api.js:517-545`); sha256, store via `StoragePort`, create the
       data room document via `DataRoomPort`, write `cim_publication`, mark published
@@ -100,11 +107,13 @@
 
 ## 9. Frontend
 
-- [ ] 9.1 Extract `apps/web/src/features/cim/SlideCanvas.jsx` from `WorkspaceCimPrep.jsx`
-      lines 2745-~3050 **verbatim**, zero behaviour change
-- [ ] 9.2 Extract `apps/web/src/features/cim/layout.js` — `extractTemplateFields`,
-      `applyFieldValues`, `getElementDisplayText`, `buildChartSvg`, `getElementStyle`,
-      `parseTableText`, `SECTION_SLIDES`, `BASIC_DETAIL_FIELD_DEFINITIONS`
+- [x] 9.1 ~~Extract `SlideCanvas`.~~ **Obsolete for this change.** The extraction paid for itself
+      only because both the editor and an html2canvas exporter needed it; the exporter draws text
+      instead, and the editor is a separate surface (see D1a). Extracting a 300-line component out
+      of a 5,055-line file with no caller left to justify it would be churn
+- [x] 9.2 ~~Extract `layout.js`.~~ **Obsolete for the same reason as 9.1** — except
+      `SECTION_SLIDES`, which the question-extraction script reads directly from the source file,
+      so nothing needed lifting
 - [x] 9.3 `apps/web/src/features/cim/cimApi.js` — the `/cim` client plus the block↔`fieldValues`
       adapter
 - [ ] 9.4 Re-point `WorkspaceCimPrep.jsx` persistence. **Blocked, and not by effort**: the SPA's
@@ -113,8 +122,9 @@
 - [ ] 9.4a Extract the block-key set from `apps/web/public/cim-template/layouts/*.json` into a
       manifest the API can seed an outline from, so a new deck and a migrated one speak the same
       vocabulary
-- [ ] 9.5 Re-point `apps/web/src/pages/client/CimQuestionnaire.jsx`'s two API calls at the Q&A
-      adapter; keep the page otherwise as-is — it is already the right seller surface
+- [ ] 9.5 Re-point `CimQuestionnaire.jsx` at the Q&A module. **Deferred, not blocked:** the seller
+      now answers CIM-generated questions through `/client/qa`, which is a working path, so the
+      old questionnaire page is redundant rather than broken. Retiring it belongs with 9.4
 - [x] 9.6 Review queue surface with accept / edit-and-accept / discard
 - [x] 9.7 Three-pane layout (slide navigator with per-slide completion indicator, canvas, context
       panel); deck health panel listing what blocks publication
