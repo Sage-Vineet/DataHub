@@ -56,10 +56,26 @@ last 24 hours goes off. Not "we think we fixed it" — off.
 docker compose -f docker-compose.demo.yml down -v && ./tools/demo/up.sh
 ```
 
-`up.sh` ends in ~43 live assertions against the running stack. Every check for a
+`up.sh` ends in ~57 live assertions against the running stack. Every check for a
 new surface is wrapped in its own flag test, so a disabled feature's checks
 **skip** rather than fail — which is what makes this script the rehearsal rather
-than something that must be edited before one.
+than something that must be edited before one. Verified: a cold run with
+everything on is 57/57, and the same run with `QOE_MODULE_ENABLED=false` is
+34/34 and still exits 0.
+
+> **If the build dies on `ETIMEDOUT` from registry.npmjs.org**, the machine
+> cannot reach the network from BuildKit's per-step netns even though `curl`
+> works fine from a shell. Re-run as:
+>
+> ```
+> DEMO_BUILD_HOST_NETWORK=1 ./tools/demo/up.sh
+> ```
+>
+> That builds the images directly with host networking — which needs an
+> entitlement Compose cannot express — and then starts the stack without
+> rebuilding. It is off by default because on an ordinary Docker host the plain
+> path works and host networking would be a privilege granted for nothing.
+> **This is the known state of the demo laptop**, so expect to need it.
 
 **4. Eyeball the SPA on the iPad, in Safari, with the console open.**
 **This step is a blocking gate.** Look for:

@@ -68,7 +68,40 @@ psql_demo() {
 step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 
 step "Building and starting containers"
-$COMPOSE up -d --build
+# Some hosts — rootless podman-backed Docker among them — cannot reach the
+# network from BuildKit's per-step netns, even though the host and ordinary
+# containers can. The symptom is every `pnpm install` and `corepack prepare`
+# dying on ETIMEDOUT against registry.npmjs.org while `curl` from the same
+# machine is fine. Building with host networking is the escape hatch; it needs
+# an entitlement that Compose cannot express, so the images are built directly
+# and Compose is then told not to rebuild them.
+#
+# Opt in with DEMO_BUILD_HOST_NETWORK=1. Off by default: on a normal Docker host
+# the plain path works and host networking would be an unnecessary privilege.
+if [[ "${DEMO_BUILD_HOST_NETWORK:-0}" == "1" ]]; then
+  BUILDER="${DEMO_BUILDX_BUILDER:-datahub-hostnet}"
+  if ! docker buildx inspect "$BUILDER" >/dev/null 2>&1; then
+    echo "   creating buildx builder '$BUILDER' with host networking"
+    docker buildx create --name "$BUILDER" --driver docker-container \
+      --driver-opt network=host \
+      --buildkitd-flags '--allow-insecure-entitlement network.host' >/dev/null
+  fi
+  # Service -> Dockerfile straight out of the compose file, so a service added
+  # later is picked up rather than silently skipped by a hardcoded list.
+  $COMPOSE config --format json \
+    | python3 -c 'import json,sys
+for name, svc in json.load(sys.stdin)["services"].items():
+    build = svc.get("build")
+    if build: print(name, build["dockerfile"])' \
+    | while read -r svc dockerfile; do
+        echo "   building $svc via $BUILDER (host network)"
+        docker buildx build --builder "$BUILDER" --allow network.host --network host \
+          -f "$dockerfile" -t "datahub-demo-${svc}:latest" --load .
+      done
+  $COMPOSE up -d --no-build
+else
+  $COMPOSE up -d --build
+fi
 
 step "Waiting for Postgres"
 for _ in $(seq 1 60); do
@@ -246,11 +279,26 @@ if [[ "${QA_MODULE_ENABLED}" == "true" ]]; then
   # The seller's path, driven over HTTP exactly as the tablet drives it: answer,
   # upload through the chunked route, link. This is the check most likely to catch
   # a regression on demo morning.
-  # Guarded on EVIDENCE_FOLDER as well as the flag: under `set -u` an unresolved
-  # folder would abort the whole bringup, and a check that cannot run should be
-  # skipped and said so, never turned into a crash.
-  if [[ "${DATAROOM_CHUNKED_UPLOAD_ENABLED}" == "true" && -n "$EVIDENCE_FOLDER" && "$EVIDENCE_FOLDER" != "n/a" ]]; then
-    OPEN_ITEM=$(curl -s "$GW/qa/companies/$ACME/items?status=open" -b "$JAR" | jq_get "d[0]['id']")
+  # Guarded on the ids as well as the flag: under `set -u` an unresolved one
+  # would abort the whole bringup, and a check that cannot run should be skipped
+  # and said so, never turned into a crash.
+  #
+  # `uuid` is not fussiness. jq_get's failure sentinel is the string "n/a", which
+  # contains a SLASH, so pasting it into a path silently produces a different
+  # route — /qa/items/n/a/responses falls through to legacy and comes back 401,
+  # which reads as an auth regression rather than "the id was never resolved".
+  uuid() { [[ "${1:-}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; }
+
+  # Prefer a question nobody has answered; on a re-run there may be none left,
+  # because the previous run answered it. Falling back to any item keeps this
+  # meaningful on every invocation instead of only against a virgin database —
+  # and the T-48h rehearsal in docs/DEMO_FREEZE_CHECKLIST.md IS a re-run.
+  # Answering twice supersedes rather than edits, which is exactly the behaviour
+  # the Q&A module is built around, so the fallback exercises a real path.
+  OPEN_ITEM=$(curl -s "$GW/qa/companies/$ACME/items?status=open" -b "$JAR" | jq_get "d[0]['id']")
+  uuid "$OPEN_ITEM" || OPEN_ITEM=$(curl -s "$GW/qa/companies/$ACME/items" -b "$JAR" | jq_get "d[0]['id']")
+
+  if [[ "${DATAROOM_CHUNKED_UPLOAD_ENABLED}" == "true" ]] && uuid "$EVIDENCE_FOLDER" && uuid "$OPEN_ITEM"; then
     NEW_RESP=$(curl -s -X POST "$GW/qa/items/$OPEN_ITEM/responses" -H 'Content-Type: application/json' \
       -b "$JAR" -d '{"body":"Attached, see the data room.","kind":"answer"}' | jq_get "d['id']")
     EV_BYTES="demo evidence"
@@ -260,6 +308,7 @@ if [[ "${QA_MODULE_ENABLED}" == "true" ]]; then
     printf '%s' "$EV_BYTES" | curl -s -X PUT "$GW/dataroom/uploads/sessions/$EV_SESSION/chunks/0" \
       -H 'Content-Type: application/octet-stream' -b "$JAR" --data-binary @- -o /dev/null
     EV_DOC=$(curl -s -X POST "$GW/dataroom/uploads/sessions/$EV_SESSION/complete" -b "$JAR" | jq_get "d['document_id']")
+    check "seller path: upload produced a document" "True" "$(uuid "$EV_DOC" && echo True || echo False)"
     check "seller path: attach lands" 204 \
       "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$GW/qa/items/$OPEN_ITEM/attachments" \
          -H 'Content-Type: application/json' -b "$JAR" \
@@ -268,7 +317,7 @@ if [[ "${QA_MODULE_ENABLED}" == "true" ]]; then
       "$(curl -s "$GW/qa/items/$OPEN_ITEM" -b "$JAR" \
          | jq_get "'Evidence.txt' in [a['name'] for r in d['responses'] for a in r['attachments']]")"
   elif [[ "${DATAROOM_CHUNKED_UPLOAD_ENABLED}" == "true" ]]; then
-    printf '   - %-46s %s\n' "seller path" "skipped: no seeded evidence folder"
+    printf '   - %-46s %s\n' "seller path" "skipped: no evidence folder or Q&A item"
   fi
 fi
 
@@ -291,75 +340,83 @@ if [[ "${CIM_MODULE_ENABLED}" == "true" ]]; then
     "$(curl -s -o /dev/null -w '%{http_code}' "$GW/cim/companies/$CARDINAL/decks" -b "$JAR")"
 fi
 
-# The QoE bridge, asserted against the engagement workbook over live HTTP. These
-# are the same figures packages/financial-engine's golden suite asserts, so a
-# mismatch here means the pipeline disagrees with the arithmetic.
-# The chart of accounts is seeded UNCLASSIFIED, exactly as a fresh ingest leaves
-# it. Classifying is the step that has to work on a customer's account names —
-# in particular it must not mistake this company's four operating-tax accounts
-# for income tax, which is what the previous implementation did.
-CLASSIFY=$(curl -s -X POST "$GW/qoe/versions/${QOE_VERSION_ID}/classify" -b "$JAR")
-jqc() { printf '%s' "$CLASSIFY" | python3 -c "import json,sys;d=json.load(sys.stdin);print(eval(sys.argv[1],{},{'d':d}))" "$1" 2>/dev/null || echo "n/a"; }
-check "QoE classified account count" "3" "$(jqc "d['applied_count']")"
-check "QoE income tax accounts found" "0" "$(jqc "len([c for c in d['applied'] if c['role']=='income_tax'])")"
-check "QoE operating taxes excluded" "4" "$(jqc "len([c for c in d['unclassified'] if c['rule']=='exclude.operating-tax'])")"
+# Flag-guarded like every other capability above. Without this, the T-48h
+# rehearsal — re-running with a flag false, which is what the freeze checklist
+# tells someone to do — turns 23 correctly-disabled checks into red lines and a
+# non-zero exit. At T-48h, under pressure, that reads as "the demo is broken"
+# rather than "the feature is off", which is the opposite of what a kill-switch
+# drill is for.
+if [[ "${QOE_MODULE_ENABLED}" == "true" ]]; then
+  # The QoE bridge, asserted against the engagement workbook over live HTTP. These
+  # are the same figures packages/financial-engine's golden suite asserts, so a
+  # mismatch here means the pipeline disagrees with the arithmetic.
+  # The chart of accounts is seeded UNCLASSIFIED, exactly as a fresh ingest leaves
+  # it. Classifying is the step that has to work on a customer's account names —
+  # in particular it must not mistake this company's four operating-tax accounts
+  # for income tax, which is what the previous implementation did.
+  CLASSIFY=$(curl -s -X POST "$GW/qoe/versions/${QOE_VERSION_ID}/classify" -b "$JAR")
+  jqc() { printf '%s' "$CLASSIFY" | python3 -c "import json,sys;d=json.load(sys.stdin);print(eval(sys.argv[1],{},{'d':d}))" "$1" 2>/dev/null || echo "n/a"; }
+  check "QoE classified account count" "3" "$(jqc "d['applied_count']")"
+  check "QoE income tax accounts found" "0" "$(jqc "len([c for c in d['applied'] if c['role']=='income_tax'])")"
+  check "QoE operating taxes excluded" "4" "$(jqc "len([c for c in d['unclassified'] if c['rule']=='exclude.operating-tax'])")"
 
-BRIDGE=$(curl -s "$GW/qoe/bridge?version_id=${QOE_VERSION_ID}" -b "$JAR")
-jqn() { printf '%s' "$BRIDGE" | python3 -c "import json,sys;d=json.load(sys.stdin);print(f\"{eval(sys.argv[1],{},{'d':d}):.2f}\")" "$1" 2>/dev/null || echo "n/a"; }
-check "QoE FY2024 net income"      "47568.23"  "$(jqn "d['netIncome']['amounts']['2024']")"
-check "QoE FY2024 revenue"         "2511740.83" "$(jqn "d['revenue']['2024']")"
-check "QoE FY2024 Reported EBITDA" "347403.35" "$(jqn "d['reportedEbitda']['2024']")"
+  BRIDGE=$(curl -s "$GW/qoe/bridge?version_id=${QOE_VERSION_ID}" -b "$JAR")
+  jqn() { printf '%s' "$BRIDGE" | python3 -c "import json,sys;d=json.load(sys.stdin);print(f\"{eval(sys.argv[1],{},{'d':d}):.2f}\")" "$1" 2>/dev/null || echo "n/a"; }
+  check "QoE FY2024 net income"      "47568.23"  "$(jqn "d['netIncome']['amounts']['2024']")"
+  check "QoE FY2024 revenue"         "2511740.83" "$(jqn "d['revenue']['2024']")"
+  check "QoE FY2024 Reported EBITDA" "347403.35" "$(jqn "d['reportedEbitda']['2024']")"
 
-# The add-backs are the exhibit the bridge is named after. Without them Adjusted
-# EBITDA equals Reported EBITDA — the same number twice in the header, and the
-# whole middle of the bridge empty. Each figure below is sourced from the seeded
-# ledger, so these assertions also prove the four sourcing kinds still resolve:
-# vendor-scoped GL, whole-account GL, a recast against a normalized value, and a
-# manual amount keyed by year.
-jqi() { printf '%s' "$BRIDGE" | jq_get "$1"; }
-check "QoE add-back groups"          "2" "$(jqi "len(d['addbackGroups'])")"
-check "QoE add-backs in the bridge"  "6" "$(jqi "sum(len(g['items']) for g in d['addbackGroups'])")"
-check "QoE FY2024 vendor-scoped vehicles" "6016.37" \
-  "$(jqn "[i for g in d['addbackGroups'] for i in g['items'] if 'vehicle' in i['label']][0]['amounts']['2024']")"
-check "QoE FY2024 related-party rent recast" "24741.20" \
-  "$(jqn "[i for g in d['addbackGroups'] for i in g['items'] if 'rent' in i['label']][0]['amounts']['2024']")"
-# A negative add-back: non-recurring income comes OUT of the bridge. It lands in
-# 2022 only, which is also the check that per-year values are not smeared.
-check "QoE FY2022 non-recurring gain removed" "-38400.00" \
-  "$(jqn "[i for g in d['addbackGroups'] for i in g['items'] if 'Gain on sale' in i['label']][0]['amounts']['2022']")"
-# Owner compensation is lifted out of the groups onto its own line, net of ONE
-# market-rate replacement salary. That netting is the sole structural difference
-# between Adjusted EBITDA and SDE, so if the replacement salary goes missing this
-# is the check that says so.
-check "QoE FY2024 owner comp net of replacement" "85000.00" \
-  "$(jqn "d['ownerCompensation']['amounts']['2024']")"
-check "QoE FY2024 Adjusted EBITDA" "483824.78" "$(jqn "d['adjusted']['2024']")"
-# The headline the exhibit exists to make: the two numbers differ.
-check "QoE Adjusted exceeds Reported" "True" \
-  "$(jqi "d['adjusted']['2024'] > d['reportedEbitda']['2024']")"
+  # The add-backs are the exhibit the bridge is named after. Without them Adjusted
+  # EBITDA equals Reported EBITDA — the same number twice in the header, and the
+  # whole middle of the bridge empty. Each figure below is sourced from the seeded
+  # ledger, so these assertions also prove the four sourcing kinds still resolve:
+  # vendor-scoped GL, whole-account GL, a recast against a normalized value, and a
+  # manual amount keyed by year.
+  jqi() { printf '%s' "$BRIDGE" | jq_get "$1"; }
+  check "QoE add-back groups"          "2" "$(jqi "len(d['addbackGroups'])")"
+  check "QoE add-backs in the bridge"  "6" "$(jqi "sum(len(g['items']) for g in d['addbackGroups'])")"
+  check "QoE FY2024 vendor-scoped vehicles" "6016.37" \
+    "$(jqn "[i for g in d['addbackGroups'] for i in g['items'] if 'vehicle' in i['label']][0]['amounts']['2024']")"
+  check "QoE FY2024 related-party rent recast" "24741.20" \
+    "$(jqn "[i for g in d['addbackGroups'] for i in g['items'] if 'rent' in i['label']][0]['amounts']['2024']")"
+  # A negative add-back: non-recurring income comes OUT of the bridge. It lands in
+  # 2022 only, which is also the check that per-year values are not smeared.
+  check "QoE FY2022 non-recurring gain removed" "-38400.00" \
+    "$(jqn "[i for g in d['addbackGroups'] for i in g['items'] if 'Gain on sale' in i['label']][0]['amounts']['2022']")"
+  # Owner compensation is lifted out of the groups onto its own line, net of ONE
+  # market-rate replacement salary. That netting is the sole structural difference
+  # between Adjusted EBITDA and SDE, so if the replacement salary goes missing this
+  # is the check that says so.
+  check "QoE FY2024 owner comp net of replacement" "85000.00" \
+    "$(jqn "d['ownerCompensation']['amounts']['2024']")"
+  check "QoE FY2024 Adjusted EBITDA" "483824.78" "$(jqn "d['adjusted']['2024']")"
+  # The headline the exhibit exists to make: the two numbers differ.
+  check "QoE Adjusted exceeds Reported" "True" \
+    "$(jqi "d['adjusted']['2024'] > d['reportedEbitda']['2024']")"
 
-# The balance sheet is rolled from the ingested statements: it must balance in
-# every one of the 48 monthly periods, and tie to the closing statement it was
-# not rolled from. The extracted sheet was out by exactly the unclassified
-# retained-earnings account, every year.
-BS=$(curl -s "$GW/qoe/balance-sheet?version_id=${QOE_VERSION_ID}" -b "$JAR")
-jqb() { printf '%s' "$BS" | python3 -c "import json,sys;d=json.load(sys.stdin);print(eval(sys.argv[1],{},{'d':d}))" "$1" 2>/dev/null || echo "n/a"; }
-check "QoE balance sheet balances"        "True" "$(jqb "d['balances']")"
-check "QoE periods out of balance"        "0"    "$(jqb "len([c for c in d['checks'] if not c['balances']])")"
-check "QoE ties to the closing statement" "True" "$(jqb "d['tieOut']['ties']")"
-check "QoE Dec-2025 retained earnings"    "112021.03" "$(jqb "round(d['retainedEarnings']['2025-12'],2)")"
-# UAT #7: the sheet must be organised into bank accounts, fixed assets, credit
-# cards and so on — not one flat list.
-check "QoE balance sheet lines grouped"   "0"    "$(jqb "len([l for l in d['lines'] if not l['group']])")"
-check "QoE asset sub-headings"            "True" "$(jqb "len({l['group'] for l in d['lines'] if l['section']=='asset'}) >= 3")"
+  # The balance sheet is rolled from the ingested statements: it must balance in
+  # every one of the 48 monthly periods, and tie to the closing statement it was
+  # not rolled from. The extracted sheet was out by exactly the unclassified
+  # retained-earnings account, every year.
+  BS=$(curl -s "$GW/qoe/balance-sheet?version_id=${QOE_VERSION_ID}" -b "$JAR")
+  jqb() { printf '%s' "$BS" | python3 -c "import json,sys;d=json.load(sys.stdin);print(eval(sys.argv[1],{},{'d':d}))" "$1" 2>/dev/null || echo "n/a"; }
+  check "QoE balance sheet balances"        "True" "$(jqb "d['balances']")"
+  check "QoE periods out of balance"        "0"    "$(jqb "len([c for c in d['checks'] if not c['balances']])")"
+  check "QoE ties to the closing statement" "True" "$(jqb "d['tieOut']['ties']")"
+  check "QoE Dec-2025 retained earnings"    "112021.03" "$(jqb "round(d['retainedEarnings']['2025-12'],2)")"
+  # UAT #7: the sheet must be organised into bank accounts, fixed assets, credit
+  # cards and so on — not one flat list.
+  check "QoE balance sheet lines grouped"   "0"    "$(jqb "len([l for l in d['lines'] if not l['group']])")"
+  check "QoE asset sub-headings"            "True" "$(jqb "len({l['group'] for l in d['lines'] if l['section']=='asset'}) >= 3")"
 
-# Openings are real: balance-sheet accounts carry the prior closing, P&L
-# accounts genuinely open at zero. Both were zero before.
-TB=$(curl -s "$GW/qoe/trial-balance?version_id=${QOE_VERSION_ID}" -b "$JAR")
-jqt() { printf '%s' "$TB" | python3 -c "import json,sys;d=json.load(sys.stdin);print(eval(sys.argv[1],{},{'d':d}))" "$1" 2>/dev/null || echo "n/a"; }
-check "QoE trial balance balances"     "True" "$(jqt "d['balances']")"
-check "QoE P&L accounts open at zero"  "0"    "$(jqt "len([r for e in d['entries'] for r in e['rows'] if r['statementType']=='profit_loss' and r['openingBalance']!=0])")"
-check "QoE BS accounts have openings"  "True" "$(jqt "any(r['openingBalance']!=0 for e in d['entries'] for r in e['rows'] if r['statementType']=='balance_sheet')")"
+  # Openings are real: balance-sheet accounts carry the prior closing, P&L
+  # accounts genuinely open at zero. Both were zero before.
+  TB=$(curl -s "$GW/qoe/trial-balance?version_id=${QOE_VERSION_ID}" -b "$JAR")
+  jqt() { printf '%s' "$TB" | python3 -c "import json,sys;d=json.load(sys.stdin);print(eval(sys.argv[1],{},{'d':d}))" "$1" 2>/dev/null || echo "n/a"; }
+  check "QoE trial balance balances"     "True" "$(jqt "d['balances']")"
+  check "QoE P&L accounts open at zero"  "0"    "$(jqt "len([r for e in d['entries'] for r in e['rows'] if r['statementType']=='profit_loss' and r['openingBalance']!=0])")"
+  check "QoE BS accounts have openings"  "True" "$(jqt "any(r['openingBalance']!=0 for e in d['entries'] for r in e['rows'] if r['statementType']=='balance_sheet')")"
+fi
 
 if [[ "$FAILED" != "0" ]]; then
   echo
