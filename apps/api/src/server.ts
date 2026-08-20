@@ -24,6 +24,7 @@ import { createRequestsModule } from "./modules/requests/index.js";
 import { createMessagesModule } from "./modules/messages/index.js";
 import { createReportsModule } from "./modules/reports/index.js";
 import { createQoeModule } from "./modules/qoe/index.js";
+import { createDataRoomModule } from "./modules/dataroom/index.js";
 import { requireSession } from "./shared/session.js";
 import { parseRoutingTable } from "./routing.js";
 import { loadGatewayEnv, type GatewayEnv } from "./env.js";
@@ -155,6 +156,24 @@ function buildModules(flags: GatewayEnv["flags"]): MountedModule[] {
         }).router,
       });
       console.warn("[gateway] QoE module ENABLED at /qoe (SDE/EBITDA bridge)");
+    }
+    // Data room versioning, comments and chunked upload. Like QoE, it serves a
+    // prefix legacy does not define, so it adds surface rather than shadowing
+    // any — and, like QoE, it is deliberately absent from `moduleSurfaces()`.
+    if (flags.DATAROOM_MODULE_ENABLED) {
+      modules.push({
+        path: "/",
+        router: createDataRoomModule({
+          db,
+          requireAuth,
+          features: {
+            versions: flags.DATAROOM_VERSIONS_ENABLED,
+            comments: flags.DATAROOM_COMMENTS_ENABLED,
+            chunkedUpload: flags.DATAROOM_CHUNKED_UPLOAD_ENABLED,
+          },
+        }).router,
+      });
+      console.warn("[gateway] data room module ENABLED at /dataroom (versions, comments, chunked upload)");
     }
   }
   return modules;

@@ -23,62 +23,62 @@
 
 ## 3. Module scaffold
 
-- [ ] 3.1 `apps/api/src/modules/dataroom/{ports,service,repository.drizzle,repository.memory,router,index}.ts`
+- [x] 3.1 `apps/api/src/modules/dataroom/{ports,service,repository.drizzle,repository.memory,router,index}.ts`
       per `CONTRIBUTING.md` §4, using `apps/api/src/modules/companies/` as the reference
-- [ ] 3.2 Mount at `"/"` in `apps/api/src/server.ts` under `DATAROOM_MODULE_ENABLED`, with every
+- [x] 3.2 Mount at `"/"` in `apps/api/src/server.ts` under `DATAROOM_MODULE_ENABLED`, with every
       route written as `/dataroom/...`
-- [ ] 3.3 **Do NOT add `dataroom` to `moduleSurfaces()`** in `apps/api/src/parity/routes.ts`; add a
+- [x] 3.3 **Do NOT add `dataroom` to `moduleSurfaces()`** in `apps/api/src/parity/routes.ts`; add a
       comment there recording why (see `design.md` D5)
-- [ ] 3.4 `withCommonMiddleware(router, [helmet(), pinoHttp(), express.json(), requireAuth])` —
+- [x] 3.4 `withCommonMiddleware(router, [helmet(), pinoHttp(), express.json(), requireAuth])` —
       per route, never `router.use()`
-- [ ] 3.5 Vitest: `route-contract.test.ts` still green; `tools/parity/route-surface.json` unchanged
+- [x] 3.5 Vitest: `route-contract.test.ts` still green; `tools/parity/route-surface.json` unchanged
 
 ## 4. Versioning
 
-- [ ] 4.1 `GET /dataroom/documents/:id/versions`
-- [ ] 4.2 `GET /dataroom/versions/:versionId/content` — streams via the existing `StoragePort`
-- [ ] 4.3 `POST /dataroom/documents/:id/versions/:versionId/restore` — appends a version copying the
+- [x] 4.1 `GET /dataroom/documents/:id/versions`
+- [x] 4.2 `GET /dataroom/versions/:versionId/content` — streams via the existing `StoragePort`
+- [x] 4.3 `POST /dataroom/documents/:id/versions/:versionId/restore` — appends a version copying the
       prior `upload_id`; never mutates or deletes history
-- [ ] 4.4 Version numbering is server-assigned and gap-free per document
-- [ ] 4.5 Vitest (service, in-memory repo): append, list ordering, restore appends rather than
+- [x] 4.4 Version numbering is server-assigned and gap-free per document
+- [x] 4.5 Vitest (service, in-memory repo): append, list ordering, restore appends rather than
       rewrites, version numbers do not collide under concurrent append
-- [ ] 4.6 Integration test (PGlite, hand-written DDL per
+- [x] 4.6 Integration test (PGlite, hand-written DDL per
       `uploads.integration.test.ts:12-43`): re-upload → v2 → v1 still readable → restore → v3
 
 ## 5. Comments
 
-- [ ] 5.1 `GET /dataroom/documents/:id/comments` — **internal comments filtered in the repository**,
+- [x] 5.1 `GET /dataroom/documents/:id/comments` — **internal comments filtered in the repository**,
       not the component
-- [ ] 5.2 `POST /dataroom/documents/:id/comments`, `DELETE /dataroom/comments/:id` (soft delete)
-- [ ] 5.3 `parent_id` ships on the table; no threading UI (see proposal Non-goals)
-- [ ] 5.4 Vitest: a non-broker role cannot read an internal comment **through the API**, not merely
+- [x] 5.2 `POST /dataroom/documents/:id/comments`, `DELETE /dataroom/comments/:id` (soft delete)
+- [x] 5.3 `parent_id` ships on the table; no threading UI (see proposal Non-goals)
+- [x] 5.4 Vitest: a non-broker role cannot read an internal comment **through the API**, not merely
       in the UI; shared comments are returned to anyone with document access
 
 ## 6. Chunked upload
 
-- [ ] 6.1 `POST /dataroom/uploads/sessions` — clamps chunk size to 1–8 MB; `document_id` on the
+- [x] 6.1 `POST /dataroom/uploads/sessions` — clamps chunk size to 1–8 MB; `document_id` on the
       session means "this is a new version of that document"
-- [ ] 6.2 `GET /dataroom/uploads/sessions/:id` — returns status and received chunk indices (resume)
-- [ ] 6.3 `PUT /dataroom/uploads/sessions/:id/chunks/:index` — raw body via the per-route
+- [x] 6.2 `GET /dataroom/uploads/sessions/:id` — returns status and received chunk indices (resume)
+- [x] 6.3 `PUT /dataroom/uploads/sessions/:id/chunks/:index` — raw body via the per-route
       `bodyForRoute` pattern copied from `apps/api/src/modules/uploads/router.ts:34-41`;
       `ON CONFLICT (session_id, chunk_index) DO UPDATE`
-- [ ] 6.4 `POST /dataroom/uploads/sessions/:id/complete` — single-statement `string_agg` assembly,
+- [x] 6.4 `POST /dataroom/uploads/sessions/:id/complete` — single-statement `string_agg` assembly,
       chunk delete, version insert, document repoint, session close; one transaction
-- [ ] 6.5 `DELETE /dataroom/uploads/sessions/:id`; lazy expiry sweep on session-create
+- [x] 6.5 `DELETE /dataroom/uploads/sessions/:id`; lazy expiry sweep on session-create
 - [ ] 6.6 `ChunkedStoragePort` beside `ByteaStoragePort` in
       `apps/api/src/modules/uploads/adapters.drizzle.ts`, exported from `modules/uploads/index.ts`
       — **no uploads router change**
-- [ ] 6.7 Vitest: chunk idempotency, out-of-order arrival assembles correctly, missing chunk blocks
+- [x] 6.7 Vitest: chunk idempotency, out-of-order arrival assembles correctly, missing chunk blocks
       completion, expiry sweep reclaims
-- [ ] 6.8 Integration test: 3-chunk upload assembles to byte-identical content (proves `string_agg`
+- [x] 6.8 Integration test: 3-chunk upload assembles to byte-identical content (proves `string_agg`
       over `bytea` on the real path)
 
 ## 7. Access control on the new endpoints
 
-- [ ] 7.1 `canAccessCompany` on every new route (`apps/api/src/shared/access.ts`)
+- [x] 7.1 `canAccessCompany` on every new route (`apps/api/src/shared/access.ts`)
 - [ ] 7.2 Folder grant predicate applied to the new document-scoped reads only — zero-regression
       because nothing depends on their prior behaviour
-- [ ] 7.3 Vitest: cross-tenant document version, comment and session requests are all refused
+- [x] 7.3 Vitest: cross-tenant document version, comment and session requests are all refused
 
 ## 8. Frontend
 
