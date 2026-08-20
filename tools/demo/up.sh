@@ -77,7 +77,7 @@ for _ in $(seq 1 60); do
 done
 psql_demo -c 'select 1' >/dev/null
 
-step "1/5 Loading the legacy schema (tolerating the objects it never creates)"
+step "1/6 Loading the legacy schema (tolerating the objects it never creates)"
 # No ON_ERROR_STOP: psql reports each orphaned statement and carries on. Anything
 # beyond the expected 14 is new and worth reading in the output.
 #
@@ -94,21 +94,31 @@ else
   echo "     schema has changed — read the errors above before trusting this stack."
 fi
 
-step "2/5 Applying the legacy tables the Drizzle migrations build on"
+step "2/6 Applying the legacy tables the Drizzle migrations build on"
 # 049/050 create general_ledger_entries and its raw-row columns; both are
 # idempotent. They must precede db:migrate because 0002_qoe_bridge ALTERs them.
 psql_demo -v ON_ERROR_STOP=1 < backend/sql/migrations/049_key_reports_entry_tables.sql >/dev/null
 psql_demo -v ON_ERROR_STOP=1 < backend/sql/migrations/050_general_ledger_entries_new_columns.sql >/dev/null
 
-step "3/5 Applying the Drizzle migrations"
+step "3/6 Applying the Drizzle migrations"
 DATABASE_URL="$DB_URL" pnpm --filter @datahub/db db:migrate
 
-step "4/5 Seeding demo data and backfilling Better Auth identities"
+step "4/6 Seeding demo data and backfilling Better Auth identities"
 psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed.sql >/dev/null
 DATABASE_URL="$DB_URL" pnpm --filter @datahub/demo backfill
 
-step "5/5 Loading the QoE engagement"
+step "5/6 Loading the QoE engagement"
 DATABASE_URL="$DB_URL" pnpm --filter @datahub/demo seed-qoe
+
+step "6/6 Seeding the data room, Q&A and CIM"
+# Content, not just rows: documents with real bytes and version history, a Q&A
+# thread with a superseded answer and a published rewording, and a CIM with one
+# version already published into the data room. A stack that works perfectly and
+# shows three empty folders is the failure mode this exists to prevent.
+psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-dataroom.sql >/dev/null
+psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-qa.sql >/dev/null
+psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-cim-questions.sql >/dev/null
+DATABASE_URL="$DB_URL" pnpm --filter @datahub/demo seed-cim
 
 step "Verifying the stack"
 GW="http://127.0.0.1:${GATEWAY_PORT}"
@@ -157,6 +167,81 @@ check "archived folder shown with ?includeArchived" 1 "$arch"
 check "QuickBooks OAuth still reaches legacy" 401 "$(curl -s -o /dev/null -w '%{http_code}' "$GW/api/auth/status")"
 
 check "SPA is served" 200 "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${WEB_PORT}/")"
+
+# ── the three new surfaces ──────────────────────────────────────────────────
+#
+# Each block is guarded by its own flag, so re-running with a feature switched
+# off SKIPS its checks rather than failing them. That is what makes this script
+# the T-48h rehearsal rather than something that has to be edited before one
+# (docs/DEMO_FREEZE_CHECKLIST.md).
+
+# Read a value out of a JSON response. The argument is a full Python expression
+# with the parsed body bound to `d` — `d[0]["name"]`, or a comprehension over it.
+# (An earlier version prepended `d`, which silently broke every expression that
+# was not a bare subscript and reported "n/a" as though the endpoint had failed.)
+jq_len() { python3 -c "import json,sys;print(len(json.load(sys.stdin)))" 2>/dev/null || echo "n/a"; }
+jq_get() { python3 -c "import json,sys;print(eval(sys.argv[1],{},{'d':json.load(sys.stdin)}))" "$1" 2>/dev/null || echo "n/a"; }
+
+if [[ "${DATAROOM_MODULE_ENABLED}" == "true" ]]; then
+  DOC=$(curl -s "$GW/folders/c0000000-0000-4000-8000-000000000001/documents" -b "$JAR" \
+    | python3 -c "import json,sys;print(next(d['id'] for d in json.load(sys.stdin) if d['name']=='Financial Model.txt'))" 2>/dev/null || echo "")
+  check "data room: document found" "true" "$([[ -n "$DOC" ]] && echo true || echo false)"
+
+  if [[ "${DATAROOM_VERSIONS_ENABLED}" == "true" && -n "$DOC" ]]; then
+    VER=$(curl -s "$GW/dataroom/documents/$DOC/versions" -b "$JAR")
+    check "data room: three versions" 3 "$(printf '%s' "$VER" | jq_get "d['version_count']")"
+    V1=$(printf '%s' "$VER" | python3 -c "import json,sys;print(next(v['id'] for v in json.load(sys.stdin)['versions'] if v['version_no']==1))" 2>/dev/null || echo "")
+    # The promise of versioning: v1's own bytes, not the current file's.
+    check "data room: v1 content is v1" "Financial Model v1 — prepared 2026-06-01" \
+      "$(curl -s "$GW/dataroom/versions/$V1/content" -b "$JAR")"
+  fi
+
+  if [[ "${DATAROOM_COMMENTS_ENABLED}" == "true" && -n "$DOC" ]]; then
+    check "data room: broker sees both comments" 2 \
+      "$(curl -s "$GW/dataroom/documents/$DOC/comments" -b "$JAR" | jq_len)"
+  fi
+fi
+
+if [[ "${QA_MODULE_ENABLED}" == "true" ]]; then
+  check "Q&A: five seeded questions" 5 \
+    "$(curl -s "$GW/qa/companies/$ACME/items" -b "$JAR" | jq_len)"
+  check "Q&A: categories provisioned" 7 \
+    "$(curl -s "$GW/qa/companies/$ACME/categories" -b "$JAR" | jq_len)"
+  QA_ITEM=$(curl -s "$GW/qa/companies/$ACME/items" -b "$JAR" \
+    | python3 -c "import json,sys;print(next(i['id'] for i in json.load(sys.stdin) if i['reference']=='QA-001'))" 2>/dev/null || echo "")
+  if [[ -n "$QA_ITEM" ]]; then
+    DETAIL=$(curl -s "$GW/qa/items/$QA_ITEM" -b "$JAR")
+    # A superseded answer keeps both versions readable — the whole point of the
+    # supersede chain rather than an edit.
+    check "Q&A: both answer versions readable" 2 \
+      "$(printf '%s' "$DETAIL" | jq_get "len([r for r in d['responses'] if r['answer_root_id']])")"
+    check "Q&A: exactly one current" 1 \
+      "$(printf '%s' "$DETAIL" | jq_get "len([r for r in d['responses'] if r['answer_root_id'] and r['is_current']])")"
+    if [[ "${QA_PRESENTATION_ENABLED}" == "true" ]]; then
+      check "Q&A: rewording published beside it" 1 \
+        "$(printf '%s' "$DETAIL" | jq_get "len([p for p in d['presentations'] if p['status']=='published'])")"
+    fi
+  fi
+fi
+
+if [[ "${CIM_MODULE_ENABLED}" == "true" ]]; then
+  DECKS=$(curl -s "$GW/cim/companies/$ACME/decks" -b "$JAR")
+  check "CIM: deck seeded" "Project Atlas CIM" "$(printf '%s' "$DECKS" | jq_get "d[0]['name']")"
+  DECK_ID=$(printf '%s' "$DECKS" | jq_get "d[0]['id']")
+  VERSION_ID=$(printf '%s' "$DECKS" | jq_get "d[0]['current_version_id']")
+  check "CIM: draft is the current version" "draft" "$(printf '%s' "$DECKS" | jq_get "d[0]['current_status']")"
+  check "CIM: gaps to fill" "true" \
+    "$(curl -s "$GW/cim/versions/$VERSION_ID/gaps" -b "$JAR" | python3 -c "import json,sys;print(str(len(json.load(sys.stdin))>0).lower())" 2>/dev/null || echo n/a)"
+  check "CIM: v1 published, v2 draft" 2 "$(curl -s "$GW/cim/decks/$DECK_ID/versions" -b "$JAR" | jq_len)"
+  # Writing to a published version must be refused — the freeze, asserted.
+  PUBLISHED=$(curl -s "$GW/cim/decks/$DECK_ID/versions" -b "$JAR" \
+    | python3 -c "import json,sys;print(next(v['id'] for v in json.load(sys.stdin) if v['status']=='published'))" 2>/dev/null || echo "")
+  check "CIM: published version refuses edits" 400 \
+    "$(curl -s -o /dev/null -w '%{http_code}' -X PUT "$GW/cim/versions/$PUBLISHED/blocks" \
+       -H 'Content-Type: application/json' -d '{"blocks":[{"block_key":"2:headline","content":"x"}]}' -b "$JAR")"
+  check "CIM: cross-tenant denied" 403 \
+    "$(curl -s -o /dev/null -w '%{http_code}' "$GW/cim/companies/$CARDINAL/decks" -b "$JAR")"
+fi
 
 # The QoE bridge, asserted against the engagement workbook over live HTTP. These
 # are the same figures packages/financial-engine's golden suite asserts, so a

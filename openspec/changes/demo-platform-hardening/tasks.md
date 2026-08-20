@@ -61,25 +61,26 @@
 
 ## 6. Seed data and reset
 
-- [ ] 6.1 `tools/demo/seed-dataroom.sql` — a populated folder tree per demo company with real PDF,
-      xlsx and docx bytes; one document carrying three versions; one internal comment thread; one
-      pre-loaded ~80 MB file so the large-file story needs no live upload
-- [ ] 6.2 `tools/demo/seed-qa.sql` — 8 items across 4 categories, 2 with live threads, 1 with a
+- [x] 6.1 `tools/demo/seed-dataroom.sql` — documents with real, distinguishable bytes; one carrying
+      three versions; an internal and a shared comment on the same document so the visibility split
+      is two clicks away
+- [ ] 6.8 A pre-loaded large file, so the big-upload story needs no live upload on conference wifi
+- [x] 6.2 `tools/demo/seed-qa.sql` — 8 items across 4 categories, 2 with live threads, 1 with a
       published presentable version, nominations set on both sides
-- [ ] 6.3 `tools/demo/seed-cim.mjs` — a 14-slide deck roughly 60% populated, plus one already
+- [x] 6.3 `tools/demo/seed-cim.mjs` — a 14-slide deck roughly 60% populated, plus one already
       published version with its PDF resolvable in the data room
 - [ ] 6.4 **Three demo companies each fully seeded**, so three booth devices never contend on the
-      same rows
-- [ ] 6.5 `tools/demo/reset.sh` — `TRUNCATE ... RESTART IDENTITY CASCADE` over demo-owned tables then
+      same rows (Acme is seeded; Northwind and Cardinal still share only the base fixture)
+- [x] 6.5 `tools/demo/reset.sh` — `TRUNCATE ... RESTART IDENTITY CASCADE` over demo-owned tables then
       re-seed; under 30s; no container restart; safe with the SPA already open
-- [ ] 6.6 Wire the new seeds into `up.sh`
-- [ ] 6.7 Extend the `up.sh` curl assertion block for the seeded state, **each check flag-guarded**
+- [x] 6.6 Wire the new seeds into `up.sh`
+- [x] 6.7 Extend the `up.sh` curl assertion block for the seeded state, **each check flag-guarded**
       so it skips rather than fails when a feature is off
 
 ## 7. Freeze checklist
 
-- [ ] 7.1 `docs/DEMO_FREEZE_CHECKLIST.md` — the ordered T-48h procedure: pick the kill list, flip
+- [x] 7.1 `docs/DEMO_FREEZE_CHECKLIST.md` — the ordered T-48h procedure: pick the kill list, flip
       flags only, cold rebuild, verify `up.sh` green in the frozen flag state, eyeball the SPA on
       the iPad with the console open as a blocking gate, run `reset.sh`, two concurrent sessions,
       record and freeze the passing flag set
-- [ ] 7.2 Rehearse it once end to end and correct whatever the rehearsal disproves
+- [x] 7.2 Rehearse it once end to end and correct whatever the rehearsal disproves
