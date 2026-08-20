@@ -18,8 +18,8 @@
 - [x] 2.3 Backfill a v1 `document_versions` row for every existing document with an `upload_id`, so
       no version list is ever empty
 - [x] 2.4 `0003_dataroom_qa.down.sql`
-- [ ] 2.5 Drizzle declarations in `packages/db/src/schema.ts`; assertions in `schema.test.ts`
-- [ ] 2.6 Confirm `packages/db/src/drift.ts` records no *new* breaking drift
+- [x] 2.5 Drizzle declarations in `packages/db/src/schema.ts`; assertions in `schema.test.ts`
+- [x] 2.6 Confirm `packages/db/src/drift.ts` records no *new* breaking drift
 
 ## 3. Module scaffold
 

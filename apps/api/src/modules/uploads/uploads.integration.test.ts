@@ -34,7 +34,10 @@ CREATE TABLE documents (
   folder_id uuid NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
   name text NOT NULL, file_url text, upload_id uuid REFERENCES uploads(id) ON DELETE SET NULL,
   size text NOT NULL, ext text NOT NULL, status document_status NOT NULL DEFAULT 'active',
-  uploaded_by uuid NOT NULL, uploaded_at timestamptz NOT NULL DEFAULT now(), archived_at timestamptz
+  uploaded_by uuid NOT NULL, uploaded_at timestamptz NOT NULL DEFAULT now(), archived_at timestamptz,
+  -- Versioning columns (migration 0003). Declared here because packages/db models
+  -- them, so every Drizzle read of documents selects them.
+  current_version_id uuid, version_count integer NOT NULL DEFAULT 1
 );
 CREATE TABLE document_activity (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -209,6 +209,18 @@ export const documents = pgTable("documents", {
   uploadedBy: uuid("uploaded_by").notNull(),
   uploadedAt: timestamp("uploaded_at", { withTimezone: true }).notNull().defaultNow(),
   archivedAt: timestamp("archived_at", { withTimezone: true }),
+  /**
+   * Versioning (DR - 0001, migration 0003). The document keeps its identity and
+   * points at whichever version is live, so every reference held elsewhere —
+   * document_activity, request_documents, file_references, the SPA's tree nodes
+   * — keeps resolving, and restore is a pointer swap rather than a blob copy.
+   *
+   * No `.references()`: a foreign key here would make documents and
+   * document_versions mutually dependent at create time, for a guarantee the
+   * service already holds.
+   */
+  currentVersionId: uuid("current_version_id"),
+  versionCount: integer("version_count").notNull().default(1),
 });
 
 /** Append-only document activity log (uploads-domain D5). */

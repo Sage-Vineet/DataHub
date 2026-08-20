@@ -24,7 +24,7 @@
       `packages/db/src/schema.ts:157-175` (`(user_id IS NOT NULL) <> (role_key IS NOT NULL)`)
 - [x] 2.4 Seed each company's `qa_categories` from the `request_category` vocabulary (see
       `design.md` D2)
-- [ ] 2.5 `.down.sql`; Drizzle declarations; `schema.test.ts` assertions
+- [x] 2.5 `.down.sql`; Drizzle declarations; `schema.test.ts` assertions
 - [x] 2.6 `text` + `CHECK` rather than `pgEnum` for the new status columns — deviation recorded in
       `design.md` D6
 
