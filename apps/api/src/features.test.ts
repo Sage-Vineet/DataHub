@@ -33,6 +33,7 @@ describe("clientFeatures", () => {
       "qaPresentation",
       "qaNominations",
       "cim",
+      "qoe",
     ]);
   });
 
@@ -48,12 +49,21 @@ describe("clientFeatures", () => {
         REQUESTS_MODULE_ENABLED: true,
         MESSAGES_MODULE_ENABLED: true,
         REPORTS_MODULE_ENABLED: true,
-        QOE_MODULE_ENABLED: true,
         ACTIVITY_LOG_ENABLED: true,
       }),
     );
 
     expect(Object.values(everyCutoverOn).every((v) => v === false)).toBe(true);
+  });
+
+  it("declares QoE, because legacy defines nothing at its prefix", () => {
+    // QoE was classified with the cutover flags, which is only safe when both
+    // paths answer identically. They do not: legacy serves /ebitda-adjustments
+    // and nothing at /qoe, so with the module off the SPA's requests fall
+    // through the catch-all proxy to a backend that has no such route. The
+    // client has to be told, or it renders a bridge it cannot populate.
+    expect(clientFeatures(flags({ QOE_MODULE_ENABLED: true })).qoe).toBe(true);
+    expect(clientFeatures(flags({})).qoe).toBe(false);
   });
 
   it("reports a sub-feature only when its module is also on", () => {

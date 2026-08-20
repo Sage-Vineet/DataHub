@@ -10,7 +10,7 @@ the happy path never breaking in front of a stranger, not for surface area.
 
 ## The switches
 
-Eight flags, parsed strictly at boot — a value that is not exactly `true` or
+Nine flags, parsed strictly at boot — a value that is not exactly `true` or
 `false` is a startup error, never a silent off (`apps/api/src/env.ts`).
 
 | Flag | Turns off |
@@ -23,6 +23,12 @@ Eight flags, parsed strictly at boot — a value that is not exactly `true` or
 | `QA_PRESENTATION_ENABLED` | broker rewordings only |
 | `QA_NOMINATIONS_ENABLED` | seller nomination only |
 | `CIM_MODULE_ENABLED` | the CIM builder |
+| `QOE_MODULE_ENABLED` | the earnings bridge and Financial Statements |
+
+`QOE_MODULE_ENABLED` is greenfield despite the domain being old: legacy serves
+`/ebitda-adjustments`, and nothing at `/qoe`. Switching it off therefore removes
+the capability rather than falling back — Bank and Tax Reconciliation are legacy
+screens and stay, so the Quality of Earnings folder survives losing one child.
 
 They are sub-flags rather than one per module on purpose: the commitment is that
 a single unfinished thing can be killed **without losing the module around it**.

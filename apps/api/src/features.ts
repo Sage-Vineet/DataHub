@@ -23,5 +23,17 @@ export function clientFeatures(flags: GatewayEnv["flags"]): Record<string, boole
     qaPresentation: flags.QA_MODULE_ENABLED && flags.QA_PRESENTATION_ENABLED,
     qaNominations: flags.QA_MODULE_ENABLED && flags.QA_NOMINATIONS_ENABLED,
     cim: flags.CIM_MODULE_ENABLED,
+    /**
+     * Greenfield, despite the domain having a legacy predecessor.
+     *
+     * The test for cutover-vs-greenfield is the PREFIX, not the subject matter.
+     * Legacy serves `/ebitda-adjustments`; the module serves `/qoe`, which legacy
+     * does not define at all (`server.ts` says so, and `moduleSurfaces()` omits
+     * it for the same reason). So switching QoE off does not fall back to a
+     * legacy handler that answers identically — it falls through the catch-all
+     * proxy to a backend with nothing at that path. Off has to mean the feature
+     * does not exist, and the interface has to say so by omission.
+     */
+    qoe: flags.QOE_MODULE_ENABLED,
   };
 }

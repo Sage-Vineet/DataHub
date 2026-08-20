@@ -142,6 +142,7 @@ function WorkspaceSidebar({ company, onClose }) {
   const basePath = `/broker/client/${clientId}`;
   const qaEnabled = useFeature("qa");
   const cimEnabled = useFeature("cim");
+  const qoeEnabled = useFeature("qoe");
 
   const profitMetricConfig = getProfitMetricConfig(company);
 
@@ -171,13 +172,21 @@ function WorkspaceSidebar({ company, onClose }) {
     { label: "Reports", icon: BarChart3, to: `${basePath}/reports` },
     { label: "Analytics", icon: TrendingUp, to: `${basePath}/analytics` },
     { label: "Invoices", icon: Receipt, to: `${basePath}/invoices` },
-    { label: profitMetricConfig.navLabel, icon: Calculator, to: `${basePath}/ebitda` },
+    // The earnings bridge and Financial Statements both read /qoe, which legacy
+    // does not serve. With the module off they are hidden rather than left to
+    // fetch into the catch-all proxy. Bank and Tax Reconciliation are legacy
+    // screens and stay, so the folder survives losing one child.
+    ...(qoeEnabled
+      ? [{ label: profitMetricConfig.navLabel, icon: Calculator, to: `${basePath}/ebitda` }]
+      : []),
     {
       type: 'folder',
       label: "Quality of Earnings Report",
       icon: Scale,
       children: [
-        { label: "Financial Statements", icon: BarChart3, to: `${basePath}/statements` },
+        ...(qoeEnabled
+          ? [{ label: "Financial Statements", icon: BarChart3, to: `${basePath}/statements` }]
+          : []),
         { label: "Bank Reconciliation", icon: Scale, to: `${basePath}/reconciliation` },
         { label: "Tax Reconciliation", icon: FileCheck, to: `${basePath}/tax-reconciliation` },
       ],

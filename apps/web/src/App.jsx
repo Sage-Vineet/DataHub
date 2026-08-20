@@ -345,8 +345,25 @@ function AppRoutes() {
           path="tax-reconciliation"
           element={<WorkspaceTaxReconciliation />}
         />
-        <Route path="ebitda" element={<WorkspaceEbitda />} />
-        <Route path="statements" element={<WorkspaceStatements />} />
+        {/* Gated for the same reason as Q&A and the CIM builder below: legacy
+            defines nothing at /qoe, so with the module off these screens would
+            fetch through the catch-all proxy and hang rather than fail. */}
+        <Route
+          path="ebitda"
+          element={
+            <FeatureRoute feature="qoe" fallback={<ComingSoon name="Quality of Earnings" />}>
+              <WorkspaceEbitda />
+            </FeatureRoute>
+          }
+        />
+        <Route
+          path="statements"
+          element={
+            <FeatureRoute feature="qoe" fallback={<ComingSoon name="Financial Statements" />}>
+              <WorkspaceStatements />
+            </FeatureRoute>
+          }
+        />
         <Route path="dataroom" element={<Navigate to="deal-tracker" replace />} />
         <Route path="dataroom/connections" element={<WorkspaceConnections />} />
         <Route path="dataroom/key-reports" element={<WorkspaceKeyReports />} />

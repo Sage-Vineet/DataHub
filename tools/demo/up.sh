@@ -143,6 +143,7 @@ check "gateway /healthz" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$GW/heal
 feat() { curl -s "$GW/healthz" | python3 -c "import json,sys;print(str(json.load(sys.stdin)['features'].get('$1')).lower())" 2>/dev/null || echo "n/a"; }
 check "features.dataroom matches its flag" "${DATAROOM_MODULE_ENABLED}" "$(feat dataroom)"
 check "features.qa matches its flag"       "${QA_MODULE_ENABLED}"       "$(feat qa)"
+check "features.qoe matches its flag"      "${QOE_MODULE_ENABLED}"      "$(feat qoe)"
 check "features.cim matches its flag"      "${CIM_MODULE_ENABLED}"      "$(feat cim)"
 
 curl -s -X POST "$GW/auth/login" -H 'Content-Type: application/json' \
