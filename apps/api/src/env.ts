@@ -38,6 +38,21 @@ export const MODULE_FLAGS = [
   // to. It is parsed here so it gets the same strict validation — a mistyped
   // value silently meaning "off" would be an audit log nobody notices is absent.
   "ACTIVITY_LOG_ENABLED",
+  // Greenfield capabilities, like QoE and the activity log: legacy serves none of
+  // these prefixes, so flipping one off is a kill switch rather than a rollback.
+  //
+  // Sub-flags rather than one per module, deliberately. The demo commitment is
+  // that a single unfinished feature can be switched off 48 hours out without
+  // losing the module around it — an all-or-nothing flag would force a choice
+  // between shipping something broken and shipping nothing.
+  "DATAROOM_MODULE_ENABLED",
+  "DATAROOM_VERSIONS_ENABLED",
+  "DATAROOM_COMMENTS_ENABLED",
+  "DATAROOM_CHUNKED_UPLOAD_ENABLED",
+  "QA_MODULE_ENABLED",
+  "QA_PRESENTATION_ENABLED",
+  "QA_NOMINATIONS_ENABLED",
+  "CIM_MODULE_ENABLED",
 ] as const;
 
 export type ModuleFlag = (typeof MODULE_FLAGS)[number];

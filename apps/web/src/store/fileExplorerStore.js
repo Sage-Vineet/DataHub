@@ -16,8 +16,46 @@ import {
   unarchiveDocument,
   unarchiveFolder,
   uploadFile,
+  uploadFileChunked,
+  CHUNK_THRESHOLD_BYTES,
   updateFolder,
 } from '../lib/api';
+
+/**
+ * The localStorage key this store persists under.
+ *
+ * Scoped to the signed-in user so one person's cached tree and folder grants are
+ * never readable by the next person on the same device. `anon` covers the window
+ * before sign-in, where there is nothing tenant-specific to cache anyway.
+ */
+const STORAGE_PREFIX = 'leo-file-explorer';
+
+export function getScopedStorageName() {
+  try {
+    const id = window.localStorage.getItem('datahub.activeUserId');
+    return id ? `${STORAGE_PREFIX}:${id}` : `${STORAGE_PREFIX}:anon`;
+  } catch {
+    // Private browsing, or storage disabled. An in-memory store is correct here:
+    // nothing persists, so nothing leaks.
+    return `${STORAGE_PREFIX}:anon`;
+  }
+}
+
+/**
+ * Forget everything cached for whoever was signed in.
+ *
+ * Called on sign-out. Clearing on the way out rather than only re-keying on the
+ * way in means a device left at a sign-in screen holds no one's data.
+ */
+export function clearScopedFileExplorerState() {
+  try {
+    for (const key of Object.keys(window.localStorage)) {
+      if (key.startsWith(`${STORAGE_PREFIX}:`)) window.localStorage.removeItem(key);
+    }
+  } catch {
+    // Nothing to clear if storage is unavailable.
+  }
+}
 
 // ── Tree Utilities ──────────────────────────────────────────────────────────
 export function findById(node, id) {
@@ -470,6 +508,33 @@ export const useFileExplorerStore = create(
         set({ tree: newTree, selectedItems: [], dragOver: null, draggingItems: [], contextMenu: null });
       },
 
+      /**
+       * Server capabilities, mirrored onto the store.
+       *
+       * The store is used from several components and cannot call a hook, so the
+       * flags are pushed in once when the explorer mounts. Both default FALSE:
+       * an unknown capability has to behave as absent, or a switched-off feature
+       * produces a request that falls through the gateway proxy to legacy.
+       */
+      versioningEnabled: false,
+      chunkedUploadEnabled: false,
+
+      /**
+       * The document whose versions and comments are open.
+       *
+       * Held here rather than threaded as props, because the menus that open it
+       * sit four components deep and already reach the store directly for
+       * `deleteItems`. One more shared field beats four more props.
+       */
+      detailDocument: null,
+      openDocumentDetail: (doc) => set({ detailDocument: doc }),
+      closeDocumentDetail: () => set({ detailDocument: null }),
+      setCapabilities: ({ versioning, chunkedUpload }) =>
+        set({
+          versioningEnabled: versioning === true,
+          chunkedUploadEnabled: chunkedUpload === true,
+        }),
+
       uploadFiles: async (parentId, files) => {
         const MAX_FILE_BYTES = 200 * 1024 * 1024; // 200 MB — matches backend limit
         const folder = findById(get().tree, parentId);
@@ -480,23 +545,70 @@ export const useFileExplorerStore = create(
           const names = oversized.map(f => f.name).join(', ');
           throw new Error(`File(s) exceed the 200 MB limit: ${names}`);
         }
+        // A same-name upload is a new VERSION of the existing document when the
+        // data room capability is on. The old behaviour — renaming to "(copy)" in
+        // the browser — is kept verbatim as the flag-off fallback, because with
+        // versioning disabled the server has nowhere to put a second version.
+        const existingByName = new Map(
+          (folder?.children || []).filter(c => c.type === 'file').map(c => [c.name, c.id]),
+        );
+        const versioningOn = get().versioningEnabled;
         const newFiles = Array.from(files).map(f => {
           const ext = f.name.split('.').pop()?.toLowerCase() || '';
           let name = f.name;
+          let documentId = null;
           if (existingNames.has(name)) {
-            warnings.push(name);
-            const baseName = f.name.replace(/\.[^.]+$/, '');
-            name = ext ? `${baseName} (copy).${ext}` : `${baseName} (copy)`;
+            if (versioningOn) {
+              documentId = existingByName.get(name) || null;
+            } else {
+              warnings.push(name);
+              const baseName = f.name.replace(/\.[^.]+$/, '');
+              name = ext ? `${baseName} (copy).${ext}` : `${baseName} (copy)`;
+            }
           }
-          return { file: f, name, ext };
+          return { file: f, name, ext, documentId };
         });
 
         set({ uploadProgress: { total: newFiles.length, done: 0, files: newFiles.map(f => f.name) } });
 
         let done = 0;
         const failedUploads = [];
+        /** Names that became a new version rather than a new file. */
+        const versioned = [];
         for (const fileItem of newFiles) {
           try {
+            // Chunked when the file is large enough to be worth resuming, or
+            // when this is a new version — the session is what tells the server
+            // which document to append to. Below the threshold the single-shot
+            // path is faster and is the one that has always worked.
+            const useChunked =
+              get().chunkedUploadEnabled &&
+              (fileItem.documentId || fileItem.file.size > CHUNK_THRESHOLD_BYTES);
+
+            if (useChunked) {
+              const result = await uploadFileChunked(fileItem.file, {
+                fileName: fileItem.name,
+                folderId: parentId,
+                documentId: fileItem.documentId,
+                onProgress: ({ bytes, bytesTotal }) =>
+                  set(s => ({
+                    uploadProgress: s.uploadProgress
+                      ? { ...s.uploadProgress, bytes, bytesTotal, current: fileItem.name }
+                      : null,
+                  })),
+              });
+              // A new version of an existing document changes no tree node: the
+              // document keeps its identity, which is the whole point.
+              if (fileItem.documentId) {
+                versioned.push(fileItem.name);
+                continue;
+              }
+              // A new document still needs a node, so fall through by refetching.
+              await get().hydrateFromApi(get().companyId);
+              void result;
+              continue;
+            }
+
             const uploaded = await uploadFile(fileItem.file, {
               fileName: fileItem.name,
               prefix: 'documents',
@@ -551,7 +663,7 @@ export const useFileExplorerStore = create(
         }
 
         setTimeout(() => set({ uploadProgress: null }), 2000);
-        return warnings;
+        return { warnings, versioned };
       },
 
       // ── Drag state ──
@@ -584,7 +696,19 @@ export const useFileExplorerStore = create(
         set(s => ({ folderAccess: { ...s.folderAccess, [folderId]: entries } })),
     }),
     {
-      name: 'leo-file-explorer',
+      /**
+       * Keyed by the signed-in user.
+       *
+       * This was a single global key, and what it persists includes `tree` and
+       * `folderAccess` — the latter being what drives the client-side permission
+       * gate. On a shared device (a demo tablet, a hot-desk browser) the next
+       * person to sign in inherited the previous person's folder tree and access
+       * grants until their own load completed.
+       *
+       * `getScopedStorageName` reads the id written at sign-in, so the key moves
+       * with the session rather than with the browser.
+       */
+      name: getScopedStorageName(),
       partialize: s => ({
         tree: s.tree,
         expandedFolders: s.expandedFolders,

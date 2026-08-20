@@ -44,7 +44,10 @@ VALUES
   ('b0000000-0000-4000-8000-000000000003', 'a0000000-0000-4000-8000-000000000001')
 ON CONFLICT DO NOTHING;
 
--- Folders: one archived, so the includeArchived filter has something to hide.
+-- Folders. One is archived so the includeArchived filter has something to hide —
+-- deliberately a folder of its own rather than one holding demo content. Legal used
+-- to play that role and it holds the Q&A evidence document, so the one link the
+-- demo is built around landed in a folder invisible in the normal view.
 INSERT INTO folders (id, company_id, name, parent_id, created_by)
 VALUES
   ('c0000000-0000-4000-8000-000000000001', 'a0000000-0000-4000-8000-000000000001',
@@ -54,10 +57,44 @@ VALUES
   ('c0000000-0000-4000-8000-000000000003', 'a0000000-0000-4000-8000-000000000001',
    'Tax Returns', 'c0000000-0000-4000-8000-000000000001', 'b0000000-0000-4000-8000-000000000002'),
   ('c0000000-0000-4000-8000-000000000004', 'a0000000-0000-4000-8000-000000000002',
-   'Financials', NULL, 'b0000000-0000-4000-8000-000000000002')
+   'Financials', NULL, 'b0000000-0000-4000-8000-000000000002'),
+  -- Empty, and archived below. Its only job is to be the thing the archive view
+  -- and the includeArchived parity check have to find.
+  ('c0000000-0000-4000-8000-000000000005', 'a0000000-0000-4000-8000-000000000001',
+   'Superseded', NULL, 'b0000000-0000-4000-8000-000000000002')
 ON CONFLICT (id) DO NOTHING;
 
 UPDATE folders SET archived_at = now()
-WHERE id = 'c0000000-0000-4000-8000-000000000002' AND archived_at IS NULL;
+WHERE id = 'c0000000-0000-4000-8000-000000000005' AND archived_at IS NULL;
+
+-- Legal carries the Q&A evidence document, so it must be reachable by clicking.
+-- Explicit rather than implied: a database seeded before this change still has it
+-- archived, and a re-run has to repair that.
+UPDATE folders SET archived_at = NULL
+WHERE id = 'c0000000-0000-4000-8000-000000000002';
+
+-- Q&A categories for the seeded companies.
+--
+-- Migration 0003 backfills these for companies that exist WHEN IT RUNS, which on
+-- a fresh stack is none — the schema lands at step 3 and these rows at step 4.
+-- That ordering is not a bug in the migration (a real deployment has companies
+-- already), but it does mean the demo would come up with no categories.
+--
+-- The durable answer is that the Q&A service provisions a company's categories on
+-- first use, the way folders are provisioned; this seed is the demo's copy of the
+-- same vocabulary so the data is there before anyone clicks.
+INSERT INTO qa_categories (company_id, key, label, sort_order)
+SELECT c.id, v.key, v.label, v.sort_order
+FROM companies c
+CROSS JOIN (VALUES
+  ('finance',    'Finance',    1),
+  ('legal',      'Legal',      2),
+  ('compliance', 'Compliance', 3),
+  ('hr',         'HR',         4),
+  ('tax',        'Tax',        5),
+  ('ma',         'M&A',        6),
+  ('other',      'Other',      7)
+) AS v(key, label, sort_order)
+ON CONFLICT (company_id, key) DO NOTHING;
 
 COMMIT;

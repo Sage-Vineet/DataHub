@@ -10,6 +10,11 @@ import {
 } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
 import { AuthProvider, useAuth } from "./context/AuthContext";
+import { FeatureProvider } from "./context/FeatureContext";
+import FeatureRoute from "./components/FeatureRoute";
+import WorkspaceQA from "./pages/broker/workspace/WorkspaceQA";
+import CompanyQA from "./pages/client/CompanyQA";
+import WorkspaceCimBuilder from "./pages/broker/workspace/WorkspaceCimBuilder";
 import { MessageNotificationsProvider } from "./context/MessageNotificationsContext";
 import { ToastProvider, useToast } from "./context/ToastContext";
 import { DataSourceProvider } from "./context/DataSourceContext";
@@ -340,8 +345,25 @@ function AppRoutes() {
           path="tax-reconciliation"
           element={<WorkspaceTaxReconciliation />}
         />
-        <Route path="ebitda" element={<WorkspaceEbitda />} />
-        <Route path="statements" element={<WorkspaceStatements />} />
+        {/* Gated for the same reason as Q&A and the CIM builder below: legacy
+            defines nothing at /qoe, so with the module off these screens would
+            fetch through the catch-all proxy and hang rather than fail. */}
+        <Route
+          path="ebitda"
+          element={
+            <FeatureRoute feature="qoe" fallback={<ComingSoon name="Quality of Earnings" />}>
+              <WorkspaceEbitda />
+            </FeatureRoute>
+          }
+        />
+        <Route
+          path="statements"
+          element={
+            <FeatureRoute feature="qoe" fallback={<ComingSoon name="Financial Statements" />}>
+              <WorkspaceStatements />
+            </FeatureRoute>
+          }
+        />
         <Route path="dataroom" element={<Navigate to="deal-tracker" replace />} />
         <Route path="dataroom/connections" element={<WorkspaceConnections />} />
         <Route path="dataroom/key-reports" element={<WorkspaceKeyReports />} />
@@ -350,6 +372,24 @@ function AppRoutes() {
         <Route path="dataroom/documents" element={<WorkspaceDocuments />} />
         <Route path="dataroom/messages" element={<WorkspaceMessages />} />
         <Route path="dataroom/reminders" element={<WorkspaceReminders />} />
+        {/* Gated above any fetch: a disabled module must issue no request that
+            could fall through the proxy to legacy. */}
+        <Route
+          path="dataroom/qa"
+          element={
+            <FeatureRoute feature="qa" fallback={<ComingSoon name="Q&A" />}>
+              <WorkspaceQA />
+            </FeatureRoute>
+          }
+        />
+        <Route
+          path="dataroom/cim"
+          element={
+            <FeatureRoute feature="cim" fallback={<ComingSoon name="The CIM builder" />}>
+              <WorkspaceCimBuilder />
+            </FeatureRoute>
+          }
+        />
         <Route path="dataroom/activity" element={<WorkspaceActivity />} />
         <Route path="dataroom/users" element={<WorkspaceUsers />} />
         <Route
@@ -420,6 +460,16 @@ function AppRoutes() {
         element={
           <ProtectedRoute allowedRole="client">
             <ClientMessages />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/client/qa"
+        element={
+          <ProtectedRoute allowedRole="client">
+            <FeatureRoute feature="qa" fallback={<ComingSoon name="Q&A" />}>
+              <CompanyQA />
+            </FeatureRoute>
           </ProtectedRoute>
         }
       />
@@ -496,20 +546,44 @@ function AppRoutes() {
   );
 }
 
+/**
+ * What a switched-off capability looks like.
+ *
+ * A named card rather than a blank page or a redirect: someone who followed a
+ * link should learn the feature is not on here, not wonder whether they broke it.
+ */
+function ComingSoon({ name }) {
+  return (
+    <div className="mx-auto max-w-lg p-10 text-center">
+      <h1 className="text-lg font-semibold text-[#111827]">{name} is not enabled</h1>
+      <p className="mt-2 text-sm text-[#6B7280]">
+        This capability is switched off on this deployment.
+      </p>
+    </div>
+  );
+}
+
 export default function App() {
   return (
     <HashRouter>
-      <AuthProvider>
-        <MessageNotificationsProvider>
-          <ToastProvider>
-            <DataSourceProvider>
-              <ErrorBoundary>
-                <AppRoutes />
-              </ErrorBoundary>
-            </DataSourceProvider>
-          </ToastProvider>
-        </MessageNotificationsProvider>
-      </AuthProvider>
+      {/*
+        Outside AuthProvider on purpose: which capabilities exist is a property
+        of the deployment, not of the session, and the answer is needed to decide
+        what to render before anyone has signed in.
+      */}
+      <FeatureProvider>
+        <AuthProvider>
+          <MessageNotificationsProvider>
+            <ToastProvider>
+              <DataSourceProvider>
+                <ErrorBoundary>
+                  <AppRoutes />
+                </ErrorBoundary>
+              </DataSourceProvider>
+            </ToastProvider>
+          </MessageNotificationsProvider>
+        </AuthProvider>
+      </FeatureProvider>
     </HashRouter>
   );
 }

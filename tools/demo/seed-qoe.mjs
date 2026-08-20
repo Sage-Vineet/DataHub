@@ -161,10 +161,157 @@ try {
     }
   }
 
+  // ── add-backs: the exhibit the bridge is named after ──────────────────────
+  /**
+   * Without these the EBITDA bridge opens with Adjusted EBITDA identical to
+   * Reported EBITDA — the same number twice in the header and an empty middle.
+   * The accounts, vendors and amounts below are all drawn from the seeded
+   * ledger, so every figure on screen can be traced to a transaction rather
+   * than being a decoration.
+   *
+   * Six add-backs in two groups, plus owner compensation, which the bridge
+   * lifts out of the groups and renders as its own line because it is the sole
+   * structural difference between Adjusted EBITDA and SDE.
+   *
+   * All of them are `company_financials`. The Tax Return toggle deliberately
+   * has none: fabricating a second engagement would make the toggle look
+   * substantive while the underlying ledger is unchanged, which is a claim the
+   * demo should not make. The toggle staying visibly empty is the honest
+   * behaviour, and it is in the presenter's script.
+   */
+  const MARKET_RATE_REPLACEMENT = 95_000;
+  const RENT_POST_CLOSE = 216_000;
+
+  // One replacement salary for the whole engagement. Adjusted EBITDA adds owner
+  // compensation back NET of this; SDE adds it back in full. Without it the
+  // owner line is labelled "net of market-rate replacement" and nets nothing.
+  await client.query(
+    `UPDATE companies SET market_rate_replacement_salary = $2 WHERE id = $1`,
+    [COMPANY_ID, MARKET_RATE_REPLACEMENT],
+  );
+
+  const account = (slug) => {
+    const id = accountId.get(slug);
+    if (!id) throw new Error(`Add-back seed references an unknown account: ${slug}`);
+    return id;
+  };
+
+  const addbacks = [
+    {
+      kind: "manual_adjustment",
+      typeKey: "officer_compensation",
+      name: "Owner's salary and discretionary bonus",
+      values: { 2022: 165_000, 2023: 172_000, 2024: 180_000, 2025: 185_000 },
+      explanation:
+        "Owner's W-2 salary and year-end discretionary bonus, added back in full and netted " +
+        `against a market-rate replacement salary of $${MARKET_RATE_REPLACEMENT.toLocaleString()}.`,
+      commentary:
+        "The owner works full time in the business. A buyer would hire a general manager at " +
+        "market rate, so only the excess over that rate is an adjustment.",
+    },
+
+    // ── discretionary and personal ──
+    {
+      kind: "pnl_account_vendor",
+      typeKey: "personal_expense",
+      name: "Owner's personal vehicle costs",
+      linkedAccount: "car-truck",
+      // Scoped to the four vendors carrying the owner's vehicles. The rest of
+      // Car & Truck is the delivery fleet and stays in the business.
+      vendorScope: ["Vendor 052", "Vendor 078", "Vendor 102", "Vendor 108"],
+      groupId: "g-discretionary",
+      groupLabel: "Owner & Discretionary",
+      commentary: "Lease, fuel and maintenance on two vehicles used personally by the owner's family.",
+    },
+    {
+      kind: "pnl_account_vendor",
+      typeKey: "personal_expense",
+      name: "Meals & entertainment",
+      linkedAccount: "meals-entertainment",
+      groupId: "g-discretionary",
+      groupLabel: "Owner & Discretionary",
+      commentary: "Treated as wholly discretionary; the business does not entertain customers.",
+    },
+    {
+      kind: "pnl_account_vendor",
+      typeKey: "other_addback",
+      name: "Charitable contributions",
+      linkedAccount: "charitable-contributions",
+      groupId: "g-discretionary",
+      groupLabel: "Owner & Discretionary",
+      commentary: "Local sponsorships at the owner's discretion, not required to operate.",
+    },
+    {
+      kind: "recast",
+      typeKey: "related_party_rent",
+      name: "Related-party rent above market",
+      linkedAccount: "rent-lease",
+      recastNormalizedValue: RENT_POST_CLOSE,
+      groupId: "g-discretionary",
+      groupLabel: "Owner & Discretionary",
+      commentary:
+        `The premises are owned by an affiliate of the seller. A market lease is $${RENT_POST_CLOSE.toLocaleString()} ` +
+        "per year; the add-back is the excess actually paid.",
+    },
+
+    // ── non-recurring ──
+    {
+      kind: "manual_adjustment",
+      typeKey: "non_recurring_charge",
+      name: "Legal fees — ownership dispute",
+      values: { 2023: 12_400, 2024: 18_500 },
+      groupId: "g-nonrecurring",
+      groupLabel: "Non-recurring Items",
+      explanation:
+        "Fees for a shareholder dispute settled in 2024. Confirmed with counsel as concluded, " +
+        "with no further amounts expected.",
+      commentary: "Concluded matter; does not recur for a buyer.",
+    },
+    {
+      kind: "manual_adjustment",
+      typeKey: "other_addback",
+      name: "Gain on sale of surplus equipment",
+      values: { 2022: -38_400 },
+      groupId: "g-nonrecurring",
+      groupLabel: "Non-recurring Items",
+      explanation:
+        "One-off gain on disposal of surplus arcade equipment in 2022. Removed from earnings " +
+        "because it is not operating income.",
+      commentary: "A negative adjustment: non-recurring income comes out of the bridge.",
+    },
+  ];
+
+  for (const a of addbacks) {
+    await client.query(
+      `INSERT INTO qoe_addbacks
+         (company_id, version_id, kind, data_source, type_key, name, linked_account_id,
+          vendor_scope, granularity, values, recast_normalized_value,
+          group_id, group_label, explanation, commentary, created_by)
+       VALUES ($1,$2,$3,'company_financials',$4,$5,$6,$7,'detail',$8,$9,$10,$11,$12,$13,$14)`,
+      [
+        COMPANY_ID,
+        VERSION_ID,
+        a.kind,
+        a.typeKey,
+        a.name,
+        a.linkedAccount ? account(a.linkedAccount) : null,
+        JSON.stringify(a.vendorScope ?? []),
+        JSON.stringify(a.values ?? {}),
+        a.recastNormalizedValue ?? null,
+        a.groupId ?? null,
+        a.groupLabel ?? null,
+        a.explanation ?? null,
+        a.commentary ?? null,
+        uploaders[0].id,
+      ],
+    );
+  }
+
   await client.query("COMMIT");
 
   const bsRows = engagementFixture.balanceSheets.reduce((n, s) => n + s.rows.length, 0);
   console.log(`qoe seed: ${engagementFixture.accounts.length} accounts, ${engagementFixture.glEntries.length} ledger rows, ${bsRows} balance-sheet rows`);
+  console.log(`qoe seed: ${addbacks.length} add-backs, replacement salary $${MARKET_RATE_REPLACEMENT.toLocaleString()}`);
   console.log(`qoe seed: company ${COMPANY_ID}, version ${VERSION_ID}`);
 } catch (err) {
   await client.query("ROLLBACK");

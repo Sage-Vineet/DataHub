@@ -25,3 +25,11 @@ build:
 # Check spec structure, orphan requirements, and unarchived completed changes
 spec-validate:
     node tools/openspec/validate.mjs
+
+# Apply outstanding schema migrations. Needs DATABASE_URL.
+db-migrate:
+    pnpm --filter @datahub/db db:migrate
+
+# Report what is applied, pending, or drifted without changing anything.
+db-status:
+    pnpm --filter @datahub/db db:migrate --status

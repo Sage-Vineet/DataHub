@@ -97,6 +97,18 @@ services:
       MESSAGES_MODULE_ENABLED: ${MESSAGES_MODULE_ENABLED:-true}
       REPORTS_MODULE_ENABLED: ${REPORTS_MODULE_ENABLED:-true}
       QOE_MODULE_ENABLED: ${QOE_MODULE_ENABLED:-true}
+      # Greenfield capabilities. Legacy serves none of these prefixes, so there is
+      # nothing to fall back to and nothing to shadow — they default on, like QoE.
+      # Sub-flags so one unfinished feature can be switched off without losing the
+      # module around it (the T-48h freeze, docs/DEMO_FREEZE_CHECKLIST.md).
+      DATAROOM_MODULE_ENABLED: ${DATAROOM_MODULE_ENABLED:-true}
+      DATAROOM_VERSIONS_ENABLED: ${DATAROOM_VERSIONS_ENABLED:-true}
+      DATAROOM_COMMENTS_ENABLED: ${DATAROOM_COMMENTS_ENABLED:-true}
+      DATAROOM_CHUNKED_UPLOAD_ENABLED: ${DATAROOM_CHUNKED_UPLOAD_ENABLED:-true}
+      QA_MODULE_ENABLED: ${QA_MODULE_ENABLED:-true}
+      QA_PRESENTATION_ENABLED: ${QA_PRESENTATION_ENABLED:-true}
+      QA_NOMINATIONS_ENABLED: ${QA_NOMINATIONS_ENABLED:-true}
+      CIM_MODULE_ENABLED: ${CIM_MODULE_ENABLED:-true}
     depends_on:
       postgres:
         condition: service_healthy

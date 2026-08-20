@@ -2,6 +2,21 @@ import { describe, expect, it } from "vitest";
 import { brokerTeamInvites, companies, companyMessages, directMessages, documentActivity, documents, folderAccess, folders, groupMessageReads, groupMessages, messageGroupMembers, messageGroups, requestDocuments, requestNarratives, requestReminders, requests, uploads, users, emailVerifications, userCompanies } from "./schema.js";
 
 import { keyReportVersions } from "./schema.js";
+import {
+  documentComments,
+  documentVersions,
+  qaAssignees,
+  qaAssignmentEvents,
+  qaAttachments,
+  qaCategories,
+  qaItemVisibility,
+  qaItems,
+  qaNominations,
+  qaPresentations,
+  qaResponses,
+  uploadChunks,
+  uploadSessions,
+} from "./dataroom-qa-schema.js";
 describe("@datahub/db schema (reports slice)", () => {
   it("models key_report_versions", () => {
     expect(keyReportVersions.versionNumber.name).toBe("version_number");
@@ -103,5 +118,97 @@ describe("@datahub/db schema (auth slice)", () => {
   it("models the user↔company join", () => {
     expect(userCompanies.userId.name).toBe("user_id");
     expect(userCompanies.companyId.name).toBe("company_id");
+  });
+});
+
+describe("@datahub/db schema (data room versioning slice)", () => {
+  it("models document_versions, keyed by document and version number", () => {
+    expect(documentVersions.documentId.name).toBe("document_id");
+    expect(documentVersions.versionNo.name).toBe("version_no");
+    expect(documentVersions.uploadId.name).toBe("upload_id");
+    expect(documentVersions.sizeBytes.name).toBe("size_bytes");
+  });
+
+  it("gives documents a pointer at its current version, not a version column", () => {
+    // The document keeps its identity; the version lives in its own table. If
+    // this ever became a `version` integer on documents, every existing FK would
+    // start resolving to the wrong content.
+    expect(documents.currentVersionId.name).toBe("current_version_id");
+    expect(documents.versionCount.name).toBe("version_count");
+  });
+
+  it("models document comments with the internal/shared split", () => {
+    expect(documentComments.visibility.name).toBe("visibility");
+    expect(documentComments.visibility.default).toBe("internal");
+    expect(documentComments.documentId.name).toBe("document_id");
+    expect(documentComments.authorId.name).toBe("author_id");
+  });
+
+  it("models chunked upload sessions and their staged chunks", () => {
+    expect(uploadSessions.totalChunks.name).toBe("total_chunks");
+    expect(uploadSessions.receivedCount.name).toBe("received_count");
+    expect(uploadSessions.expiresAt.name).toBe("expires_at");
+    // documentId set on a session is what makes the upload a new VERSION.
+    expect(uploadSessions.documentId.name).toBe("document_id");
+    expect(uploadChunks.chunkIndex.name).toBe("chunk_index");
+    expect(uploadChunks.data.name).toBe("data");
+  });
+});
+
+describe("@datahub/db schema (deal Q&A slice)", () => {
+  it("models categories as per-company rows, so a nomination can hang off one", () => {
+    expect(qaCategories.companyId.name).toBe("company_id");
+    expect(qaCategories.key.name).toBe("key");
+    expect(qaNominations.categoryId.name).toBe("category_id");
+    expect(qaNominations.userId.name).toBe("user_id");
+  });
+
+  it("models items with their origin and structured tags", () => {
+    expect(qaItems.origin.name).toBe("origin");
+    expect(qaItems.origin.default).toBe("manual");
+    // Unclassified rather than null: QA-0002 requires no item leave the pipeline.
+    expect(qaItems.moduleTag.default).toBe("Unclassified");
+    expect(qaItems.requestorId.name).toBe("requestor_id");
+  });
+
+  it("carries the opaque external reference the CIM builder writes into", () => {
+    // One column is the entire contract between deal-qa and the CIM module.
+    expect(qaItems.externalRef.name).toBe("external_ref");
+  });
+
+  it("models many assignees per item, and the history of every change", () => {
+    expect(qaAssignees.itemId.name).toBe("item_id");
+    expect(qaAssignees.kind.default).toBe("requestee");
+    expect(qaAssignmentEvents.priorUserIds.name).toBe("prior_user_ids");
+    expect(qaAssignmentEvents.newUserIds.name).toBe("new_user_ids");
+    expect(qaAssignmentEvents.actorId.name).toBe("actor_id");
+  });
+
+  it("models responses as a supersede chain, never an update", () => {
+    expect(qaResponses.supersedesId.name).toBe("supersedes_id");
+    expect(qaResponses.answerRootId.name).toBe("answer_root_id");
+    expect(qaResponses.answerVersion.name).toBe("answer_version");
+    expect(qaResponses.isCurrent.name).toBe("is_current");
+    // Every response is individually citable, per QA-0002.
+    expect(qaResponses.citationRef.name).toBe("citation_ref");
+  });
+
+  it("keeps the broker's rewording in a separate table from the seller's answer", () => {
+    // Separate table is the whole point: it cannot overwrite what was written.
+    expect(qaPresentations.sourceResponseId.name).toBe("source_response_id");
+    expect(qaPresentations.status.default).toBe("draft");
+    expect(qaPresentations.version.name).toBe("version");
+  });
+
+  it("links an answer's evidence to both the item and the data room", () => {
+    expect(qaAttachments.documentId.name).toBe("document_id");
+    expect(qaAttachments.folderId.name).toBe("folder_id");
+    expect(qaAttachments.responseId.name).toBe("response_id");
+  });
+
+  it("models the per-item visibility override", () => {
+    expect(qaItemVisibility.userId.name).toBe("user_id");
+    expect(qaItemVisibility.roleKey.name).toBe("role_key");
+    expect(qaItemVisibility.effect.default).toBe("hide");
   });
 });

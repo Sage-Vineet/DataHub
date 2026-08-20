@@ -21,11 +21,14 @@ import {
   BarChart3,
   TrendingUp,
   MessageSquare,
+  MessageSquareText,
+  BookOpen,
   Calculator,
   FileCheck,
   FileText,
   Target,
 } from "lucide-react";
+import { useFeature } from "../../context/useFeature";
 import { useAuth } from "../../context/AuthContext";
 import { useMessageNotifications } from "../../context/MessageNotificationsContext";
 import { listCompaniesRequest } from "../../lib/api";
@@ -137,6 +140,9 @@ function WorkspaceSidebar({ company, onClose }) {
   }, [showUserMenu]);
 
   const basePath = `/broker/client/${clientId}`;
+  const qaEnabled = useFeature("qa");
+  const cimEnabled = useFeature("cim");
+  const qoeEnabled = useFeature("qoe");
 
   const profitMetricConfig = getProfitMetricConfig(company);
 
@@ -150,6 +156,14 @@ function WorkspaceSidebar({ company, onClose }) {
       children: [
         { label: "Requests", icon: ClipboardList, to: `${basePath}/dataroom/requests` },
         { label: "Documents", icon: FileText, to: `${basePath}/dataroom/documents` },
+        // Omitted entirely when the module is off — not greyed out. A disabled
+        // feature the user can still click is worse than one they cannot see.
+        ...(qaEnabled
+          ? [{ label: "Q&A", icon: MessageSquareText, to: `${basePath}/dataroom/qa` }]
+          : []),
+        ...(cimEnabled
+          ? [{ label: "CIM Builder", icon: BookOpen, to: `${basePath}/dataroom/cim` }]
+          : []),
         { label: "Messages", icon: MessageSquare, to: `${basePath}/dataroom/messages` },
         { label: "Reminders", icon: Bell, to: `${basePath}/dataroom/reminders` },
       ],
@@ -158,13 +172,21 @@ function WorkspaceSidebar({ company, onClose }) {
     { label: "Reports", icon: BarChart3, to: `${basePath}/reports` },
     { label: "Analytics", icon: TrendingUp, to: `${basePath}/analytics` },
     { label: "Invoices", icon: Receipt, to: `${basePath}/invoices` },
-    { label: profitMetricConfig.navLabel, icon: Calculator, to: `${basePath}/ebitda` },
+    // The earnings bridge and Financial Statements both read /qoe, which legacy
+    // does not serve. With the module off they are hidden rather than left to
+    // fetch into the catch-all proxy. Bank and Tax Reconciliation are legacy
+    // screens and stay, so the folder survives losing one child.
+    ...(qoeEnabled
+      ? [{ label: profitMetricConfig.navLabel, icon: Calculator, to: `${basePath}/ebitda` }]
+      : []),
     {
       type: 'folder',
       label: "Quality of Earnings Report",
       icon: Scale,
       children: [
-        { label: "Financial Statements", icon: BarChart3, to: `${basePath}/statements` },
+        ...(qoeEnabled
+          ? [{ label: "Financial Statements", icon: BarChart3, to: `${basePath}/statements` }]
+          : []),
         { label: "Bank Reconciliation", icon: Scale, to: `${basePath}/reconciliation` },
         { label: "Tax Reconciliation", icon: FileCheck, to: `${basePath}/tax-reconciliation` },
       ],

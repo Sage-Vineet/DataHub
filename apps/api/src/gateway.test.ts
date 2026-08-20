@@ -85,6 +85,37 @@ describe("gateway", () => {
     expect(res.body).toMatchObject({ status: "ok", service: "gateway" });
   });
 
+  it("declares the live feature set, so the SPA can hide what is switched off", async () => {
+    const table = parseRoutingTable({ LEGACY_ORIGIN: legacy.url });
+    const app = createGateway(table, { features: { qa: true, cim: false } });
+
+    const res = await request(app).get("/healthz");
+
+    expect(res.body.features).toEqual({ qa: true, cim: false });
+  });
+
+  it("reports an empty feature set rather than omitting the key", async () => {
+    // The client reads `features` unconditionally; a missing key would make
+    // "nothing is enabled" indistinguishable from "this gateway is too old to
+    // say", and the client's safe default depends on telling those apart.
+    const res = await request(gateway()).get("/healthz");
+
+    expect(res.body.features).toEqual({});
+  });
+
+  it("keeps the feature payload off the module route surface", async () => {
+    // /healthz lives on the gateway app, not a module router. If it ever moved
+    // onto one, route-contract.test.ts would start comparing it against a legacy
+    // path that does not exist.
+    const table = parseRoutingTable({ LEGACY_ORIGIN: legacy.url });
+    const app = createGateway(table, { features: { qa: true }, modules: [] });
+
+    const res = await request(app).get("/healthz");
+
+    expect(res.status).toBe(200);
+    expect(res.body.service).toBe("gateway");
+  });
+
   it("forwards unmapped paths to legacy, preserving method/query/status", async () => {
     const res = await request(gateway()).get("/companies?active=true");
     expect(res.status).toBe(200);

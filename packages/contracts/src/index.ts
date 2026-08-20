@@ -132,3 +132,68 @@ export type {
   AccountType,
   AccountClassificationUpdate,
 } from "./qoe.js";
+
+export * as dataroom from "./dataroom.js";
+export { MIN_CHUNK_BYTES, MAX_CHUNK_BYTES } from "./dataroom.js";
+export type {
+  CommentVisibility,
+  CommentCreate,
+  CommentResponse,
+  DocumentVersionResponse,
+  DocumentVersionList,
+  UploadSessionCreate,
+  UploadSessionResponse,
+  UploadSessionComplete,
+  UploadSessionStatus,
+} from "./dataroom.js";
+
+export * as qa from "./qa.js";
+export type {
+  AssigneeResponse,
+  AssigneesReplace,
+  AttachmentCreate,
+  AuditEntry,
+  AuditTrail,
+  AssignmentEventResponse,
+  CategoryResponse,
+  ItemCreate,
+  ItemDetail,
+  ItemListQuery,
+  ItemOrigin,
+  ItemPriority,
+  ItemResponse,
+  ItemStatus,
+  ItemUpdate,
+  NomineesReplace,
+  PresentationCreate,
+  PresentationResponse,
+  ResponseCreate,
+  ResponseKind,
+  ResponseResponse,
+  VisibilityRule,
+} from "./qa.js";
+
+export * as cim from "./cim.js";
+export type {
+  AcceptAnswer,
+  BlockBulkUpsert,
+  BlockResponse,
+  ContentClass,
+  DeckCreate,
+  DeckHealth,
+  DeckStatus,
+  DeckSummary,
+  DiscardAnswer,
+  GapResponse,
+  GenerateRequest,
+  GenerateResult,
+  PopulatedBy,
+  PublishResult,
+  QuestionLibraryEntry,
+  ReviewItem,
+  SectionResponse,
+  SlideClass,
+  SlideResponse,
+  VersionDetail,
+  VersionSummary,
+} from "./cim.js";

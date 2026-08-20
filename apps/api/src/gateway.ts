@@ -64,6 +64,22 @@ export interface GatewayOptions {
    * by Better Auth's own Origin check against its trustedOrigins.
    */
   corsOrigins?: ReadonlyArray<string>;
+  /**
+   * The live feature-flag set, reported by `/healthz` so the SPA can hide what is
+   * switched off instead of rendering it broken.
+   *
+   * This matters more than it looks. An unmatched path does NOT 404 here — it
+   * falls through to the catch-all proxy and reaches legacy, which answers with
+   * something the SPA cannot interpret. So a module flipped off without the client
+   * knowing produces a live nav entry, a request that resolves to nonsense, and a
+   * spinner that never settles. Declaring availability is what makes the kill
+   * switch subtract a feature rather than break one.
+   *
+   * It rides on `/healthz` rather than a new endpoint because this handler lives
+   * on the gateway app, not a module router — so it claims no surface that
+   * `route-contract.test.ts` compares against legacy.
+   */
+  features?: Readonly<Record<string, boolean>>;
 }
 
 /**
@@ -92,7 +108,7 @@ export function createGateway(table: RoutingTable, options: GatewayOptions = {})
 
   // Liveness — independent of upstream availability, never proxied.
   app.get("/healthz", (_req, res) => {
-    res.status(200).json({ status: "ok", service: "gateway" });
+    res.status(200).json({ status: "ok", service: "gateway", features: options.features ?? {} });
   });
 
   // In-process modules are mounted ahead of the proxy: a migrated route-group

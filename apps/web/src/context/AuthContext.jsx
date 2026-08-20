@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { brokerSignupRequest, loginRequest, logoutRequest, meRequest, setStoredToken, getStoredToken } from '../lib/api';
+import { clearScopedFileExplorerState } from '../store/fileExplorerStore';
 import {
   startSession,
   clearSession,
@@ -9,6 +10,48 @@ import {
 } from '../lib/session';
 
 const AuthContext = createContext(null);
+
+/**
+ * The signed-in user's id, in localStorage.
+ *
+ * Client-side caches key their storage off this so one person's cached data is
+ * never readable by the next person on the same device — which matters on any
+ * shared browser and acutely on a demo tablet. Written on sign-in, removed on
+ * sign-out.
+ */
+const ACTIVE_USER_KEY = 'datahub.activeUserId';
+
+/**
+ * Keep the active-user key in step with whatever the session becomes.
+ *
+ * Wrapping the setter rather than remembering to call it at each of the eight
+ * `setUser` sites: a cache key that silently falls out of step is exactly the
+ * bug this was introduced to fix.
+ */
+function trackActiveUser(setUser) {
+  return (next) => {
+    const resolved = typeof next === 'function' ? next : next;
+    if (resolved && typeof resolved === 'object' && resolved.id) rememberActiveUser(resolved.id);
+    else if (resolved === null) rememberActiveUser(null);
+    setUser(resolved);
+  };
+}
+
+function rememberActiveUser(id) {
+  try {
+    if (id) window.localStorage.setItem(ACTIVE_USER_KEY, id);
+    else window.localStorage.removeItem(ACTIVE_USER_KEY);
+  } catch {
+    // Storage unavailable — caches fall back to their anonymous key, which is
+    // in-memory in practice, so nothing leaks.
+  }
+}
+
+/** Drop every per-user client cache. Called wherever a session ends. */
+function forgetClientCaches() {
+  rememberActiveUser(null);
+  clearScopedFileExplorerState();
+}
 
 const ROLE_MAP = {
   user: 'user',
@@ -83,7 +126,10 @@ function normalizeUser(userData) {
 }
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
+  const [user, setUserState] = useState(null);
+  // Every setUser below also keeps the active-user cache key in step — see
+  // trackActiveUser. Wrapping the setter once beats remembering at eight sites.
+  const setUser = trackActiveUser(setUserState);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -99,6 +145,7 @@ export function AuthProvider({ children }) {
       expiryTimerRef.current = null;
     }
     clearSession();
+    forgetClientCaches();
     setStoredToken(null);
     setUser(null);
     setError('');
@@ -316,6 +363,9 @@ export function AuthProvider({ children }) {
 
     // Clear session timestamps from localStorage.
     clearSession();
+
+    // …and every per-user cache, so the next person on this device starts clean.
+    forgetClientCaches();
 
     // Optimistically clear local auth so signout feels instant.
     setUser(null);
