@@ -534,6 +534,81 @@ describe("assignment history (real Postgres)", () => {
   });
 });
 
+describe("the audit trail (real Postgres)", () => {
+  it("reconstructs the whole exchange, in order, from three separate records", async () => {
+    const item = await ask({ requestee_ids: [SELLER_ID] });
+    await request(app)
+      .post(`/qa/items/${item.id}/assignees`)
+      .send({ user_ids: [CFO_ID], kind: "delegate" });
+    current = cfo;
+    const v1 = await request(app)
+      .post(`/qa/items/${item.id}/responses`)
+      .send({ body: "about 4m", kind: "answer" });
+    await request(app)
+      .post(`/qa/items/${item.id}/responses`)
+      .send({ body: "actually 4.2m", kind: "answer", supersedes_id: v1.body.id });
+    current = broker;
+    const draft = await request(app)
+      .post(`/qa/items/${item.id}/presentation`)
+      .send({ source_response_id: v1.body.id, body: "Approximately 4.2 million." });
+    await request(app).post(`/qa/items/${item.id}/presentation/${draft.body.id}/publish`);
+
+    const audit = await request(app).get(`/qa/items/${item.id}/audit`);
+
+    expect(audit.status).toBe(200);
+    const kinds = audit.body.entries.map((e) => e.kind);
+    // Asked, assigned, delegated, answered, corrected, reworded — the exchange,
+    // in the order it happened, without the reader interleaving three lists.
+    expect(kinds).toContain("asked");
+    expect(kinds).toContain("delegated");
+    expect(kinds).toContain("answered");
+    expect(kinds).toContain("corrected");
+    expect(kinds).toContain("reworded");
+    const times = audit.body.entries.map((e) => e.at);
+    expect([...times].sort()).toEqual(times);
+  });
+
+  it("attributes every entry to a person", async () => {
+    const item = await ask({ requestee_ids: [SELLER_ID] });
+    current = seller;
+    await request(app).post(`/qa/items/${item.id}/responses`).send({ body: "answered", kind: "answer" });
+    current = broker;
+
+    const audit = await request(app).get(`/qa/items/${item.id}/audit`);
+
+    expect(audit.body.entries.every((e) => e.actor_name)).toBe(true);
+  });
+
+  it("keeps an unpublished rewording out of the record", async () => {
+    // A draft is the broker thinking aloud; an audit showing it would
+    // misrepresent what was ever actually put forward.
+    const item = await ask();
+    const answer = await request(app)
+      .post(`/qa/items/${item.id}/responses`)
+      .send({ body: "raw", kind: "answer" });
+    await request(app)
+      .post(`/qa/items/${item.id}/presentation`)
+      .send({ source_response_id: answer.body.id, body: "not published" });
+
+    const audit = await request(app).get(`/qa/items/${item.id}/audit`);
+
+    expect(audit.body.entries.map((e) => e.kind)).not.toContain("reworded");
+  });
+
+  it("refuses the audit of a question the viewer cannot see", async () => {
+    const hidden = await ask();
+    await request(app).post(`/qa/items/${hidden.id}/visibility`).send({
+      user_id: CFO_ID,
+      effect: "hide",
+    });
+
+    current = cfo;
+    const res = await request(app).get(`/qa/items/${hidden.id}/audit`);
+
+    expect(res.status).toBe(404);
+  });
+});
+
 describe("filters and tenant isolation (real Postgres)", () => {
   it("separates raised-by-me from assigned-to-me", async () => {
     await ask({ requestee_ids: [SELLER_ID] });

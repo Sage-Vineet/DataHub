@@ -161,6 +161,21 @@ export interface ChunkedStoragePort {
   ): Promise<{ id: string; sizeBytes: number }>;
 }
 
+/**
+ * Folder grants, for the server-side predicate.
+ *
+ * `forFolderChain` returns the folder's own grants first, then each ancestor's
+ * nearest-first — the shape `effectivePermissions` consumes, resolved in one
+ * query rather than by walking the tree a level at a time.
+ */
+export interface FolderGrantsPort {
+  forFolderChain(folderId: string): Promise<{
+    own: ReadonlyArray<import("./access.js").FolderGrant>;
+    ancestors: ReadonlyArray<ReadonlyArray<import("./access.js").FolderGrant>>;
+  }>;
+  groupIdsFor(userId: string): Promise<string[]>;
+}
+
 /** What the module needs to know about a document without owning the table. */
 export interface DocumentRefPort {
   describe(documentId: string): Promise<{

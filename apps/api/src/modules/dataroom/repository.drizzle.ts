@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { schema, type Db } from "@datahub/db";
 import type { CommentVisibility } from "@datahub/contracts";
+import type { FolderGrant } from "./access.js";
 import type {
   AppendVersionInput,
   ChunkedStoragePort,
@@ -11,6 +12,7 @@ import type {
   DocumentRefPort,
   DocumentVersionRecord,
   DocumentVersionsRepository,
+  FolderGrantsPort,
   UploadSessionRecord,
   UploadSessionsRepository,
 } from "./ports.js";
@@ -389,6 +391,72 @@ export class DrizzleChunkedStoragePort implements ChunkedStoragePort {
       : (rows as unknown as Array<{ id: string; size_bytes: number }>)[0];
     if (!row) throw new Error("assembly produced no upload row");
     return { id: row.id, sizeBytes: Number(row.size_bytes) };
+  }
+}
+
+/**
+ * Folder grants for a folder and its ancestors, nearest-first.
+ *
+ * One recursive CTE rather than a walk up the tree: the depth is unbounded and a
+ * per-level round trip would put the folder depth into the latency of every
+ * document read.
+ */
+export class DrizzleFolderGrantsPort implements FolderGrantsPort {
+  constructor(private readonly db: Db) {}
+
+  async forFolderChain(folderId: string) {
+    const rows = await this.db.execute<{
+      depth: number;
+      folder_id: string;
+      user_id: string | null;
+      group_id: string | null;
+      can_read: boolean;
+      can_write: boolean;
+      can_download: boolean;
+    }>(sql`
+      WITH RECURSIVE chain AS (
+        SELECT id, parent_id, 0 AS depth FROM ${folders} WHERE id = ${folderId}
+        UNION ALL
+        SELECT f.id, f.parent_id, chain.depth + 1
+        FROM ${folders} f JOIN chain ON f.id = chain.parent_id
+      )
+      SELECT chain.depth, fa.folder_id, fa.user_id, fa.group_id,
+             fa.can_read, fa.can_write, fa.can_download
+      FROM chain
+      JOIN folder_access fa ON fa.folder_id = chain.id
+      ORDER BY chain.depth ASC
+    `);
+    const list = (rows as unknown as { rows?: unknown[] }).rows ?? (rows as unknown as unknown[]);
+
+    const byDepth = new Map<number, FolderGrant[]>();
+    for (const raw of list as Array<Record<string, unknown>>) {
+      const depth = Number(raw.depth);
+      const grants = byDepth.get(depth) ?? [];
+      grants.push({
+        folderId: String(raw.folder_id),
+        userId: (raw.user_id as string | null) ?? null,
+        groupId: (raw.group_id as string | null) ?? null,
+        canRead: Boolean(raw.can_read),
+        canWrite: Boolean(raw.can_write),
+        canDownload: Boolean(raw.can_download),
+      });
+      byDepth.set(depth, grants);
+    }
+
+    const depths = [...byDepth.keys()].sort((a, b) => a - b).filter((d) => d > 0);
+    return {
+      own: byDepth.get(0) ?? [],
+      // Nearest ancestor first, so the predicate stops at the most specific one.
+      ancestors: depths.map((d) => byDepth.get(d) ?? []),
+    };
+  }
+
+  async groupIdsFor(userId: string): Promise<string[]> {
+    const rows = await this.db.execute<{ group_id: string }>(sql`
+      SELECT group_id FROM buyer_group_members WHERE user_id = ${userId}
+    `);
+    const list = (rows as unknown as { rows?: unknown[] }).rows ?? (rows as unknown as unknown[]);
+    return (list as Array<Record<string, unknown>>).map((r) => String(r.group_id));
   }
 }
 

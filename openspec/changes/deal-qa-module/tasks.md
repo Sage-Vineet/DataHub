@@ -90,8 +90,8 @@
 ## 8. Audit
 
 - [x] 8.1 Emit the four Q&A event types through `emitActivity` (`apps/api/src/activity/capture.ts`)
-- [ ] 8.2 `GET /qa/items/:id/audit` — assignment events and activity entries for the item
-- [ ] 8.3 Vitest: create → answer → reassign → publish produces four audit entries with actor and
+- [x] 8.2 `GET /qa/items/:id/audit` — assignment events and activity entries for the item
+- [x] 8.3 Vitest: create → answer → reassign → publish produces four audit entries with actor and
       timestamp
 
 ## 9. Integration tests
@@ -121,7 +121,7 @@
 
 ## 11. Demo verification
 
-- [ ] 11.1 Extend the `tools/demo/up.sh` curl block: seeded items list; a nominated answerer is
+- [x] 11.1 Extend the `tools/demo/up.sh` curl block: seeded items list; a nominated answerer is
       auto-assigned; a superseded answer keeps both versions readable; a published presentable
       version is returned. Each check flag-guarded so it skips when the feature is off
 - [ ] 11.2 Two-browser run-through (broker on laptop, seller on iPad) through the full round trip

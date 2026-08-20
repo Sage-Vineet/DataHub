@@ -1879,6 +1879,11 @@ export function attachQaDocumentRequest(itemId, documentId, folderId, responseId
   });
 }
 
+/** Everything that happened to a question, in order. */
+export function getQaAuditRequest(itemId, options = {}) {
+  return request(`/qa/items/${itemId}/audit`, options);
+}
+
 export function setQaVisibilityRequest(itemId, rule, options = {}) {
   return request(`/qa/items/${itemId}/visibility`, { ...options, method: 'POST', body: rule });
 }

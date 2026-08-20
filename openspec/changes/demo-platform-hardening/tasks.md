@@ -41,8 +41,8 @@
 - [x] 4.1 `apps/web/src/context/FeatureContext.jsx` — fetch `/healthz` once at boot, expose
       `useFeature(name)`; **every flag false while pending and false on error**
 - [x] 4.2 Provider mounted above the router in `apps/web/src/App.jsx`
-- [ ] 4.3 Navigation entries for disabled features are **not rendered** — not disabled, not greyed
-- [ ] 4.4 Route elements for disabled features render a plain "coming soon" card, gated **above** any
+- [x] 4.3 Navigation entries for disabled features are **not rendered** — not disabled, not greyed
+- [x] 4.4 Route elements for disabled features render a plain "coming soon" card, gated **above** any
       data fetch, so no request reaches the gateway and falls through to legacy
 - [x] 4.5 Vitest over the pure logic: the payload parses, a non-OK response rejects rather than
       reporting "no features", an unreachable gateway rejects, and the request carries credentials.

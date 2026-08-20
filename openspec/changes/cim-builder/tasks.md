@@ -88,7 +88,7 @@
       data room document via `DataRoomPort`, write `cim_publication`, mark published
 - [x] 7.5 `DataRoomPort` adapter following the `createFolderProvisioningPort` precedent
       (`server.ts:98-107`)
-- [ ] 7.6 Leave the existing `.pptx` button working and untested — not on the critical path
+- [x] 7.6 Leave the existing `.pptx` button working and untested — not on the critical path
 - [x] 7.7 Vitest: publish records a hash and a document id; a second publish of the same version is
       refused; the published document resolves in the data room
 
@@ -129,7 +129,7 @@
 
 - [x] 10.1 `tools/demo/seed-cim.mjs` — a **14-slide** deck roughly 60% populated per demo company,
       plus one already-published version whose PDF resolves in the data room
-- [ ] 10.2 Extend the `up.sh` curl block: deck seeded; gaps present; published version resolves in
+- [x] 10.2 Extend the `up.sh` curl block: deck seeded; gaps present; published version resolves in
       the data room; a write to a published version returns 409; cross-tenant deck access returns
       403. Each check flag-guarded so it skips when the feature is off
 - [x] 10.3 Rehearse publish twice on the actual booth iPad, not on the dev laptop

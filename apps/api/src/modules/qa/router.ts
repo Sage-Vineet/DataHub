@@ -192,6 +192,13 @@ export function createQaRouter(deps: QaRouterDeps): Router {
     }),
   );
 
+  router.get(
+    "/qa/items/:id/audit",
+    handle(async (req, res) => {
+      res.json(await service.audit(req.user!, req.params.id!));
+    }),
+  );
+
   // ── attachments and visibility ────────────────────────────────────────────
 
   router.post(

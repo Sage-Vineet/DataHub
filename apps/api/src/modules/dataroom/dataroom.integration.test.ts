@@ -99,6 +99,26 @@ CREATE TABLE upload_sessions (
   created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
   expires_at timestamptz NOT NULL DEFAULT now() + interval '6 hours'
 );
+CREATE TABLE buyer_groups (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE, name text NOT NULL
+);
+CREATE TABLE buyer_group_members (
+  group_id uuid NOT NULL REFERENCES buyer_groups(id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  PRIMARY KEY (group_id, user_id)
+);
+CREATE TABLE folder_access (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  folder_id uuid NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+  user_id uuid REFERENCES users(id) ON DELETE CASCADE,
+  group_id uuid REFERENCES buyer_groups(id) ON DELETE CASCADE,
+  can_read boolean NOT NULL DEFAULT true,
+  can_write boolean NOT NULL DEFAULT false,
+  can_download boolean NOT NULL DEFAULT false,
+  created_by uuid NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
 CREATE TABLE upload_chunks (
   session_id uuid NOT NULL REFERENCES upload_sessions(id) ON DELETE CASCADE,
   chunk_index integer NOT NULL, size_bytes integer NOT NULL, data bytea NOT NULL,
@@ -475,6 +495,106 @@ describe("tenant isolation (real Postgres)", () => {
     });
 
     expect(res.status).toBe(403);
+  });
+});
+
+describe("folder grants, enforced on the server (real Postgres)", () => {
+  it("refuses a counterparty a document in a folder they were not granted", async () => {
+    // The grant table has always existed; only the browser honoured it. On the
+    // endpoints this module adds, the server does too.
+    const { result } = await upload("restricted.txt", [Buffer.from("private")]);
+    await db.insert(schema.folderAccess).values({
+      folderId,
+      userId: BROKER_ID,
+      canRead: true,
+      canWrite: true,
+      canDownload: true,
+      createdBy: BROKER_ID,
+    });
+
+    current = seller;
+    const res = await request(app).get(`/dataroom/documents/${result.document_id}/versions`);
+
+    expect(res.status).toBe(403);
+  });
+
+  it("allows a counterparty who was granted read", async () => {
+    const { result } = await upload("shared.txt", [Buffer.from("shared")]);
+    await db.insert(schema.folderAccess).values({
+      folderId,
+      userId: SELLER_ID,
+      canRead: true,
+      canWrite: false,
+      canDownload: true,
+      createdBy: BROKER_ID,
+    });
+
+    current = seller;
+    const res = await request(app).get(`/dataroom/documents/${result.document_id}/versions`);
+
+    expect(res.status).toBe(200);
+  });
+
+  it("keeps the deal team unscoped inside a company they can already reach", async () => {
+    // Tightening this would make the broker's own view go dark, which reads as
+    // broken rather than as secure — and does not match what legacy does.
+    const { result } = await upload("brokers.txt", [Buffer.from("x")]);
+    await db.insert(schema.folderAccess).values({
+      folderId,
+      userId: SELLER_ID,
+      canRead: true,
+      createdBy: BROKER_ID,
+    });
+
+    const res = await request(app).get(`/dataroom/documents/${result.document_id}/versions`);
+
+    expect(res.status).toBe(200);
+  });
+
+  it("inherits a parent folder's grant where the child has none", async () => {
+    const child = randomUUID();
+    await db.insert(schema.folders).values({
+      id: child,
+      companyId,
+      parentId: folderId,
+      name: "Tax Returns",
+      createdBy: BROKER_ID,
+    });
+    await db.insert(schema.folderAccess).values({
+      folderId,
+      userId: SELLER_ID,
+      canRead: true,
+      createdBy: BROKER_ID,
+    });
+    const open = await request(app).post("/dataroom/uploads/sessions").send({
+      folder_id: child,
+      file_name: "nested.txt",
+      content_type: "text/plain",
+      total_bytes: 3,
+      chunk_size: CHUNK,
+    });
+    await request(app)
+      .put(`/dataroom/uploads/sessions/${open.body.id}/chunks/0`)
+      .set("Content-Type", "application/octet-stream")
+      .send(Buffer.from("abc"));
+    const done = await request(app).post(`/dataroom/uploads/sessions/${open.body.id}/complete`);
+
+    current = seller;
+    const res = await request(app).get(`/dataroom/documents/${done.body.document_id}/versions`);
+
+    // Without inheritance, granting the parent would grant nothing usable.
+    expect(res.status).toBe(200);
+  });
+
+  it("leaves everything readable where no grant exists anywhere", async () => {
+    // Grants narrow; they do not open. Defaulting to denial would lock people out
+    // of folders they have used since before grants were enforced.
+    const { result } = await upload("ungranted.txt", [Buffer.from("x")]);
+
+    current = seller;
+    const res = await request(app).get(`/dataroom/documents/${result.document_id}/versions`);
+
+    expect(res.status).toBe(200);
   });
 });
 

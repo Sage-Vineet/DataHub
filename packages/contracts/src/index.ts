@@ -152,6 +152,8 @@ export type {
   AssigneeResponse,
   AssigneesReplace,
   AttachmentCreate,
+  AuditEntry,
+  AuditTrail,
   AssignmentEventResponse,
   CategoryResponse,
   ItemCreate,

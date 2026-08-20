@@ -7,6 +7,7 @@ import {
   DrizzleCommentsRepository,
   DrizzleDocumentRefPort,
   DrizzleDocumentVersionsRepository,
+  DrizzleFolderGrantsPort,
   DrizzleUploadSessionsRepository,
 } from "./repository.drizzle.js";
 import { createDataRoomRouter } from "./router.js";
@@ -40,6 +41,7 @@ export function createDataRoomModule(opts: CreateDataRoomModuleOptions): DataRoo
     sessions: new DrizzleUploadSessionsRepository(opts.db),
     storage: new DrizzleChunkedStoragePort(opts.db),
     documents: new DrizzleDocumentRefPort(opts.db),
+    grants: new DrizzleFolderGrantsPort(opts.db),
     ...(opts.activity ? { activity: opts.activity } : {}),
   });
   return {
@@ -60,6 +62,7 @@ export {
   DrizzleCommentsRepository,
   DrizzleDocumentRefPort,
   DrizzleDocumentVersionsRepository,
+  DrizzleFolderGrantsPort,
   DrizzleUploadSessionsRepository,
 } from "./repository.drizzle.js";
 export {

@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { History, Loader2, Lock, Send, Sparkles, X } from 'lucide-react';
+import { getQaAuditRequest } from '../../lib/api';
 import { useQaStore } from '../../store/qaStore';
 import { useFeature } from '../../context/useFeature';
 
@@ -32,8 +33,10 @@ export default function QAItemDrawer({ detail, onClose, currentUser }) {
   const [rewordText, setRewordText] = useState('');
   const [busy, setBusy] = useState(false);
   const [showSuperseded, setShowSuperseded] = useState(false);
+  // Fetched only when the section is opened — an audit is a deliberate look.
+  const [audit, setAudit] = useState(null);
 
-  const { item, responses, presentations, history } = detail;
+  const { item, responses, presentations } = detail;
   const isDealTeam = currentUser?.role === 'broker' || currentUser?.role === 'admin';
 
   // Superseded answers are hidden by default — the current text is what matters
@@ -221,21 +224,38 @@ export default function QAItemDrawer({ detail, onClose, currentUser }) {
             );
           })}
 
-          {history.length > 0 && (
-            <details className="rounded-xl border border-[#E5E7EB] p-4">
-              <summary className="cursor-pointer text-xs font-medium text-[#6B7280]">
-                Assignment history ({history.length})
-              </summary>
-              <ul className="mt-2 space-y-1 text-xs text-[#6B7280]">
-                {history.map((event) => (
-                  <li key={event.id}>
-                    {timestamp(event.at)} — {event.actor_name ?? 'someone'} {event.action}
-                    {event.new_user_ids.length > 0 ? ` to ${event.new_user_ids.length} person(s)` : ''}
+          {/* The whole exchange in order, assembled server-side from the
+              assignment log, the responses and the published rewordings. */}
+          <details
+            className="rounded-xl border border-[#E5E7EB] p-4"
+            onToggle={(e) => {
+              if (e.currentTarget.open && audit === null) {
+                getQaAuditRequest(item.id)
+                  .then((trail) => setAudit(trail.entries))
+                  .catch(() => setAudit([]));
+              }
+            }}
+          >
+            <summary className="cursor-pointer text-xs font-medium text-[#6B7280]">
+              Audit trail
+            </summary>
+            {audit === null ? (
+              <p className="mt-2 text-xs text-[#9CA3AF]">Loading…</p>
+            ) : (
+              <ol className="mt-2 space-y-1 text-xs text-[#6B7280]">
+                {audit.map((entry, i) => (
+                  <li key={`${entry.at}-${i}`}>
+                    <span className="text-[#9CA3AF]">{timestamp(entry.at)}</span> —{' '}
+                    <span className="font-medium text-[#374151]">
+                      {entry.actor_name ?? 'someone'}
+                    </span>{' '}
+                    {entry.kind}
+                    {entry.citation_ref ? ` (${entry.citation_ref})` : ''}
                   </li>
                 ))}
-              </ul>
-            </details>
-          )}
+              </ol>
+            )}
+          </details>
         </div>
 
         <form onSubmit={submitReply} className="border-t border-[#F3F4F6] p-4">

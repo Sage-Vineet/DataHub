@@ -1,4 +1,5 @@
 import type {
+  AuditTrail,
   AssigneesReplace,
   AttachmentCreate,
   CategoryResponse,
@@ -506,6 +507,78 @@ export class QaService {
     });
 
     return toPresentationResponse(published);
+  }
+
+  /**
+   * Everything that happened to a question, in order.
+   *
+   * Assembled from the assignment log, the responses and the rewordings rather
+   * than read from one table — the three are separate records for good reasons,
+   * and interleaving them is the reader's problem to be solved here rather than
+   * in whatever renders it.
+   */
+  async audit(user: SessionUser, itemId: string): Promise<AuditTrail> {
+    const item = await this.requireItem(user, itemId);
+    const [events, responses, presentations] = await Promise.all([
+      this.deps.assignees.history(itemId),
+      this.deps.responses.listFor(itemId),
+      this.deps.presentations.listFor(itemId),
+    ]);
+
+    const entries: AuditTrail["entries"] = [
+      {
+        at: item.askedAt,
+        kind: "asked" as const,
+        actor_id: item.requestorId,
+        actor_name: item.requestorName,
+        detail: item.title,
+        citation_ref: item.reference,
+      },
+      ...events.map((event) => ({
+        at: event.at,
+        kind:
+          event.action === "delegated"
+            ? ("delegated" as const)
+            : event.action === "assigned"
+              ? ("assigned" as const)
+              : ("reassigned" as const),
+        actor_id: event.actorId,
+        actor_name: event.actorName,
+        detail:
+          event.priorUserIds.length === 0
+            ? `Assigned to ${event.newUserIds.length} person(s)`
+            : `Moved from ${event.priorUserIds.length} to ${event.newUserIds.length} person(s)`,
+        citation_ref: null,
+      })),
+      ...responses.map((response) => ({
+        at: response.postedAt,
+        kind:
+          response.kind !== "answer"
+            ? ("commented" as const)
+            : response.supersedesId
+              ? ("corrected" as const)
+              : ("answered" as const),
+        actor_id: response.authorId,
+        actor_name: response.authorName,
+        detail: response.body.slice(0, 200),
+        citation_ref: response.citationRef,
+      })),
+      // Only published rewordings appear: a draft is the broker thinking aloud,
+      // and an audit that showed unpublished drafts would misrepresent what was
+      // ever actually put forward.
+      ...presentations
+        .filter((p) => p.status === "published")
+        .map((p) => ({
+          at: p.createdAt,
+          kind: "reworded" as const,
+          actor_id: p.authorId,
+          actor_name: p.authorName,
+          detail: p.body.slice(0, 200),
+          citation_ref: null,
+        })),
+    ].sort((a, b) => a.at.localeCompare(b.at));
+
+    return { item_id: itemId, reference: item.reference, entries };
   }
 
   // ── attachments and visibility ────────────────────────────────────────────

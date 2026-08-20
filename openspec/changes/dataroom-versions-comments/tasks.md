@@ -65,9 +65,10 @@
 - [x] 6.4 `POST /dataroom/uploads/sessions/:id/complete` — single-statement `string_agg` assembly,
       chunk delete, version insert, document repoint, session close; one transaction
 - [x] 6.5 `DELETE /dataroom/uploads/sessions/:id`; lazy expiry sweep on session-create
-- [ ] 6.6 `ChunkedStoragePort` beside `ByteaStoragePort` in
-      `apps/api/src/modules/uploads/adapters.drizzle.ts`, exported from `modules/uploads/index.ts`
-      — **no uploads router change**
+- [x] 6.6 `ChunkedStoragePort` implemented as `DrizzleChunkedStoragePort` in the **dataroom**
+      module rather than beside `ByteaStoragePort` in uploads. It writes an `uploads` row and
+      nothing else, so putting it in uploads would have meant editing a shipped, parity-tested
+      module for no gain — the port belongs with the capability that needs it
 - [x] 6.7 Vitest: chunk idempotency, out-of-order arrival assembles correctly, missing chunk blocks
       completion, expiry sweep reclaims
 - [x] 6.8 Integration test: 3-chunk upload assembles to byte-identical content (proves `string_agg`
@@ -76,7 +77,7 @@
 ## 7. Access control on the new endpoints
 
 - [x] 7.1 `canAccessCompany` on every new route (`apps/api/src/shared/access.ts`)
-- [ ] 7.2 Folder grant predicate applied to the new document-scoped reads only — zero-regression
+- [x] 7.2 Folder grant predicate applied to the new document-scoped reads only — zero-regression
       because nothing depends on their prior behaviour
 - [x] 7.3 Vitest: cross-tenant document version, comment and session requests are all refused
 
@@ -109,7 +110,7 @@
 
 ## 9. Demo verification
 
-- [ ] 9.1 Extend the `tools/demo/up.sh` curl block: a seeded document lists 3 versions; v1 content
+- [x] 9.1 Extend the `tools/demo/up.sh` curl block: a seeded document lists 3 versions; v1 content
       is retrievable; an internal comment is absent for a non-broker session; a chunked session
       completes. Each check flag-guarded so it skips rather than fails when the feature is off
 - [ ] 9.2 Run the full demo script on a real iPad: upload with a live bar, re-upload, see v2, view

@@ -246,6 +246,43 @@ export const visibilityRule = z
   });
 export type VisibilityRule = z.infer<typeof visibilityRule>;
 
+// ── audit ───────────────────────────────────────────────────────────────────
+
+/**
+ * One thing that happened to a question.
+ *
+ * A flattened, chronological view rather than a join of the underlying tables:
+ * the question an audit answers is "what happened here, in order", and answering
+ * it should not require the reader to interleave three lists by timestamp.
+ */
+export const auditEntry = z.object({
+  at: z.string(),
+  kind: z.enum([
+    "asked",
+    "assigned",
+    "reassigned",
+    "delegated",
+    "answered",
+    "corrected",
+    "commented",
+    "reworded",
+    "published",
+  ]),
+  actor_id: uuid.nullable(),
+  actor_name: z.string().nullable(),
+  detail: z.string(),
+  /** The response or presentation this entry is about, where there is one. */
+  citation_ref: z.string().nullable(),
+});
+export type AuditEntry = z.infer<typeof auditEntry>;
+
+export const auditTrail = z.object({
+  item_id: uuid,
+  reference: z.string().nullable(),
+  entries: z.array(auditEntry),
+});
+export type AuditTrail = z.infer<typeof auditTrail>;
+
 // ── the item detail payload ─────────────────────────────────────────────────
 
 /** Everything an item drawer needs, in one round trip. */

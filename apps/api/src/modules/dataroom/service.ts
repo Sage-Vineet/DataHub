@@ -10,12 +10,14 @@ import type {
 } from "@datahub/contracts";
 import { canAccessCompany } from "../../shared/access.js";
 import { BadRequestError, ForbiddenError, NotFoundError } from "../../shared/errors.js";
+import { effectivePermissions } from "./access.js";
 import type {
   ChunkedStoragePort,
   CommentRecord,
   CommentsRepository,
   DataRoomActivityPort,
   DocumentRefPort,
+  FolderGrantsPort,
   DocumentVersionRecord,
   DocumentVersionsRepository,
   UploadSessionsRepository,
@@ -27,6 +29,11 @@ export interface DataRoomServiceDeps {
   sessions: UploadSessionsRepository;
   storage: ChunkedStoragePort;
   documents: DocumentRefPort;
+  /**
+   * Folder grants. Optional: omitted, the endpoints fall back to company scoping
+   * alone, which is what the rest of the system does today.
+   */
+  grants?: FolderGrantsPort;
   activity?: DataRoomActivityPort;
 }
 
@@ -89,6 +96,24 @@ export class DataRoomService {
     if (!doc) throw new NotFoundError("Document not found.");
     if (!canAccessCompany(user, doc.companyId)) {
       throw new ForbiddenError("You do not have access to this document.");
+    }
+    // Folder grants, on the endpoints this module adds. Applying them to the
+    // shipped folders and uploads routes would change behaviour with their flags
+    // on while flag-off legacy still returned everything — see access.ts.
+    if (this.deps.grants) {
+      const [chain, groupIds] = await Promise.all([
+        this.deps.grants.forFolderChain(doc.folderId),
+        this.deps.grants.groupIdsFor(user.id),
+      ]);
+      const perms = effectivePermissions({
+        user,
+        groupIds,
+        folderGrants: chain.own,
+        ancestorGrants: chain.ancestors,
+      });
+      if (!perms.read) {
+        throw new ForbiddenError("You do not have access to this document.");
+      }
     }
     return doc;
   }
