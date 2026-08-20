@@ -26,14 +26,14 @@
 
 ## 3. Feature declaration on the gateway
 
-- [ ] 3.1 Add `DATAROOM_MODULE_ENABLED`, `DATAROOM_VERSIONS_ENABLED`, `DATAROOM_COMMENTS_ENABLED`,
+- [x] 3.1 Add `DATAROOM_MODULE_ENABLED`, `DATAROOM_VERSIONS_ENABLED`, `DATAROOM_COMMENTS_ENABLED`,
       `DATAROOM_CHUNKED_UPLOAD_ENABLED`, `QA_MODULE_ENABLED`, `QA_PRESENTATION_ENABLED`,
       `QA_NOMINATIONS_ENABLED`, `CIM_MODULE_ENABLED` to `MODULE_FLAGS` in `apps/api/src/env.ts`
-- [ ] 3.2 `apps/api/src/gateway.ts` `/healthz` returns `{status, service, features:{...}}` — on the
+- [x] 3.2 `apps/api/src/gateway.ts` `/healthz` returns `{status, service, features:{...}}` — on the
       gateway app, NOT a module router, so `route-contract.test.ts` never sees it
-- [ ] 3.3 All eight flags into `docker-compose.demo.yml` beside lines 92-99, defaulting `true`;
+- [x] 3.3 All eight flags into `docker-compose.demo.yml` beside lines 92-99, defaulting `true`;
       added to the `LEGACY_MODE=1` off-switch block in `tools/demo/up.sh`
-- [ ] 3.4 Vitest/supertest: `/healthz` reports each flag; a flag set false is reported false;
+- [x] 3.4 Vitest/supertest: `/healthz` reports each flag; a flag set false is reported false;
       `apps/api/src/env.test.ts` still passes unmodified (it iterates `MODULE_FLAGS`)
 
 ## 4. Client feature degradation

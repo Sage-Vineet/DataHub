@@ -6,6 +6,7 @@ import {
   DrizzleActivityRepository,
 } from "./activity/index.js";
 import { createGateway, type MountedModule } from "./gateway.js";
+import { clientFeatures } from "./features.js";
 import {
   createAuthModule,
   createBetterAuth,
@@ -191,6 +192,7 @@ function main(): void {
     modules: buildModules(env.flags),
     corsOrigins: env.corsOrigins,
     activityCapture: buildActivityCapture(env.flags.ACTIVITY_LOG_ENABLED),
+    features: clientFeatures(env.flags),
   });
   const port = env.port;
 

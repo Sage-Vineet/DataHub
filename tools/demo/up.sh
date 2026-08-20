@@ -40,9 +40,19 @@ if [[ "${LEGACY_MODE:-0}" == "1" ]]; then
          FOLDERS_MODULE_ENABLED=false UPLOADS_MODULE_ENABLED=false REQUESTS_MODULE_ENABLED=false \
          MESSAGES_MODULE_ENABLED=false REPORTS_MODULE_ENABLED=false QOE_MODULE_ENABLED=false
 fi
-# The QoE bridge has no legacy predecessor at /qoe, so it defaults ON — there is
-# nothing to fall back to and nothing it can shadow.
+# The greenfield capabilities have no legacy predecessor at their prefixes, so they
+# default ON — there is nothing to fall back to and nothing they can shadow.
+# LEGACY_MODE leaves them on for the same reason: turning them off would not show
+# you the legacy behaviour, because there isn't any.
 export QOE_MODULE_ENABLED="${QOE_MODULE_ENABLED:-true}"
+export DATAROOM_MODULE_ENABLED="${DATAROOM_MODULE_ENABLED:-true}"
+export DATAROOM_VERSIONS_ENABLED="${DATAROOM_VERSIONS_ENABLED:-true}"
+export DATAROOM_COMMENTS_ENABLED="${DATAROOM_COMMENTS_ENABLED:-true}"
+export DATAROOM_CHUNKED_UPLOAD_ENABLED="${DATAROOM_CHUNKED_UPLOAD_ENABLED:-true}"
+export QA_MODULE_ENABLED="${QA_MODULE_ENABLED:-true}"
+export QA_PRESENTATION_ENABLED="${QA_PRESENTATION_ENABLED:-true}"
+export QA_NOMINATIONS_ENABLED="${QA_NOMINATIONS_ENABLED:-true}"
+export CIM_MODULE_ENABLED="${CIM_MODULE_ENABLED:-true}"
 QOE_VERSION_ID="${QOE_DEMO_VERSION_ID:-d0000000-0000-4000-8000-000000000001}"
 PG_PORT="${DEMO_PG_PORT:-5435}"
 GATEWAY_PORT="${DEMO_GATEWAY_PORT:-8080}"
@@ -103,6 +113,16 @@ check() { # label expected actual
 FAILED=0
 
 check "gateway /healthz" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$GW/healthz")"
+
+# The kill switch, asserted rather than assumed. /healthz declares which
+# greenfield capabilities are live; the SPA reads exactly this to decide what to
+# render, so if it disagrees with the flags the demo shows a feature that is not
+# there. Re-run with a flag false and this flips with it — that IS the T-48h
+# rehearsal (docs/DEMO_FREEZE_CHECKLIST.md).
+feat() { curl -s "$GW/healthz" | python3 -c "import json,sys;print(str(json.load(sys.stdin)['features'].get('$1')).lower())" 2>/dev/null || echo "n/a"; }
+check "features.dataroom matches its flag" "${DATAROOM_MODULE_ENABLED}" "$(feat dataroom)"
+check "features.qa matches its flag"       "${QA_MODULE_ENABLED}"       "$(feat qa)"
+check "features.cim matches its flag"      "${CIM_MODULE_ENABLED}"      "$(feat cim)"
 
 curl -s -X POST "$GW/auth/login" -H 'Content-Type: application/json' \
   -d '{"email":"broker@demo.test","password":"demo1234"}' -c "$JAR" -o /dev/null
