@@ -82,25 +82,25 @@
 
 ## 8. Frontend
 
-- [ ] 8.1 `apps/web/src/lib/api.js` — version, comment and session wrappers appended in the style of
+- [x] 8.1 `apps/web/src/lib/api.js` — version, comment and session wrappers appended in the style of
       the folder block at lines 1353-1417, copying `uploadFile`'s auth/header handling verbatim
       rather than abstracting it
-- [ ] 8.2 `uploadFileChunked(file, {fileName, folderId, documentId, onProgress})` orchestrator;
+- [x] 8.2 `uploadFileChunked(file, {fileName, folderId, documentId, onProgress})` orchestrator;
       at most 3 chunks in flight, one file at a time
-- [ ] 8.3 `fileExplorerStore.js` `uploadFiles` (line 473) — swap **only** the `uploadFile` call for
+- [x] 8.3 `fileExplorerStore.js` `uploadFiles` (line 473) — swap **only** the `uploadFile` call for
       the chunked path above an 8 MB threshold; leave `createFolderDocument`, the `fileNode`
       construction and the `insertChild` tree update untouched (the chunked path returns the same
       `{id, fileUrl}` shape)
-- [ ] 8.4 Replace the `(copy)` rename at lines 485-491 with a version when the feature is on;
+- [x] 8.4 Replace the `(copy)` rename at lines 485-491 with a version when the feature is on;
       **keep the `(copy)` branch verbatim as the flag-off fallback**
-- [ ] 8.5 Extend `uploadProgress` to carry bytes and render a real progress bar
-- [ ] 8.6 `DocumentVersionsPanel.jsx`, `DocumentCommentsPanel.jsx`, `DocumentDetailDrawer.jsx`
+- [x] 8.5 Extend `uploadProgress` to carry bytes and render a real progress bar
+- [x] 8.6 `DocumentVersionsPanel.jsx`, `DocumentCommentsPanel.jsx`, `DocumentDetailDrawer.jsx`
       (tabs: Preview / Versions / Comments / Activity) — opened from the existing `FileActionMenu`
       (`FileExplorer.jsx:1265`). **Leave the existing activity modal mounted** so nothing regresses
       if the drawer is cut
-- [ ] 8.7 Each new panel returns null when its feature flag is off (`useFeature` from
+- [x] 8.7 Each new panel returns null when its feature flag is off (`useFeature` from
       `demo-platform-hardening`) — never an empty tab
-- [ ] 8.8 iPad: an always-visible Upload button in `TopBar` (`FileExplorer.jsx:531`) wired to a
+- [x] 8.8 iPad: an always-visible Upload button in `TopBar` (`FileExplorer.jsx:531`) wired to a
       hidden file input — **drag-and-drop never fires for files on iOS Safari**, so this is the only
       upload path there. Lift the existing `handleSidebarUpload` (lines 411-415) to the toolbar
 - [ ] 8.9 iPad: 44px minimum tap targets on `IconTooltipButton` (282), `FolderActionMenu` (1202),

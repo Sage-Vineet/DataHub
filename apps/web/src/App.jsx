@@ -11,6 +11,9 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { FeatureProvider } from "./context/FeatureContext";
+import FeatureRoute from "./components/FeatureRoute";
+import WorkspaceQA from "./pages/broker/workspace/WorkspaceQA";
+import CompanyQA from "./pages/client/CompanyQA";
 import { MessageNotificationsProvider } from "./context/MessageNotificationsContext";
 import { ToastProvider, useToast } from "./context/ToastContext";
 import { DataSourceProvider } from "./context/DataSourceContext";
@@ -351,6 +354,16 @@ function AppRoutes() {
         <Route path="dataroom/documents" element={<WorkspaceDocuments />} />
         <Route path="dataroom/messages" element={<WorkspaceMessages />} />
         <Route path="dataroom/reminders" element={<WorkspaceReminders />} />
+        {/* Gated above any fetch: a disabled module must issue no request that
+            could fall through the proxy to legacy. */}
+        <Route
+          path="dataroom/qa"
+          element={
+            <FeatureRoute feature="qa" fallback={<ComingSoon name="Q&A" />}>
+              <WorkspaceQA />
+            </FeatureRoute>
+          }
+        />
         <Route path="dataroom/activity" element={<WorkspaceActivity />} />
         <Route path="dataroom/users" element={<WorkspaceUsers />} />
         <Route
@@ -425,6 +438,16 @@ function AppRoutes() {
         }
       />
       <Route
+        path="/client/qa"
+        element={
+          <ProtectedRoute allowedRole="client">
+            <FeatureRoute feature="qa" fallback={<ComingSoon name="Q&A" />}>
+              <CompanyQA />
+            </FeatureRoute>
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/client/cim-questionnaire"
         element={
           <ProtectedRoute allowedRole="client">
@@ -494,6 +517,23 @@ function AppRoutes() {
       <Route path="/" element={<Navigate to="/login" replace />} />
       <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>
+  );
+}
+
+/**
+ * What a switched-off capability looks like.
+ *
+ * A named card rather than a blank page or a redirect: someone who followed a
+ * link should learn the feature is not on here, not wonder whether they broke it.
+ */
+function ComingSoon({ name }) {
+  return (
+    <div className="mx-auto max-w-lg p-10 text-center">
+      <h1 className="text-lg font-semibold text-[#111827]">{name} is not enabled</h1>
+      <p className="mt-2 text-sm text-[#6B7280]">
+        This capability is switched off on this deployment.
+      </p>
+    </div>
   );
 }
 

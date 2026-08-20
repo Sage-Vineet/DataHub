@@ -4,9 +4,11 @@ import {
   ChevronRight, ChevronDown, Trash2, Home, Archive, X, ArrowLeft, Check,
   MoreVertical, LayoutGrid, List, AlertCircle, Pencil, FolderPlus,
   ArrowUpDown, ArrowUp, ArrowDown, CheckCircle, Share2, Users, Loader2,
-  RotateCcw,
+  RotateCcw, History, MessageSquare,
 } from 'lucide-react';
 import { useFileExplorerStore, findById, getPathTo } from '../../store/fileExplorerStore';
+import { useFeature } from '../../context/useFeature';
+import DocumentDetailDrawer from './DocumentDetailDrawer';
 import {
   fetchProtectedFileBlob,
   listCompanyGroups,
@@ -916,6 +918,7 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
               onRename={() => startRenaming(item.id)}
               onMove={() => onMoveFolder(item)}
               onDelete={() => useFileExplorerStore.getState().deleteItems([item.id])}
+              onDetails={() => useFileExplorerStore.getState().openDocumentDetail(item)}
               isArchiveView={isArchiveView}
             />
           )}
@@ -1083,6 +1086,7 @@ function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFol
               onRename={() => startRenaming(item.id)}
               onMove={() => onMoveFolder(item)}
               onDelete={() => useFileExplorerStore.getState().deleteItems([item.id])}
+              onDetails={() => useFileExplorerStore.getState().openDocumentDetail(item)}
               isArchiveView={isArchiveView}
               className="opacity-100"
             />
@@ -1262,7 +1266,7 @@ function FolderActionMenu({ onShareAccess, onRename, onMove, onDelete, isArchive
   );
 }
 
-function FileActionMenu({ onRename, onMove, onDelete, isArchiveView, className }) {
+function FileActionMenu({ onRename, onMove, onDelete, onDetails, isArchiveView, className }) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef(null);
 
@@ -1285,7 +1289,16 @@ function FileActionMenu({ onRename, onMove, onDelete, isArchiveView, className }
         <MoreVertical size={13} className="text-[#6D6E71]" />
       </button>
       {open && (
-        <div className="absolute right-0 mt-2 w-44 bg-white rounded-2xl shadow-xl border border-gray-100 py-2 z-20 animate-fadeIn">
+        <div className="absolute right-0 mt-2 w-52 bg-white rounded-2xl shadow-xl border border-gray-100 py-2 z-20 animate-fadeIn">
+          {onDetails && (
+            <button
+              onClick={() => { onDetails(); setOpen(false); }}
+              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-gray-50"
+            >
+              <History size={14} className="text-[#6D6E71]" />
+              Versions &amp; comments
+            </button>
+          )}
           {!isArchiveView && (
             <>
               <button
@@ -2314,14 +2327,23 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     clearSelection, hideContextMenu, uploadFiles, dragOver, draggingItems,
     setDragOver, moveItemsTo, clearDrag, newFolderParentId, folderAccess, setFolderAccess,
     hydrateFromApi, setCompanyId, setCreatedBy, loadFolderAccessFromApi, syncFolderAccessToApi,
-    showPreview,
+    showPreview, detailDocument, closeDocumentDetail, setCapabilities,
   } = useFileExplorerStore();
+
+  // The store cannot call a hook, so the answer is pushed in once. Both default
+  // false until /healthz replies, so an unknown capability behaves as absent.
+  const versioningEnabled = useFeature('dataroomVersions');
+  const chunkedUploadEnabled = useFeature('dataroomChunkedUpload');
+  useEffect(() => {
+    setCapabilities({ versioning: versioningEnabled, chunkedUpload: chunkedUploadEnabled });
+  }, [versioningEnabled, chunkedUploadEnabled, setCapabilities]);
 
   const fileInputRef = useRef(null);
   const [loadingTree, setLoadingTree] = useState(false);
   const [treeError, setTreeError] = useState('');
   const [dragCounter, setDragCounter] = useState(0);
   const [duplicateWarnings, setDuplicateWarnings] = useState([]);
+  const [versionedNotice, setVersionedNotice] = useState([]);
   const [shareModal, setShareModal] = useState(null);
   const [moveModal, setMoveModal] = useState(null);
   const [activityModal, setActivityModal] = useState(null);
@@ -2569,7 +2591,13 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     if (e.dataTransfer.files.length > 0) {
       if (!canWriteCurrent || isArchiveView) return;
       uploadFiles(currentFolderId, e.dataTransfer.files)
-        .then((warns) => { if (warns?.length > 0) setDuplicateWarnings(warns); })
+        .then((result) => {
+          // `warnings` is the flag-off "(copy)" rename; `versioned` is the names
+          // that became a new version instead, which is good news rather than a
+          // warning and reads differently to the user.
+          if (result?.warnings?.length > 0) setDuplicateWarnings(result.warnings);
+          if (result?.versioned?.length > 0) setVersionedNotice(result.versioned);
+        })
         .catch((err) => { setTreeError(err?.message || 'Upload failed'); setTimeout(() => setTreeError(''), 6000); });
     } else if (draggingItems.length > 0) {
       // drop on background = no-op (items stay where they are)
@@ -2582,7 +2610,13 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     if (!canWriteCurrent || isArchiveView) return;
     if (e.target.files?.length) {
       uploadFiles(currentFolderId, e.target.files)
-        .then((warns) => { if (warns?.length > 0) setDuplicateWarnings(warns); })
+        .then((result) => {
+          // `warnings` is the flag-off "(copy)" rename; `versioned` is the names
+          // that became a new version instead, which is good news rather than a
+          // warning and reads differently to the user.
+          if (result?.warnings?.length > 0) setDuplicateWarnings(result.warnings);
+          if (result?.versioned?.length > 0) setVersionedNotice(result.versioned);
+        })
         .catch((err) => { setTreeError(err?.message || 'Upload failed'); setTimeout(() => setTreeError(''), 6000); });
       e.target.value = '';
     }
@@ -2725,6 +2759,24 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
             <DuplicateWarning names={duplicateWarnings} onClose={() => setDuplicateWarnings([])} />
           )}
 
+          {/* A same-name upload became a new version, which is what was wanted. */}
+          {versionedNotice.length > 0 && (
+            <div className="mb-3 flex items-start gap-2 rounded-xl border border-[#BFDBFE] bg-[#EFF6FF] px-4 py-3">
+              <History size={15} className="mt-0.5 flex-shrink-0 text-[#1D4ED8]" />
+              <p className="flex-1 text-sm text-[#1E3A8A]">
+                New version saved for {versionedNotice.join(', ')}. Earlier versions are still
+                available from the file's Versions panel.
+              </p>
+              <button
+                onClick={() => setVersionedNotice([])}
+                className="text-[#1D4ED8] hover:text-[#1E3A8A]"
+                aria-label="Dismiss"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          )}
+
           {/* Search title */}
           {searchQuery && (
             <div className="flex items-center gap-2 mb-3">
@@ -2793,6 +2845,17 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
         document={activityModal}
         onClose={() => setActivityModal(null)}
       />
+
+      {/* Versions and comments for one document. Renders nothing when both of
+          its sub-features are off, rather than an empty drawer. */}
+      {detailDocument && (
+        <DocumentDetailDrawer
+          document={detailDocument}
+          isDealTeam={role === 'broker' || role === 'admin'}
+          onClose={closeDocumentDetail}
+          onChanged={() => hydrateFromApi(companyId)}
+        />
+      )}
 
       {/* Share Access Modal */}
       <ShareAccessModal

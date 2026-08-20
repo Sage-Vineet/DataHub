@@ -1671,3 +1671,268 @@ export async function fetchFeatures() {
   const body = await res.json();
   return body?.features ?? {};
 }
+
+// ── data room: versions, comments, chunked upload (DR - 0001) ────────────────
+//
+// Served by the `dataroom` module at /dataroom/*, which is additive to the
+// folder and document routes above rather than a replacement for them.
+
+export function listDocumentVersionsRequest(documentId, options = {}) {
+  return request(`/dataroom/documents/${documentId}/versions`, options);
+}
+
+export function restoreDocumentVersionRequest(documentId, versionId, note, options = {}) {
+  return request(`/dataroom/documents/${documentId}/versions/${versionId}/restore`, {
+    ...options,
+    method: 'POST',
+    body: note ? { note } : {},
+  });
+}
+
+/** A specific version's stored bytes — not the document's current content. */
+export function documentVersionContentUrl(versionId) {
+  return buildUrl(`/dataroom/versions/${versionId}/content`);
+}
+
+export function listDocumentCommentsRequest(documentId, options = {}) {
+  return request(`/dataroom/documents/${documentId}/comments`, options);
+}
+
+export function createDocumentCommentRequest(documentId, body, visibility, options = {}) {
+  return request(`/dataroom/documents/${documentId}/comments`, {
+    ...options,
+    method: 'POST',
+    body: { body, visibility },
+  });
+}
+
+export function deleteDocumentCommentRequest(commentId, options = {}) {
+  return request(`/dataroom/comments/${commentId}`, { ...options, method: 'DELETE' });
+}
+
+/** Below this, a single-shot upload is faster and is the proven path. */
+export const CHUNK_THRESHOLD_BYTES = 8 * 1024 * 1024;
+const CHUNK_SIZE_BYTES = 5 * 1024 * 1024;
+
+export function createUploadSessionRequest(input, options = {}) {
+  return request('/dataroom/uploads/sessions', { ...options, method: 'POST', body: input });
+}
+
+export function getUploadSessionRequest(sessionId, options = {}) {
+  return request(`/dataroom/uploads/sessions/${sessionId}`, options);
+}
+
+export function completeUploadSessionRequest(sessionId, options = {}) {
+  return request(`/dataroom/uploads/sessions/${sessionId}/complete`, {
+    ...options,
+    method: 'POST',
+  });
+}
+
+/**
+ * Send one chunk.
+ *
+ * Raw binary, not JSON — a body parser in this path would corrupt the file. The
+ * auth handling mirrors `uploadFile` rather than abstracting it, because these
+ * two are the only raw-body calls in the client and one shared helper for two
+ * callers is harder to read than two explicit ones.
+ */
+async function putUploadChunk(sessionId, index, blob, token) {
+  const headers = { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const response = await fetch(buildUrl(`/dataroom/uploads/sessions/${sessionId}/chunks/${index}`), {
+    method: 'PUT',
+    headers,
+    body: blob,
+    cache: 'no-store',
+    credentials: 'include',
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const error = new Error(data?.error || 'Chunk upload failed');
+    error.status = response.status;
+    throw error;
+  }
+  return data;
+}
+
+/**
+ * Upload a file in chunks, resuming whatever the server already has.
+ *
+ * `onProgress` reports bytes, not files — a moving bar for one large file is the
+ * difference between "this is working" and "this has hung", and the old client
+ * could only ever report "file 2 of 5".
+ *
+ * Chunks go one at a time. Several tablets pushing parallel multi-megabyte
+ * inserts into one demo Postgres is how a single upload takes the whole stand
+ * down with it.
+ */
+export async function uploadFileChunked(file, { fileName, folderId, documentId, onProgress } = {}) {
+  const token = getStoredToken();
+  const name = fileName || file.name;
+
+  const session = await createUploadSessionRequest({
+    folder_id: folderId,
+    file_name: name,
+    content_type: file.type || 'application/octet-stream',
+    total_bytes: file.size,
+    chunk_size: CHUNK_SIZE_BYTES,
+    ...(documentId ? { document_id: documentId } : {}),
+  });
+
+  // Whatever landed before an interruption is not sent again.
+  const already = new Set(session.received || []);
+  let sent = already.size * session.chunk_size;
+  onProgress?.({ bytes: Math.min(sent, file.size), bytesTotal: file.size });
+
+  for (let index = 0; index < session.total_chunks; index += 1) {
+    if (already.has(index)) continue;
+    const start = index * session.chunk_size;
+    const end = Math.min(start + session.chunk_size, file.size);
+    await putUploadChunk(session.id, index, file.slice(start, end), token);
+    sent += end - start;
+    onProgress?.({ bytes: Math.min(sent, file.size), bytesTotal: file.size });
+  }
+
+  return completeUploadSessionRequest(session.id);
+}
+
+// ── deal Q&A (QA - 0001 / 0002 / 0003) ──────────────────────────────────────
+
+export function listQaCategoriesRequest(companyId, options = {}) {
+  return request(`/qa/companies/${companyId}/categories`, options);
+}
+
+export function replaceQaNomineesRequest(companyId, categoryId, userIds, options = {}) {
+  return request(`/qa/companies/${companyId}/categories/${categoryId}/nominees`, {
+    ...options,
+    method: 'PUT',
+    body: { user_ids: userIds },
+  });
+}
+
+export function listQaItemsRequest(companyId, query = {}, options = {}) {
+  const params = new URLSearchParams();
+  if (query.categoryId) params.set('category_id', query.categoryId);
+  if (query.status) params.set('status', query.status);
+  if (query.mine) params.set('mine', query.mine);
+  const qs = params.toString();
+  return request(`/qa/companies/${companyId}/items${qs ? `?${qs}` : ''}`, options);
+}
+
+export function createQaItemRequest(companyId, input, options = {}) {
+  return request(`/qa/companies/${companyId}/items`, { ...options, method: 'POST', body: input });
+}
+
+export function getQaItemRequest(itemId, options = {}) {
+  return request(`/qa/items/${itemId}`, options);
+}
+
+export function updateQaItemRequest(itemId, patch, options = {}) {
+  return request(`/qa/items/${itemId}`, { ...options, method: 'PATCH', body: patch });
+}
+
+export function replaceQaAssigneesRequest(itemId, userIds, kind, note, options = {}) {
+  return request(`/qa/items/${itemId}/assignees`, {
+    ...options,
+    method: 'POST',
+    body: { user_ids: userIds, kind: kind || 'requestee', ...(note ? { note } : {}) },
+  });
+}
+
+/**
+ * Post a response.
+ *
+ * `supersedesId` is how a correction is expressed — a new response pointing at
+ * the one it replaces. There is deliberately no edit call here, because a posted
+ * response is immutable and the server serves no route that could change one.
+ */
+export function postQaResponseRequest(itemId, body, { kind = 'answer', supersedesId } = {}, options = {}) {
+  return request(`/qa/items/${itemId}/responses`, {
+    ...options,
+    method: 'POST',
+    body: { body, kind, ...(supersedesId ? { supersedes_id: supersedesId } : {}) },
+  });
+}
+
+/** The broker's reworded version — a separate object, never an edit of the answer. */
+export function writeQaPresentationRequest(itemId, sourceResponseId, body, options = {}) {
+  return request(`/qa/items/${itemId}/presentation`, {
+    ...options,
+    method: 'POST',
+    body: { source_response_id: sourceResponseId, body },
+  });
+}
+
+export function publishQaPresentationRequest(itemId, presentationId, options = {}) {
+  return request(`/qa/items/${itemId}/presentation/${presentationId}/publish`, {
+    ...options,
+    method: 'POST',
+  });
+}
+
+export function attachQaDocumentRequest(itemId, documentId, folderId, responseId, options = {}) {
+  return request(`/qa/items/${itemId}/attachments`, {
+    ...options,
+    method: 'POST',
+    body: { document_id: documentId, folder_id: folderId, ...(responseId ? { response_id: responseId } : {}) },
+  });
+}
+
+export function setQaVisibilityRequest(itemId, rule, options = {}) {
+  return request(`/qa/items/${itemId}/visibility`, { ...options, method: 'POST', body: rule });
+}
+
+// ── the CIM builder (CM - 0001 / 0004) ──────────────────────────────────────
+
+export function listCimDecksRequest(companyId, options = {}) {
+  return request(`/cim/companies/${companyId}/decks`, options);
+}
+
+export function createCimDeckRequest(companyId, name, options = {}) {
+  return request(`/cim/companies/${companyId}/decks`, { ...options, method: 'POST', body: { name } });
+}
+
+export function listCimVersionsRequest(deckId, options = {}) {
+  return request(`/cim/decks/${deckId}/versions`, options);
+}
+
+export function createCimDraftRequest(deckId, options = {}) {
+  return request(`/cim/decks/${deckId}/versions`, { ...options, method: 'POST' });
+}
+
+export function getCimVersionRequest(versionId, options = {}) {
+  return request(`/cim/versions/${versionId}`, options);
+}
+
+export function saveCimBlocksRequest(versionId, payload, options = {}) {
+  return request(`/cim/versions/${versionId}/blocks`, { ...options, method: 'PUT', body: payload });
+}
+
+export function listCimGapsRequest(versionId, options = {}) {
+  return request(`/cim/versions/${versionId}/gaps`, options);
+}
+
+export function generateCimQuestionsRequest(versionId, questions, options = {}) {
+  return request(`/cim/versions/${versionId}/questions`, {
+    ...options,
+    method: 'POST',
+    body: { questions },
+  });
+}
+
+export function listCimReviewQueueRequest(versionId, options = {}) {
+  return request(`/cim/versions/${versionId}/review-queue`, options);
+}
+
+export function acceptCimAnswerRequest(blockId, input, options = {}) {
+  return request(`/cim/blocks/${blockId}/accept-answer`, { ...options, method: 'POST', body: input });
+}
+
+export function discardCimAnswerRequest(blockId, input, options = {}) {
+  return request(`/cim/blocks/${blockId}/discard-answer`, { ...options, method: 'POST', body: input });
+}
+
+export function getCimHealthRequest(versionId, options = {}) {
+  return request(`/cim/versions/${versionId}/health`, options);
+}

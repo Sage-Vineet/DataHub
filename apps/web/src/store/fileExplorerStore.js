@@ -16,6 +16,8 @@ import {
   unarchiveDocument,
   unarchiveFolder,
   uploadFile,
+  uploadFileChunked,
+  CHUNK_THRESHOLD_BYTES,
   updateFolder,
 } from '../lib/api';
 
@@ -506,6 +508,33 @@ export const useFileExplorerStore = create(
         set({ tree: newTree, selectedItems: [], dragOver: null, draggingItems: [], contextMenu: null });
       },
 
+      /**
+       * Server capabilities, mirrored onto the store.
+       *
+       * The store is used from several components and cannot call a hook, so the
+       * flags are pushed in once when the explorer mounts. Both default FALSE:
+       * an unknown capability has to behave as absent, or a switched-off feature
+       * produces a request that falls through the gateway proxy to legacy.
+       */
+      versioningEnabled: false,
+      chunkedUploadEnabled: false,
+
+      /**
+       * The document whose versions and comments are open.
+       *
+       * Held here rather than threaded as props, because the menus that open it
+       * sit four components deep and already reach the store directly for
+       * `deleteItems`. One more shared field beats four more props.
+       */
+      detailDocument: null,
+      openDocumentDetail: (doc) => set({ detailDocument: doc }),
+      closeDocumentDetail: () => set({ detailDocument: null }),
+      setCapabilities: ({ versioning, chunkedUpload }) =>
+        set({
+          versioningEnabled: versioning === true,
+          chunkedUploadEnabled: chunkedUpload === true,
+        }),
+
       uploadFiles: async (parentId, files) => {
         const MAX_FILE_BYTES = 200 * 1024 * 1024; // 200 MB — matches backend limit
         const folder = findById(get().tree, parentId);
@@ -516,23 +545,70 @@ export const useFileExplorerStore = create(
           const names = oversized.map(f => f.name).join(', ');
           throw new Error(`File(s) exceed the 200 MB limit: ${names}`);
         }
+        // A same-name upload is a new VERSION of the existing document when the
+        // data room capability is on. The old behaviour — renaming to "(copy)" in
+        // the browser — is kept verbatim as the flag-off fallback, because with
+        // versioning disabled the server has nowhere to put a second version.
+        const existingByName = new Map(
+          (folder?.children || []).filter(c => c.type === 'file').map(c => [c.name, c.id]),
+        );
+        const versioningOn = get().versioningEnabled;
         const newFiles = Array.from(files).map(f => {
           const ext = f.name.split('.').pop()?.toLowerCase() || '';
           let name = f.name;
+          let documentId = null;
           if (existingNames.has(name)) {
-            warnings.push(name);
-            const baseName = f.name.replace(/\.[^.]+$/, '');
-            name = ext ? `${baseName} (copy).${ext}` : `${baseName} (copy)`;
+            if (versioningOn) {
+              documentId = existingByName.get(name) || null;
+            } else {
+              warnings.push(name);
+              const baseName = f.name.replace(/\.[^.]+$/, '');
+              name = ext ? `${baseName} (copy).${ext}` : `${baseName} (copy)`;
+            }
           }
-          return { file: f, name, ext };
+          return { file: f, name, ext, documentId };
         });
 
         set({ uploadProgress: { total: newFiles.length, done: 0, files: newFiles.map(f => f.name) } });
 
         let done = 0;
         const failedUploads = [];
+        /** Names that became a new version rather than a new file. */
+        const versioned = [];
         for (const fileItem of newFiles) {
           try {
+            // Chunked when the file is large enough to be worth resuming, or
+            // when this is a new version — the session is what tells the server
+            // which document to append to. Below the threshold the single-shot
+            // path is faster and is the one that has always worked.
+            const useChunked =
+              get().chunkedUploadEnabled &&
+              (fileItem.documentId || fileItem.file.size > CHUNK_THRESHOLD_BYTES);
+
+            if (useChunked) {
+              const result = await uploadFileChunked(fileItem.file, {
+                fileName: fileItem.name,
+                folderId: parentId,
+                documentId: fileItem.documentId,
+                onProgress: ({ bytes, bytesTotal }) =>
+                  set(s => ({
+                    uploadProgress: s.uploadProgress
+                      ? { ...s.uploadProgress, bytes, bytesTotal, current: fileItem.name }
+                      : null,
+                  })),
+              });
+              // A new version of an existing document changes no tree node: the
+              // document keeps its identity, which is the whole point.
+              if (fileItem.documentId) {
+                versioned.push(fileItem.name);
+                continue;
+              }
+              // A new document still needs a node, so fall through by refetching.
+              await get().hydrateFromApi(get().companyId);
+              void result;
+              continue;
+            }
+
             const uploaded = await uploadFile(fileItem.file, {
               fileName: fileItem.name,
               prefix: 'documents',
@@ -587,7 +663,7 @@ export const useFileExplorerStore = create(
         }
 
         setTimeout(() => set({ uploadProgress: null }), 2000);
-        return warnings;
+        return { warnings, versioned };
       },
 
       // ── Drag state ──

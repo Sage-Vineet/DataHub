@@ -103,19 +103,19 @@
 
 ## 10. Frontend
 
-- [ ] 10.1 `apps/web/src/store/qaStore.js` — zustand, shaped like `fileExplorerStore.js`.
+- [x] 10.1 `apps/web/src/store/qaStore.js` — zustand, shaped like `fileExplorerStore.js`.
       **No `persist`** (see `demo-platform-hardening` task 5). No react-query — it is not installed
       and this is not the week to introduce it
-- [ ] 10.2 `apps/web/src/lib/api.js` — Q&A wrappers appended in the existing style
-- [ ] 10.3 `WorkspaceQA.jsx` — list with category tabs and "raised by me" / "assigned to me" /
+- [x] 10.2 `apps/web/src/lib/api.js` — Q&A wrappers appended in the existing style
+- [x] 10.3 `WorkspaceQA.jsx` — list with category tabs and "raised by me" / "assigned to me" /
       status filter chips. Steal the layout of `WorkspaceRequests.jsx`, not its code
-- [ ] 10.4 `QAItemDrawer.jsx` — thread, answer composer, delegate control, answer-version
+- [x] 10.4 `QAItemDrawer.jsx` — thread, answer composer, delegate control, answer-version
       disclosure, and the broker presentable panel **side by side with the seller's immutable
       words**, plus an audit tab
-- [ ] 10.5 Nominee picker screen for the seller — a headline demo moment, not a settings page
-- [ ] 10.6 Routes in `apps/web/src/App.jsx`: `dataroom/qa` in the broker workspace block and the
+- [x] 10.5 Nominee picker screen for the seller — a headline demo moment, not a settings page
+- [x] 10.6 Routes in `apps/web/src/App.jsx`: `dataroom/qa` in the broker workspace block and the
       equivalent in the client block so the seller persona has it
-- [ ] 10.7 Route element gated on `useFeature('qa')` **above any data fetch**, so a disabled module
+- [x] 10.7 Route element gated on `useFeature('qa')` **above any data fetch**, so a disabled module
       issues no request that could fall through the proxy to legacy (`design.md` D9)
 - [ ] 10.8 iPad: 44px tap targets, no hover-only affordances, drawer full-screen below `lg`
 

@@ -21,11 +21,13 @@ import {
   BarChart3,
   TrendingUp,
   MessageSquare,
+  MessageSquareText,
   Calculator,
   FileCheck,
   FileText,
   Target,
 } from "lucide-react";
+import { useFeature } from "../../context/useFeature";
 import { useAuth } from "../../context/AuthContext";
 import { useMessageNotifications } from "../../context/MessageNotificationsContext";
 import { listCompaniesRequest } from "../../lib/api";
@@ -137,6 +139,7 @@ function WorkspaceSidebar({ company, onClose }) {
   }, [showUserMenu]);
 
   const basePath = `/broker/client/${clientId}`;
+  const qaEnabled = useFeature("qa");
 
   const profitMetricConfig = getProfitMetricConfig(company);
 
@@ -150,6 +153,11 @@ function WorkspaceSidebar({ company, onClose }) {
       children: [
         { label: "Requests", icon: ClipboardList, to: `${basePath}/dataroom/requests` },
         { label: "Documents", icon: FileText, to: `${basePath}/dataroom/documents` },
+        // Omitted entirely when the module is off — not greyed out. A disabled
+        // feature the user can still click is worse than one they cannot see.
+        ...(qaEnabled
+          ? [{ label: "Q&A", icon: MessageSquareText, to: `${basePath}/dataroom/qa` }]
+          : []),
         { label: "Messages", icon: MessageSquare, to: `${basePath}/dataroom/messages` },
         { label: "Reminders", icon: Bell, to: `${basePath}/dataroom/reminders` },
       ],
