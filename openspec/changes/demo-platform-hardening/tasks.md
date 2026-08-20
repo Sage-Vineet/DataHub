@@ -19,8 +19,12 @@
 - [x] 2.1 `tools/demo/up.sh` steps 2, 3 and the `0002` line of step 5 collapse into one
       `db:migrate` call, preserving the order: legacy `schema.sql` (tolerant) → legacy `049` →
       legacy `050` → `db:migrate` → `seed.sql` → backfill → `seed-qoe`
-- [ ] 2.2 Cold `docker compose -f docker-compose.demo.yml down -v && ./tools/demo/up.sh` goes green,
-      including every existing curl assertion
+- [x] 2.2 Cold `docker compose -f docker-compose.demo.yml down -v && ./tools/demo/up.sh` goes green,
+      including every existing curl assertion — 57/57, exit 0, from an empty volume. Needed
+      `DEMO_BUILD_HOST_NETWORK=1` on this machine: BuildKit's per-step netns cannot reach
+      registry.npmjs.org even though the host and ordinary containers can. Re-running against the
+      same database is also green, which it was not before — the seller-path check depended on a
+      virgin database
 - [x] 2.3 `openspec/changes/devenv-schema-bootstrap` reconciled: 1.1, 1.2, 2.1, 2.2 and 2.3 closed
       by the runner and the rewritten `load-schema`; a new 2.4 restates the half that remains —
       the legacy schema still has no authoritative source, which is Phase C's
