@@ -83,6 +83,37 @@ Below an 8 MB threshold the client keeps using the existing single-shot `uploadF
 and it is the proven path. Chunking earns its keep on large files only, which is also where the
 progress bar is the story.
 
+## D4a — The `document_status` drift is load-bearing, not cosmetic
+
+The proposal lists reconciling `document_status` as a Non-goal — "a half-day
+rabbit hole with zero demo payoff". Running against the real schema showed the
+second half of that is wrong.
+
+The deployed enum is `verified | under-review | rejected`. `packages/db` declares
+`active | processing | error`. **The two share no value.** `documents.status` is
+NOT NULL with no database default, so inserting a document through the Drizzle
+model against the real schema emits either `DEFAULT` — which the column does not
+have — or a label the type rejects. Either way the insert fails.
+
+That is not confined to this change. The shipped `uploads` module's
+`createDocument` has the same shape, and its integration test declares
+`('active','processing','error')` — the model's vocabulary rather than the
+database's — so the test passes and the path could never have worked in
+production. It has not surfaced because `UPLOADS_MODULE_ENABLED` has never been
+flipped on against a real database.
+
+**What this change does.** `DrizzleDocumentRefPort.create` writes the row with
+explicit SQL and an explicit `'under-review'`, and the three integration tests now
+declare the enum the deployed database actually has. Modelling the real one is the
+point: a test DDL that invents a friendlier schema cannot catch this class of bug,
+and this one was invisible precisely because it did.
+
+**What it does not do.** Pick a winner. Both vocabularies are in use — the SPA
+writes `'under-review'`, the model expects `'active'` — so reconciling means
+rewriting existing rows and deciding which meaning survives. That belongs in its
+own change with the data in front of it, and the uploads module's insert path
+should be fixed in the same one.
+
 ## D5 — The route-contract guard, and the mistake to avoid
 
 `route-contract.test.ts` iterates `moduleSurfaces()` at `apps/api/src/parity/routes.ts:111-124`,

@@ -25,7 +25,10 @@ const DDL = `
 CREATE TYPE company_status AS ENUM ('active','inactive');
 CREATE TYPE user_role AS ENUM ('admin','broker','buyer');
 CREATE TYPE user_status AS ENUM ('active','inactive');
-CREATE TYPE document_status AS ENUM ('active','processing','error');
+-- The enum the deployed database actually has. packages/db declares
+-- ('active','processing','error') instead, which shares no value with it — a
+-- drift that is real and is why document inserts here use explicit SQL.
+CREATE TYPE document_status AS ENUM ('verified','under-review','rejected');
 CREATE TABLE companies (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, project_name text, industry text,
   status company_status NOT NULL DEFAULT 'active', since date, logo text,
@@ -62,7 +65,7 @@ CREATE TABLE documents (
   company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   folder_id uuid NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
   name text NOT NULL, file_url text, upload_id uuid REFERENCES uploads(id) ON DELETE SET NULL,
-  size text NOT NULL, ext text NOT NULL, status document_status NOT NULL DEFAULT 'active',
+  size text NOT NULL, ext text NOT NULL, status document_status NOT NULL DEFAULT 'under-review',
   uploaded_by uuid NOT NULL, uploaded_at timestamptz NOT NULL DEFAULT now(), archived_at timestamptz,
   current_version_id uuid, version_count integer NOT NULL DEFAULT 1
 );

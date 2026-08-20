@@ -77,10 +77,10 @@
 
 ## 7. PDF export and publish
 
-- [ ] 7.1 `apps/web/src/features/cim/cimPdfExport.js` — offscreen `SlideCanvas` + `html2canvas` +
+- [x] 7.1 `apps/web/src/features/cim/cimPdfExport.js` — offscreen `SlideCanvas` + `html2canvas` +
       `jsPDF`; cover, table of contents, page numbers, footer and confidentiality legend drawn as
       **text primitives, not rasterised**; draft watermark when not published
-- [ ] 7.2 Watchdog with a readable failure toast rather than an endless spinner; determinate
+- [x] 7.2 Watchdog with a readable failure toast rather than an endless spinner; determinate
       progress with slide thumbnails
 - [ ] 7.3 Pin the font stack in `SlideCanvas` so screen and PDF agree (`design.md` D5)
 - [x] 7.4 `POST /cim/versions/:id/publish` — raw bytes following the existing `POST /uploads`
@@ -105,7 +105,7 @@
 - [ ] 9.2 Extract `apps/web/src/features/cim/layout.js` — `extractTemplateFields`,
       `applyFieldValues`, `getElementDisplayText`, `buildChartSvg`, `getElementStyle`,
       `parseTableText`, `SECTION_SLIDES`, `BASIC_DETAIL_FIELD_DEFINITIONS`
-- [ ] 9.3 `apps/web/src/features/cim/cimApi.js` — the `/cim` client plus the block↔`fieldValues`
+- [x] 9.3 `apps/web/src/features/cim/cimApi.js` — the `/cim` client plus the block↔`fieldValues`
       adapter
 - [ ] 9.4 Re-point `WorkspaceCimPrep.jsx` persistence. **Blocked, and not by effort**: the SPA's
       field ids are derived from the 38 layout JSONs (`makeFieldId`, line 1158), so a deck created

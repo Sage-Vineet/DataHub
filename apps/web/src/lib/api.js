@@ -1938,6 +1938,35 @@ export function discardCimAnswerRequest(blockId, input, options = {}) {
   return request(`/cim/blocks/${blockId}/discard-answer`, { ...options, method: 'POST', body: input });
 }
 
+/**
+ * Freeze a version around the rendered document.
+ *
+ * Raw bytes, like the other binary route here — the server hashes them, stores
+ * them, lands a tracked document in the data room and locks the version.
+ * Immutability is that write-lock plus the content hash, not where the pixels
+ * came from.
+ */
+export async function publishCimVersionRequest(versionId, blob, { pageCount } = {}) {
+  const token = getStoredToken();
+  const headers = { 'Content-Type': 'application/pdf', 'Cache-Control': 'no-store' };
+  if (pageCount) headers['X-Page-Count'] = String(pageCount);
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const response = await fetch(buildUrl(`/cim/versions/${versionId}/publish`), {
+    method: 'POST',
+    headers,
+    body: blob,
+    cache: 'no-store',
+    credentials: 'include',
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const error = new Error(data?.error || 'Publish failed');
+    error.status = response.status;
+    throw error;
+  }
+  return data;
+}
+
 export function getCimHealthRequest(versionId, options = {}) {
   return request(`/cim/versions/${versionId}/health`, options);
 }

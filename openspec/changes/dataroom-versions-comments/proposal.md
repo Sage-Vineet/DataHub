@@ -90,8 +90,11 @@ paths they serve.
   (`DR - 0006`), **folder templates** (`DR - 0002`), **deal team** (`DR - 0009`), zip download of a
   folder, and data room search. All specified in `openspec/product/specs/data-room/spec.md`; none is
   needed for the demo.
-- **Schema drift reconciliation.** The `document_status` enum divergence between `backend/sql/` and
-  Drizzle, the `document_activity` column-name divergence, and the missing `uploads.storage_path` /
-  `file_references` Drizzle declarations are left exactly as they are. Each is a half-day with no
-  demo payoff and each risks the flag-off legacy path.
+- **Schema drift reconciliation.** The `document_activity` column-name divergence and the missing
+  `uploads.storage_path` / `file_references` Drizzle declarations are left exactly as they are.
+  **Amended:** the `document_status` divergence turned out to be load-bearing rather than
+  cosmetic — the two vocabularies share no value, so document inserts through the Drizzle model
+  cannot work against the real schema, and that affects the shipped `uploads` module too. This
+  change works around it locally and records the finding; reconciling it needs its own change
+  because both vocabularies are in live use. See `design.md` D4a.
 - **Comment replies.** `parent_id` ships on the table; threading UI does not.

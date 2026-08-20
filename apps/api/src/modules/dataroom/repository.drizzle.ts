@@ -498,6 +498,25 @@ export class DrizzleDocumentRefPort implements DocumentRefPort {
       .where(eq(documents.id, documentId));
   }
 
+  /**
+   * Create a document row.
+   *
+   * Written as raw SQL for one reason, and it is not style. `documents.status` is
+   * NOT NULL with no database default, and the deployed `document_status` enum is
+   * `verified | under-review | rejected` while `packages/db` declares
+   * `active | processing | error` — the two have NO value in common. Inserting
+   * through the Drizzle model therefore emits either `DEFAULT` (which the column
+   * has none of) or a label the type rejects, and the insert fails outright
+   * against the real schema.
+   *
+   * That drift is documented in `packages/db/src/drift.ts` and was deferred as
+   * backlog; it turns out to be load-bearing rather than cosmetic. See the
+   * change's design notes — reconciling the enum belongs in its own change,
+   * because both vocabularies are in use and picking one rewrites existing rows.
+   *
+   * `size` is a text column in the legacy schema — a display string, not a
+   * number — and is left that way.
+   */
   async create(input: {
     companyId: string;
     folderId: string;
@@ -507,22 +526,20 @@ export class DrizzleDocumentRefPort implements DocumentRefPort {
     ext: string;
     uploadedBy: string;
   }): Promise<{ id: string }> {
-    const [row] = await this.db
-      .insert(documents)
-      .values({
-        companyId: input.companyId,
-        folderId: input.folderId,
-        name: input.name,
-        uploadId: input.uploadId,
-        // `documents.size` is a text column in the legacy schema — a display
-        // string, not a number. Kept as-is rather than reconciled here.
-        size: String(input.sizeBytes),
-        ext: input.ext,
-        fileUrl: null,
-        uploadedBy: input.uploadedBy,
-        versionCount: 0,
-      })
-      .returning({ id: documents.id });
-    return { id: row!.id };
+    const rows = await this.db.execute<{ id: string }>(sql`
+      INSERT INTO ${documents}
+        (company_id, folder_id, name, file_url, upload_id, size, ext, status, uploaded_by, version_count)
+      VALUES (
+        ${input.companyId}, ${input.folderId}, ${input.name}, '',
+        ${input.uploadId}, ${String(input.sizeBytes)}, ${input.ext},
+        'under-review', ${input.uploadedBy}, 0
+      )
+      RETURNING id
+    `);
+    const list = (rows as unknown as { rows?: Array<{ id: string }> }).rows
+      ?? (rows as unknown as Array<{ id: string }>);
+    const row = list[0];
+    if (!row) throw new Error("document insert returned no row");
+    return { id: row.id };
   }
 }

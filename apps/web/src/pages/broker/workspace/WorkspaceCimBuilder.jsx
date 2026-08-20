@@ -21,8 +21,10 @@ import {
   listCimGapsRequest,
   listCimReviewQueueRequest,
   listCimVersionsRequest,
+  publishCimVersionRequest,
   saveCimBlocksRequest,
 } from '../../../lib/api';
+import { buildCimPdf } from '../../../features/cim/cimPdfExport';
 
 /**
  * The CIM builder.
@@ -181,6 +183,59 @@ export default function WorkspaceCimBuilder() {
     }
   }
 
+  /**
+   * Render the deck and freeze the version around it.
+   *
+   * Rendering is text-primitive jsPDF, so it finishes in well under a second
+   * even on a tablet — but a watchdog still bounds it, because a publish button
+   * that spins forever in front of a stranger is worse than one that says it
+   * failed.
+   */
+  async function publish() {
+    if (!detail) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const { blob, pageCount } = await Promise.race([
+        Promise.resolve().then(() =>
+          buildCimPdf({
+            deckName: deck.name,
+            cover: detail.cover,
+            versionNo: detail.version.version_no,
+            status: detail.version.status,
+            sections: detail.sections,
+          }),
+        ),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Rendering took too long — try again.')), 25_000),
+        ),
+      ]);
+      await publishCimVersionRequest(deck.current_version_id, blob, { pageCount });
+      const decks = await listCimDecksRequest(clientId);
+      const next = decks.find((d) => d.id === deck.id) ?? decks[0];
+      setDecks(decks);
+      setDeck(next);
+      apply(await loadDeck(next.current_version_id, next.id));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Preview without freezing anything — the same renderer, opened in a tab. */
+  function preview() {
+    if (!detail) return;
+    const { blob } = buildCimPdf({
+      deckName: deck.name,
+      cover: detail.cover,
+      versionNo: detail.version.version_no,
+      status: detail.version.status,
+      sections: detail.sections,
+    });
+    window.open(URL.createObjectURL(blob), '_blank', 'noopener');
+  }
+
   async function saveBlock(block, value) {
     setBusy(true);
     try {
@@ -257,11 +312,30 @@ export default function WorkspaceCimBuilder() {
             type="button"
             disabled={gaps.length === 0}
             onClick={() => setComposing((v) => !v)}
-            className={`${TAP} inline-flex items-center gap-2 rounded-xl bg-[#05164D] text-sm font-medium text-white disabled:opacity-50`}
+            className={`${TAP} inline-flex items-center gap-2 rounded-xl border border-[#E5E7EB] bg-white text-sm font-medium text-[#374151] disabled:opacity-50`}
           >
             <Send size={16} />
             Request missing info ({gaps.length})
           </button>
+          <button
+            type="button"
+            onClick={preview}
+            className={`${TAP} inline-flex items-center gap-2 rounded-xl border border-[#E5E7EB] bg-white text-sm font-medium text-[#374151]`}
+          >
+            <FileText size={16} />
+            Preview
+          </button>
+          {health?.publishable && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={publish}
+              className={`${TAP} inline-flex items-center gap-2 rounded-xl bg-[#05164D] text-sm font-medium text-white disabled:opacity-60`}
+            >
+              {busy ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />}
+              Publish to the data room
+            </button>
+          )}
         </div>
       </div>
 
