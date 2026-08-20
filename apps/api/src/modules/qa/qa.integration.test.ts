@@ -506,6 +506,120 @@ describe("visibility runs inside the query (real Postgres)", () => {
   });
 });
 
+describe("evidence attaches to an answer (real Postgres)", () => {
+  /**
+   * A document inserted the way the deployed database requires.
+   *
+   * `documents.status` is NOT NULL with no overlap between the deployed enum and
+   * the one packages/db declares, so this goes in as explicit SQL with an
+   * explicit `under-review` rather than through Drizzle.
+   */
+  async function fileInDataRoom(name: string) {
+    const folderId = randomUUID();
+    const documentId = randomUUID();
+    await client.exec(`
+      INSERT INTO folders (id, company_id, name, created_by)
+      VALUES ('${folderId}', '${companyId}', 'Legal', '${BROKER_ID}');
+      INSERT INTO documents (id, company_id, folder_id, name, size, ext, status, uploaded_by)
+      VALUES ('${documentId}', '${companyId}', '${folderId}', '${name}', '12 KB', 'pdf',
+              'under-review', '${SELLER_ID}');
+    `);
+    return { folderId, documentId };
+  }
+
+  it("returns the attachment on the answer it was bound to", async () => {
+    const item = await ask();
+    current = seller;
+    const answer = await request(app)
+      .post(`/qa/items/${item.id}/responses`)
+      .send({ body: "Attached the signed lease.", kind: "answer" });
+    const { folderId, documentId } = await fileInDataRoom("lease.pdf");
+
+    const attached = await request(app)
+      .post(`/qa/items/${item.id}/attachments`)
+      .send({ document_id: documentId, folder_id: folderId, response_id: answer.body.id });
+    expect(attached.status).toBe(204);
+
+    current = broker;
+    const detail = await request(app).get(`/qa/items/${item.id}`);
+    const withFile = detail.body.responses.find(
+      (r: { attachments: unknown[] }) => r.attachments.length > 0,
+    );
+    expect(withFile.id).toBe(answer.body.id);
+    expect(withFile.attachments[0]).toMatchObject({ document_id: documentId, folder_id: folderId, name: "lease.pdf" });
+  });
+
+  it("binds to the current answer when the caller names no response", async () => {
+    // The client attaches straight after answering and does not always have the
+    // response id to hand. Without this the row is written and never returned.
+    const item = await ask();
+    current = seller;
+    await request(app).post(`/qa/items/${item.id}/responses`).send({ body: "Here it is.", kind: "answer" });
+    const { folderId, documentId } = await fileInDataRoom("aging.xlsx");
+
+    await request(app)
+      .post(`/qa/items/${item.id}/attachments`)
+      .send({ document_id: documentId, folder_id: folderId })
+      .expect(204);
+
+    const detail = await request(app).get(`/qa/items/${item.id}`);
+    const names = detail.body.responses.flatMap((r: { attachments: Array<{ name: string }> }) =>
+      r.attachments.map((a) => a.name),
+    );
+    expect(names).toEqual(["aging.xlsx"]);
+  });
+
+  it("records one row when the same document is attached twice", async () => {
+    // The seller's client retries a failed link against the document it already
+    // uploaded. That retry is only safe because the second attach is a no-op.
+    const item = await ask();
+    current = seller;
+    const answer = await request(app)
+      .post(`/qa/items/${item.id}/responses`)
+      .send({ body: "Attached.", kind: "answer" });
+    const { folderId, documentId } = await fileInDataRoom("lease.pdf");
+    const body = { document_id: documentId, folder_id: folderId, response_id: answer.body.id };
+
+    await request(app).post(`/qa/items/${item.id}/attachments`).send(body).expect(204);
+    await request(app).post(`/qa/items/${item.id}/attachments`).send(body).expect(204);
+
+    const rows = await client.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM qa_attachments WHERE document_id = $1`,
+      [documentId],
+    );
+    expect(rows.rows[0]!.n).toBe(1);
+
+    const detail = await request(app).get(`/qa/items/${item.id}`);
+    const all = detail.body.responses.flatMap((r: { attachments: unknown[] }) => r.attachments);
+    expect(all).toHaveLength(1);
+  });
+
+  it("refuses a document belonging to another deal", async () => {
+    const item = await ask();
+    const otherCompany = randomUUID();
+    const folderId = randomUUID();
+    const documentId = randomUUID();
+    await client.exec(`
+      INSERT INTO companies (id, name) VALUES ('${otherCompany}', 'Other Co');
+      INSERT INTO folders (id, company_id, name, created_by)
+      VALUES ('${folderId}', '${otherCompany}', 'Legal', '${BROKER_ID}');
+      INSERT INTO documents (id, company_id, folder_id, name, size, ext, status, uploaded_by)
+      VALUES ('${documentId}', '${otherCompany}', '${folderId}', 'theirs.pdf', '1 KB', 'pdf',
+              'under-review', '${BROKER_ID}');
+    `);
+
+    const res = await request(app)
+      .post(`/qa/items/${item.id}/attachments`)
+      .send({ document_id: documentId, folder_id: folderId });
+
+    expect(res.status).toBe(403);
+    const rows = await client.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM qa_attachments`,
+    );
+    expect(rows.rows[0]!.n).toBe(0);
+  });
+});
+
 describe("assignment history (real Postgres)", () => {
   it("records who moved an item, and from what to what", async () => {
     const item = await ask({ requestee_ids: [SELLER_ID] });
