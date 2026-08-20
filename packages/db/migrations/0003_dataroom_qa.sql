@@ -329,7 +329,14 @@ CREATE TABLE IF NOT EXISTS qa_item_visibility (
 
 CREATE INDEX IF NOT EXISTS idx_qa_item_visibility_item ON qa_item_visibility (item_id);
 
--- Seed each existing company's categories from the request_category vocabulary.
+-- Backfill categories for companies that already exist.
+--
+-- Note what this does NOT do: a company created after this migration runs gets no
+-- categories from here. That is the Q&A service's job — it provisions a company's
+-- categories on first use, the way folders are provisioned — and this statement
+-- only covers the companies that predate the feature. On a freshly-built database
+-- it correctly does nothing, because there are no companies yet.
+--
 -- Idempotent: ON CONFLICT keeps a re-run from duplicating.
 INSERT INTO qa_categories (company_id, key, label, sort_order)
 SELECT c.id, v.key, v.label, v.sort_order

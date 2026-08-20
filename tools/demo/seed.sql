@@ -60,4 +60,28 @@ ON CONFLICT (id) DO NOTHING;
 UPDATE folders SET archived_at = now()
 WHERE id = 'c0000000-0000-4000-8000-000000000002' AND archived_at IS NULL;
 
+-- Q&A categories for the seeded companies.
+--
+-- Migration 0003 backfills these for companies that exist WHEN IT RUNS, which on
+-- a fresh stack is none — the schema lands at step 3 and these rows at step 4.
+-- That ordering is not a bug in the migration (a real deployment has companies
+-- already), but it does mean the demo would come up with no categories.
+--
+-- The durable answer is that the Q&A service provisions a company's categories on
+-- first use, the way folders are provisioned; this seed is the demo's copy of the
+-- same vocabulary so the data is there before anyone clicks.
+INSERT INTO qa_categories (company_id, key, label, sort_order)
+SELECT c.id, v.key, v.label, v.sort_order
+FROM companies c
+CROSS JOIN (VALUES
+  ('finance',    'Finance',    1),
+  ('legal',      'Legal',      2),
+  ('compliance', 'Compliance', 3),
+  ('hr',         'HR',         4),
+  ('tax',        'Tax',        5),
+  ('ma',         'M&A',        6),
+  ('other',      'Other',      7)
+) AS v(key, label, sort_order)
+ON CONFLICT (company_id, key) DO NOTHING;
+
 COMMIT;

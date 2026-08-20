@@ -22,8 +22,12 @@
       root
 - [x] 2.3 `qa_item_visibility` uses the exclusive-subject CHECK idiom already at
       `packages/db/src/schema.ts:157-175` (`(user_id IS NOT NULL) <> (role_key IS NOT NULL)`)
-- [x] 2.4 Seed each company's `qa_categories` from the `request_category` vocabulary (see
-      `design.md` D2)
+- [x] 2.4 Backfill `qa_categories` for existing companies from the `request_category`
+      vocabulary (see `design.md` D2)
+- [ ] 4.0 **Provision a company's categories on first use**, idempotently, the way folders are
+      provisioned. The migration backfill only covers companies that predate the feature; a
+      company created afterwards would otherwise have none. Found by bringing up a cold demo
+      stack, where the backfill correctly did nothing because the seed had not run yet
 - [x] 2.5 `.down.sql`; Drizzle declarations; `schema.test.ts` assertions
 - [x] 2.6 `text` + `CHECK` rather than `pgEnum` for the new status columns — deviation recorded in
       `design.md` D6

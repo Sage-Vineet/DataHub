@@ -4,11 +4,12 @@
 # Database bootstrap still takes several steps, because no single artefact in this
 # repo can build a working database — but the Drizzle half of it is now one call:
 #
-#   1. backend/sql/schema.sql   the legacy world. Does NOT apply cleanly — line 278
-#                               indexes bank_transactions(client_id), a column the
-#                               table never declares. Loaded WITHOUT ON_ERROR_STOP
-#                               so that one known-bad statement is skipped and
-#                               reported, instead of aborting the whole load.
+#   1. backend/sql/schema.sql   the legacy world. Does NOT apply cleanly: it ends
+#                               with 14 statements that index or constrain six
+#                               tables it never creates — ebitda_adjustments and
+#                               its four satellites, plus dataset_versions.
+#                               Loaded WITHOUT ON_ERROR_STOP so those are skipped
+#                               and reported instead of aborting the whole load.
 #   2. legacy 049/050           key-report entry tables and the general-ledger
 #                               columns that 0002_qoe_bridge ALTERs. They must land
 #                               before the migration runner, which is the only
@@ -76,11 +77,21 @@ for _ in $(seq 1 60); do
 done
 psql_demo -c 'select 1' >/dev/null
 
-step "1/5 Loading the legacy schema (tolerating its one known-bad statement)"
-# No ON_ERROR_STOP: psql reports the bad index and carries on. Anything else that
-# fails here is new and worth reading in the output.
-if psql_demo < backend/sql/schema.sql 2>&1 | grep -E '^(ERROR|psql:)' ; then
-  echo "   ^ expected: bank_transactions(client_id) does not exist (schema.sql:278)"
+step "1/5 Loading the legacy schema (tolerating the objects it never creates)"
+# No ON_ERROR_STOP: psql reports each orphaned statement and carries on. Anything
+# beyond the expected 14 is new and worth reading in the output.
+#
+# The count is asserted rather than described, because a comment saying "one known
+# bad statement" is what this file used to carry — accurate when written, silently
+# wrong once schema.sql moved underneath it.
+schema_errors=$(psql_demo < backend/sql/schema.sql 2>&1 | grep -cE '^ERROR' || true)
+if [[ "$schema_errors" == "14" ]]; then
+  echo "   14 statements skipped, as expected: indexes and constraints on"
+  echo "   ebitda_adjustments (+4 satellites) and dataset_versions, which"
+  echo "   schema.sql references but never creates."
+else
+  echo "   ⚠ expected 14 skipped statements, got ${schema_errors}. The legacy"
+  echo "     schema has changed — read the errors above before trusting this stack."
 fi
 
 step "2/5 Applying the legacy tables the Drizzle migrations build on"
