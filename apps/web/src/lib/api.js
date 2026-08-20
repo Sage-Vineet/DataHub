@@ -1653,3 +1653,21 @@ export function saveTaxReconciliationOverrides({ clientId, overrides } = {}) {
     body: { clientId, overrides },
   });
 }
+
+
+/**
+ * Which greenfield capabilities the gateway is serving.
+ *
+ * Rides on /healthz rather than its own endpoint, because that handler lives on
+ * the gateway app rather than a domain router — so it claims no route surface
+ * the parity guard compares against legacy.
+ *
+ * Unauthenticated on purpose: the answer decides what to render before anyone
+ * has signed in, and it carries no tenant data.
+ */
+export async function fetchFeatures() {
+  const res = await fetch(`${API_BASE_URL}/healthz`, { credentials: 'include' });
+  if (!res.ok) throw new Error(`healthz responded ${res.status}`);
+  const body = await res.json();
+  return body?.features ?? {};
+}

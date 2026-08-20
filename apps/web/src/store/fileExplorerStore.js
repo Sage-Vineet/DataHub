@@ -19,6 +19,42 @@ import {
   updateFolder,
 } from '../lib/api';
 
+/**
+ * The localStorage key this store persists under.
+ *
+ * Scoped to the signed-in user so one person's cached tree and folder grants are
+ * never readable by the next person on the same device. `anon` covers the window
+ * before sign-in, where there is nothing tenant-specific to cache anyway.
+ */
+const STORAGE_PREFIX = 'leo-file-explorer';
+
+export function getScopedStorageName() {
+  try {
+    const id = window.localStorage.getItem('datahub.activeUserId');
+    return id ? `${STORAGE_PREFIX}:${id}` : `${STORAGE_PREFIX}:anon`;
+  } catch {
+    // Private browsing, or storage disabled. An in-memory store is correct here:
+    // nothing persists, so nothing leaks.
+    return `${STORAGE_PREFIX}:anon`;
+  }
+}
+
+/**
+ * Forget everything cached for whoever was signed in.
+ *
+ * Called on sign-out. Clearing on the way out rather than only re-keying on the
+ * way in means a device left at a sign-in screen holds no one's data.
+ */
+export function clearScopedFileExplorerState() {
+  try {
+    for (const key of Object.keys(window.localStorage)) {
+      if (key.startsWith(`${STORAGE_PREFIX}:`)) window.localStorage.removeItem(key);
+    }
+  } catch {
+    // Nothing to clear if storage is unavailable.
+  }
+}
+
 // ── Tree Utilities ──────────────────────────────────────────────────────────
 export function findById(node, id) {
   if (node.id === id) return node;
@@ -584,7 +620,19 @@ export const useFileExplorerStore = create(
         set(s => ({ folderAccess: { ...s.folderAccess, [folderId]: entries } })),
     }),
     {
-      name: 'leo-file-explorer',
+      /**
+       * Keyed by the signed-in user.
+       *
+       * This was a single global key, and what it persists includes `tree` and
+       * `folderAccess` — the latter being what drives the client-side permission
+       * gate. On a shared device (a demo tablet, a hot-desk browser) the next
+       * person to sign in inherited the previous person's folder tree and access
+       * grants until their own load completed.
+       *
+       * `getScopedStorageName` reads the id written at sign-in, so the key moves
+       * with the session rather than with the browser.
+       */
+      name: getScopedStorageName(),
       partialize: s => ({
         tree: s.tree,
         expandedFolders: s.expandedFolders,

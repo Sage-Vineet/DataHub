@@ -38,21 +38,25 @@
 
 ## 4. Client feature degradation
 
-- [ ] 4.1 `apps/web/src/context/FeatureContext.jsx` — fetch `/healthz` once at boot, expose
+- [x] 4.1 `apps/web/src/context/FeatureContext.jsx` — fetch `/healthz` once at boot, expose
       `useFeature(name)`; **every flag false while pending and false on error**
-- [ ] 4.2 Provider mounted above the router in `apps/web/src/App.jsx`
+- [x] 4.2 Provider mounted above the router in `apps/web/src/App.jsx`
 - [ ] 4.3 Navigation entries for disabled features are **not rendered** — not disabled, not greyed
 - [ ] 4.4 Route elements for disabled features render a plain "coming soon" card, gated **above** any
       data fetch, so no request reaches the gateway and falls through to legacy
-- [ ] 4.5 Vitest + @testing-library/react: pending renders nothing; error renders nothing; enabled
-      renders the entry. (First tests in `apps/web` — establishes the pattern.)
+- [x] 4.5 Vitest over the pure logic: the payload parses, a non-OK response rejects rather than
+      reporting "no features", an unreachable gateway rejects, and the request carries credentials.
+      **First tests in `apps/web`.** A render test for the provider needs jsdom and
+      @testing-library/react, which `apps/web` does not depend on — deferred rather than added
+      during a week when the registry is intermittent
+- [ ] 4.6 Provider render test once jsdom + @testing-library/react are added to `apps/web`
 
 ## 5. Per-user client persistence
 
-- [ ] 5.1 `apps/web/src/store/fileExplorerStore.js:586-595` — `persist` `name` keyed by signed-in
+- [x] 5.1 `apps/web/src/store/fileExplorerStore.js:586-595` — `persist` `name` keyed by signed-in
       user id instead of the global `leo-file-explorer`
-- [ ] 5.2 Persisted state cleared on sign-out in `AuthContext`
-- [ ] 5.3 Vitest: two user ids write to two keys; sign-out clears; no `folderAccess` survives a
+- [x] 5.2 Persisted state cleared on sign-out in `AuthContext`
+- [x] 5.3 Vitest: two user ids write to two keys; sign-out clears; no `folderAccess` survives a
       user switch
 
 ## 6. Seed data and reset

@@ -10,6 +10,7 @@ import {
 } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
 import { AuthProvider, useAuth } from "./context/AuthContext";
+import { FeatureProvider } from "./context/FeatureContext";
 import { MessageNotificationsProvider } from "./context/MessageNotificationsContext";
 import { ToastProvider, useToast } from "./context/ToastContext";
 import { DataSourceProvider } from "./context/DataSourceContext";
@@ -499,17 +500,24 @@ function AppRoutes() {
 export default function App() {
   return (
     <HashRouter>
-      <AuthProvider>
-        <MessageNotificationsProvider>
-          <ToastProvider>
-            <DataSourceProvider>
-              <ErrorBoundary>
-                <AppRoutes />
-              </ErrorBoundary>
-            </DataSourceProvider>
-          </ToastProvider>
-        </MessageNotificationsProvider>
-      </AuthProvider>
+      {/*
+        Outside AuthProvider on purpose: which capabilities exist is a property
+        of the deployment, not of the session, and the answer is needed to decide
+        what to render before anyone has signed in.
+      */}
+      <FeatureProvider>
+        <AuthProvider>
+          <MessageNotificationsProvider>
+            <ToastProvider>
+              <DataSourceProvider>
+                <ErrorBoundary>
+                  <AppRoutes />
+                </ErrorBoundary>
+              </DataSourceProvider>
+            </ToastProvider>
+          </MessageNotificationsProvider>
+        </AuthProvider>
+      </FeatureProvider>
     </HashRouter>
   );
 }
