@@ -434,6 +434,7 @@ export class CimService {
     const [answers, decided, sections, slides] = await Promise.all([
       this.deps.qa.listAnswers({
         companyId: deck.companyId,
+        actingUserId: user.id,
         externalRefs: blocks.map((b) => b.id),
       }),
       this.deps.provenance.decidedResponseIds(versionId),
@@ -485,6 +486,7 @@ export class CimService {
 
     const answers = await this.deps.qa.listAnswers({
       companyId: deck.companyId,
+      actingUserId: user.id,
       externalRefs: [blockId],
     });
     const answer = answers.find((a) => a.responseId === input.qa_response_id);
@@ -555,6 +557,7 @@ export class CimService {
     const { deck } = await this.requireOpenVersion(user, block.versionId);
     const answers = await this.deps.qa.listAnswers({
       companyId: deck.companyId,
+      actingUserId: user.id,
       externalRefs: [blockId],
     });
     const answer = answers.find((a) => a.responseId === input.qa_response_id);
@@ -580,6 +583,7 @@ export class CimService {
     const outstanding = this.deps.qa.available
       ? await this.deps.qa.outstandingCount({
           companyId: deck.companyId,
+          actingUserId: user.id,
           externalRefs: blocks.map((b) => b.id),
         })
       : 0;

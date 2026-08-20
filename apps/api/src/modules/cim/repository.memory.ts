@@ -414,11 +414,11 @@ export class MemoryQaPort implements QaPort {
     });
   }
 
-  async listAnswers(input: { externalRefs: string[] }) {
+  async listAnswers(input: { actingUserId: string; externalRefs: string[] }) {
     return this.store.answers.filter((a) => input.externalRefs.includes(a.externalRef));
   }
 
-  async outstandingCount(input: { externalRefs: string[] }) {
+  async outstandingCount(input: { actingUserId: string; externalRefs: string[] }) {
     const answered = new Set(this.store.answers.map((a) => a.externalRef));
     return this.store.createdItems.filter(
       (i) => input.externalRefs.includes(i.externalRef) && !answered.has(i.externalRef),

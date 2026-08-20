@@ -22,6 +22,7 @@ import {
   TrendingUp,
   MessageSquare,
   MessageSquareText,
+  BookOpen,
   Calculator,
   FileCheck,
   FileText,
@@ -140,6 +141,7 @@ function WorkspaceSidebar({ company, onClose }) {
 
   const basePath = `/broker/client/${clientId}`;
   const qaEnabled = useFeature("qa");
+  const cimEnabled = useFeature("cim");
 
   const profitMetricConfig = getProfitMetricConfig(company);
 
@@ -157,6 +159,9 @@ function WorkspaceSidebar({ company, onClose }) {
         // feature the user can still click is worse than one they cannot see.
         ...(qaEnabled
           ? [{ label: "Q&A", icon: MessageSquareText, to: `${basePath}/dataroom/qa` }]
+          : []),
+        ...(cimEnabled
+          ? [{ label: "CIM Builder", icon: BookOpen, to: `${basePath}/dataroom/cim` }]
           : []),
         { label: "Messages", icon: MessageSquare, to: `${basePath}/dataroom/messages` },
         { label: "Reminders", icon: Bell, to: `${basePath}/dataroom/reminders` },

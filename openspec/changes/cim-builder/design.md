@@ -27,6 +27,34 @@ Three options were considered:
 | Keep the JSON blob for now, schema later | **No.** A `(company_id, page_key)` UNIQUE row has no version axis and no per-block identity, so publish-a-frozen-version and answers-land-on-blocks are not expressible. It also leaves CIM as the only demo surface served by legacy, so the promised kill switch would have nothing to switch. |
 | **Relational spine, `jsonb` leaves, re-point the god-file** | **Chosen.** Buys the version axis and block identity that `CM - 0001` and `CM - 0004` need, at the cost of an adapter rather than a refactor. |
 
+### D1a — Correction: re-pointing the god-file needs more than two call sites
+
+D1 above says the SPA change is "swapping two call sites … roughly 60 lines".
+That is right about the *mechanism* and wrong about a prerequisite, found while
+building the editor.
+
+The SPA's field ids are not a convention the server can reproduce. They come from
+`makeFieldId(slideNumber, element)` (`WorkspaceCimPrep.jsx:1158`), which reads
+element ids out of the 38 `source-slide-NN.layout.json` files. The blob migration
+preserves those keys because they already exist in the blob — but a deck created
+fresh through `/cim` has no such keys unless the API also knows the layouts.
+
+So re-pointing works for migrated decks and produces an unrenderable deck for new
+ones. Closing that gap means the API emitting layout-derived block keys for all 38
+slides, which is a real piece of work rather than a rewiring.
+
+**What ships instead.** The CIM builder surface (`WorkspaceCimBuilder.jsx`) covers
+the half that carries the pitch and needs no layout rendering: which blocks are
+empty, one action that asks the company about exactly those, the review queue, and
+the published PDF in the data room. `WorkspaceCimPrep.jsx` is untouched and stays
+on its legacy blob path as the visual deck editor.
+
+Two surfaces is worse than one, and this is a deferral rather than a design
+preference. The work to close it: extract the block-key set from the layout files
+into a manifest the API can seed an outline from, then re-point the god-file's two
+call sites as D1 describes. That is tracked as its own task rather than left as a
+comment.
+
 ## D2 — The blob migration is forward-only and guarded
 
 Inside the CIM migration, using the same `DO $$ ... to_regclass(...) IS NULL → RETURN` guard that

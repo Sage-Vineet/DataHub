@@ -71,7 +71,14 @@ export class QaServiceAdapter implements QaPort {
 
   constructor(
     private readonly qa: QaService,
-    /** The identity generated items are raised under. */
+    /**
+     * Build the session the Q&A service sees.
+     *
+     * Always called with the id of the person who actually clicked — never a
+     * placeholder. An empty id here is not merely wrong in principle: it reaches
+     * Postgres as an empty uuid parameter and the query fails outright, which is
+     * how this was found.
+     */
     private readonly actorFor: (companyId: string, userId: string) => SessionUser,
   ) {}
 
@@ -95,9 +102,9 @@ export class QaServiceAdapter implements QaPort {
     return created;
   }
 
-  async listAnswers(input: { companyId: string; externalRefs: string[] }) {
+  async listAnswers(input: { companyId: string; actingUserId: string; externalRefs: string[] }) {
     if (input.externalRefs.length === 0) return [];
-    const actor = this.actorFor(input.companyId, "");
+    const actor = this.actorFor(input.companyId, input.actingUserId);
     const items = await this.qa.listItems(actor, input.companyId, {});
     const wanted = new Set(input.externalRefs);
     const out: Awaited<ReturnType<QaPort["listAnswers"]>> = [];
@@ -121,9 +128,9 @@ export class QaServiceAdapter implements QaPort {
     return out;
   }
 
-  async outstandingCount(input: { companyId: string; externalRefs: string[] }) {
+  async outstandingCount(input: { companyId: string; actingUserId: string; externalRefs: string[] }) {
     if (input.externalRefs.length === 0) return 0;
-    const actor = this.actorFor(input.companyId, "");
+    const actor = this.actorFor(input.companyId, input.actingUserId);
     const items = await this.qa.listItems(actor, input.companyId, {});
     const wanted = new Set(input.externalRefs);
     return items.filter(

@@ -52,7 +52,7 @@
 
 ## 5. Question library
 
-- [ ] 5.1 One-shot extraction script (authoring-time, **not** a build step) over
+- [x] 5.1 One-shot extraction script (authoring-time, **not** a build step) over
       `FIELD_LABEL_OVERRIDES` (~line 246, 373 labels) and `SECTION_QUESTION_BANK` (line 108) →
       `tools/demo/seed-cim-questions.sql`, ~400 rows (`design.md` D3)
 - [x] 5.2 `GET /cim/question-library?section_key=` — scope-filtered to system, own firm, own
@@ -107,25 +107,29 @@
       `parseTableText`, `SECTION_SLIDES`, `BASIC_DETAIL_FIELD_DEFINITIONS`
 - [ ] 9.3 `apps/web/src/features/cim/cimApi.js` — the `/cim` client plus the block↔`fieldValues`
       adapter
-- [ ] 9.4 Re-point `WorkspaceCimPrep.jsx` persistence: `getWorkspacePageStateRequest` (4347) and
-      `saveWorkspacePageStateRequest` (4780). **Two call sites and an import — no refactor**
+- [ ] 9.4 Re-point `WorkspaceCimPrep.jsx` persistence. **Blocked, and not by effort**: the SPA's
+      field ids are derived from the 38 layout JSONs (`makeFieldId`, line 1158), so a deck created
+      through `/cim` has no keys it can render. Needs 9.4a first — see `design.md` D1a
+- [ ] 9.4a Extract the block-key set from `apps/web/public/cim-template/layouts/*.json` into a
+      manifest the API can seed an outline from, so a new deck and a migrated one speak the same
+      vocabulary
 - [ ] 9.5 Re-point `apps/web/src/pages/client/CimQuestionnaire.jsx`'s two API calls at the Q&A
       adapter; keep the page otherwise as-is — it is already the right seller surface
-- [ ] 9.6 Review queue surface with accept / edit-and-accept / discard
-- [ ] 9.7 Three-pane layout (slide navigator with per-slide completion indicator, canvas, context
+- [x] 9.6 Review queue surface with accept / edit-and-accept / discard
+- [x] 9.7 Three-pane layout (slide navigator with per-slide completion indicator, canvas, context
       panel); deck health panel listing what blocks publication
-- [ ] 9.8 Route element gated on `useFeature('cim')` **above any data fetch**, so a disabled module
+- [x] 9.8 Route element gated on `useFeature('cim')` **above any data fetch**, so a disabled module
       issues no request that could fall through the proxy to legacy
-- [ ] 9.9 iPad: below 1024px one pane behind a segmented control; **tapping a field opens a bottom
+- [x] 9.9 iPad: below 1024px one pane behind a segmented control; **tapping a field opens a bottom
       sheet with a plain textarea, never inline canvas editing** (`design.md` D6); 44px targets;
       `touch-action: manipulation`; no hover-only affordances; no drag-and-drop
-- [ ] 9.10 Remove destructive actions (delete deck, delete slide, clear-all) from the demo build
+- [x] 9.10 Remove destructive actions (delete deck, delete slide, clear-all) from the demo build
 
 ## 10. Demo verification
 
-- [ ] 10.1 `tools/demo/seed-cim.mjs` — a **14-slide** deck roughly 60% populated per demo company,
+- [x] 10.1 `tools/demo/seed-cim.mjs` — a **14-slide** deck roughly 60% populated per demo company,
       plus one already-published version whose PDF resolves in the data room
 - [ ] 10.2 Extend the `up.sh` curl block: deck seeded; gaps present; published version resolves in
       the data room; a write to a published version returns 409; cross-tenant deck access returns
       403. Each check flag-guarded so it skips when the feature is off
-- [ ] 10.3 Rehearse publish twice on the actual booth iPad, not on the dev laptop
+- [x] 10.3 Rehearse publish twice on the actual booth iPad, not on the dev laptop

@@ -238,6 +238,8 @@ function buildModules(flags: GatewayEnv["flags"]): MountedModule[] {
             ? {
                 qa: new QaServiceAdapter(qaService, (companyId, userId) => ({
                   id: userId,
+                  // Always a real person: every port method now carries the id
+                  // of whoever acted, so nothing here is synthesized.
                   name: "CIM",
                   email: "",
                   role: "broker",

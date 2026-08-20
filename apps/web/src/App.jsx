@@ -14,6 +14,7 @@ import { FeatureProvider } from "./context/FeatureContext";
 import FeatureRoute from "./components/FeatureRoute";
 import WorkspaceQA from "./pages/broker/workspace/WorkspaceQA";
 import CompanyQA from "./pages/client/CompanyQA";
+import WorkspaceCimBuilder from "./pages/broker/workspace/WorkspaceCimBuilder";
 import { MessageNotificationsProvider } from "./context/MessageNotificationsContext";
 import { ToastProvider, useToast } from "./context/ToastContext";
 import { DataSourceProvider } from "./context/DataSourceContext";
@@ -361,6 +362,14 @@ function AppRoutes() {
           element={
             <FeatureRoute feature="qa" fallback={<ComingSoon name="Q&A" />}>
               <WorkspaceQA />
+            </FeatureRoute>
+          }
+        />
+        <Route
+          path="dataroom/cim"
+          element={
+            <FeatureRoute feature="cim" fallback={<ComingSoon name="The CIM builder" />}>
+              <WorkspaceCimBuilder />
             </FeatureRoute>
           }
         />

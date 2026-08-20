@@ -292,8 +292,11 @@ beforeEach(async () => {
       next();
     },
     dataRoom: new DrizzleCimDataRoomPort(db, async () => folderId),
+    // No `|| BROKER_ID` fallback: an earlier version of this test had one, and it
+    // masked an adapter that passed an empty user id on every read — which
+    // reaches Postgres as an empty uuid and fails the query outright.
     qa: new QaServiceAdapter(qa.service, (cId, userId) => ({
-      id: userId || BROKER_ID,
+      id: userId,
       name: "CIM",
       email: "",
       role: "broker",
@@ -585,6 +588,36 @@ describe("publishing into the data room (real Postgres)", () => {
       .send(Buffer.alloc(0));
 
     expect(res.status).toBe(400);
+  });
+});
+
+describe("the Q&A adapter never invents an identity", () => {
+  it("reads the review queue as the person who asked for it", async () => {
+    // The failure this guards against is not subtle in production and was
+    // invisible in a fake: a placeholder id reaches Postgres as an empty uuid
+    // and the whole query errors.
+    const deck = await newDeck();
+    const gaps = await request(cimApp).get(`/cim/versions/${deck.current_version_id}/gaps`);
+    await request(cimApp)
+      .post(`/cim/versions/${deck.current_version_id}/questions`)
+      .send({ questions: [{ block_id: gaps.body[0].block_id, text: "q" }] });
+
+    const queue = await request(cimApp).get(`/cim/versions/${deck.current_version_id}/review-queue`);
+
+    expect(queue.status).toBe(200);
+  });
+
+  it("reports deck health without a synthesized session", async () => {
+    const deck = await newDeck();
+    const gaps = await request(cimApp).get(`/cim/versions/${deck.current_version_id}/gaps`);
+    await request(cimApp)
+      .post(`/cim/versions/${deck.current_version_id}/questions`)
+      .send({ questions: [{ block_id: gaps.body[0].block_id, text: "q" }] });
+
+    const health = await request(cimApp).get(`/cim/versions/${deck.current_version_id}/health`);
+
+    expect(health.status).toBe(200);
+    expect(health.body.outstanding_questions).toBe(1);
   });
 });
 

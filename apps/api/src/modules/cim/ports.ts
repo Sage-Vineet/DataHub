@@ -225,9 +225,17 @@ export interface QaPort {
       assigneeUserId?: string;
     }>;
   }): Promise<Array<{ itemId: string; externalRef: string }>>;
-  /** Answers submitted against items carrying one of these external references. */
+  /**
+   * Answers submitted against items carrying one of these external references.
+   *
+   * `actingUserId` is threaded through rather than left to the adapter, so the
+   * Q&A module's own visibility rules apply to the real person looking. An
+   * adapter that synthesized an identity here would be deciding, on its own,
+   * that the CIM sees more than its user does.
+   */
   listAnswers(input: {
     companyId: string;
+    actingUserId: string;
     externalRefs: string[];
   }): Promise<
     Array<{
@@ -242,7 +250,11 @@ export interface QaPort {
     }>
   >;
   /** How many generated questions are still unanswered — for the health panel. */
-  outstandingCount(input: { companyId: string; externalRefs: string[] }): Promise<number>;
+  outstandingCount(input: {
+    companyId: string;
+    actingUserId: string;
+    externalRefs: string[];
+  }): Promise<number>;
 }
 
 export interface CimActivityPort {
