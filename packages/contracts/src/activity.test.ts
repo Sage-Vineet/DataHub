@@ -101,3 +101,29 @@ describe("verification result contract", () => {
     expect(parsed.success).toBe(true);
   });
 });
+
+describe("event types for the data room and Q&A capabilities", () => {
+  it("declares the data room versioning and comment events", () => {
+    // The enum is closed: an event type nobody declared throws at the capture
+    // point rather than landing as an unrecognised string. So a capability that
+    // emits has to be represented here first.
+    for (const t of ["document.version.created", "document.version.restored", "document.comment.added"]) {
+      expect(() => activityEventType.parse(t)).not.toThrow();
+    }
+  });
+
+  it("declares enough Q&A events to reconstruct the exchange from the log alone", () => {
+    for (const t of [
+      "qa.item.created",
+      "qa.response.posted",
+      "qa.assignment.changed",
+      "qa.presentation.published",
+    ]) {
+      expect(() => activityEventType.parse(t)).not.toThrow();
+    }
+  });
+
+  it("still refuses an undeclared event type", () => {
+    expect(() => activityEventType.parse("qa.item.deleted")).toThrow();
+  });
+});

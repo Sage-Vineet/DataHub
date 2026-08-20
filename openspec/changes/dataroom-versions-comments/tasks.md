@@ -1,11 +1,11 @@
 ## 1. Contracts
 
-- [ ] 1.1 `packages/contracts/src/dataroom.ts` — `documentVersion`, `documentVersionList`,
+- [x] 1.1 `packages/contracts/src/dataroom.ts` — `documentVersion`, `documentVersionList`,
       `commentCreate` (body + visibility), `commentResponse`, `uploadSessionCreate`,
       `uploadSessionStatus` (status + received chunk indices), `uploadSessionComplete`
-- [ ] 1.2 Re-export from `packages/contracts/src/index.ts` as `export * as dataroom` plus flat types,
+- [x] 1.2 Re-export from `packages/contracts/src/index.ts` as `export * as dataroom` plus flat types,
       matching the existing block style
-- [ ] 1.3 `dataroom.test.ts` — snake_case wire shape, visibility enum rejects unknown values,
+- [x] 1.3 `dataroom.test.ts` — snake_case wire shape, visibility enum rejects unknown values,
       chunk size and index bounds are enforced by the schema not the handler
 
 ## 2. Data layer

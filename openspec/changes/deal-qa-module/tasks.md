@@ -1,14 +1,14 @@
 ## 1. Contracts
 
-- [ ] 1.1 `packages/contracts/src/qa.ts` — `qaCategory`, `qaNomination`, `qaItemCreate`,
+- [x] 1.1 `packages/contracts/src/qa.ts` — `qaCategory`, `qaNomination`, `qaItemCreate`,
       `qaItemUpdate`, `qaItemListQuery` (category, status, `mine=requestor|requestee`),
       `qaItemResponse`, `qaResponseCreate` (with optional `supersedes_id`), `qaPresentationCreate`,
       `qaAttachmentCreate`, `qaVisibilityRule`
-- [ ] 1.2 Re-export from `packages/contracts/src/index.ts` as `export * as qa` plus flat types
-- [ ] 1.3 Add Q&A event types to the **closed** `activityEventType` enum at
+- [x] 1.2 Re-export from `packages/contracts/src/index.ts` as `export * as qa` plus flat types
+- [x] 1.3 Add Q&A event types to the **closed** `activityEventType` enum at
       `packages/contracts/src/activity.ts:36-48` — `qa.item.created`, `qa.response.posted`,
       `qa.assignment.changed`, `qa.presentation.published`. An undeclared type throws at runtime
-- [ ] 1.4 `qa.test.ts` — snake_case wire shape; status and origin enums reject unknown values; a
+- [x] 1.4 `qa.test.ts` — snake_case wire shape; status and origin enums reject unknown values; a
       response schema has **no** update variant (immutability expressed in the contract, not only
       in the service)
 

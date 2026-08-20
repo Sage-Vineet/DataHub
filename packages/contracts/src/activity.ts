@@ -45,6 +45,17 @@ export const activityEventType = z.enum([
   "document.downloaded",
   "integration.connected",
   "integration.disconnected",
+  // Data room versioning and comments (DR - 0001).
+  "document.version.created",
+  "document.version.restored",
+  "document.comment.added",
+  // Deal Q&A (QA - 0001/0002/0003). The exchange has to be reconstructable from
+  // the log alone: who asked, who was made accountable, who answered, and what
+  // the broker chose to present onward.
+  "qa.item.created",
+  "qa.response.posted",
+  "qa.assignment.changed",
+  "qa.presentation.published",
 ]);
 export type ActivityEventType = z.infer<typeof activityEventType>;
 
