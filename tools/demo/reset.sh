@@ -75,7 +75,9 @@ check() {
 FAILED=0
 q() { psql_demo -tAc "$1" | tr -d '[:space:]'; }
 
-check "documents"                3 "$(q "select count(*) from documents where name not like '%CIM v1%'")"
+check "documents across 3 companies" 6 "$(q "select count(*) from documents where name not like '%CIM v%'")"
+check "companies with content"   3 "$(q "select count(distinct company_id) from documents")"
+check "large file present"       12582912 "$(q "select max(size_bytes) from uploads")"
 check "versions on the model"    3 "$(q "select count(*) from document_versions v join documents d on d.id=v.document_id where d.name='Financial Model.txt'")"
 check "comments"                 3 "$(q "select count(*) from document_comments")"
 check "Q&A items"                5 "$(q "select count(*) from qa_items")"
@@ -83,6 +85,7 @@ check "published rewordings"     1 "$(q "select count(*) from qa_presentations w
 check "CIM question library"     608 "$(q "select count(*) from cim_question_library")"
 check "CIM versions"             2 "$(q "select count(*) from cim_versions")"
 check "published CIM in the room" 1 "$(q "select count(*) from documents where name like '%CIM v1%'")"
+check "three booth devices, three decks" 3 "$(q "select count(distinct company_id) from documents")"
 
 elapsed=$(( $(date +%s) - started ))
 if [[ "$FAILED" == "1" ]]; then

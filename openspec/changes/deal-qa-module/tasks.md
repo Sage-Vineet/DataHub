@@ -117,7 +117,7 @@
       equivalent in the client block so the seller persona has it
 - [x] 10.7 Route element gated on `useFeature('qa')` **above any data fetch**, so a disabled module
       issues no request that could fall through the proxy to legacy (`design.md` D9)
-- [ ] 10.8 iPad: 44px tap targets, no hover-only affordances, drawer full-screen below `lg`
+- [x] 10.8 iPad: 44px tap targets, no hover-only affordances, drawer full-screen below `lg`
 
 ## 11. Demo verification
 

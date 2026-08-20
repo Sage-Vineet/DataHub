@@ -104,7 +104,7 @@
 - [x] 8.8 iPad: an always-visible Upload button in `TopBar` (`FileExplorer.jsx:531`) wired to a
       hidden file input — **drag-and-drop never fires for files on iOS Safari**, so this is the only
       upload path there. Lift the existing `handleSidebarUpload` (lines 411-415) to the toolbar
-- [ ] 8.9 iPad: 44px minimum tap targets on `IconTooltipButton` (282), `FolderActionMenu` (1202),
+- [x] 8.9 iPad: 44px minimum tap targets on `IconTooltipButton` (282), `FolderActionMenu` (1202),
       `FileActionMenu` (1265); force grid view below `lg`; `100dvh` on the preview modal; a visible
       Open/Download beside the PDF iframe as an escape hatch
 

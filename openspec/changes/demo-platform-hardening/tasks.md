@@ -21,8 +21,9 @@
       legacy `050` → `db:migrate` → `seed.sql` → backfill → `seed-qoe`
 - [ ] 2.2 Cold `docker compose -f docker-compose.demo.yml down -v && ./tools/demo/up.sh` goes green,
       including every existing curl assertion
-- [ ] 2.3 `openspec/changes/devenv-schema-bootstrap` reconciled — either closed by this runner or its
-      remaining gap restated
+- [x] 2.3 `openspec/changes/devenv-schema-bootstrap` reconciled: 1.1, 1.2, 2.1, 2.2 and 2.3 closed
+      by the runner and the rewritten `load-schema`; a new 2.4 restates the half that remains —
+      the legacy schema still has no authoritative source, which is Phase C's
 
 ## 3. Feature declaration on the gateway
 
@@ -64,12 +65,12 @@
 - [x] 6.1 `tools/demo/seed-dataroom.sql` — documents with real, distinguishable bytes; one carrying
       three versions; an internal and a shared comment on the same document so the visibility split
       is two clicks away
-- [ ] 6.8 A pre-loaded large file, so the big-upload story needs no live upload on conference wifi
+- [x] 6.8 A pre-loaded large file, so the big-upload story needs no live upload on conference wifi
 - [x] 6.2 `tools/demo/seed-qa.sql` — 8 items across 4 categories, 2 with live threads, 1 with a
       published presentable version, nominations set on both sides
 - [x] 6.3 `tools/demo/seed-cim.mjs` — a 14-slide deck roughly 60% populated, plus one already
       published version with its PDF resolvable in the data room
-- [ ] 6.4 **Three demo companies each fully seeded**, so three booth devices never contend on the
+- [x] 6.4 **Three demo companies each fully seeded**, so three booth devices never contend on the
       same rows (Acme is seeded; Northwind and Cardinal still share only the base fixture)
 - [x] 6.5 `tools/demo/reset.sh` — `TRUNCATE ... RESTART IDENTITY CASCADE` over demo-owned tables then
       re-seed; under 30s; no container restart; safe with the SPA already open

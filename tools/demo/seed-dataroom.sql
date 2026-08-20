@@ -97,4 +97,87 @@ VALUES
    'internal', 'b0000000-0000-4000-8000-000000000002', now() - interval '3 days')
 ON CONFLICT (id) DO NOTHING;
 
+-- ── a large file, pre-loaded ────────────────────────────────────────────────
+--
+-- 12 MB of compressible filler, so the big-file story — chunked upload, resume,
+-- a progress bar that actually moves — can be told without a live upload over
+-- conference wifi. Generated rather than committed: a 12 MB binary in git would
+-- be paid for on every clone forever.
+INSERT INTO uploads (id, file_name, content_type, size_bytes, data, prefix, uploaded_by)
+VALUES (
+  'e0000000-0000-4000-8000-000000000009', 'Data Tape 2024.csv', 'text/csv',
+  12 * 1024 * 1024,
+  convert_to(repeat('invoice,date,customer,amount,currency,status' || chr(10), 300000), 'UTF8'),
+  'documents', 'b0000000-0000-4000-8000-000000000002'
+)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO documents (id, company_id, folder_id, name, file_url, upload_id, size, ext, status, uploaded_by, version_count)
+VALUES ('f0000000-0000-4000-8000-000000000009', 'a0000000-0000-4000-8000-000000000001',
+        'c0000000-0000-4000-8000-000000000001', 'Data Tape 2024.csv', '',
+        'e0000000-0000-4000-8000-000000000009', '12582912', 'csv', 'under-review',
+        'b0000000-0000-4000-8000-000000000002', 1)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO document_versions (id, document_id, version_no, upload_id, file_name, size_bytes, content_type, created_by)
+VALUES ('a1000000-0000-4000-8000-000000000009', 'f0000000-0000-4000-8000-000000000009', 1,
+        'e0000000-0000-4000-8000-000000000009', 'Data Tape 2024.csv', 12582912, 'text/csv',
+        'b0000000-0000-4000-8000-000000000002')
+ON CONFLICT (id) DO NOTHING;
+
+UPDATE documents SET current_version_id = 'a1000000-0000-4000-8000-000000000009'
+WHERE id = 'f0000000-0000-4000-8000-000000000009';
+
+-- ── the second and third companies ──────────────────────────────────────────
+--
+-- Three booth devices, three companies, no contention: two visitors editing the
+-- same deck at the same stand is a support problem nobody should have to explain.
+-- Northwind and Cardinal get a folder tree and one document each — enough to look
+-- alive, not enough to maintain three fictional deals.
+INSERT INTO folders (id, company_id, name, parent_id, created_by)
+VALUES
+  ('c0000000-0000-4000-8000-000000000010', 'a0000000-0000-4000-8000-000000000002',
+   'Legal', NULL, 'b0000000-0000-4000-8000-000000000002'),
+  ('c0000000-0000-4000-8000-000000000011', 'a0000000-0000-4000-8000-000000000003',
+   'Financials', NULL, 'b0000000-0000-4000-8000-000000000002'),
+  ('c0000000-0000-4000-8000-000000000012', 'a0000000-0000-4000-8000-000000000003',
+   'Legal', NULL, 'b0000000-0000-4000-8000-000000000002')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO uploads (id, file_name, content_type, size_bytes, data, prefix, uploaded_by)
+VALUES
+  ('e0000000-0000-4000-8000-000000000010', 'Fleet Schedule.txt', 'text/plain', 34,
+   convert_to('Fleet Schedule — 41 vehicles, 2026', 'UTF8'), 'documents',
+   'b0000000-0000-4000-8000-000000000002'),
+  ('e0000000-0000-4000-8000-000000000011', 'Supply Agreement.txt', 'text/plain', 40,
+   convert_to('Supply Agreement — renews 2028-01-31', 'UTF8'), 'documents',
+   'b0000000-0000-4000-8000-000000000002')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO documents (id, company_id, folder_id, name, file_url, upload_id, size, ext, status, uploaded_by, version_count)
+VALUES
+  ('f0000000-0000-4000-8000-000000000010', 'a0000000-0000-4000-8000-000000000002',
+   'c0000000-0000-4000-8000-000000000004', 'Fleet Schedule.txt', '',
+   'e0000000-0000-4000-8000-000000000010', '34', 'txt', 'under-review',
+   'b0000000-0000-4000-8000-000000000002', 1),
+  ('f0000000-0000-4000-8000-000000000011', 'a0000000-0000-4000-8000-000000000003',
+   'c0000000-0000-4000-8000-000000000011', 'Supply Agreement.txt', '',
+   'e0000000-0000-4000-8000-000000000011', '40', 'txt', 'under-review',
+   'b0000000-0000-4000-8000-000000000002', 1)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO document_versions (id, document_id, version_no, upload_id, file_name, size_bytes, content_type, created_by)
+VALUES
+  ('a1000000-0000-4000-8000-000000000010', 'f0000000-0000-4000-8000-000000000010', 1,
+   'e0000000-0000-4000-8000-000000000010', 'Fleet Schedule.txt', 34, 'text/plain',
+   'b0000000-0000-4000-8000-000000000002'),
+  ('a1000000-0000-4000-8000-000000000011', 'f0000000-0000-4000-8000-000000000011', 1,
+   'e0000000-0000-4000-8000-000000000011', 'Supply Agreement.txt', 40, 'text/plain',
+   'b0000000-0000-4000-8000-000000000002')
+ON CONFLICT (id) DO NOTHING;
+
+UPDATE documents d SET current_version_id = v.id
+FROM document_versions v
+WHERE v.document_id = d.id AND v.version_no = 1 AND d.current_version_id IS NULL;
+
 COMMIT;

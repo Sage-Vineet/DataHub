@@ -2714,7 +2714,7 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
   };
 
   return (
-    <div className="flex bg-[#f4f6fb] rounded-2xl border border-gray-200 shadow-sm overflow-hidden h-full">
+    <div className="touch-targets flex bg-[#f4f6fb] rounded-2xl border border-gray-200 shadow-sm overflow-hidden h-full">
       {/* Sidebar */}
       <FolderTree
         tree={tree}

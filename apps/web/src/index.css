@@ -317,3 +317,51 @@ textarea {
     box-shadow: 0 0 0 2px rgba(139, 197, 61, 0.2);
   }
 }
+
+/*
+ * Touch targets.
+ *
+ * The file explorer's action buttons are 24-28px, which is right for a mouse and
+ * too small for a thumb — Apple and Google both put the floor at 44px, and the
+ * gap is the difference between "tap the download icon" and "tap near the
+ * download icon and hope".
+ *
+ * Scoped to `pointer: coarse` so the desktop layout is untouched: this is not a
+ * responsive breakpoint, because a small window on a laptop still has a mouse
+ * and a large tablet still has a thumb. The hit area is enlarged with a
+ * pseudo-element rather than by growing the button, so nothing reflows and the
+ * icons stay where the design put them.
+ */
+@media (pointer: coarse) {
+  .touch-targets button,
+  .touch-targets [role='button'],
+  .touch-targets a {
+    position: relative;
+  }
+
+  .touch-targets button::after,
+  .touch-targets [role='button']::after,
+  .touch-targets a::after {
+    content: '';
+    position: absolute;
+    inset: 50% auto auto 50%;
+    width: 44px;
+    height: 44px;
+    transform: translate(-50%, -50%);
+    /* Behind the label, so tooltips and text stay clickable and visible. */
+    z-index: -1;
+  }
+
+  /* Anything already large enough needs no help, and a pseudo-element on a
+     full-width button would extend past it. */
+  .touch-targets button:where(.w-full, [class*='min-h-'])::after {
+    display: none;
+  }
+
+  /* Hover-only affordances never appear on a touch device, so the row actions
+     that reveal on hover are always visible instead. */
+  .touch-targets .group\/file .opacity-0,
+  .touch-targets .group\/row .opacity-0 {
+    opacity: 1;
+  }
+}
