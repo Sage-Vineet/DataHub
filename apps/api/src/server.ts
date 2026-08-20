@@ -25,6 +25,8 @@ import { createMessagesModule } from "./modules/messages/index.js";
 import { createReportsModule } from "./modules/reports/index.js";
 import { createQoeModule } from "./modules/qoe/index.js";
 import { createDataRoomModule } from "./modules/dataroom/index.js";
+import { createQaModule } from "./modules/qa/index.js";
+import { unavailableDataRoom } from "./modules/qa/repository.memory.js";
 import { requireSession } from "./shared/session.js";
 import { parseRoutingTable } from "./routing.js";
 import { loadGatewayEnv, type GatewayEnv } from "./env.js";
@@ -174,6 +176,24 @@ function buildModules(flags: GatewayEnv["flags"]): MountedModule[] {
         }).router,
       });
       console.warn("[gateway] data room module ENABLED at /dataroom (versions, comments, chunked upload)");
+    }
+    // Deal Q&A. Greenfield — legacy serves nothing at /qa, so the flag is a kill
+    // switch rather than a rollback. When the data room is off, the null
+    // attachment adapter keeps every other Q&A route working.
+    if (flags.QA_MODULE_ENABLED) {
+      modules.push({
+        path: "/",
+        router: createQaModule({
+          db,
+          requireAuth,
+          features: {
+            presentation: flags.QA_PRESENTATION_ENABLED,
+            nominations: flags.QA_NOMINATIONS_ENABLED,
+          },
+          ...(flags.DATAROOM_MODULE_ENABLED ? {} : { dataRoom: unavailableDataRoom }),
+        }).router,
+      });
+      console.warn("[gateway] Q&A module ENABLED at /qa (items, nomination, responses, rewordings)");
     }
   }
   return modules;

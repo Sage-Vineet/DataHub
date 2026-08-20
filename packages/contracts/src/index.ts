@@ -151,6 +151,7 @@ export * as qa from "./qa.js";
 export type {
   AssigneeResponse,
   AssigneesReplace,
+  AttachmentCreate,
   AssignmentEventResponse,
   CategoryResponse,
   ItemCreate,
