@@ -1,5 +1,6 @@
 import type { RequestHandler } from "express";
-import { createDb, type Db } from "@datahub/db";
+import { eq } from "drizzle-orm";
+import { createDb, schema, type Db } from "@datahub/db";
 import {
   ActivityWriter,
   createActivityCapture,
@@ -26,6 +27,8 @@ import { createReportsModule } from "./modules/reports/index.js";
 import { createQoeModule } from "./modules/qoe/index.js";
 import { createDataRoomModule } from "./modules/dataroom/index.js";
 import { createQaModule } from "./modules/qa/index.js";
+import { createCimModule } from "./modules/cim/index.js";
+import { DrizzleCimDataRoomPort, QaServiceAdapter } from "./modules/cim/adapters.js";
 import { unavailableDataRoom } from "./modules/qa/repository.memory.js";
 import { requireSession } from "./shared/session.js";
 import { parseRoutingTable } from "./routing.js";
@@ -65,8 +68,32 @@ function dbFactory(): () => Db {
  * middleware per-route (`withCommonMiddleware`), so undefined paths under a mount
  * fall through to the proxy untouched.
  */
+/**
+ * Where a published CIM lands in the data room.
+ *
+ * Prefers a folder actually named for it, then Financials, then whatever the
+ * company's first folder is. Falling back rather than failing is deliberate: a
+ * publish that succeeds into a slightly unexpected folder is recoverable by
+ * moving the file, while one that refuses because no folder matched a name is
+ * a dead end in front of whoever pressed the button.
+ */
+function publishFolderResolver(db: Db): (companyId: string) => Promise<string | null> {
+  return async (companyId: string) => {
+    const rows = await db
+      .select({ id: schema.folders.id, name: schema.folders.name })
+      .from(schema.folders)
+      .where(eq(schema.folders.companyId, companyId));
+    const byName = (needle: string) =>
+      rows.find((r) => r.name.toLowerCase().includes(needle))?.id ?? null;
+    return byName("cim") ?? byName("financial") ?? rows[0]?.id ?? null;
+  };
+}
+
 function buildModules(flags: GatewayEnv["flags"]): MountedModule[] {
   const modules: MountedModule[] = [];
+  // Captured so the CIM builder can reach the Q&A service through a typed port
+  // rather than over HTTP — the module convention here (ADR-0004).
+  let qaModule: ReturnType<typeof createQaModule> | undefined;
   const getDb = dbFactory();
   const graphEmailer = () =>
     process.env.GRAPH_TENANT_ID ? GraphEmailer.fromEnv(process.env) : new ConsoleEmailer();
@@ -181,19 +208,48 @@ function buildModules(flags: GatewayEnv["flags"]): MountedModule[] {
     // switch rather than a rollback. When the data room is off, the null
     // attachment adapter keeps every other Q&A route working.
     if (flags.QA_MODULE_ENABLED) {
-      modules.push({
-        path: "/",
-        router: createQaModule({
+      qaModule = createQaModule({
           db,
           requireAuth,
           features: {
             presentation: flags.QA_PRESENTATION_ENABLED,
             nominations: flags.QA_NOMINATIONS_ENABLED,
           },
-          ...(flags.DATAROOM_MODULE_ENABLED ? {} : { dataRoom: unavailableDataRoom }),
+        ...(flags.DATAROOM_MODULE_ENABLED ? {} : { dataRoom: unavailableDataRoom }),
+      });
+      modules.push({ path: "/", router: qaModule.router });
+      console.warn("[gateway] Q&A module ENABLED at /qa (items, nomination, responses, rewordings)");
+    }
+    // The CIM builder sits on top of both. It reaches them through typed ports,
+    // and when either is switched off the affected capability reports
+    // unavailable rather than the builder failing as a whole — generation needs
+    // Q&A, publication needs the data room, and everything else needs neither.
+    if (flags.CIM_MODULE_ENABLED) {
+      const qaService = qaModule?.service;
+      modules.push({
+        path: "/",
+        router: createCimModule({
+          db,
+          requireAuth,
+          ...(flags.DATAROOM_MODULE_ENABLED
+            ? { dataRoom: new DrizzleCimDataRoomPort(db, publishFolderResolver(db)) }
+            : {}),
+          ...(qaService
+            ? {
+                qa: new QaServiceAdapter(qaService, (companyId, userId) => ({
+                  id: userId,
+                  name: "CIM",
+                  email: "",
+                  role: "broker",
+                  company_id: companyId,
+                  status: "active",
+                  company_ids: [companyId],
+                })),
+              }
+            : {}),
         }).router,
       });
-      console.warn("[gateway] Q&A module ENABLED at /qa (items, nomination, responses, rewordings)");
+      console.warn("[gateway] CIM module ENABLED at /cim (decks, guided Q&A, publish)");
     }
   }
   return modules;

@@ -170,3 +170,28 @@ export type {
   ResponseResponse,
   VisibilityRule,
 } from "./qa.js";
+
+export * as cim from "./cim.js";
+export type {
+  AcceptAnswer,
+  BlockBulkUpsert,
+  BlockResponse,
+  ContentClass,
+  DeckCreate,
+  DeckHealth,
+  DeckStatus,
+  DeckSummary,
+  DiscardAnswer,
+  GapResponse,
+  GenerateRequest,
+  GenerateResult,
+  PopulatedBy,
+  PublishResult,
+  QuestionLibraryEntry,
+  ReviewItem,
+  SectionResponse,
+  SlideClass,
+  SlideResponse,
+  VersionDetail,
+  VersionSummary,
+} from "./cim.js";
