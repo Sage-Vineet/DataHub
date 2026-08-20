@@ -309,6 +309,34 @@ check "QoE FY2024 net income"      "47568.23"  "$(jqn "d['netIncome']['amounts']
 check "QoE FY2024 revenue"         "2511740.83" "$(jqn "d['revenue']['2024']")"
 check "QoE FY2024 Reported EBITDA" "347403.35" "$(jqn "d['reportedEbitda']['2024']")"
 
+# The add-backs are the exhibit the bridge is named after. Without them Adjusted
+# EBITDA equals Reported EBITDA — the same number twice in the header, and the
+# whole middle of the bridge empty. Each figure below is sourced from the seeded
+# ledger, so these assertions also prove the four sourcing kinds still resolve:
+# vendor-scoped GL, whole-account GL, a recast against a normalized value, and a
+# manual amount keyed by year.
+jqi() { printf '%s' "$BRIDGE" | jq_get "$1"; }
+check "QoE add-back groups"          "2" "$(jqi "len(d['addbackGroups'])")"
+check "QoE add-backs in the bridge"  "6" "$(jqi "sum(len(g['items']) for g in d['addbackGroups'])")"
+check "QoE FY2024 vendor-scoped vehicles" "6016.37" \
+  "$(jqn "[i for g in d['addbackGroups'] for i in g['items'] if 'vehicle' in i['label']][0]['amounts']['2024']")"
+check "QoE FY2024 related-party rent recast" "24741.20" \
+  "$(jqn "[i for g in d['addbackGroups'] for i in g['items'] if 'rent' in i['label']][0]['amounts']['2024']")"
+# A negative add-back: non-recurring income comes OUT of the bridge. It lands in
+# 2022 only, which is also the check that per-year values are not smeared.
+check "QoE FY2022 non-recurring gain removed" "-38400.00" \
+  "$(jqn "[i for g in d['addbackGroups'] for i in g['items'] if 'Gain on sale' in i['label']][0]['amounts']['2022']")"
+# Owner compensation is lifted out of the groups onto its own line, net of ONE
+# market-rate replacement salary. That netting is the sole structural difference
+# between Adjusted EBITDA and SDE, so if the replacement salary goes missing this
+# is the check that says so.
+check "QoE FY2024 owner comp net of replacement" "85000.00" \
+  "$(jqn "d['ownerCompensation']['amounts']['2024']")"
+check "QoE FY2024 Adjusted EBITDA" "483824.78" "$(jqn "d['adjusted']['2024']")"
+# The headline the exhibit exists to make: the two numbers differ.
+check "QoE Adjusted exceeds Reported" "True" \
+  "$(jqi "d['adjusted']['2024'] > d['reportedEbitda']['2024']")"
+
 # The balance sheet is rolled from the ingested statements: it must balance in
 # every one of the 48 monthly periods, and tie to the closing statement it was
 # not rolled from. The extracted sheet was out by exactly the unclassified
