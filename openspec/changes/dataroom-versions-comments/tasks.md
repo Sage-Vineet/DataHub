@@ -10,14 +10,14 @@
 
 ## 2. Data layer
 
-- [ ] 2.1 `packages/db/migrations/0003_dataroom_qa.sql` (shared with `deal-qa-module`) —
+- [x] 2.1 `packages/db/migrations/0003_dataroom_qa.sql` (shared with `deal-qa-module`) —
       `document_versions`, `document_comments`, `upload_sessions`, `upload_chunks`; every statement
       `IF NOT EXISTS`
-- [ ] 2.2 Two additive columns: `documents.current_version_id`, `documents.version_count` — both
+- [x] 2.2 Two additive columns: `documents.current_version_id`, `documents.version_count` — both
       `IF NOT EXISTS`, both defaulted, no FK on `current_version_id` (see `design.md` D1)
-- [ ] 2.3 Backfill a v1 `document_versions` row for every existing document with an `upload_id`, so
+- [x] 2.3 Backfill a v1 `document_versions` row for every existing document with an `upload_id`, so
       no version list is ever empty
-- [ ] 2.4 `0003_dataroom_qa.down.sql`
+- [x] 2.4 `0003_dataroom_qa.down.sql`
 - [ ] 2.5 Drizzle declarations in `packages/db/src/schema.ts`; assertions in `schema.test.ts`
 - [ ] 2.6 Confirm `packages/db/src/drift.ts` records no *new* breaking drift
 

@@ -14,18 +14,18 @@
 
 ## 2. Data layer
 
-- [ ] 2.1 `packages/db/migrations/0003_dataroom_qa.sql` (shared with `dataroom-versions-comments`):
+- [x] 2.1 `packages/db/migrations/0003_dataroom_qa.sql` (shared with `dataroom-versions-comments`):
       `qa_categories`, `qa_nominations`, `qa_items`, `qa_assignees`, `qa_assignment_events`,
       `qa_responses`, `qa_presentations`, `qa_attachments`, `qa_item_visibility`
-- [ ] 2.2 `qa_responses` carries `citation_ref` UNIQUE, `supersedes_id`, `answer_root_id`,
+- [x] 2.2 `qa_responses` carries `citation_ref` UNIQUE, `supersedes_id`, `answer_root_id`,
       `answer_version`, `is_current`; partial unique index enforcing one current version per answer
       root
-- [ ] 2.3 `qa_item_visibility` uses the exclusive-subject CHECK idiom already at
+- [x] 2.3 `qa_item_visibility` uses the exclusive-subject CHECK idiom already at
       `packages/db/src/schema.ts:157-175` (`(user_id IS NOT NULL) <> (role_key IS NOT NULL)`)
-- [ ] 2.4 Seed each company's `qa_categories` from the `request_category` vocabulary (see
+- [x] 2.4 Seed each company's `qa_categories` from the `request_category` vocabulary (see
       `design.md` D2)
 - [ ] 2.5 `.down.sql`; Drizzle declarations; `schema.test.ts` assertions
-- [ ] 2.6 `text` + `CHECK` rather than `pgEnum` for the new status columns — deviation recorded in
+- [x] 2.6 `text` + `CHECK` rather than `pgEnum` for the new status columns — deviation recorded in
       `design.md` D6
 
 ## 3. Module scaffold
