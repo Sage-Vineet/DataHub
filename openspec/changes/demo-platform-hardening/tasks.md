@@ -1,21 +1,22 @@
 ## 1. Migration runner
 
-- [ ] 1.1 `tools/db/migrate.mjs` — read `packages/db/migrations/*.sql` sorted by `NNNN`, excluding
+- [x] 1.1 `tools/db/migrate.mjs` — read `packages/db/migrations/*.sql` sorted by `NNNN`, excluding
       `*.down.sql`; create `schema_migrations(version text PRIMARY KEY, checksum text,
       applied_at timestamptz DEFAULT now())`
-- [ ] 1.2 Apply each unapplied file in its own transaction; record version + sha256 on success
-- [ ] 1.3 Checksum mismatch on an already-applied file exits non-zero and names the file; `--force`
+- [x] 1.2 Apply each unapplied file in its own transaction; record version + sha256 on success
+- [x] 1.3 Checksum mismatch on an already-applied file exits non-zero and names the file; `--force`
       re-records without re-applying
-- [ ] 1.4 `--to NNNN` / `--down NNNN` drive the `.down.sql` siblings in descending order and delete
+- [x] 1.4 `--to NNNN` / `--down NNNN` drive the `.down.sql` siblings in descending order and delete
       the rolled-back rows
-- [ ] 1.5 Uses the `pg` already vendored at `tools/demo/node_modules/pg` — no new dependency
-- [ ] 1.6 `packages/db/package.json` gains `"db:migrate"`; root `justfile` gains `db-migrate`
-- [ ] 1.7 Vitest against PGlite: fresh apply, idempotent re-run, mid-migration failure rolls back
+- [x] 1.5 Lives at `packages/db/scripts/migrate.mjs`, not `tools/db/` — the package that owns the
+      migrations already depends on `pg`, so the runner needs no new dependency and no new workspace
+- [x] 1.6 `packages/db/package.json` gains `"db:migrate"`; root `justfile` gains `db-migrate`
+- [x] 1.7 Vitest against PGlite: fresh apply, idempotent re-run, mid-migration failure rolls back
       and is not recorded, edited-file detection, force path, down path
 
 ## 2. Demo bootstrap rewiring
 
-- [ ] 2.1 `tools/demo/up.sh` steps 2, 3 and the `0002` line of step 5 collapse into one
+- [x] 2.1 `tools/demo/up.sh` steps 2, 3 and the `0002` line of step 5 collapse into one
       `db:migrate` call, preserving the order: legacy `schema.sql` (tolerant) → legacy `049` →
       legacy `050` → `db:migrate` → `seed.sql` → backfill → `seed-qoe`
 - [ ] 2.2 Cold `docker compose -f docker-compose.demo.yml down -v && ./tools/demo/up.sh` goes green,

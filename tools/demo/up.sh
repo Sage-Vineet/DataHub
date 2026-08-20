@@ -1,31 +1,30 @@
 #!/usr/bin/env bash
 # Bring up the local full-stack demo: SPA → gateway → legacy → Postgres, seeded.
 #
-# Database bootstrap is four steps rather than one, because no single artefact in
-# this repo can build a working database:
+# Database bootstrap still takes several steps, because no single artefact in this
+# repo can build a working database — but the Drizzle half of it is now one call:
 #
 #   1. backend/sql/schema.sql   the legacy world. Does NOT apply cleanly — line 278
 #                               indexes bank_transactions(client_id), a column the
 #                               table never declares. Loaded WITHOUT ON_ERROR_STOP
 #                               so that one known-bad statement is skipped and
 #                               reported, instead of aborting the whole load.
-#   2. 0001_module_schema.sql   the DDL the new modules need on top of legacy
-#                               (folders.archived_at + its provisioning unique
-#                               index, email_verifications, the message-group
-#                               tables, the approval_status enum). Until this
-#                               migration was written that DDL existed only as
-#                               TypeScript in packages/db/src/schema.ts.
-#   3. better-auth migration    identity tables (ADR-0007).
+#   2. legacy 049/050           key-report entry tables and the general-ledger
+#                               columns that 0002_qoe_bridge ALTERs. They must land
+#                               before the migration runner, which is the only
+#                               ordering constraint in the whole sequence.
+#   3. db:migrate               every packages/db migration, in order, once, in a
+#                               transaction, recorded in schema_migrations. Until
+#                               this existed the three files below were applied by
+#                               hand here and a dev checkout had no bootstrap at
+#                               all (openspec/changes/devenv-schema-bootstrap).
 #   4. seed.sql + backfill      demo rows, then the users → auth_user/account
 #                               backfill so login works with the flag either way.
-#   5. QoE engagement           key-report entry tables (legacy 049/050), the QoE
-#                               bridge migration, and the anonymized walkthrough
-#                               engagement loaded into chart_of_accounts +
-#                               general_ledger_entries.
+#   5. QoE engagement           the anonymized walkthrough engagement loaded into
+#                               chart_of_accounts + general_ledger_entries.
 #
-# That sequence is itself the finding: standing up a database from this repo takes
-# a bespoke script. Phase C replaces steps 1–2 with a production snapshot and a
-# reconciled schema.
+# Step 1 is still the finding: the legacy schema cannot describe itself. Phase C
+# replaces it with a production snapshot and a reconciled schema.
 
 set -euo pipefail
 
@@ -74,22 +73,20 @@ if psql_demo < backend/sql/schema.sql 2>&1 | grep -E '^(ERROR|psql:)' ; then
   echo "   ^ expected: bank_transactions(client_id) does not exist (schema.sql:278)"
 fi
 
-step "2/5 Applying the module schema migration (0001_module_schema)"
-psql_demo -v ON_ERROR_STOP=1 < packages/db/migrations/0001_module_schema.sql >/dev/null
+step "2/5 Applying the legacy tables the Drizzle migrations build on"
+# 049/050 create general_ledger_entries and its raw-row columns; both are
+# idempotent. They must precede db:migrate because 0002_qoe_bridge ALTERs them.
+psql_demo -v ON_ERROR_STOP=1 < backend/sql/migrations/049_key_reports_entry_tables.sql >/dev/null
+psql_demo -v ON_ERROR_STOP=1 < backend/sql/migrations/050_general_ledger_entries_new_columns.sql >/dev/null
 
-step "3/5 Applying the Better Auth identity migration"
-psql_demo -v ON_ERROR_STOP=1 < packages/db/migrations/0000_better_auth_identity.sql >/dev/null
+step "3/5 Applying the Drizzle migrations"
+DATABASE_URL="$DB_URL" pnpm --filter @datahub/db db:migrate
 
 step "4/5 Seeding demo data and backfilling Better Auth identities"
 psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed.sql >/dev/null
 DATABASE_URL="$DB_URL" pnpm --filter @datahub/demo backfill
 
-step "5/5 Loading the QoE engagement (key-report tables + bridge + ledger)"
-# 049/050 create general_ledger_entries and its raw-row columns; both are
-# idempotent. 0002 adds chart_of_accounts.ebitda_role and qoe_addbacks.
-psql_demo -v ON_ERROR_STOP=1 < backend/sql/migrations/049_key_reports_entry_tables.sql >/dev/null
-psql_demo -v ON_ERROR_STOP=1 < backend/sql/migrations/050_general_ledger_entries_new_columns.sql >/dev/null
-psql_demo -v ON_ERROR_STOP=1 < packages/db/migrations/0002_qoe_bridge.sql >/dev/null
+step "5/5 Loading the QoE engagement"
 DATABASE_URL="$DB_URL" pnpm --filter @datahub/demo seed-qoe
 
 step "Verifying the stack"

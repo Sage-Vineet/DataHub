@@ -18,7 +18,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "db:pull": "drizzle-kit pull",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "node scripts/migrate.mjs"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",
@@ -26,6 +27,7 @@
   },
   "devDependencies": {
     "@datahub/config": "workspace:*",
+    "@electric-sql/pglite": "^0.2.17",
     "@eslint/js": "^9.39.4",
     "@types/node": "^22.10.2",
     "@types/pg": "^8.11.10",
