@@ -61,8 +61,18 @@ export const documentResponse = z.object({
 });
 export type DocumentResponse = z.infer<typeof documentResponse>;
 
+/**
+ * The deployed `document_activity.activity_type` is a Postgres enum of exactly
+ * `view | download`, and the cutover writes that column alongside the module's
+ * own. A free-form string here turns an unknown action into a 500 from the
+ * database instead of a 400 at the edge, so the contract carries the same
+ * closed vocabulary the column does.
+ */
+export const documentActivityAction = z.enum(["view", "download"]);
+export type DocumentActivityAction = z.infer<typeof documentActivityAction>;
+
 export const documentActivityCreate = z.object({
-  action: z.string().trim().min(1, "An action is required."),
+  action: documentActivityAction,
 });
 export type DocumentActivityCreate = z.infer<typeof documentActivityCreate>;
 

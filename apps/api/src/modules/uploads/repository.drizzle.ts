@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { schema, type Db } from "@datahub/db";
 import type { DocumentStatus } from "@datahub/contracts";
 import type {
@@ -85,12 +85,37 @@ export class DrizzleDocumentsRepository implements DocumentsRepository {
     return rows[0] ? toDoc(rows[0]) : null;
   }
 
+  /**
+   * Write BOTH generations of columns, in one row, with raw SQL.
+   *
+   * `document_activity` carries legacy's `user_id` + `activity_type` (both NOT
+   * NULL, the second a `document_activity_type` enum) alongside this module's
+   * `actor_id` + `action` + `at`. packages/db declares only the second set, so
+   * a Drizzle insert leaves legacy's NOT NULL columns empty and every write
+   * fails — which is exactly what it did: `POST /documents/:id/activity` was a
+   * 500 in production while the read returned a healthy-looking empty list.
+   *
+   * Writing one set and not the other is not an option while both engines are
+   * live: legacy reads `activity_type`, this module reads `action`, and a row
+   * carrying only one is invisible to the other side's view of the same file.
+   * The two vocabularies happen to be identical (`view | download`), so one row
+   * satisfies both honestly rather than by coincidence.
+   *
+   * Raw SQL rather than widening the Drizzle model, for the same reason
+   * `dataroom-versions-comments` design D4a gives for `document_status`: the
+   * model describes the schema we are migrating toward, and these columns are
+   * ones we are migrating away from. Both disappear together when legacy's
+   * document handlers are retired.
+   */
   async appendActivity(documentId: string, actorId: string | null, action: string): Promise<ActivityRecord> {
-    const rows = await this.db
-      .insert(documentActivity)
-      .values({ documentId, actorId, action })
-      .returning();
-    return toActivity(rows[0]!);
+    const rows = await this.db.execute<ActRow>(sql`
+      INSERT INTO document_activity (document_id, actor_id, action, user_id, activity_type)
+      VALUES (${documentId}, ${actorId}, ${action}, ${actorId}, ${action}::document_activity_type)
+      RETURNING id, document_id AS "documentId", actor_id AS "actorId", action, at
+    `);
+    const row = (Array.isArray(rows) ? rows[0] : rows.rows?.[0]) as ActRow | undefined;
+    if (!row) throw new Error("document_activity insert returned no row.");
+    return toActivity({ ...row, at: new Date(row.at as unknown as string) });
   }
 
   async listActivity(documentId: string): Promise<ActivityRecord[]> {

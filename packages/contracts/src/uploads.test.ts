@@ -25,8 +25,18 @@ describe("documentListQuery", () => {
 });
 
 describe("documentActivityCreate", () => {
-  it("requires a non-empty action", () => {
-    expect(documentActivityCreate.safeParse({ action: "downloaded" }).success).toBe(true);
-    expect(documentActivityCreate.safeParse({ action: "" }).success).toBe(false);
+  it("accepts the two actions the deployed column can store", () => {
+    expect(documentActivityCreate.safeParse({ action: "view" }).success).toBe(true);
+    expect(documentActivityCreate.safeParse({ action: "download" }).success).toBe(true);
+  });
+
+  it("refuses anything else, including near-misses", () => {
+    // `document_activity.activity_type` is a Postgres enum of exactly
+    // view|download. This previously accepted any non-empty string, so
+    // "downloaded" passed the contract and then failed the insert — a 400's
+    // worth of information arriving as a 500.
+    for (const action of ["downloaded", "viewed", "printed", "", "VIEW"]) {
+      expect(documentActivityCreate.safeParse({ action }).success).toBe(false);
+    }
   });
 });

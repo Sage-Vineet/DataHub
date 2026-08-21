@@ -1,4 +1,5 @@
 import type { DocumentStatus } from "@datahub/contracts";
+import type { FolderAccessGrant } from "./folder-access.js";
 
 export interface StoredBlobMeta {
   fileName: string;
@@ -32,6 +33,15 @@ export interface StoragePort {
 /** Resolve a folder's company for the tenant guard (design D1) — kept as a port. */
 export interface FolderRefPort {
   companyIdFor(folderId: string): Promise<string | null>;
+  /**
+   * The folder and its ancestors, nearest first, so grant inheritance can be
+   * resolved without this module knowing how the folder tree is stored.
+   */
+  ancestryOf(folderId: string): Promise<string[]>;
+  /** Grants covering any folder in `folderIds`. */
+  grantsFor(folderIds: readonly string[]): Promise<FolderAccessGrant[]>;
+  /** Buyer groups the user belongs to. */
+  groupIdsFor(userId: string): Promise<string[]>;
 }
 
 export interface DocumentRecord {

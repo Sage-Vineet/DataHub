@@ -1,3 +1,4 @@
+import type { FolderAccessGrant } from "./folder-access.js";
 import { randomUUID } from "node:crypto";
 import type {
   ActivityRecord,
@@ -79,10 +80,39 @@ export class InMemoryStoragePort implements StoragePort {
 /** In-memory `FolderRefPort` for tests. */
 export class InMemoryFolderRefPort implements FolderRefPort {
   private readonly map = new Map<string, string>();
-  set(folderId: string, companyId: string): void {
+  private readonly parents = new Map<string, string>();
+  private readonly grants: FolderAccessGrant[] = [];
+  private readonly groups = new Map<string, string[]>();
+
+  set(folderId: string, companyId: string, parentId?: string): void {
     this.map.set(folderId, companyId);
+    if (parentId) this.parents.set(folderId, parentId);
   }
+  grant(entry: FolderAccessGrant): void {
+    this.grants.push(entry);
+  }
+  joinGroup(userId: string, groupId: string): void {
+    this.groups.set(userId, [...(this.groups.get(userId) ?? []), groupId]);
+  }
+
   async companyIdFor(folderId: string): Promise<string | null> {
     return this.map.get(folderId) ?? null;
+  }
+  async ancestryOf(folderId: string): Promise<string[]> {
+    const chain: string[] = [];
+    const seen = new Set<string>();
+    let current: string | undefined = folderId;
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      chain.push(current);
+      current = this.parents.get(current);
+    }
+    return chain;
+  }
+  async grantsFor(folderIds: readonly string[]): Promise<FolderAccessGrant[]> {
+    return this.grants.filter((entry) => folderIds.includes(entry.folderId));
+  }
+  async groupIdsFor(userId: string): Promise<string[]> {
+    return this.groups.get(userId) ?? [];
   }
 }

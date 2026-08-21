@@ -5,6 +5,12 @@ import type {
   SessionUser,
   UploadResponse,
 } from "@datahub/contracts";
+import {
+  ownsTheRoom,
+  resolveFolderPermissions,
+  UNRESTRICTED,
+  type FolderPermissions,
+} from "./folder-access.js";
 import { canAccessCompany } from "../../shared/access.js";
 import { ForbiddenError, NotFoundError } from "../../shared/errors.js";
 import type {
@@ -53,7 +59,7 @@ export class UploadsService {
 
   /** Add a document under a folder (tenant-guarded via the folder's company). */
   async addDocument(user: SessionUser, folderId: string, input: DocumentCreate): Promise<DocumentResponse> {
-    const companyId = await this.requireFolderAccess(user, folderId);
+    const companyId = await this.requireFolderAccess(user, folderId, "write");
     const doc = await this.repo.createDocument({
       companyId,
       folderId,
@@ -74,7 +80,7 @@ export class UploadsService {
   }
 
   async deleteDocument(user: SessionUser, documentId: string): Promise<void> {
-    await this.requireDocumentAccess(user, documentId);
+    await this.requireDocumentAccess(user, documentId, "write");
     await this.repo.delete(documentId);
   }
 
@@ -101,19 +107,57 @@ export class UploadsService {
   // ── Internals ───────────────────────────────────────────────────────────
 
   /** Resolve the folder's company and enforce access; returns the company id. */
-  private async requireFolderAccess(user: SessionUser, folderId: string): Promise<string> {
+  /**
+   * Two gates, in order: the tenant boundary, then the folder's own grants.
+   *
+   * The second used to be missing entirely. `folder_access` carried per-user and
+   * per-group grants with separate read/write/download capabilities, a panel
+   * wrote them, and nothing on the server ever read them — so every grant was
+   * advisory and any member of the company could list any folder's documents by
+   * calling the API directly. See folder-access.ts for why an ungranted folder
+   * stays open rather than becoming denied.
+   */
+  private async requireFolderAccess(
+    user: SessionUser,
+    folderId: string,
+    capability: keyof FolderPermissions = "read",
+  ): Promise<string> {
     const companyId = await this.folders.companyIdFor(folderId);
     if (!companyId) throw new NotFoundError("Folder not found.");
     if (!canAccessCompany(user, companyId)) {
       throw new ForbiddenError("You do not have permission to access this folder's documents.");
     }
+    const permissions = await this.permissionsFor(user, folderId);
+    if (!permissions[capability]) {
+      throw new ForbiddenError("You do not have permission to access this folder's documents.");
+    }
     return companyId;
   }
 
-  private async requireDocumentAccess(user: SessionUser, documentId: string): Promise<DocumentRecord> {
+  private async permissionsFor(user: SessionUser, folderId: string): Promise<FolderPermissions> {
+    if (ownsTheRoom(user)) return UNRESTRICTED;
+    const ancestry = await this.folders.ancestryOf(folderId);
+    const [grants, groupIds] = await Promise.all([
+      this.folders.grantsFor(ancestry),
+      this.folders.groupIdsFor(user.id),
+    ]);
+    return resolveFolderPermissions({ user, ancestry, grants, groupIds });
+  }
+
+  private async requireDocumentAccess(
+    user: SessionUser,
+    documentId: string,
+    capability: keyof FolderPermissions = "read",
+  ): Promise<DocumentRecord> {
     const doc = await this.repo.getById(documentId);
     if (!doc) throw new NotFoundError("Document not found.");
     if (!canAccessCompany(user, doc.companyId)) {
+      throw new ForbiddenError("You do not have permission to access this document.");
+    }
+    // A document is only as reachable as the folder holding it; otherwise a
+    // restricted folder could be walked around by addressing its contents.
+    const permissions = await this.permissionsFor(user, doc.folderId);
+    if (!permissions[capability]) {
       throw new ForbiddenError("You do not have permission to access this document.");
     }
     return doc;
