@@ -13,6 +13,7 @@ import {
 import {
   acceptCimAnswerRequest,
   createCimDeckRequest,
+  createCimDraftRequest,
   discardCimAnswerRequest,
   generateCimQuestionsRequest,
   getCimHealthRequest,
@@ -113,6 +114,28 @@ export default function WorkspaceCimBuilder() {
     () => versions.find((v) => v.status === 'published' && v.document_id),
     [versions],
   );
+
+  /**
+   * Publishing freezes the version, and the deck's current version is derived as
+   * the LATEST one — so once the newest version is published there is nothing
+   * editable left and every control refuses. Without a way to start the next
+   * draft the builder is a one-way door: the first person to publish leaves it
+   * read-only for everyone after them.
+   */
+  const frozen = detail?.version?.status && detail.version.status !== 'draft';
+
+  async function startNextDraft() {
+    if (!deck) return;
+    setBusy(true);
+    try {
+      const draft = await createCimDraftRequest(deck.id);
+      apply(await loadDeck(draft.id, deck.id));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function createDeck() {
     setBusy(true);
@@ -325,7 +348,18 @@ export default function WorkspaceCimBuilder() {
             <FileText size={16} />
             Preview
           </button>
-          {health?.publishable && (
+          {frozen && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={startNextDraft}
+              className={`${TAP} inline-flex items-center gap-2 rounded-xl border border-[#05164D] bg-white text-sm font-medium text-[#05164D] disabled:opacity-60`}
+            >
+              {busy ? <Loader2 className="animate-spin" size={16} /> : <FileText size={16} />}
+              Start v{(detail?.version?.version_no ?? 0) + 1}
+            </button>
+          )}
+          {!frozen && health?.publishable && (
             <button
               type="button"
               disabled={busy}
