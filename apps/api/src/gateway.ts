@@ -47,6 +47,12 @@ export interface GatewayOptions {
   /** Upstream timeout in ms before a request is failed as 504. */
   proxyTimeoutMs?: number;
   /**
+   * Runs immediately before the catch-all proxy, so it sees only requests bound
+   * for legacy — never one an in-process module already claimed. Used by the
+   * legacy auth bridge (`legacy-bridge.ts`); omitted → no request-path change.
+   */
+  beforeProxy?: RequestHandler;
+  /**
    * Tier-1 activity capture (SE-0004). Runs ahead of everything so it sees every
    * request — including the ones that proxy to legacy, which is most of them
    * during the cutover. Omitted → no capture, and no request-path change at all.
@@ -145,6 +151,9 @@ export function createGateway(table: RoutingTable, options: GatewayOptions = {})
       },
     },
   });
+
+  // Last thing before the proxy: everything past this point is legacy's.
+  if (options.beforeProxy) app.use(options.beforeProxy);
 
   app.use(proxy);
   return app;

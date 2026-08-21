@@ -233,6 +233,54 @@ describe("gateway", () => {
     });
   });
 
+  describe("beforeProxy (the legacy auth bridge seam)", () => {
+    /** Stamps a header so the upstream echo tells us whether it ran. */
+    const stamp: express.RequestHandler = (req, _res, next) => {
+      req.headers.authorization = "Bearer minted-for-legacy";
+      next();
+    };
+
+    function gatewayWithBridge() {
+      const table = parseRoutingTable({ LEGACY_ORIGIN: legacy.url });
+      return createGateway(table, {
+        modules: [{ path: "/served", router: (() => {
+          const r = express.Router();
+          r.get("/in-process", (req, res) => res.json({ auth: req.headers.authorization ?? null }));
+          return r;
+        })() }],
+        beforeProxy: stamp,
+        proxyTimeoutMs: 800,
+      });
+    }
+
+    it("runs for a request bound for legacy", async () => {
+      const res = await request(gatewayWithBridge())
+        .get("/reminders")
+        .set("Authorization", "Bearer opaque-session-token");
+
+      expect(res.body.upstream).toBe("legacy");
+      expect(res.body.auth).toBe("Bearer minted-for-legacy");
+    });
+
+    it("never runs for a route an in-process module already claimed", async () => {
+      // The bridge exists only to satisfy legacy. A module reading a re-signed
+      // token instead of the real session would be validating the wrong thing.
+      const res = await request(gatewayWithBridge())
+        .get("/served/in-process")
+        .set("Authorization", "Bearer opaque-session-token");
+
+      expect(res.body.auth).toBe("Bearer opaque-session-token");
+    });
+
+    it("changes nothing when no bridge is configured", async () => {
+      const res = await request(gateway())
+        .get("/reminders")
+        .set("Authorization", "Bearer opaque-session-token");
+
+      expect(res.body.auth).toBe("Bearer opaque-session-token");
+    });
+  });
+
   it("emits credentialed-CORS headers for allow-listed origins and answers preflight", async () => {
     const table = parseRoutingTable({ LEGACY_ORIGIN: legacy.url });
     const app = createGateway(table, { corsOrigins: ["https://app.datahub.test"] });

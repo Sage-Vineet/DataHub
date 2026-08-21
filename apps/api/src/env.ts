@@ -53,6 +53,11 @@ export const MODULE_FLAGS = [
   "QA_PRESENTATION_ENABLED",
   "QA_NOMINATIONS_ENABLED",
   "CIM_MODULE_ENABLED",
+  // Not a capability — plumbing. Re-signs the gateway's session into the HS256
+  // shape legacy verifies, so routes that have not been cut over yet keep
+  // working for a cookie-session caller. Flagged so it can be switched off in
+  // one step once the last route-group moves in-process (see legacy-bridge.ts).
+  "LEGACY_AUTH_BRIDGE_ENABLED",
 ] as const;
 
 export type ModuleFlag = (typeof MODULE_FLAGS)[number];

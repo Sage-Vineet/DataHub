@@ -31,6 +31,8 @@ import { createCimModule } from "./modules/cim/index.js";
 import { DrizzleCimDataRoomPort, QaServiceAdapter } from "./modules/cim/adapters.js";
 import { unavailableDataRoom } from "./modules/qa/repository.memory.js";
 import { requireSession } from "./shared/session.js";
+import { legacyAuthBridge } from "./legacy-bridge.js";
+import { resolveSessionUser } from "./modules/auth/better-session.js";
 import { parseRoutingTable } from "./routing.js";
 import { loadGatewayEnv, type GatewayEnv } from "./env.js";
 
@@ -263,6 +265,38 @@ function buildModules(flags: GatewayEnv["flags"]): MountedModule[] {
  * as a plain middleware. Disabled → `undefined`, and the request path is exactly
  * what it was before.
  */
+/**
+ * Re-sign the gateway's session into the shape legacy verifies.
+ *
+ * Only useful while routes remain on legacy: Better Auth sessions are opaque
+ * database rows and legacy verifies HS256 JWTs, so without this every request
+ * the SPA makes to an un-migrated route comes back `401 Invalid token`. See
+ * legacy-bridge.ts for why this cannot manufacture an identity.
+ */
+function buildLegacyBridge(enabled: boolean): RequestHandler | undefined {
+  if (!enabled) return undefined;
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    throw new Error("LEGACY_AUTH_BRIDGE_ENABLED=true requires DATABASE_URL.");
+  }
+  const db = createDb(databaseUrl);
+  const auth = createBetterAuth({
+    db,
+    emailer: new ConsoleEmailer(),
+    config: loadBetterAuthConfig(process.env),
+  });
+  const repo = new DrizzleAuthRepository(db);
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    throw new Error("LEGACY_AUTH_BRIDGE_ENABLED=true requires JWT_SECRET (the value legacy verifies).");
+  }
+  console.warn("[gateway] legacy auth bridge ENABLED (re-signs sessions for un-migrated routes)");
+  return legacyAuthBridge({
+    resolveUser: (req) => resolveSessionUser(auth, repo, req),
+    secret,
+  });
+}
+
 function buildActivityCapture(enabled: boolean): RequestHandler | undefined {
   if (!enabled) return undefined;
   const databaseUrl = process.env.DATABASE_URL;
@@ -289,6 +323,7 @@ function main(): void {
     modules: buildModules(env.flags),
     corsOrigins: env.corsOrigins,
     activityCapture: buildActivityCapture(env.flags.ACTIVITY_LOG_ENABLED),
+    beforeProxy: buildLegacyBridge(env.flags.LEGACY_AUTH_BRIDGE_ENABLED),
     features: clientFeatures(env.flags),
   });
   const port = env.port;

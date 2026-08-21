@@ -45,6 +45,10 @@ fi
 # default ON — there is nothing to fall back to and nothing they can shadow.
 # LEGACY_MODE leaves them on for the same reason: turning them off would not show
 # you the legacy behaviour, because there isn't any.
+# Plumbing rather than a capability: legacy verifies HS256 JWTs and the gateway
+# issues Better Auth sessions, so without the bridge every un-migrated route
+# refuses the SPA's own credentials.
+export LEGACY_AUTH_BRIDGE_ENABLED="${LEGACY_AUTH_BRIDGE_ENABLED:-true}"
 export QOE_MODULE_ENABLED="${QOE_MODULE_ENABLED:-true}"
 export DATAROOM_MODULE_ENABLED="${DATAROOM_MODULE_ENABLED:-true}"
 export DATAROOM_VERSIONS_ENABLED="${DATAROOM_VERSIONS_ENABLED:-true}"
@@ -143,13 +147,14 @@ DATABASE_URL="$DB_URL" pnpm --filter @datahub/demo backfill
 step "5/6 Loading the QoE engagement"
 DATABASE_URL="$DB_URL" pnpm --filter @datahub/demo seed-qoe
 
-step "6/6 Seeding the data room, Q&A and CIM"
+step "6/6 Seeding the data room, Q&A, requests and CIM"
 # Content, not just rows: documents with real bytes and version history, a Q&A
 # thread with a superseded answer and a published rewording, and a CIM with one
 # version already published into the data room. A stack that works perfectly and
 # shows three empty folders is the failure mode this exists to prevent.
 psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-dataroom.sql >/dev/null
 psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-qa.sql >/dev/null
+psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-requests.sql >/dev/null
 psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-cim-questions.sql >/dev/null
 DATABASE_URL="$DB_URL" pnpm --filter @datahub/demo seed-cim
 
@@ -202,7 +207,30 @@ check "archived folder shown with ?includeArchived" 1 "$arch"
 
 # QuickBooks OAuth lives under /api/auth/* in legacy. It must keep reaching legacy
 # even with the auth module mounted at /auth.
+# Anonymous on purpose: it proves the route still reaches legacy AND that the
+# auth bridge mints nothing for a caller with no session.
 check "QuickBooks OAuth still reaches legacy" 401 "$(curl -s -o /dev/null -w '%{http_code}' "$GW/api/auth/status")"
+
+# The legacy auth bridge. Better Auth sessions are opaque rows; legacy verifies
+# HS256 JWTs. Every screen still served by legacy answered 401 to a logged-in
+# user until the gateway started re-signing. These are the screens a booth
+# visitor can actually reach, so they are asserted as themselves rather than as
+# one representative route.
+if [[ "${LEGACY_AUTH_BRIDGE_ENABLED}" == "true" ]]; then
+  for legacy_route in \
+    "reminders:/companies/$ACME/reminders" \
+    "activity:/companies/$ACME/activity" \
+    "chart of accounts:/companies/$ACME/chart-of-accounts" \
+    "report sources:/report-sources/$ACME" \
+    "CIM prep state:/companies/$ACME/workspace-page-state/cim-prep"
+  do
+    label="${legacy_route%%:*}"; path="${legacy_route#*:}"
+    code=$(curl -s -o /dev/null -w '%{http_code}' "$GW$path" -b "$JAR")
+    # 200 or 404 both prove authentication succeeded; 401 is the regression.
+    check "legacy bridge: $label authenticates" "true" \
+      "$([[ "$code" != "401" && "$code" != "403" ]] && echo true || echo "false ($code)")"
+  done
+fi
 
 check "SPA is served" 200 "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${WEB_PORT}/")"
 
@@ -238,6 +266,30 @@ if [[ "${DATAROOM_MODULE_ENABLED}" == "true" ]]; then
     check "data room: broker sees both comments" 2 \
       "$(curl -s "$GW/dataroom/documents/$DOC/comments" -b "$JAR" | jq_len)"
   fi
+fi
+
+# Requests: the broker→seller diligence board. Cut over to the module, fully
+# wired in the SPA, and until now seeded with nothing at all — so the screen a
+# visitor reached was empty and no check would have noticed a regression.
+if [[ "${REQUESTS_MODULE_ENABLED:-true}" == "true" ]]; then
+  REQS=$(curl -s "$GW/companies/$ACME/requests" -b "$JAR")
+  check "requests: six seeded" 6 "$(printf '%s' "$REQS" | jq_len)"
+  # Every status the board renders. One missing means a column nobody sees.
+  check "requests: all four statuses present" 4 \
+    "$(printf '%s' "$REQS" | jq_get "len(set(r['status'] for r in d))")"
+  # The approval gate needs something to act on, or it cannot be demonstrated.
+  check "requests: one awaiting approval" 1 \
+    "$(printf '%s' "$REQS" | jq_get "len([r for r in d if r['approval_status']=='pending'])")"
+  # Due dates are seeded relative to today, so exactly one is overdue however
+  # long after the seed the demo runs. A literal date would drift and eventually
+  # turn the whole board red.
+  check "requests: exactly one overdue" 1 \
+    "$(printf '%s' "$REQS" | jq_get "len([r for r in d if r['due_date'] < '$(date +%Y-%m-%d)'])")"
+  REQ_LEASE=d1000000-0000-4000-8000-000000000002
+  check "requests: narrative reads back" "True" \
+    "$(curl -s "$GW/requests/$REQ_LEASE/narrative" -b "$JAR" | jq_get "'Cascade Holdings' in d['content']")"
+  check "requests: data room document linked" 1 \
+    "$(curl -s "$GW/requests/$REQ_LEASE/documents" -b "$JAR" | jq_len)"
 fi
 
 if [[ "${QA_MODULE_ENABLED}" == "true" ]]; then

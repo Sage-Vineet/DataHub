@@ -94,6 +94,10 @@ services:
       FOLDERS_MODULE_ENABLED: ${FOLDERS_MODULE_ENABLED:-true}
       UPLOADS_MODULE_ENABLED: ${UPLOADS_MODULE_ENABLED:-true}
       REQUESTS_MODULE_ENABLED: ${REQUESTS_MODULE_ENABLED:-true}
+      # Without this every screen still served by legacy — reminders, activity,
+      # the chart of accounts, report sources, CIM prep — answers 401 to a
+      # cookie-session caller. See apps/api/src/legacy-bridge.ts.
+      LEGACY_AUTH_BRIDGE_ENABLED: ${LEGACY_AUTH_BRIDGE_ENABLED:-true}
       MESSAGES_MODULE_ENABLED: ${MESSAGES_MODULE_ENABLED:-true}
       REPORTS_MODULE_ENABLED: ${REPORTS_MODULE_ENABLED:-true}
       QOE_MODULE_ENABLED: ${QOE_MODULE_ENABLED:-true}
