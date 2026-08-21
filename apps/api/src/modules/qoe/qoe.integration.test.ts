@@ -5,7 +5,7 @@ import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { schema, type Db } from "@datahub/db";
+import { createSchemaDb, schema, type Db } from "@datahub/db";
 import type { SessionUser } from "@datahub/contracts";
 import { engagementFixture } from "@datahub/financial-engine";
 import { createQoeRouter } from "./router.js";
@@ -23,60 +23,6 @@ import { QoeService } from "./service.js";
  * not just the arithmetic, agrees with the workbook.
  */
 
-const DDL = `
-CREATE TYPE company_status AS ENUM ('active','inactive');
-CREATE TABLE companies (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, project_name text, industry text,
-  status company_status NOT NULL DEFAULT 'active', since date, logo text, contact_name text,
-  contact_email text, contact_phone text, profit_metric text NOT NULL DEFAULT 'adjusted_ebitda',
-  market_rate_replacement_salary numeric(18,2),
-  data_source_type text, quickbooks_connected boolean NOT NULL DEFAULT false,
-  manual_upload_active boolean NOT NULL DEFAULT false, last_source_switch_at timestamptz,
-  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
-CREATE TABLE users (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text, email text);
-CREATE TABLE key_report_versions (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-  version_number integer NOT NULL, version_name text, status text NOT NULL DEFAULT 'draft',
-  is_active boolean NOT NULL DEFAULT false, resolved_batch_id uuid, resolved_dataset_version integer,
-  last_synced_at timestamptz, metadata jsonb NOT NULL DEFAULT '{}'::jsonb, created_by uuid, updated_by uuid,
-  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
-CREATE TABLE chart_of_accounts (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), version_id uuid NOT NULL,
-  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-  account_number text, account_name text NOT NULL, parent_account_id uuid,
-  account_type text, statement_type text, is_active boolean NOT NULL DEFAULT true,
-  sort_order integer, ebitda_role text,
-  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
--- Mirrors backend/sql/migrations/049 + 050 + the coa_id reconciliation in
--- packages/db/migrations/0002, including the NOT NULL columns a real row carries.
-CREATE TABLE general_ledger_entries (
-  id bigint PRIMARY KEY, version_id uuid NOT NULL,
-  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-  source_file_id uuid NOT NULL, transaction_date date, fiscal_year integer,
-  account_number text NOT NULL, account_name text NOT NULL, coa_id uuid,
-  row_type text NOT NULL DEFAULT 'TRANSACTION', amount numeric(18,2),
-  vendor_name text, memo_description text);
-CREATE TABLE balance_sheet_entries (
-  id bigint PRIMARY KEY, version_id uuid NOT NULL,
-  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-  source_file_id uuid, as_of_date date NOT NULL, fiscal_year integer,
-  account_name text, account_number text, account_type text,
-  section text, sub_section text, amount numeric(18,2),
-  hierarchy_level integer, sort_order integer,
-  is_total boolean DEFAULT false, is_generated boolean DEFAULT false, coa_id uuid);
-CREATE TABLE qoe_addbacks (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-  version_id text NOT NULL, kind text NOT NULL,
-  data_source text NOT NULL DEFAULT 'company_financials', type_key text NOT NULL, name text NOT NULL,
-  linked_account_id text, vendor_scope jsonb NOT NULL DEFAULT '[]'::jsonb,
-  granularity text NOT NULL DEFAULT 'detail', values jsonb NOT NULL DEFAULT '{}'::jsonb,
-  recast_normalized_value numeric(18,2), group_id text, group_label text,
-  explanation text, commentary text, qa_citation_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
-  created_by uuid, created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(), deleted_at timestamptz);
-`;
 
 const BROKER: SessionUser = {
   id: "11111111-1111-1111-1111-111111111111",
@@ -95,8 +41,7 @@ let accountUuid: Map<string, string>;
 const SOURCE_FILE_ID = "22222222-2222-4222-8222-222222222222";
 
 beforeEach(async () => {
-  client = new PGlite();
-  await client.exec(DDL);
+  client = await createSchemaDb();
   db = drizzle(client, { schema }) as unknown as Db;
 
   companyId = randomUUID();
@@ -104,12 +49,31 @@ beforeEach(async () => {
   await db.insert(schema.companies).values({
     id: companyId,
     name: engagementFixture.company.name,
+    industry: "",
     profitMetric: "adjusted_ebitda",
   });
   await client.exec(
     `INSERT INTO key_report_versions (id, company_id, version_number, is_active)
      VALUES ('${versionId}', '${companyId}', 1, true);`,
   );
+
+  // general_ledger_entries.source_file_id is a real foreign key to documents, so
+  // the ledger has to point at a document that exists — the same referential
+  // shape tools/demo/seed-qoe.mjs builds. The hand-written DDL declared it as a
+  // bare uuid, so the fixture could invent one.
+  // The acting user, not an invented one: qoe_addbacks.created_by is a real
+  // foreign key, so an add-back created in a test has to be created by someone.
+  const userId = BROKER.id;
+  const folderId = randomUUID();
+  await client.exec(`
+    INSERT INTO users (id, name, email, password_hash, role, company_id)
+    VALUES ('${userId}', 'Broker', 'b-${userId}@x.test', '!', 'broker', '${companyId}');
+    INSERT INTO folders (id, company_id, name, created_by)
+    VALUES ('${folderId}', '${companyId}', 'Financials', '${userId}');
+    INSERT INTO documents (id, company_id, folder_id, name, file_url, size, ext, status, uploaded_by)
+    VALUES ('${SOURCE_FILE_ID}', '${companyId}', '${folderId}', 'GL.xlsx', '', '1', 'xlsx',
+            'under-review', '${userId}');
+  `);
 
   // ── load the chart of accounts ────────────────────────────────────────────
   // `ebitdaRole` is deliberately NOT seeded. A freshly ingested engagement has
@@ -166,6 +130,7 @@ beforeEach(async () => {
         id: bsId++,
         versionId,
         companyId,
+        sourceFileId: SOURCE_FILE_ID,
         asOfDate: asOf,
         fiscalYear: Number(asOf.slice(0, 4)),
         accountName: row.name,
@@ -173,6 +138,11 @@ beforeEach(async () => {
         subSection: row.group,
         amount: String(row.amount),
         sortOrder: order,
+        // The real extractor writes level 1 for statement accounts (see
+        // tools/demo/seed-qoe.mjs); the column defaults to 0, so leaving it
+        // unset made every seeded row look like a parent caption once a level-1
+        // row appeared beside it.
+        hierarchyLevel: 1,
         isTotal: false,
         isGenerated: false,
         coaId: accountUuid.get(
@@ -316,12 +286,12 @@ describe("balance sheet and trial balance over HTTP", () => {
 
     await db.insert(schema.balanceSheetEntries).values([
       {
-        id: 900001, versionId, companyId, asOfDate: "2021-12-31", fiscalYear: 2021,
+        id: 900001, versionId, companyId, sourceFileId: SOURCE_FILE_ID, asOfDate: "2021-12-31", fiscalYear: 2021,
         accountName: "Bank Accounts", section: "assets", amount: "331021.02",
         sortOrder: 999, isTotal: false, isGenerated: false, hierarchyLevel: 0,
       },
       {
-        id: 900002, versionId, companyId, asOfDate: "2021-12-31", fiscalYear: 2021,
+        id: 900002, versionId, companyId, sourceFileId: SOURCE_FILE_ID, asOfDate: "2021-12-31", fiscalYear: 2021,
         accountName: "Fixed Assets", section: "assets", amount: "1010393.10",
         sortOrder: 998, isTotal: false, isGenerated: false, hierarchyLevel: 1,
       },

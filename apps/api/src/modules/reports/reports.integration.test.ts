@@ -5,26 +5,10 @@ import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { schema, type Db } from "@datahub/db";
+import { createSchemaDb, schema, type Db } from "@datahub/db";
 import type { SessionUser } from "@datahub/contracts";
 import { createReportsModule } from "./index.js";
 
-const DDL = `
-CREATE TYPE company_status AS ENUM ('active','inactive');
-CREATE TABLE companies (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, project_name text, industry text,
-  status company_status NOT NULL DEFAULT 'active', since date, logo text, contact_name text, contact_email text, contact_phone text,
-  profit_metric text NOT NULL DEFAULT 'adjusted_ebitda', data_source_type text, quickbooks_connected boolean NOT NULL DEFAULT false,
-  manual_upload_active boolean NOT NULL DEFAULT false, last_source_switch_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
-CREATE TABLE key_report_versions (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-  version_number integer NOT NULL, version_name text, status text NOT NULL DEFAULT 'draft',
-  is_active boolean NOT NULL DEFAULT false, resolved_batch_id uuid, resolved_dataset_version integer,
-  last_synced_at timestamptz, metadata jsonb NOT NULL DEFAULT '{}'::jsonb, created_by uuid, updated_by uuid,
-  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT uq_krv_company_number UNIQUE (company_id, version_number));
-CREATE UNIQUE INDEX krv_one_active ON key_report_versions (company_id) WHERE is_active;
-`;
 
 const BROKER: SessionUser = { id: "11111111-1111-1111-1111-111111111111", name: "B", email: "b@x.com", role: "broker", company_id: null, status: "active", company_ids: [] };
 
@@ -35,11 +19,16 @@ let current: SessionUser;
 let companyId: string;
 
 beforeEach(async () => {
-  client = new PGlite();
-  await client.exec(DDL);
+  client = await createSchemaDb();
   db = drizzle(client, { schema }) as unknown as Db;
+  // The acting user needs a row: the deployed schema's foreign keys are real,
+  // so anything created on their behalf points at a person who has to exist.
+  await db.insert(schema.users).values({
+    id: BROKER.id, name: BROKER.name, email: `${BROKER.id}@x.test`,
+    passwordHash: "!", role: "broker",
+  });
   companyId = randomUUID();
-  await db.insert(schema.companies).values({ id: companyId, name: "Acme" });
+  await db.insert(schema.companies).values({ id: companyId, name: "Acme", industry: "" });
   current = { ...BROKER, company_ids: [companyId] };
   const requireAuth = (req: Request, _res: Response, next: NextFunction) => { req.user = current; next(); };
   app = express();

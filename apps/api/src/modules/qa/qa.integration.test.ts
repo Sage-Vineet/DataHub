@@ -6,7 +6,7 @@ import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { schema, type Db } from "@datahub/db";
+import { createSchemaDb, schema, type Db } from "@datahub/db";
 import type { SessionUser } from "@datahub/contracts";
 import { createQaModule } from "./index.js";
 
@@ -18,144 +18,6 @@ import { createQaModule } from "./index.js";
  * NOT EXISTS inside the listing query rather than as a filter over its results,
  * and the citation reference's uniqueness constraint.
  */
-const DDL = `
-CREATE TYPE company_status AS ENUM ('active','inactive');
-CREATE TYPE user_role AS ENUM ('admin','broker','buyer');
-CREATE TYPE user_status AS ENUM ('active','inactive');
--- The enum the deployed database actually has. packages/db declares
--- ('active','processing','error') instead, which shares no value with it — a
--- drift that is real and is why document inserts here use explicit SQL.
-CREATE TYPE document_status AS ENUM ('verified','under-review','rejected');
-CREATE TABLE companies (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, project_name text, industry text,
-  status company_status NOT NULL DEFAULT 'active', since date, logo text,
-  contact_name text, contact_email text, contact_phone text,
-  profit_metric text NOT NULL DEFAULT 'adjusted_ebitda', data_source_type text,
-  quickbooks_connected boolean NOT NULL DEFAULT false, manual_upload_active boolean NOT NULL DEFAULT false,
-  last_source_switch_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE users (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, email text NOT NULL UNIQUE,
-  phone text, password_hash text NOT NULL, role user_role NOT NULL, company_id uuid,
-  status user_status NOT NULL DEFAULT 'active',
-  sub_role text, designation text, buyer_company_name text, parent_user_id uuid,
-  date_of_birth date, occupation text, address text, broker_company text,
-  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE user_companies (
-  user_id uuid NOT NULL, company_id uuid NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (user_id, company_id)
-);
-CREATE TABLE folders (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE, parent_id uuid,
-  name text NOT NULL, color text, created_by uuid NOT NULL, archived_at timestamptz,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE uploads (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), file_name text NOT NULL, content_type text NOT NULL,
-  size_bytes integer NOT NULL, data bytea NOT NULL, prefix text, uploaded_by uuid,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE documents (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-  folder_id uuid NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
-  name text NOT NULL, file_url text, upload_id uuid REFERENCES uploads(id) ON DELETE SET NULL,
-  size text NOT NULL, ext text NOT NULL, status document_status NOT NULL DEFAULT 'under-review',
-  uploaded_by uuid NOT NULL, uploaded_at timestamptz NOT NULL DEFAULT now(), archived_at timestamptz,
-  current_version_id uuid, version_count integer NOT NULL DEFAULT 1
-);
-CREATE TABLE qa_categories (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-  key text NOT NULL, label text NOT NULL, sort_order integer NOT NULL DEFAULT 0,
-  created_at timestamptz NOT NULL DEFAULT now(), UNIQUE (company_id, key)
-);
-CREATE TABLE qa_nominations (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-  category_id uuid NOT NULL REFERENCES qa_categories(id) ON DELETE CASCADE,
-  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  nominated_by uuid REFERENCES users(id) ON DELETE SET NULL,
-  created_at timestamptz NOT NULL DEFAULT now(), revoked_at timestamptz,
-  UNIQUE (category_id, user_id)
-);
-CREATE TABLE qa_items (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-  category_id uuid REFERENCES qa_categories(id) ON DELETE SET NULL,
-  reference text, title text NOT NULL, body text NOT NULL,
-  status text NOT NULL DEFAULT 'open' CHECK (status IN ('open','answered','follow_up','closed')),
-  priority text NOT NULL DEFAULT 'medium' CHECK (priority IN ('critical','high','medium','low')),
-  origin text NOT NULL DEFAULT 'manual' CHECK (origin IN ('manual','qe_generator','cim_guided')),
-  module_tag text NOT NULL DEFAULT 'Unclassified', section_tag text, account_ref text,
-  external_ref text,
-  requestor_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  asked_at timestamptz NOT NULL DEFAULT now(), answered_at timestamptz, due_date date, closed_at timestamptz,
-  created_by uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE qa_assignees (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  item_id uuid NOT NULL REFERENCES qa_items(id) ON DELETE CASCADE,
-  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  kind text NOT NULL DEFAULT 'requestee' CHECK (kind IN ('requestee','delegate')),
-  assigned_by uuid REFERENCES users(id) ON DELETE SET NULL,
-  assigned_at timestamptz NOT NULL DEFAULT now(), removed_at timestamptz,
-  UNIQUE (item_id, user_id, kind)
-);
-CREATE TABLE qa_assignment_events (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  item_id uuid NOT NULL REFERENCES qa_items(id) ON DELETE CASCADE,
-  action text NOT NULL CHECK (action IN ('assigned','reassigned','delegated','removed','status_changed')),
-  prior_user_ids uuid[] NOT NULL DEFAULT '{}', new_user_ids uuid[] NOT NULL DEFAULT '{}',
-  actor_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE, note text,
-  at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE qa_responses (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  item_id uuid NOT NULL REFERENCES qa_items(id) ON DELETE CASCADE,
-  citation_ref text NOT NULL,
-  kind text NOT NULL DEFAULT 'answer' CHECK (kind IN ('answer','comment','clarification')),
-  body text NOT NULL,
-  author_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  posted_at timestamptz NOT NULL DEFAULT now(),
-  supersedes_id uuid REFERENCES qa_responses(id) ON DELETE SET NULL,
-  answer_root_id uuid, answer_version integer NOT NULL DEFAULT 1,
-  is_current boolean NOT NULL DEFAULT true
-);
-CREATE UNIQUE INDEX qa_responses_citation_uq ON qa_responses (citation_ref);
-CREATE UNIQUE INDEX qa_responses_current_root_uq ON qa_responses (answer_root_id)
-  WHERE is_current AND kind = 'answer' AND answer_root_id IS NOT NULL;
-CREATE TABLE qa_presentations (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  item_id uuid NOT NULL REFERENCES qa_items(id) ON DELETE CASCADE,
-  source_response_id uuid NOT NULL REFERENCES qa_responses(id) ON DELETE CASCADE,
-  body text NOT NULL, version integer NOT NULL DEFAULT 1, is_current boolean NOT NULL DEFAULT true,
-  status text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','published')),
-  author_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE qa_attachments (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  item_id uuid NOT NULL REFERENCES qa_items(id) ON DELETE CASCADE,
-  response_id uuid REFERENCES qa_responses(id) ON DELETE CASCADE,
-  document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-  folder_id uuid REFERENCES folders(id) ON DELETE SET NULL,
-  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
-  created_at timestamptz NOT NULL DEFAULT now(), UNIQUE (response_id, document_id)
-);
-CREATE TABLE qa_item_visibility (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  item_id uuid NOT NULL REFERENCES qa_items(id) ON DELETE CASCADE,
-  user_id uuid REFERENCES users(id) ON DELETE CASCADE, role_key text,
-  effect text NOT NULL DEFAULT 'hide' CHECK (effect IN ('hide','allow')),
-  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT qa_item_visibility_subject CHECK ((user_id IS NOT NULL) <> (role_key IS NOT NULL))
-);
-`;
 
 const BROKER_ID = "11111111-1111-4111-8111-111111111111";
 const SELLER_ID = "22222222-2222-4222-8222-222222222222";
@@ -184,12 +46,11 @@ async function ask(body: Record<string, unknown> = {}) {
 }
 
 beforeEach(async () => {
-  client = new PGlite();
-  await client.exec(DDL);
+  client = await createSchemaDb();
   db = drizzle(client, { schema }) as unknown as Db;
 
   companyId = randomUUID();
-  await db.insert(schema.companies).values({ id: companyId, name: "Acme" });
+  await db.insert(schema.companies).values({ id: companyId, name: "Acme", industry: "" });
   await db.insert(schema.users).values([
     { id: BROKER_ID, name: "Blake Broker", email: "b@x.test", passwordHash: "x", role: "broker", companyId },
     { id: SELLER_ID, name: "Dana Seller", email: "s@x.test", passwordHash: "x", role: "buyer", companyId },
@@ -520,8 +381,8 @@ describe("evidence attaches to an answer (real Postgres)", () => {
     await client.exec(`
       INSERT INTO folders (id, company_id, name, created_by)
       VALUES ('${folderId}', '${companyId}', 'Legal', '${BROKER_ID}');
-      INSERT INTO documents (id, company_id, folder_id, name, size, ext, status, uploaded_by)
-      VALUES ('${documentId}', '${companyId}', '${folderId}', '${name}', '12 KB', 'pdf',
+      INSERT INTO documents (id, company_id, folder_id, name, file_url, size, ext, status, uploaded_by)
+      VALUES ('${documentId}', '${companyId}', '${folderId}', '${name}', '', '12 KB', 'pdf',
               'under-review', '${SELLER_ID}');
     `);
     return { folderId, documentId };
@@ -600,11 +461,12 @@ describe("evidence attaches to an answer (real Postgres)", () => {
     const folderId = randomUUID();
     const documentId = randomUUID();
     await client.exec(`
-      INSERT INTO companies (id, name) VALUES ('${otherCompany}', 'Other Co');
+      INSERT INTO companies (id, name, industry)
+      VALUES ('${otherCompany}', 'Other Co', '');
       INSERT INTO folders (id, company_id, name, created_by)
       VALUES ('${folderId}', '${otherCompany}', 'Legal', '${BROKER_ID}');
-      INSERT INTO documents (id, company_id, folder_id, name, size, ext, status, uploaded_by)
-      VALUES ('${documentId}', '${otherCompany}', '${folderId}', 'theirs.pdf', '1 KB', 'pdf',
+      INSERT INTO documents (id, company_id, folder_id, name, file_url, size, ext, status, uploaded_by)
+      VALUES ('${documentId}', '${otherCompany}', '${folderId}', 'theirs.pdf', '', '1 KB', 'pdf',
               'under-review', '${BROKER_ID}');
     `);
 

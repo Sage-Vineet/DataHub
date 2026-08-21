@@ -6,51 +6,11 @@ import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { schema, type Db } from "@datahub/db";
+import { createSchemaDb, schema, type Db } from "@datahub/db";
 import type { SessionUser } from "@datahub/contracts";
 import { createUsersModule } from "./index.js";
 import { DrizzleUsersRepository } from "./repository.drizzle.js";
 
-const DDL = `
-CREATE TYPE user_role AS ENUM ('admin','broker','buyer');
-CREATE TYPE user_status AS ENUM ('active','inactive');
-CREATE TYPE company_status AS ENUM ('active','inactive');
-
-CREATE TABLE companies (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, project_name text, industry text,
-  status company_status NOT NULL DEFAULT 'active', since date, logo text,
-  contact_name text, contact_email text, contact_phone text,
-  profit_metric text NOT NULL DEFAULT 'adjusted_ebitda', data_source_type text,
-  quickbooks_connected boolean NOT NULL DEFAULT false, manual_upload_active boolean NOT NULL DEFAULT false,
-  last_source_switch_at timestamptz,
-  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE users (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, email text NOT NULL UNIQUE,
-  phone text, password_hash text NOT NULL, role user_role NOT NULL, company_id uuid,
-  status user_status NOT NULL DEFAULT 'active',
-  sub_role text, designation text, buyer_company_name text, parent_user_id uuid,
-  date_of_birth date, occupation text, address text, broker_company text,
-  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE user_companies (
-  user_id uuid NOT NULL, company_id uuid NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (user_id, company_id)
-);
-CREATE TABLE broker_team_invites (
-  team_owner_id uuid NOT NULL, invited_broker_id uuid NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (team_owner_id, invited_broker_id)
-);
--- Reassignment target tables (minimal).
-CREATE TABLE requests (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), created_by uuid);
-CREATE TABLE folders (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), created_by uuid);
-CREATE TABLE documents (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), uploaded_by uuid);
-CREATE TABLE request_narratives (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), updated_by uuid);
-CREATE TABLE request_reminders (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), sent_by uuid);
-CREATE TABLE folder_access (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), created_by uuid);
-CREATE TABLE reminders (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), created_by uuid);
-CREATE TABLE activity_log (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), created_by uuid);
-`;
 
 const ADMIN: SessionUser = {
   id: "11111111-1111-1111-1111-111111111111",
@@ -68,8 +28,7 @@ let app: express.Express;
 let current: SessionUser;
 
 beforeEach(async () => {
-  client = new PGlite();
-  await client.exec(DDL);
+  client = await createSchemaDb();
   db = drizzle(client, { schema }) as unknown as Db;
   current = { ...ADMIN };
   // The admin actor must exist as a row (replacement owner for deletes).
@@ -107,7 +66,7 @@ describe("users router — CRUD + effective_role (real Postgres)", () => {
 
   it("computes effective_role=client for a buyer whose email is a company contact (seller)", async () => {
     const companyId = randomUUID();
-    await db.insert(schema.companies).values({ id: companyId, name: "Acme", contactEmail: "owner@acme.com" });
+    await db.insert(schema.companies).values({ id: companyId, name: "Acme", contactEmail: "owner@acme.com", industry: "" });
     const created = (await request(app).post("/api/users").send({
       name: "Owner", email: "owner@acme.com", password: "passw0rd1", role: "buyer", company_ids: [companyId],
     })).body;
@@ -130,11 +89,23 @@ describe("users router — transactional delete-with-reassignment (D4)", () => {
     })).body;
     const tid = target.id;
 
-    await db.execute(sql`INSERT INTO requests (created_by) VALUES (${tid})`);
-    await db.execute(sql`INSERT INTO folders (created_by) VALUES (${tid})`);
-    await db.execute(sql`INSERT INTO documents (uploaded_by) VALUES (${tid})`);
-    await db.execute(sql`INSERT INTO activity_log (created_by) VALUES (${tid})`);
-    await db.insert(schema.userCompanies).values({ userId: tid, companyId: (await seedCompany()) });
+    // One row per reassignment target, each carrying what the deployed schema
+    // requires. These used to name a single column apiece, which only parsed
+    // because the hand-written DDL made everything else optional.
+    const companyId = await seedCompany();
+    await db.execute(sql`
+      INSERT INTO requests (company_id, title, description, category, response_type, priority, status, due_date, created_by)
+      VALUES (${companyId}, 'T', 'D', 'Finance', 'Upload', 'medium', 'pending', current_date + 7, ${tid})`);
+    const folderRow = (await db.execute(sql`
+      INSERT INTO folders (company_id, name, created_by) VALUES (${companyId}, 'F', ${tid})
+      RETURNING id`)) as unknown as { rows: Array<{ id: string }> };
+    await db.execute(sql`
+      INSERT INTO documents (company_id, folder_id, name, file_url, size, ext, status, uploaded_by)
+      VALUES (${companyId}, ${folderRow.rows[0]!.id}, 'D.pdf', '', '1', 'pdf', 'under-review', ${tid})`);
+    await db.execute(sql`
+      INSERT INTO activity_log (company_id, type, message, created_by)
+      VALUES (${companyId}, 'request', 'seeded', ${tid})`);
+    await db.insert(schema.userCompanies).values({ userId: tid, companyId });
 
     const del = await request(app).delete(`/api/users/${tid}`);
     expect(del.status).toBe(204);
@@ -154,7 +125,7 @@ describe("users router — transactional delete-with-reassignment (D4)", () => {
 
   async function seedCompany(): Promise<string> {
     const id = randomUUID();
-    await db.insert(schema.companies).values({ id, name: "C" });
+    await db.insert(schema.companies).values({ id, name: "C", industry: "" });
     return id;
   }
 });

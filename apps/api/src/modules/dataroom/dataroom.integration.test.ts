@@ -6,7 +6,7 @@ import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { schema, type Db } from "@datahub/db";
+import { createSchemaDb, schema, type Db } from "@datahub/db";
 import type { SessionUser } from "@datahub/contracts";
 import { MIN_CHUNK_BYTES } from "@datahub/contracts";
 import { createDataRoomModule } from "./index.js";
@@ -23,112 +23,6 @@ import { createDataRoomModule } from "./index.js";
  * tests use — `packages/db/migrations/0001` presupposes the legacy schema and
  * cannot be fed to PGlite.
  */
-const DDL = `
-CREATE TYPE company_status AS ENUM ('active','inactive');
--- The enum the deployed database actually has. packages/db declares
--- ('active','processing','error') instead, which shares no value with it — a
--- drift that is real and is why document inserts here use explicit SQL.
-CREATE TYPE document_status AS ENUM ('verified','under-review','rejected');
-CREATE TYPE user_role AS ENUM ('admin','broker','buyer');
-CREATE TYPE user_status AS ENUM ('active','inactive');
-CREATE TABLE companies (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, project_name text, industry text,
-  status company_status NOT NULL DEFAULT 'active', since date, logo text,
-  contact_name text, contact_email text, contact_phone text,
-  profit_metric text NOT NULL DEFAULT 'adjusted_ebitda', data_source_type text,
-  quickbooks_connected boolean NOT NULL DEFAULT false, manual_upload_active boolean NOT NULL DEFAULT false,
-  last_source_switch_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE users (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, email text NOT NULL UNIQUE,
-  phone text, password_hash text NOT NULL, role user_role NOT NULL, company_id uuid,
-  status user_status NOT NULL DEFAULT 'active',
-  sub_role text, designation text, buyer_company_name text, parent_user_id uuid,
-  date_of_birth date, occupation text, address text, broker_company text,
-  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE folders (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE, parent_id uuid,
-  name text NOT NULL, color text, created_by uuid NOT NULL, archived_at timestamptz,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE uploads (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), file_name text NOT NULL, content_type text NOT NULL,
-  size_bytes integer NOT NULL, data bytea NOT NULL, prefix text, uploaded_by uuid,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE documents (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-  folder_id uuid NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
-  name text NOT NULL, file_url text NOT NULL, upload_id uuid REFERENCES uploads(id) ON DELETE SET NULL,
-  size text NOT NULL, ext text NOT NULL, status document_status NOT NULL,
-  uploaded_by uuid NOT NULL, uploaded_at timestamptz NOT NULL DEFAULT now(), archived_at timestamptz,
-  current_version_id uuid, version_count integer NOT NULL DEFAULT 1
-);
-CREATE TABLE document_versions (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-  version_no integer NOT NULL,
-  upload_id uuid REFERENCES uploads(id) ON DELETE SET NULL,
-  file_name text NOT NULL, size_bytes bigint NOT NULL DEFAULT 0, content_type text, note text,
-  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (document_id, version_no)
-);
-CREATE TABLE document_comments (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-  version_id uuid REFERENCES document_versions(id) ON DELETE SET NULL,
-  parent_id uuid REFERENCES document_comments(id) ON DELETE CASCADE,
-  body text NOT NULL,
-  visibility text NOT NULL DEFAULT 'internal' CHECK (visibility IN ('internal','shared')),
-  page_number integer,
-  author_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  created_at timestamptz NOT NULL DEFAULT now(), deleted_at timestamptz
-);
-CREATE TABLE upload_sessions (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  company_id uuid REFERENCES companies(id) ON DELETE CASCADE,
-  folder_id uuid REFERENCES folders(id) ON DELETE CASCADE,
-  document_id uuid REFERENCES documents(id) ON DELETE CASCADE,
-  file_name text NOT NULL, content_type text NOT NULL, total_bytes bigint NOT NULL,
-  chunk_size integer NOT NULL, total_chunks integer NOT NULL, received_count integer NOT NULL DEFAULT 0,
-  status text NOT NULL DEFAULT 'open' CHECK (status IN ('open','completed','aborted')),
-  upload_id uuid REFERENCES uploads(id) ON DELETE SET NULL,
-  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
-  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
-  expires_at timestamptz NOT NULL DEFAULT now() + interval '6 hours'
-);
-CREATE TABLE buyer_groups (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE, name text NOT NULL
-);
-CREATE TABLE buyer_group_members (
-  group_id uuid NOT NULL REFERENCES buyer_groups(id) ON DELETE CASCADE,
-  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  PRIMARY KEY (group_id, user_id)
-);
-CREATE TABLE folder_access (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  folder_id uuid NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
-  user_id uuid REFERENCES users(id) ON DELETE CASCADE,
-  group_id uuid REFERENCES buyer_groups(id) ON DELETE CASCADE,
-  can_read boolean NOT NULL DEFAULT true,
-  can_write boolean NOT NULL DEFAULT false,
-  can_download boolean NOT NULL DEFAULT false,
-  created_by uuid NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE upload_chunks (
-  session_id uuid NOT NULL REFERENCES upload_sessions(id) ON DELETE CASCADE,
-  chunk_index integer NOT NULL, size_bytes integer NOT NULL, data bytea NOT NULL,
-  received_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (session_id, chunk_index)
-);
-`;
 
 const BROKER_ID = "11111111-1111-4111-8111-111111111111";
 const SELLER_ID = "22222222-2222-4222-8222-222222222222";
@@ -188,12 +82,11 @@ async function upload(fileName: string, parts: Buffer[], documentId?: string) {
 }
 
 beforeEach(async () => {
-  client = new PGlite();
-  await client.exec(DDL);
+  client = await createSchemaDb();
   db = drizzle(client, { schema }) as unknown as Db;
 
   companyId = randomUUID();
-  await db.insert(schema.companies).values({ id: companyId, name: "Acme" });
+  await db.insert(schema.companies).values({ id: companyId, name: "Acme", industry: "" });
   await db.insert(schema.users).values([
     { id: BROKER_ID, name: "Blake Broker", email: "broker@x.test", passwordHash: "x", role: "broker", companyId },
     { id: SELLER_ID, name: "Dana Seller", email: "seller@x.test", passwordHash: "x", role: "buyer", companyId },

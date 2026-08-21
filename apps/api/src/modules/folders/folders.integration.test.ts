@@ -6,39 +6,11 @@ import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { schema, type Db } from "@datahub/db";
+import { createSchemaDb, schema, type Db } from "@datahub/db";
 import type { SessionUser } from "@datahub/contracts";
 import { createFoldersModule } from "./index.js";
 import { EXPECTED_FOLDER_COUNT } from "./hierarchy.js";
 
-const DDL = `
-CREATE TYPE company_status AS ENUM ('active','inactive');
-CREATE TABLE companies (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, project_name text, industry text,
-  status company_status NOT NULL DEFAULT 'active', since date, logo text,
-  contact_name text, contact_email text, contact_phone text,
-  profit_metric text NOT NULL DEFAULT 'adjusted_ebitda', data_source_type text,
-  quickbooks_connected boolean NOT NULL DEFAULT false, manual_upload_active boolean NOT NULL DEFAULT false,
-  last_source_switch_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE folders (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  company_id uuid NOT NULL, parent_id uuid, name text NOT NULL, color text,
-  created_by uuid NOT NULL, archived_at timestamptz, created_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE UNIQUE INDEX folders_company_parent_name_uq
-  ON folders (company_id, coalesce(parent_id, '00000000-0000-0000-0000-000000000000'::uuid), name);
-CREATE TABLE folder_access (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  folder_id uuid NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
-  user_id uuid, group_id uuid,
-  can_read boolean NOT NULL DEFAULT true, can_write boolean NOT NULL DEFAULT false,
-  can_download boolean NOT NULL DEFAULT false, created_by uuid NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT folder_access_one_subject CHECK ((user_id IS NOT NULL) <> (group_id IS NOT NULL))
-);
-CREATE TABLE report_source_records (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), folder_id uuid);
-CREATE TABLE buyer_groups (id uuid PRIMARY KEY DEFAULT gen_random_uuid());
-`;
 
 const BROKER: SessionUser = {
   id: "11111111-1111-1111-1111-111111111111",
@@ -57,11 +29,16 @@ let current: SessionUser;
 let companyId: string;
 
 beforeEach(async () => {
-  client = new PGlite();
-  await client.exec(DDL);
+  client = await createSchemaDb();
   db = drizzle(client, { schema }) as unknown as Db;
+  // The acting user needs a row: the deployed schema's foreign keys are real,
+  // so anything created on their behalf points at a person who has to exist.
+  await db.insert(schema.users).values({
+    id: BROKER.id, name: BROKER.name, email: `${BROKER.id}@x.test`,
+    passwordHash: "!", role: "broker",
+  });
   companyId = randomUUID();
-  await db.insert(schema.companies).values({ id: companyId, name: "Acme" });
+  await db.insert(schema.companies).values({ id: companyId, name: "Acme", industry: "" });
   // Membership is what grants access — brokers are not unscoped (parity with
   // legacy permissionService), so the test broker must belong to this company.
   current = { ...BROKER, company_ids: [companyId] };
@@ -136,10 +113,18 @@ describe("folders router — protected delete + access cascade (D3/D5)", () => {
   it("409s a folder linked to a Key Report; deletes an unlinked one and cascades access", async () => {
     const linked = (await request(app).post(`/companies/${companyId}/folders`).send({ name: "Linked" })).body;
     const free = (await request(app).post(`/companies/${companyId}/folders`).send({ name: "Free" })).body;
-    await db.execute(sql`INSERT INTO report_source_records (folder_id) VALUES (${linked.id})`);
+    // The real Key-Report linkage: a file_references row against a document in
+    // the folder. report_source_records has no folder_id column and never did.
+    const linkedDoc = (await db.execute(sql`
+      INSERT INTO documents (company_id, folder_id, name, file_url, size, ext, status, uploaded_by)
+      VALUES (${companyId}, ${linked.id}, 'Linked.pdf', '', '1', 'pdf', 'under-review', ${BROKER.id})
+      RETURNING id`)) as unknown as { rows: Array<{ id: string }> };
+    await db.execute(sql`
+      INSERT INTO file_references (company_id, document_id, linked_module, linked_entity_id, created_by)
+      VALUES (${companyId}, ${linkedDoc.rows[0]!.id}, 'key_reports', ${randomUUID()}, ${BROKER.id})`);
 
     // Grant access on the free folder, then delete it → access cascades away.
-    await request(app).post(`/folders/${free.id}/access`).send({ user_id: randomUUID(), can_write: true }).expect(201);
+    await request(app).post(`/folders/${free.id}/access`).send({ user_id: BROKER.id, can_write: true }).expect(201);
     expect((await db.select().from(schema.folderAccess)).length).toBe(1);
 
     expect((await request(app).delete(`/folders/${linked.id}`)).status).toBe(409);
@@ -154,7 +139,9 @@ describe("folders router — protected delete + access cascade (D3/D5)", () => {
 describe("folders router — access grants enforce one subject (D4)", () => {
   it("accepts a user-only grant, 400s both/neither", async () => {
     const folder = (await request(app).post(`/companies/${companyId}/folders`).send({ name: "F" })).body;
-    await request(app).post(`/folders/${folder.id}/access`).send({ user_id: randomUUID() }).expect(201);
+    // user_id is a foreign key in the deployed schema, so the grant names a
+    // real person rather than an arbitrary uuid.
+    await request(app).post(`/folders/${folder.id}/access`).send({ user_id: BROKER.id }).expect(201);
     expect((await request(app).post(`/folders/${folder.id}/access`).send({ user_id: randomUUID(), group_id: randomUUID() })).status).toBe(400);
     expect((await request(app).post(`/folders/${folder.id}/access`).send({ can_read: true })).status).toBe(400);
   });

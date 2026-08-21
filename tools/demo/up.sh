@@ -171,6 +171,10 @@ check() { # label expected actual
 }
 FAILED=0
 
+# Defined beside check() rather than beside its first use: a helper introduced
+# halfway down is a trap for the next assertion added above it.
+jq_get() { python3 -c "import json,sys;print(eval(sys.argv[1],{},{'d':json.load(sys.stdin)}))" "$1" 2>/dev/null || echo "n/a"; }
+
 check "gateway /healthz" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$GW/healthz")"
 
 # The kill switch, asserted rather than assumed. /healthz declares which
@@ -193,6 +197,14 @@ check "authenticated GET /companies" 200 "$(curl -s -o /dev/null -w '%{http_code
 check "anonymous GET /companies is rejected" 401 "$(curl -s -o /dev/null -w '%{http_code}' "$GW/companies")"
 check "cross-tenant company is denied" 403 "$(curl -s -o /dev/null -w '%{http_code}' "$GW/companies/$CARDINAL" -b "$JAR")"
 check "folder tree" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$GW/companies/$ACME/folders/tree" -b "$JAR")"
+
+# Deleting a folder ran a query against report_source_records.folder_id — a
+# column that has never existed — so every delete was a 500. It passed its test
+# because that test declared its own DDL and invented the column.
+FOLDER_PROBE=$(curl -s -X POST "$GW/companies/$ACME/folders" -H 'Content-Type: application/json' -b "$JAR" \
+  -d '{"name":"Delete probe"}' | jq_get "d['id']")
+check "an unlinked folder can be deleted" 204 \
+  "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$GW/folders/$FOLDER_PROBE" -b "$JAR")"
 
 # The archived folder must be hidden by default and visible with the flag the SPA
 # actually sends. This is the parity defect the harness found, asserted live.
@@ -246,7 +258,6 @@ check "SPA is served" 200 "$(curl -s -o /dev/null -w '%{http_code}' "http://127.
 # (An earlier version prepended `d`, which silently broke every expression that
 # was not a bare subscript and reported "n/a" as though the endpoint had failed.)
 jq_len() { python3 -c "import json,sys;print(len(json.load(sys.stdin)))" 2>/dev/null || echo "n/a"; }
-jq_get() { python3 -c "import json,sys;print(eval(sys.argv[1],{},{'d':json.load(sys.stdin)}))" "$1" 2>/dev/null || echo "n/a"; }
 
 if [[ "${DATAROOM_MODULE_ENABLED}" == "true" ]]; then
   DOC=$(curl -s "$GW/folders/c0000000-0000-4000-8000-000000000001/documents" -b "$JAR" \

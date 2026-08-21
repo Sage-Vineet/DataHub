@@ -1,3 +1,4 @@
+import { eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
@@ -6,61 +7,11 @@ import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { schema, type Db } from "@datahub/db";
+import { createSchemaDb, schema, type Db } from "@datahub/db";
 import type { SessionUser } from "@datahub/contracts";
 import { createCompaniesModule } from "./index.js";
 
 // Minimal schema: business tables + every table the cascade touches.
-const DDL = `
-CREATE TYPE user_role AS ENUM ('admin','broker','buyer');
-CREATE TYPE user_status AS ENUM ('active','inactive');
-CREATE TYPE company_status AS ENUM ('active','inactive');
-
-CREATE TABLE companies (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  -- industry is NOT NULL with no default in the deployed schema.
-  name text NOT NULL, project_name text, industry text NOT NULL,
-  status company_status NOT NULL DEFAULT 'active', since date, logo text,
-  contact_name text, contact_email text, contact_phone text,
-  profit_metric text NOT NULL DEFAULT 'adjusted_ebitda',
-  data_source_type text, quickbooks_connected boolean NOT NULL DEFAULT false,
-  manual_upload_active boolean NOT NULL DEFAULT false, last_source_switch_at timestamptz,
-  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE users (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, email text NOT NULL UNIQUE,
-  phone text, password_hash text NOT NULL, role user_role NOT NULL, company_id uuid,
-  status user_status NOT NULL DEFAULT 'active',
-  sub_role text, designation text, buyer_company_name text, parent_user_id uuid,
-  date_of_birth date, occupation text, address text, broker_company text,
-  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE user_companies (
-  user_id uuid NOT NULL, company_id uuid NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (user_id, company_id)
-);
-CREATE TABLE folders (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), company_id uuid NOT NULL, parent_id uuid,
-  name text NOT NULL, color text, created_by uuid NOT NULL, archived_at timestamptz,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE folder_access (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), folder_id uuid NOT NULL);
-CREATE TABLE requests (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), company_id uuid NOT NULL, status text);
-CREATE TABLE request_documents (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), request_id uuid NOT NULL);
-CREATE TABLE request_narratives (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), request_id uuid NOT NULL);
-CREATE TABLE request_reminders (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), request_id uuid NOT NULL);
-CREATE TABLE buyer_groups (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), company_id uuid NOT NULL);
-CREATE TABLE buyer_group_members (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), group_id uuid NOT NULL);
-CREATE TABLE documents (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), company_id uuid NOT NULL);
-CREATE TABLE reminders (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), company_id uuid NOT NULL);
-CREATE TABLE activity_log (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), company_id uuid NOT NULL);
-CREATE TABLE company_messages (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), company_id uuid NOT NULL);
-CREATE TABLE direct_messages (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), company_id uuid NOT NULL);
-CREATE TABLE manual_gl_staged_transactions (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), company_id uuid NOT NULL);
-CREATE TABLE manual_gl_balance_sheet_lines (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), company_id uuid NOT NULL);
-CREATE TABLE manual_gl_batches (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), company_id uuid NOT NULL);
-CREATE TABLE report_source_records (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), company_id uuid NOT NULL);
-`;
 
 const BROKER: SessionUser = {
   id: "11111111-1111-1111-1111-111111111111",
@@ -78,10 +29,16 @@ let app: express.Express;
 let current: SessionUser;
 
 beforeEach(async () => {
-  client = new PGlite();
-  await client.exec(DDL);
+  client = await createSchemaDb();
   db = drizzle(client, { schema }) as unknown as Db;
   current = { ...BROKER };
+  // The acting user has to exist: creating a company writes user_companies, and
+  // that is a real foreign key in the deployed schema. The hand-written DDL
+  // declared it as a bare uuid, so the session user never needed a row.
+  await db.insert(schema.users).values({
+    id: BROKER.id, name: BROKER.name, email: `${BROKER.id}@x.test`,
+    passwordHash: "!", role: "broker",
+  });
 
   // Fake session guard: inject the current test user.
   const requireAuth = (req: Request, _res: Response, next: NextFunction) => {
@@ -142,8 +99,14 @@ describe("companies router — CRUD (real Postgres)", () => {
     // session guard has to reflect that, because membership — not the broker role
     // — is what grants access.
     current = { ...current, company_ids: [created.id] };
-    // Seed request rows for stats.
-    await db.execute(sql`INSERT INTO requests (company_id, status) VALUES (${created.id}, 'pending'), (${created.id}, 'completed'), (${created.id}, 'pending')`);
+    // Seed request rows for stats. Every NOT NULL column is supplied, because
+    // the schema under the test is the deployed one.
+    await db.update(schema.users).set({ companyId: created.id }).where(eq(schema.users.id, BROKER.id));
+    for (const status of ["pending", "completed", "pending"] as const) {
+      await db.execute(sql`
+        INSERT INTO requests (company_id, title, description, category, response_type, priority, status, due_date, created_by)
+        VALUES (${created.id}, 'T', 'D', 'Finance', 'Upload', 'medium', ${status}, current_date + 7, ${BROKER.id})`);
+    }
 
     const read = await request(app).get(`/api/companies/${created.id}`);
     expect(read.status).toBe(200);
@@ -173,16 +136,34 @@ describe("companies router — transactional cascade delete (design D4)", () => 
     current = { ...current, company_ids: [id] };
 
     // Seed dependents across the cascade surface.
+    //
+    // Every row below carries what the deployed schema actually requires — NOT
+    // NULL columns, foreign keys, and folder_access's exclusive-subject CHECK.
+    // These inserts used to name one column each, which only worked because the
+    // hand-written DDL made the rest optional.
+    //
+    // The user comes first: folders, requests and folder_access all point at it.
+    await db.update(schema.users).set({ companyId: id }).where(eq(schema.users.id, BROKER.id));
     const folder = (await db.insert(schema.folders).values({ companyId: id, name: "F", createdBy: BROKER.id }).returning())[0]!;
-    await db.execute(sql`INSERT INTO folder_access (folder_id) VALUES (${folder.id})`);
-    const reqRow = (await db.execute(sql`INSERT INTO requests (company_id, status) VALUES (${id}, 'pending') RETURNING id`)) as unknown as { rows: Array<{ id: string }> };
+    await db.execute(sql`
+      INSERT INTO folder_access (folder_id, user_id, created_by)
+      VALUES (${folder.id}, ${BROKER.id}, ${BROKER.id})`);
+    const reqRow = (await db.execute(sql`
+      INSERT INTO requests (company_id, title, description, category, response_type, priority, status, due_date, created_by)
+      VALUES (${id}, 'T', 'D', 'Finance', 'Upload', 'medium', 'pending', current_date + 7, ${BROKER.id})
+      RETURNING id`)) as unknown as { rows: Array<{ id: string }> };
     const requestId = reqRow.rows[0]!.id;
-    await db.execute(sql`INSERT INTO request_documents (request_id) VALUES (${requestId})`);
-    const grpRow = (await db.execute(sql`INSERT INTO buyer_groups (company_id) VALUES (${id}) RETURNING id`)) as unknown as { rows: Array<{ id: string }> };
-    await db.execute(sql`INSERT INTO buyer_group_members (group_id) VALUES (${grpRow.rows[0]!.id})`);
-    await db.execute(sql`INSERT INTO documents (company_id) VALUES (${id})`);
-    // A user whose primary company is this one → should be nulled, not deleted.
-    await db.insert(schema.users).values({ id: BROKER.id, name: "B", email: "b@example.com", passwordHash: "!", role: "broker", companyId: id });
+    const docRow = (await db.execute(sql`
+      INSERT INTO documents (company_id, folder_id, name, file_url, size, ext, status, uploaded_by)
+      VALUES (${id}, ${folder.id}, 'D.pdf', '', '1', 'pdf', 'under-review', ${BROKER.id})
+      RETURNING id`)) as unknown as { rows: Array<{ id: string }> };
+    await db.execute(sql`
+      INSERT INTO request_documents (request_id, document_id)
+      VALUES (${requestId}, ${docRow.rows[0]!.id})`);
+    const grpRow = (await db.execute(sql`
+      INSERT INTO buyer_groups (company_id, name) VALUES (${id}, 'Bidders') RETURNING id`)) as unknown as { rows: Array<{ id: string }> };
+    await db.execute(sql`
+      INSERT INTO buyer_group_members (group_id, user_id) VALUES (${grpRow.rows[0]!.id}, ${BROKER.id})`);
 
     const del = await request(app).delete(`/api/companies/${id}`);
     expect(del.status).toBe(200);

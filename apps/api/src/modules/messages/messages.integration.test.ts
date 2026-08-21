@@ -5,23 +5,10 @@ import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { schema, type Db } from "@datahub/db";
+import { createSchemaDb, schema, type Db } from "@datahub/db";
 import type { SessionUser } from "@datahub/contracts";
 import { createMessagesModule } from "./index.js";
 
-const DDL = `
-CREATE TYPE company_status AS ENUM ('active','inactive');
-CREATE TABLE companies (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, project_name text, industry text,
-  status company_status NOT NULL DEFAULT 'active', since date, logo text, contact_name text, contact_email text, contact_phone text,
-  profit_metric text NOT NULL DEFAULT 'adjusted_ebitda', data_source_type text, quickbooks_connected boolean NOT NULL DEFAULT false,
-  manual_upload_active boolean NOT NULL DEFAULT false, last_source_switch_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
-CREATE TABLE company_messages (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE, sender_id uuid NOT NULL, body text NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
-CREATE TABLE direct_messages (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE, sender_id uuid NOT NULL, recipient_id uuid NOT NULL, body text NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
-CREATE TABLE message_groups (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE, name text NOT NULL, group_type text NOT NULL, buyer_user_id uuid, auto_created boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
-CREATE TABLE message_group_members (group_id uuid NOT NULL REFERENCES message_groups(id) ON DELETE CASCADE, user_id uuid NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (group_id, user_id));
-CREATE TABLE group_messages (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), group_id uuid NOT NULL REFERENCES message_groups(id) ON DELETE CASCADE, sender_id uuid NOT NULL, body text NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
-CREATE TABLE group_message_reads (group_id uuid NOT NULL REFERENCES message_groups(id) ON DELETE CASCADE, user_id uuid NOT NULL, last_read_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (group_id, user_id));
-`;
 
 const BROKER: SessionUser = { id: "11111111-1111-1111-1111-111111111111", name: "B", email: "b@x.com", role: "broker", company_id: null, status: "active", company_ids: [] };
 
@@ -32,11 +19,16 @@ let current: SessionUser;
 let companyId: string;
 
 beforeEach(async () => {
-  client = new PGlite();
-  await client.exec(DDL);
+  client = await createSchemaDb();
   db = drizzle(client, { schema }) as unknown as Db;
+  // The acting user needs a row: the deployed schema's foreign keys are real,
+  // so anything created on their behalf points at a person who has to exist.
+  await db.insert(schema.users).values({
+    id: BROKER.id, name: BROKER.name, email: `${BROKER.id}@x.test`,
+    passwordHash: "!", role: "broker",
+  });
   companyId = randomUUID();
-  await db.insert(schema.companies).values({ id: companyId, name: "Acme" });
+  await db.insert(schema.companies).values({ id: companyId, name: "Acme", industry: "" });
   current = { ...BROKER, company_ids: [companyId] };
   const requireAuth = (req: Request, _res: Response, next: NextFunction) => { req.user = current; next(); };
   app = express();

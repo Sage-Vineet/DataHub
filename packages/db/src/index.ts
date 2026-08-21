@@ -23,3 +23,9 @@ export {
   type SchemaShape,
   type TableShape,
 } from "./drift.js";
+
+/**
+ * Test-only: a PGlite database carrying the real deployed schema. Exported from
+ * the package so integration tests never hand-write DDL again — see testing.ts.
+ */
+export { createSchemaDb, readSchemaSnapshot, SNAPSHOT_PATH } from "./testing.js";
