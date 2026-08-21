@@ -77,7 +77,11 @@ export class DrizzleCompaniesRepository implements CompaniesRepository {
       .values({
         name: input.name,
         projectName: input.projectName,
-        industry: input.industry,
+        // `industry` is optional in the contract and NOT NULL with no default in
+        // the deployed schema, so omitting it was a 500 rather than a 400. The
+        // SPA has always sent "" for an unfilled field, so that is the value
+        // that keeps existing and new rows the same shape.
+        industry: input.industry ?? "",
         status: input.status,
         since: input.since,
         logo: input.logo,

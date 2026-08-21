@@ -33,7 +33,7 @@ CREATE TABLE folder_access (
   folder_id uuid NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
   user_id uuid, group_id uuid,
   can_read boolean NOT NULL DEFAULT true, can_write boolean NOT NULL DEFAULT false,
-  can_download boolean NOT NULL DEFAULT false, created_by uuid, created_at timestamptz NOT NULL DEFAULT now(),
+  can_download boolean NOT NULL DEFAULT false, created_by uuid NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT folder_access_one_subject CHECK ((user_id IS NOT NULL) <> (group_id IS NOT NULL))
 );
 CREATE TABLE report_source_records (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), folder_id uuid);

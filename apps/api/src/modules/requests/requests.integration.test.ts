@@ -16,16 +16,17 @@ CREATE TYPE request_category AS ENUM ('Finance','Legal','Compliance','HR','Tax',
 CREATE TYPE response_type AS ENUM ('Upload','Narrative','Both');
 CREATE TYPE request_priority AS ENUM ('critical','high','medium','low');
 CREATE TYPE request_status AS ENUM ('pending','in-review','completed','blocked');
-CREATE TYPE approval_status AS ENUM ('pending','approved');
 CREATE TABLE companies (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, project_name text, industry text,
   status company_status NOT NULL DEFAULT 'active', since date, logo text, contact_name text, contact_email text, contact_phone text,
   profit_metric text NOT NULL DEFAULT 'adjusted_ebitda', data_source_type text, quickbooks_connected boolean NOT NULL DEFAULT false,
   manual_upload_active boolean NOT NULL DEFAULT false, last_source_switch_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE requests (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   title text NOT NULL, sub_label text, description text NOT NULL, category request_category NOT NULL, response_type response_type NOT NULL,
-  priority request_priority NOT NULL, status request_status NOT NULL DEFAULT 'pending', due_date date NOT NULL, assigned_to uuid,
+  priority request_priority NOT NULL, status request_status NOT NULL, due_date date NOT NULL, assigned_to uuid,
   visible boolean NOT NULL DEFAULT true, reminder_frequency_days integer NOT NULL DEFAULT 7, submission_source text NOT NULL DEFAULT 'broker',
-  approval_status approval_status NOT NULL DEFAULT 'approved', approved_by uuid, approved_at timestamptz, created_by uuid NOT NULL,
+  -- text in the deployed schema, not an enum: the database accepts any string
+  -- here, so the service is the only thing narrowing it.
+  approval_status text NOT NULL DEFAULT 'approved', approved_by uuid, approved_at timestamptz, created_by uuid NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE request_reminders (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), request_id uuid NOT NULL REFERENCES requests(id) ON DELETE CASCADE, sent_by uuid NOT NULL, sent_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE request_narratives (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), request_id uuid NOT NULL UNIQUE REFERENCES requests(id) ON DELETE CASCADE, content text NOT NULL, updated_by uuid NOT NULL, updated_at timestamptz NOT NULL DEFAULT now());

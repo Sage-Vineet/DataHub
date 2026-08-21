@@ -62,8 +62,8 @@ CREATE TABLE documents (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   folder_id uuid NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
-  name text NOT NULL, file_url text, upload_id uuid REFERENCES uploads(id) ON DELETE SET NULL,
-  size text NOT NULL, ext text NOT NULL, status document_status NOT NULL DEFAULT 'under-review',
+  name text NOT NULL, file_url text NOT NULL, upload_id uuid REFERENCES uploads(id) ON DELETE SET NULL,
+  size text NOT NULL, ext text NOT NULL, status document_status NOT NULL,
   uploaded_by uuid NOT NULL, uploaded_at timestamptz NOT NULL DEFAULT now(), archived_at timestamptz,
   current_version_id uuid, version_count integer NOT NULL DEFAULT 1
 );

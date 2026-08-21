@@ -41,21 +41,43 @@ function toActivity(row: ActRow): ActivityRecord {
 export class DrizzleDocumentsRepository implements DocumentsRepository {
   constructor(private readonly db: Db) {}
 
+  /**
+   * Raw SQL for the same reason `dataroom` uses it (design D4a), and this is the
+   * path that never got the fix.
+   *
+   * Two columns make a Drizzle insert impossible against the deployed schema:
+   *
+   *   `status`    NOT NULL with no default, and the deployed `document_status`
+   *               enum is `verified | under-review | rejected` while packages/db
+   *               declares `active | processing | error` — no value in common.
+   *               The service's `?? "active"` default is therefore a label the
+   *               column rejects outright.
+   *   `file_url`  NOT NULL with no default, while the service passes
+   *               `?? null` when a caller does not supply one.
+   *
+   * Either alone is fatal. The result was that POST /folders/:id/documents —
+   * the plain, non-chunked upload path — 500'd in production while its tests
+   * passed, because the test DDL declared file_url nullable and status as free
+   * text. The chunked path went through `dataroom`, which had been fixed, so the
+   * single-shot fallback that docs/DEMO_FREEZE_CHECKLIST.md offers as the safe
+   * option when resumable upload is switched off was the broken one.
+   *
+   * `''` and `'under-review'` are exactly what dataroom writes, so a document
+   * created either way is now the same row.
+   */
   async createDocument(input: CreateDocumentInput): Promise<DocumentRecord> {
-    const rows = await this.db
-      .insert(documents)
-      .values({
-        companyId: input.companyId,
-        folderId: input.folderId,
-        name: input.name,
-        fileUrl: input.fileUrl,
-        uploadId: input.uploadId,
-        size: input.size,
-        ext: input.ext,
-        status: input.status,
-        uploadedBy: input.uploadedBy,
-      })
-      .returning();
+    const rows = await this.db.execute<DocRow>(sql`
+      INSERT INTO documents
+        (company_id, folder_id, name, file_url, upload_id, size, ext, status, uploaded_by)
+      VALUES (
+        ${input.companyId}, ${input.folderId}, ${input.name}, ${input.fileUrl ?? ""},
+        ${input.uploadId}, ${input.size}, ${input.ext}, 'under-review', ${input.uploadedBy}
+      )
+      RETURNING id, company_id AS "companyId", folder_id AS "folderId", name,
+                file_url AS "fileUrl", upload_id AS "uploadId", size, ext,
+                status, uploaded_by AS "uploadedBy", uploaded_at AS "uploadedAt",
+                archived_at AS "archivedAt"
+    `).then((r) => (Array.isArray(r) ? r : (r as { rows: DocRow[] }).rows));
     return toDoc(rows[0]!);
   }
 

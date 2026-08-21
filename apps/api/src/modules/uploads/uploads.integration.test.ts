@@ -11,7 +11,9 @@ import { createUploadsModule } from "./index.js";
 
 const DDL = `
 CREATE TYPE company_status AS ENUM ('active','inactive');
-CREATE TYPE document_status AS ENUM ('active','processing','error');
+-- The DEPLOYED vocabulary. packages/db declares active|processing|error
+-- instead, which shares no value with it (design D4a).
+CREATE TYPE document_status AS ENUM ('verified','under-review','rejected');
 CREATE TABLE companies (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, project_name text, industry text,
   status company_status NOT NULL DEFAULT 'active', since date, logo text,
@@ -47,8 +49,11 @@ CREATE TABLE documents (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   folder_id uuid NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
-  name text NOT NULL, file_url text, upload_id uuid REFERENCES uploads(id) ON DELETE SET NULL,
-  size text NOT NULL, ext text NOT NULL, status document_status NOT NULL DEFAULT 'active',
+  -- file_url and status are both NOT NULL with NO default in the deployed
+  -- schema. Declaring file_url nullable and defaulting status is what let an
+  -- insert that can never succeed in production pass here.
+  name text NOT NULL, file_url text NOT NULL, upload_id uuid REFERENCES uploads(id) ON DELETE SET NULL,
+  size text NOT NULL, ext text NOT NULL, status document_status NOT NULL,
   uploaded_by uuid NOT NULL, uploaded_at timestamptz NOT NULL DEFAULT now(), archived_at timestamptz,
   -- Versioning columns (migration 0003). Declared here because packages/db models
   -- them, so every Drizzle read of documents selects them.

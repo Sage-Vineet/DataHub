@@ -18,7 +18,8 @@ CREATE TYPE company_status AS ENUM ('active','inactive');
 
 CREATE TABLE companies (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  name text NOT NULL, project_name text, industry text,
+  -- industry is NOT NULL with no default in the deployed schema.
+  name text NOT NULL, project_name text, industry text NOT NULL,
   status company_status NOT NULL DEFAULT 'active', since date, logo text,
   contact_name text, contact_email text, contact_phone text,
   profit_metric text NOT NULL DEFAULT 'adjusted_ebitda',
@@ -97,6 +98,15 @@ afterEach(async () => {
 });
 
 describe("companies router — CRUD (real Postgres)", () => {
+  it("creates a company when the optional industry is omitted", async () => {
+    // industry is optional in the contract and NOT NULL in the deployed schema,
+    // so omitting it used to be a 500 from the database rather than a create.
+    const res = await request(app).post("/api/companies").send({ name: "Drift Probe Co" });
+
+    expect(res.status).toBe(201);
+    expect(res.body.industry).toBe("");
+  });
+
   it("creates a company (201) with default folders + a synced rep, and lists it", async () => {
     const res = await request(app)
       .post("/api/companies")
