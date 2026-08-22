@@ -457,13 +457,20 @@ function FolderTree({ tree, onUpload, role, getFolderPermissions }) {
           >
             <Upload size={11} /> Upload
           </button>
-          <button
-            onClick={() => { if (canWrite) startNewFolder(currentFolderId); }}
-            disabled={!canWrite}
-            className={`flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg text-xs font-semibold transition-colors border ${canWrite ? 'bg-[#05164D]/8 text-[#05164D] hover:bg-[#05164D]/15 border-[#05164D]/15' : 'bg-gray-100 text-[#A5A5A5] border-gray-200 cursor-not-allowed'}`}
-          >
-            <FolderPlus size={11} /> New
-          </button>
+          {/*
+            "New" creates a folder — reshaping the room, which is the broker's.
+            Hidden rather than disabled: a control the reader can see but never
+            use is the thing the workspace nav already refuses to do.
+          */}
+          {role === 'broker' && (
+            <button
+              onClick={() => { if (canWrite) startNewFolder(currentFolderId); }}
+              disabled={!canWrite}
+              className={`flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg text-xs font-semibold transition-colors border ${canWrite ? 'bg-[#05164D]/8 text-[#05164D] hover:bg-[#05164D]/15 border-[#05164D]/15' : 'bg-gray-100 text-[#A5A5A5] border-gray-200 cursor-not-allowed'}`}
+            >
+              <FolderPlus size={11} /> New
+            </button>
+          )}
         </div>
       </div>
 
@@ -554,7 +561,19 @@ function TopBar({ tree, currentPath, onUpload, role, currentFolderPermissions, a
   const currentFolderId = currentPath[currentPath.length - 1];
   const isArchiveView = currentFolderId === 'archive';
   const canWrite = role === 'broker' || currentFolderPermissions.write;
-  const canCreateHere = canWrite && !isArchiveView;
+  /**
+   * Uploading and restructuring are different rights.
+   *
+   * `canWrite` comes from a folder grant and governs putting a file INTO the
+   * room. Reshaping the room — creating, renaming, moving, archiving, deleting —
+   * is the broker's, and the client had all of it: the seller could archive a
+   * document a bidder was reading, or rename the broker's Financials folder.
+   * In a broker-run process the seller uploads what they are asked for, into the
+   * place they are asked to put it.
+   */
+  const canRestructure = role === 'broker' && !isArchiveView;
+  const canUploadHere = canWrite && !isArchiveView;
+  const canCreateHere = canRestructure && canWrite;
   const runSelectedAction = (e, action) => {
     e.preventDefault();
     e.stopPropagation();
@@ -600,13 +619,16 @@ function TopBar({ tree, currentPath, onUpload, role, currentFolderPermissions, a
       {selectedItems.length > 0 && canWrite && (
         <div className="flex items-center gap-1 px-2 py-1 bg-[#05164D]/8 rounded-xl border border-[#05164D]/15">
           <span className="text-xs font-semibold text-[#05164D]">{selectedItems.length} selected</span>
-          <IconTooltipButton
-            label={isArchiveView ? 'Unarchive' : 'Archive'}
-            onClick={(e) => runSelectedAction(e, (ids) => isArchiveView ? unarchiveItems(ids) : archiveItems(ids))}
-            className="ml-2 p-1 rounded-lg hover:bg-[#E6F3D3] text-[#476E2C] transition-colors"
-          >
-            {isArchiveView ? <RotateCcw size={14} /> : <Archive size={14} />}
-          </IconTooltipButton>
+          {/* Archiving takes a document out of the room. Broker's call, like delete. */}
+          {role === 'broker' && (
+            <IconTooltipButton
+              label={isArchiveView ? 'Unarchive' : 'Archive'}
+              onClick={(e) => runSelectedAction(e, (ids) => isArchiveView ? unarchiveItems(ids) : archiveItems(ids))}
+              className="ml-2 p-1 rounded-lg hover:bg-[#E6F3D3] text-[#476E2C] transition-colors"
+            >
+              {isArchiveView ? <RotateCcw size={14} /> : <Archive size={14} />}
+            </IconTooltipButton>
+          )}
           {role === 'broker' && (
             <IconTooltipButton
               label="Delete"
@@ -670,7 +692,8 @@ function TopBar({ tree, currentPath, onUpload, role, currentFolderPermissions, a
         </button>
       </div>
 
-      {/* New Folder */}
+      {/* New Folder — hidden entirely for a role that cannot restructure. */}
+      {canRestructure && (
       <button
         onClick={() => { if (canCreateHere) startNewFolder(currentFolderId); }}
         disabled={!canCreateHere}
@@ -678,12 +701,13 @@ function TopBar({ tree, currentPath, onUpload, role, currentFolderPermissions, a
       >
         <FolderPlus size={14} /> New Folder
       </button>
+      )}
 
       {/* Upload */}
       <button
-        onClick={() => { if (canCreateHere) onUpload(); }}
-        disabled={!canCreateHere}
-        className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-colors shadow-sm ${canCreateHere ? 'bg-[#8BC53D] text-white hover:bg-[#7ab535]' : 'bg-gray-200 text-[#A5A5A5] cursor-not-allowed'}`}
+        onClick={() => { if (canUploadHere) onUpload(); }}
+        disabled={!canUploadHere}
+        className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-colors shadow-sm ${canUploadHere ? 'bg-[#8BC53D] text-white hover:bg-[#7ab535]' : 'bg-gray-200 text-[#A5A5A5] cursor-not-allowed'}`}
       >
         <Upload size={14} /> Upload
       </button>
@@ -1130,7 +1154,7 @@ function FileGrid({
   const { newFolderParentId } = useFileExplorerStore();
   return (
     <div className="flex flex-wrap gap-3 p-1 content-start">
-      {newFolderParentId === currentFolderId && (role === 'broker' || currentFolderPermissions.write) && (
+      {newFolderParentId === currentFolderId && role === 'broker' && (
         <NewFolderInput parentId={currentFolderId} />
       )}
       {items.map(item => {
@@ -1186,7 +1210,7 @@ function FileTable({
           </tr>
         </thead>
         <tbody>
-          {newFolderParentId === currentFolderId && (role === 'broker' || currentFolderPermissions.write) && (
+          {newFolderParentId === currentFolderId && role === 'broker' && (
             <tr><td colSpan={5} className="px-4 py-2">
               <NewFolderInput parentId={currentFolderId} />
             </td></tr>
