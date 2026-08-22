@@ -1,0 +1,79 @@
+# Secret scanning configuration.
+#
+# Context: the engineering audit found a live Gmail app password committed to
+# this repository, and it is still reachable in history. Rotating it and purging
+# history are the CTO-owned half of `openspec/changes/secrets-rotation/` and
+# `openspec/changes/secrets-history-purge/`. This file is the other half — the
+# part that stops the next one arriving, which is worth having in place whether
+# or not the purge ever runs.
+#
+# Two entry points use it:
+#   .githooks/pre-commit          scans staged changes before they become a commit
+#   .github/workflows/ci.yml      scans the pushed range, so a bypassed hook is caught
+#
+# Run manually over all of history with:
+#   gitleaks detect --config .gitleaks.toml --redact
+
+[extend]
+# Start from the maintained rule set (AWS, GCP, Slack, Stripe, private keys,
+# generic high-entropy assignments) rather than hand-rolling detection.
+useDefault = true
+
+[[rules]]
+id = "gmail-app-password"
+description = "Gmail app password (16 lowercase letters, usually in four groups)"
+# The exact shape of the credential this repository actually leaked. The default
+# rules do not catch it: it carries no prefix and its entropy is unremarkable.
+regex = '''(?i)(?:gmail|smtp|mail)[_-]?(?:app[_-]?)?(?:pass|password|pwd)["'\s:=]{1,10}([a-z]{4}\s?[a-z]{4}\s?[a-z]{4}\s?[a-z]{4})\b'''
+tags = ["password", "email"]
+
+[[rules]]
+id = "quickbooks-oauth-secret"
+description = "QuickBooks OAuth client secret"
+regex = '''(?i)(?:qb|quickbooks)[_-]?(?:client[_-]?)?secret["'\s:=]{1,10}([A-Za-z0-9]{32,})'''
+tags = ["oauth"]
+
+[[rules]]
+id = "supabase-service-role-key"
+description = "Supabase service-role JWT"
+# Service-role keys are signed JWTs; leaking one bypasses row-level security
+# entirely, so it is worth catching by shape rather than by variable name.
+regex = '''eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'''
+tags = ["jwt", "supabase"]
+
+[allowlist]
+description = "Values that are deliberately public, or deliberately fake"
+
+paths = [
+  # Lockfiles carry integrity hashes that trip high-entropy rules.
+  '''pnpm-lock\.yaml''',
+  '''.*\.lock$''',
+  # Binary and generated artefacts.
+  '''.*\.(png|jpg|jpeg|gif|svg|ico|pdf|pptx|docx|odt|xlsx)$''',
+  '''packages/db/schema-snapshot\.sql''',
+  # This file describes the patterns; it is not a leak of them.
+  '''\.gitleaks\.toml''',
+  # Build and test artefacts. All are gitignored, so the hook and CI never see
+  # them — but a manual `gitleaks detect --no-git` does, and it reported four
+  # findings from a turbo test log (session cookies and JWTs minted by the test
+  # suite). A full scan that is noisy by default is a scan nobody runs twice.
+  '''.*/\.turbo/.*''',
+  '''.*/coverage/.*''',
+  '''.*/dist/.*''',
+  '''.*/node_modules/.*''',
+]
+
+regexes = [
+  # Demo and dev signing secrets. These are published in docker-compose.demo.yml
+  # and devenv.nix on purpose — the demo is meant to be reproducible by anyone,
+  # and a secret everybody already has is not a secret worth alerting on.
+  '''demo-only-insecure-secret''',
+  '''dev-only-insecure-secret-do-not-use-in-prod''',
+  '''demo-unreachable-not-a-real-key''',
+  '''test-key-not-real''',
+  # The seeded bcrypt digest of the demo password `demo1234`.
+  '''\$2a\$10\$p6HbWbPjhCQJM\.7HDy6Zqu[A-Za-z0-9./]*''',
+  # Local-only connection strings.
+  '''postgres://datahub:datahub@''',
+  '''postgres://test/test''',
+]

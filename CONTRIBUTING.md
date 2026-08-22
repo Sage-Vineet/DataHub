@@ -101,8 +101,33 @@ Router-level tests use `supertest` against the Express app with the in-memory re
 | **Decisions** | Significant choice → an ADR in `docs/adr/`. |
 | **Config** | Extend `@datahub/config` (tsconfig/eslint/prettier); don't redefine. |
 | **Errors** | Handle or log — no empty `catch {}`. Use `pino`, not `console.*`. |
-| **Secrets** | Never commit `.env`/`.db`/keys. Fail closed on missing secrets. |
+| **Secrets** | Never commit `.env`/`.db`/keys. Fail closed on missing secrets. Scanned — see §7.1. |
 | **Boundaries** | Cross-module only via services; SQL only in repositories. |
+
+### 7.1 Secret scanning
+
+`gitleaks` runs in two places, against `.gitleaks.toml`:
+
+- **Pre-commit**, over the staged diff. Enabled automatically on entering the
+  dev shell (`devenv.nix` sets `core.hooksPath=.githooks`); enable it by hand
+  with `git config core.hooksPath .githooks`.
+- **CI**, over the pushed range. This is the enforcement point and it is a hard
+  gate — unlike the dependency audit, it is not `continue-on-error`.
+
+The hook warns and continues when `gitleaks` is not on PATH, so a commit from an
+IDE or from outside the dev shell is never blocked by a missing tool. Bypass one
+commit with `git commit --no-verify`; CI still scans it.
+
+**A false positive is a config change, not a reason to disable the hook.** Add a
+narrow entry to the `[allowlist]` in `.gitleaks.toml`, or annotate the line with
+`# gitleaks:allow`. The allowlist already covers the values that are public on
+purpose — the demo and devenv signing secrets, the seeded bcrypt digest of
+`demo1234`, and local connection strings.
+
+**If it catches something real**, the value must be rotated even if you amend the
+commit away: it existed on disk in a reachable git object. `.env.example` files
+are tracked, so they hold placeholders only — that file is exactly how audit
+finding C3's credential reached this repository.
 
 ## 8. Gotchas
 

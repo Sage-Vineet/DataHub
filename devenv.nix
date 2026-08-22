@@ -20,6 +20,7 @@ in
     pkgs.openssl
     pkgs.jq
     pkgs.postgresql_16 # provides psql on PATH
+    pkgs.gitleaks # secret scanning; .githooks/pre-commit fails closed without it
   ];
 
   # Local Postgres so packages/db introspection and the auth module work with no external infra.
@@ -79,6 +80,12 @@ in
   scripts.stack.exec = "pnpm dev:stack";
 
   enterShell = ''
+    # Point git at the tracked hooks. Idempotent, and per-clone rather than
+    # global, so it cannot affect the user's other repositories.
+    if [ -d .githooks ] && [ "$(git config core.hooksPath 2>/dev/null)" != ".githooks" ]; then
+      git config core.hooksPath .githooks
+      echo "enabled tracked git hooks (core.hooksPath=.githooks)"
+    fi
     echo "DataHub dev shell — node $(node -v), pnpm $(pnpm -v 2>/dev/null || echo 'run: corepack pnpm -v')"
     echo "DATABASE_URL=$DATABASE_URL"
     echo "scripts: db-up (start Postgres) · load-schema · db-status · introspect · stack"
