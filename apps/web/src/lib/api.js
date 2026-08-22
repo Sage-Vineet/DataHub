@@ -1655,6 +1655,65 @@ export function getChartOfAccountsHistory(versionId) {
   return request(`/key-reports/versions/${versionId}/chart-of-accounts/history`);
 }
 
+// ── Chart-of-accounts reasonableness review (the `coaReview` feature) ────────
+//
+// Advisory suggestions produced after the deterministic COA has been built.
+// Listing never changes anything; apply and reject are the only mutating
+// actions, and apply only ever writes through the one hierarchy-writing path.
+//
+// Served by the `coa-review` module behind COA_REVIEW_MODULE_ENABLED. Guard
+// every caller with `useFeature('coaReview')` — with the module off these paths
+// fall through to legacy, which does not serve them.
+
+export function getHierarchyRecommendations(versionId) {
+  return request(`/key-reports/versions/${versionId}/hierarchy-recommendations`);
+}
+
+/**
+ * Apply a recommendation.
+ *
+ * Answers **409** when the account has changed since the recommendation was
+ * generated. That is not a retryable failure: the proposal was reasoned about a
+ * chart of accounts that no longer exists, and applying it would overwrite a
+ * newer edit. The caller re-runs the check instead.
+ */
+export function applyHierarchyRecommendation(recommendationId) {
+  return request(`/key-reports/hierarchy-recommendations/${recommendationId}/apply`, {
+    method: 'POST',
+    body: {},
+  });
+}
+
+/** Reject one. The chart of accounts is untouched; only the decision is stored. */
+export function rejectHierarchyRecommendation(recommendationId, reason = null) {
+  return request(`/key-reports/hierarchy-recommendations/${recommendationId}/reject`, {
+    method: 'POST',
+    body: reason ? { reason } : {},
+  });
+}
+
+/**
+ * The original engine's names for the same two operations.
+ *
+ * Kept because rows decided through them are still valid, and because a future
+ * merge with the branch this was ported from should not have to rename
+ * anything. `accept` differs from `apply` only in reporting a stale
+ * recommendation as a thrown error rather than a 409 body — prefer `apply`.
+ */
+export function acceptHierarchyRecommendation(recommendationId) {
+  return request(`/key-reports/hierarchy-recommendations/${recommendationId}/accept`, {
+    method: 'POST',
+    body: {},
+  });
+}
+
+export function ignoreHierarchyRecommendation(recommendationId, reason = null) {
+  return request(`/key-reports/hierarchy-recommendations/${recommendationId}/ignore`, {
+    method: 'POST',
+    body: reason ? { reason } : {},
+  });
+}
+
 // Standardized hierarchy taxonomy (reference data for UI filters).
 export function getHierarchyLevels() {
   return request(`/key-reports/hierarchy-levels`);

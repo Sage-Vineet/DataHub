@@ -35,5 +35,19 @@ export function clientFeatures(flags: GatewayEnv["flags"]): Record<string, boole
      * does not exist, and the interface has to say so by omission.
      */
     qoe: flags.QOE_MODULE_ENABLED,
+    /**
+     * Greenfield by the same test, despite sharing a prefix with legacy.
+     *
+     * Legacy does serve `/key-reports/*` here — but not the
+     * `hierarchy-recommendations` paths, which exist only on the branch this
+     * feature was ported from. So switching the module off does not fall back to
+     * a legacy handler that answers identically; it falls through the catch-all
+     * proxy to a backend that 404s those paths.
+     *
+     * The prefix rule is about whether a legacy EQUIVALENT exists, not whether
+     * the first path segment matches. Off has to mean the feature does not
+     * exist, or the SPA renders a review button that cannot answer.
+     */
+    coaReview: flags.COA_REVIEW_MODULE_ENABLED,
   };
 }

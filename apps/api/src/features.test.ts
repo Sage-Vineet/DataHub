@@ -34,6 +34,7 @@ describe("clientFeatures", () => {
       "qaNominations",
       "cim",
       "qoe",
+      "coaReview",
     ]);
   });
 

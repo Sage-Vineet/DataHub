@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import {
   RefreshCw, Loader2, Table2, Check, X, Pencil, RotateCcw, Search, Undo2, Download,
-  AlertTriangle,
+  AlertTriangle, Sparkles,
 } from "lucide-react";
 import {
   getChartOfAccounts,
@@ -11,6 +11,9 @@ import {
   resetChartOfAccount,
   resetChartOfAccounts,
 } from "../../lib/api";
+import { useFeature } from "../../context/useFeature";
+import { useHierarchyRecommendations } from "../../hooks/useHierarchyRecommendations";
+import RecommendedChangesPanel from "./RecommendedChangesPanel";
 
 const STATEMENT_LABELS = { balance_sheet: "Balance Sheet", profit_loss: "P&L" };
 const METHOD_LABELS = { rule: "Rule", gemini: "AI", hybrid: "AI+Rules", manual: "Manual" };
@@ -70,6 +73,26 @@ const ACCOUNT_TYPE_OPTIONS = [
 const TOTAL_COLS = 5 + MAX_LEVELS + 4;
 
 export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }) {
+  // The reasonableness review. Off unless the module is mounted — with it off
+  // these paths fall through to legacy, which does not serve them, so a button
+  // rendered anyway would 404.
+  const coaReviewEnabled = useFeature("coaReview");
+  const [showReviewPanel, setShowReviewPanel] = useState(false);
+  const appliedSinceOpen = useRef(false);
+  const rec = useHierarchyRecommendations(coaReviewEnabled ? versionId : null, notify);
+  // Wraps `accept` so the grid learns that the hierarchy moved underneath it.
+  const reviewRec = useMemo(
+    () => ({
+      ...rec,
+      accept: async (id) => {
+        const ok = await rec.accept(id);
+        if (ok) appliedSinceOpen.current = true;
+        return ok;
+      },
+    }),
+    [rec],
+  );
+
   const [flat, setFlat]               = useState([]);
   const [loading, setLoading]         = useState(false);
   // Failed is its own state. It used to be reported only as a toast, which
@@ -325,6 +348,16 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
             <Download size={13} />
             Export
           </button>
+          {coaReviewEnabled && rec.pending.length > 0 && (
+            <button
+              onClick={() => setShowReviewPanel(true)}
+              title="Accounts whose placement may read incorrectly on a financial statement"
+              className="flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100"
+            >
+              <Sparkles size={13} />
+              Review {rec.pending.length}
+            </button>
+          )}
           <button
             onClick={handleRegenerate}
             disabled={regenerating || !hasSyncedData}
@@ -587,6 +620,26 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
             </tbody>
           </table>
         </div>
+      )}
+
+      {/* The review panel. Rendered only when the module is on, so with the flag
+          off nothing here can call a path legacy does not serve. */}
+      {coaReviewEnabled && (
+        <RecommendedChangesPanel
+          isOpen={showReviewPanel}
+          onClose={async () => {
+            setShowReviewPanel(false);
+            // Applying a recommendation rewrites the account's levels through
+            // the server. The hook reloads its own list, but the grid is showing
+            // the hierarchy that just changed — so it has to refetch too, or the
+            // reviewer closes the panel onto stale rows.
+            if (appliedSinceOpen.current) {
+              appliedSinceOpen.current = false;
+              await load();
+            }
+          }}
+          rec={reviewRec}
+        />
       )}
     </div>
   );

@@ -41,9 +41,9 @@ export default mergeConfig(
         include: ["src/**/*.{js,jsx}"],
         exclude: ["src/**/*.test.{js,jsx}", "src/main.jsx"],
         thresholds: {
-          statements: 1.9,
-          functions: 5.8,
-          lines: 1.9,
+          statements: 2.7,
+          functions: 8.2,
+          lines: 2.7,
         },
       },
     },
