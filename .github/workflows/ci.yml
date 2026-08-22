@@ -16,6 +16,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # gitleaks scans the pushed commit range, which needs the history that
+          # range refers to. The default shallow checkout has depth 1 and would
+          # silently reduce the scan to a single commit.
+          fetch-depth: 0
+
+      # Secret scanning. A live Gmail app password reached this repository once
+      # (engineering audit, finding C3) and is still in history; rotating it and
+      # purging history are tracked separately and are CTO-owned. This step is
+      # the forward guard, and it is a hard gate: unlike the dependency audit
+      # below there is no known-unfixable backlog to work around, and a leaked
+      # credential is not something to merge and schedule.
+      #
+      # Runs before install so a secret in a pull request fails in ~10 seconds
+      # rather than after the whole build.
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_CONFIG: .gitleaks.toml
+          # No GITLEAKS_LICENSE: required only for organization accounts.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4

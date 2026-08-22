@@ -494,11 +494,45 @@ function buildPlStatement(leaves, byId) {
   const operatingIncome = safeNum(grossProfit - totalExpenses);
   const netIncome       = operatingIncome;
 
+  // Accounts that reached here carrying no usable account_type.
+  //
+  // `isPlAccount` admits anything whose statement_type is "profit_loss",
+  // regardless of account_type, so such a row is loaded, given an amount by the
+  // roll-up, and then matches NONE of the three filters above. Every total is
+  // computed from those three lists, so the money simply disappeared: revenue,
+  // cost of sales and expenses all excluded it, net income never saw it, and
+  // nothing in the output said so.
+  //
+  // It is not reported into a total here, because which total it belongs in is
+  // exactly the unknown — an unclassified account could be revenue or expense
+  // and the amount's own sign cannot say which, since this ledger exports both
+  // as positive. Guessing would replace a silent omission with a confident
+  // wrong answer. `packages/financial-engine` refuses outright
+  // (UnclassifiedAccountError); legacy still has to render, so it reports the
+  // gap instead of hiding it.
+  const unclassified = leaves.filter((n) => !PL_TYPES.has(n.account_type));
+  const unclassifiedAccounts = unclassified.map(toLeaf);
+  const unclassifiedTotal = safeNum(unclassifiedAccounts.reduce((s, a) => s + a.amount, 0));
+  if (unclassified.length) {
+    console.warn(
+      `[FinStmt][PL] ${unclassified.length} account(s) carry no income/cogs/expense classification `
+      + `and are excluded from every total (net ${unclassifiedTotal}). Classify them on the chart of `
+      + `accounts: ${unclassifiedAccounts.map((a) => a.name).join(", ")}`,
+    );
+  }
+
   const incomeSectionLabel  = income[0]?.level_6  || income[0]?.level_7  || "Total Revenue";
   const cogsSectionLabel    = cogs[0]?.level_6    || cogs[0]?.level_7    || "Cost of Sales";
   const expenseSectionLabel = expense[0]?.level_6 || expense[0]?.level_7 || "Total Expenses";
 
   return {
+    // Present on every statement, empty when there is nothing wrong, so a
+    // consumer can render "N accounts excluded" without probing for the field.
+    unclassified: {
+      label:    "Unclassified",
+      accounts: unclassifiedAccounts,
+      total:    unclassifiedTotal,
+    },
     revenue: {
       label:    incomeSectionLabel,
       accounts: incomeAccounts,
@@ -639,7 +673,30 @@ function buildBsStatement(leaves, byId) {
   const longTermLiab = findSection(liabSections, ["long", "noncurrent liabilit", "non.current liabilit"]) || { label: "Long-Term Liabilities", groups: {}, total: 0 };
   mergeSurplus(liabSections, [currentLiab, longTermLiab], currentLiab);
 
+  // Same silent-omission hazard as the P&L, and worse here: the balance sheet
+  // asserts A = L + E, so an account excluded from all three lists takes the
+  // sheet out of balance by exactly its own amount with nothing to point at.
+  // This is the shape of a defect the project has already paid for once — a
+  // null account_type on balance-sheet accounts put FY2022 out by $2,886,349.72
+  // and only the A = L + E assertion caught it.
+  const bsUnclassified = leaves.filter((n) => !BS_TYPES.has(n.account_type));
+  const bsUnclassifiedAccounts = bsUnclassified.map(toLeaf);
+  const bsUnclassifiedTotal = safeNum(bsUnclassifiedAccounts.reduce((s, a) => s + a.amount, 0));
+  if (bsUnclassified.length) {
+    console.warn(
+      `[FinStmt][BS] ${bsUnclassified.length} account(s) carry no asset/liability/equity classification `
+      + `and are excluded from the sheet (net ${bsUnclassifiedTotal}), which will show as an imbalance of `
+      + `that amount. Classify them on the chart of accounts: `
+      + `${bsUnclassifiedAccounts.map((a) => a.name).join(", ")}`,
+    );
+  }
+
   return {
+    unclassified: {
+      label:    "Unclassified",
+      accounts: bsUnclassifiedAccounts,
+      total:    bsUnclassifiedTotal,
+    },
     assets: {
       label: assets[0]?.level_1 || "Total Assets",
       currentAssets:  { label: currentAssets.label, groups: currentAssets.groups, total: currentAssets.total },
@@ -1912,4 +1969,12 @@ async function generateFinancialStatements(versionId, options = {}) {
   };
 }
 
-module.exports = { generateFinancialStatements };
+module.exports = {
+  generateFinancialStatements,
+  // Exported for tests. These are pure functions over an already-loaded tree,
+  // so they are verifiable without reaching Supabase or Postgres — which
+  // matters, because vitest cannot intercept `require` inside this package's
+  // CommonJS. See backend/vitest.config.mjs.
+  buildPlStatement,
+  buildBsStatement,
+};

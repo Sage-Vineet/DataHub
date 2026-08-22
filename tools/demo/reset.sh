@@ -46,12 +46,50 @@ RESTART IDENTITY CASCADE;
 
 -- Documents and their versions, but only the ones the seeds created: anything a
 -- visitor uploaded during the demo goes with them, which is the point.
-DELETE FROM documents WHERE company_id IN (
+--
+-- `file_references.document_id` is ON DELETE RESTRICT, so the references have to
+-- go first or the delete below fails outright. The `90%` prefix is the breadth
+-- seed's reserved company range (tools/demo/seed-extra.sql); without it those
+-- documents survive while `DELETE FROM uploads` removes the bytes underneath
+-- them, and the reset leaves the room full of documents that cannot be opened.
+DELETE FROM file_references WHERE company_id IN (
   'a0000000-0000-4000-8000-000000000001',
   'a0000000-0000-4000-8000-000000000002',
   'a0000000-0000-4000-8000-000000000003'
-);
-DELETE FROM uploads WHERE prefix = 'documents';
+) OR company_id::text LIKE '90%';
+
+-- Everything that points at a document with ON DELETE RESTRICT has to be either
+-- cleared first or stepped around. The QoE engagement's source file is the one
+-- that matters: `balance_sheet_entries`, `general_ledger_entries` and their three
+-- siblings all reference it, reset.sh does NOT re-run seed-qoe, and deleting it
+-- would take the earnings bridge with it. So it is preserved rather than deleted
+-- — which is also why this reset failed outright on any stack that had QoE
+-- loaded, i.e. every stack up.sh has ever built.
+DELETE FROM documents d WHERE (
+  d.company_id IN (
+    'a0000000-0000-4000-8000-000000000001',
+    'a0000000-0000-4000-8000-000000000002',
+    'a0000000-0000-4000-8000-000000000003'
+  ) OR d.company_id::text LIKE '90%'
+)
+  AND NOT EXISTS (SELECT 1 FROM balance_sheet_entries   x WHERE x.source_file_id = d.id)
+  AND NOT EXISTS (SELECT 1 FROM general_ledger_entries  x WHERE x.source_file_id = d.id)
+  AND NOT EXISTS (SELECT 1 FROM profit_loss_entries     x WHERE x.source_file_id = d.id)
+  AND NOT EXISTS (SELECT 1 FROM tax_return_entries      x WHERE x.source_file_id = d.id)
+  AND NOT EXISTS (SELECT 1 FROM bank_statement_entries  x WHERE x.source_file_id = d.id)
+  AND NOT EXISTS (SELECT 1 FROM key_report_file_mappings x WHERE x.document_id   = d.id);
+
+-- Only the bytes nothing points at any more. `DELETE FROM uploads WHERE prefix =
+-- 'documents'` was unconditional, which fails the moment a single document is
+-- preserved above.
+DELETE FROM uploads u WHERE u.prefix = 'documents'
+  AND NOT EXISTS (SELECT 1 FROM documents                   x WHERE x.upload_id        = u.id)
+  AND NOT EXISTS (SELECT 1 FROM document_versions           x WHERE x.upload_id        = u.id)
+  AND NOT EXISTS (SELECT 1 FROM upload_sessions             x WHERE x.upload_id        = u.id)
+  AND NOT EXISTS (SELECT 1 FROM cim_publications            x WHERE x.upload_id        = u.id)
+  AND NOT EXISTS (SELECT 1 FROM key_report_file_mappings    x WHERE x.upload_id        = u.id)
+  AND NOT EXISTS (SELECT 1 FROM manual_gl_staged_transactions x WHERE x.source_upload_id = u.id)
+  AND NOT EXISTS (SELECT 1 FROM manual_gl_balance_sheet_lines x WHERE x.source_upload_id = u.id);
 COMMIT;
 SQL
 
@@ -59,7 +97,12 @@ step "Re-seeding"
 psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed.sql >/dev/null
 psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-dataroom.sql >/dev/null
 psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-qa.sql >/dev/null
+# Requests were never re-seeded here, so a visitor who dragged a card across the
+# board left it there through every subsequent reset. Idempotent, so it restores
+# the seeded status rather than duplicating the row.
+psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-requests.sql >/dev/null
 psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-cim-questions.sql >/dev/null
+psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-extra.sql >/dev/null
 DATABASE_URL="$DB_URL" pnpm --filter @datahub/demo seed-cim 2>&1 | sed 's/^/   /'
 
 step "Verifying"
@@ -75,17 +118,39 @@ check() {
 FAILED=0
 q() { psql_demo -tAc "$1" | tr -d '[:space:]'; }
 
-check "documents across 3 companies" 6 "$(q "select count(*) from documents where name not like '%CIM v%'")"
-check "companies with content"   3 "$(q "select count(distinct company_id) from documents")"
+# The Acme fixture. Scoped to the original three companies rather than counted
+# globally: the breadth seed adds content on five more, and a global count would
+# have to be edited every time that file grows.
+ORIG="'a0000000-0000-4000-8000-000000000001','a0000000-0000-4000-8000-000000000002','a0000000-0000-4000-8000-000000000003'"
+# Seven, not six: the six seed-dataroom documents plus the QoE general ledger,
+# which is preserved above because the earnings bridge references it. The old
+# expectation of six described a state this script could never actually reach,
+# since the delete that would have produced it failed on that document's foreign
+# keys every time.
+check "documents across 3 companies" 7 "$(q "select count(*) from documents where company_id in ($ORIG) and name not like '%CIM v%'")"
 check "large file present"       12582912 "$(q "select max(size_bytes) from uploads")"
 check "versions on the model"    3 "$(q "select count(*) from document_versions v join documents d on d.id=v.document_id where d.name='Financial Model.txt'")"
-check "comments"                 3 "$(q "select count(*) from document_comments")"
-check "Q&A items"                5 "$(q "select count(*) from qa_items")"
+check "comments"                 3 "$(q "select count(*) from document_comments where company_id in ($ORIG)")"
+check "Q&A items"                5 "$(q "select count(*) from qa_items where company_id='a0000000-0000-4000-8000-000000000001'")"
 check "published rewordings"     1 "$(q "select count(*) from qa_presentations where status='published'")"
 check "CIM question library"     608 "$(q "select count(*) from cim_question_library")"
 check "CIM versions"             2 "$(q "select count(*) from cim_versions")"
 check "published CIM in the room" 1 "$(q "select count(*) from documents where name like '%CIM v1%'")"
-check "three booth devices, three decks" 3 "$(q "select count(distinct company_id) from documents")"
+
+# The breadth seed (tools/demo/seed-extra.sql). These are the screens that were
+# empty on every company a visitor clicked into, so a reset that silently dropped
+# them would put the demo back to the state this content exists to fix.
+check "portfolio companies"      8 "$(q "select count(*) from companies")"
+check "people who can sign in"   15 "$(q "select count(*) from users")"
+check "companies with content"   8 "$(q "select count(distinct company_id) from documents")"
+check "portfolio documents"      60 "$(q "select count(*) from documents where company_id::text like '90%'")"
+check "portfolio requests"       45 "$(q "select count(*) from requests where company_id::text like '90%'")"
+check "portfolio Q&A items"      30 "$(q "select count(*) from qa_items where company_id::text like '90%'")"
+check "activity feed entries"    129 "$(q "select count(*) from activity_log")"
+check "reminders"                49 "$(q "select count(*) from reminders")"
+check "messages"                 55 "$(q "select (select count(*) from company_messages)+(select count(*) from direct_messages)+(select count(*) from group_messages)")"
+check "folder grants"            28 "$(q "select count(*) from folder_access")"
+check "buyer group members"      12 "$(q "select count(*) from buyer_group_members")"
 
 elapsed=$(( $(date +%s) - started ))
 if [[ "$FAILED" == "1" ]]; then
