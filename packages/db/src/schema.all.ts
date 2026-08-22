@@ -8,3 +8,4 @@ export * from "./auth-schema.js";
 export * from "./qoe-schema.js";
 export * from "./dataroom-qa-schema.js";
 export * from "./cim-schema.js";
+export * from "./coa-review-schema.js";

@@ -15,8 +15,9 @@
 --   packages/db/migrations/0002_qoe_bridge.sql
 --   packages/db/migrations/0003_dataroom_qa.sql
 --   packages/db/migrations/0004_cim.sql
+--   packages/db/migrations/0005_coa_recommendations.sql
 --
--- source-sha256: 0da39fb0ff40c710c17fc7a7b2b1c0efbed9d23ec350d132d6f2726b89d06bfd
+-- source-sha256: b53a867427c53f5c265ca307a0b755418a513b4be7a82cadbacddb0a31bd8fe2
 --
 -- PostgreSQL database dump
 --
@@ -893,6 +894,46 @@ CREATE TABLE public.group_messages (
     sender_id uuid NOT NULL,
     body text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+--
+-- Name: key_report_coa_hierarchy_recommendations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.key_report_coa_hierarchy_recommendations (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    version_id uuid NOT NULL,
+    company_id uuid NOT NULL,
+    account_id uuid NOT NULL,
+    current_hierarchy jsonb NOT NULL,
+    current_account_type text,
+    current_statement_type text,
+    kind text DEFAULT 'ROLLUP_INSERT'::text NOT NULL,
+    recommended_hierarchy jsonb,
+    recommended_rollup text NOT NULL,
+    recommended_parent text,
+    recommended_account_type text,
+    recommended_statement_type text,
+    confidence numeric,
+    confidence_band text,
+    source text,
+    impact text,
+    reason text,
+    ai_model text,
+    status text DEFAULT 'pending'::text NOT NULL,
+    rejection_reason text,
+    decided_at timestamp with time zone,
+    decided_by uuid,
+    applied_at timestamp with time zone,
+    applied_hierarchy jsonb,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT coa_reco_confidence_band_check CHECK (((confidence_band IS NULL) OR (confidence_band = ANY (ARRAY['HIGH'::text, 'MEDIUM'::text, 'LOW'::text])))),
+    CONSTRAINT coa_reco_impact_check CHECK (((impact IS NULL) OR (impact = ANY (ARRAY['CLASSIFICATION'::text, 'PRESENTATION'::text, 'BALANCE_SHEET_SECTION'::text, 'OPERATING_RESULT'::text])))),
+    CONSTRAINT coa_reco_kind_check CHECK ((kind = ANY (ARRAY['ROLLUP_INSERT'::text, 'HIERARCHY_MOVE'::text, 'RECLASSIFY'::text]))),
+    CONSTRAINT coa_reco_reclassify_type_check CHECK ((((kind = 'RECLASSIFY'::text) AND (recommended_account_type IS NOT NULL) AND (recommended_account_type = ANY (ARRAY['income'::text, 'cogs'::text, 'expense'::text, 'asset'::text, 'liability'::text, 'equity'::text]))) OR ((kind <> 'RECLASSIFY'::text) AND (recommended_account_type IS NULL)))),
+    CONSTRAINT coa_reco_source_check CHECK (((source IS NULL) OR (source = ANY (ARRAY['DOCUMENT_MATCH'::text, 'AI_REASONABLENESS'::text])))),
+    CONSTRAINT coa_reco_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'applied'::text, 'rejected'::text, 'accepted'::text, 'ignored'::text])))
 );
 
 --
@@ -2061,6 +2102,20 @@ ALTER TABLE ONLY public.group_messages
     ADD CONSTRAINT group_messages_pkey PRIMARY KEY (id);
 
 --
+-- Name: key_report_coa_hierarchy_recommendations key_report_coa_hierarchy_reco_version_id_account_id_recomme_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.key_report_coa_hierarchy_recommendations
+    ADD CONSTRAINT key_report_coa_hierarchy_reco_version_id_account_id_recomme_key UNIQUE (version_id, account_id, recommended_rollup);
+
+--
+-- Name: key_report_coa_hierarchy_recommendations key_report_coa_hierarchy_recommendations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.key_report_coa_hierarchy_recommendations
+    ADD CONSTRAINT key_report_coa_hierarchy_recommendations_pkey PRIMARY KEY (id);
+
+--
 -- Name: key_report_file_mappings key_report_file_mappings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2671,6 +2726,30 @@ CREATE INDEX idx_coa_classification_history_version ON public.coa_classification
 CREATE INDEX idx_coa_hierarchy_levels_lookup ON public.coa_hierarchy_levels USING btree (level_number, statement_type);
 
 --
+-- Name: idx_coa_reco_account; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_coa_reco_account ON public.key_report_coa_hierarchy_recommendations USING btree (account_id);
+
+--
+-- Name: idx_coa_reco_band; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_coa_reco_band ON public.key_report_coa_hierarchy_recommendations USING btree (version_id, confidence_band);
+
+--
+-- Name: idx_coa_reco_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_coa_reco_status ON public.key_report_coa_hierarchy_recommendations USING btree (version_id, status);
+
+--
+-- Name: idx_coa_reco_version; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_coa_reco_version ON public.key_report_coa_hierarchy_recommendations USING btree (version_id);
+
+--
 -- Name: idx_company_messages_company_created; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2735,18 +2814,6 @@ CREATE INDEX idx_documents_upload_id ON public.documents USING btree (upload_id)
 --
 
 CREATE INDEX idx_email_verifications_email ON public.email_verifications USING btree (email);
-
---
--- Name: idx_ev_email; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_ev_email ON public.email_verifications USING btree (email);
-
---
--- Name: idx_ev_expires; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_ev_expires ON public.email_verifications USING btree (expires_at);
 
 --
 -- Name: idx_file_references_company; Type: INDEX; Schema: public; Owner: -
@@ -3737,6 +3804,27 @@ ALTER TABLE ONLY public.group_message_reads
 
 ALTER TABLE ONLY public.group_messages
     ADD CONSTRAINT group_messages_group_id_fkey FOREIGN KEY (group_id) REFERENCES public.message_groups(id) ON DELETE CASCADE;
+
+--
+-- Name: key_report_coa_hierarchy_recommendations key_report_coa_hierarchy_recommendations_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.key_report_coa_hierarchy_recommendations
+    ADD CONSTRAINT key_report_coa_hierarchy_recommendations_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.chart_of_accounts(id) ON DELETE CASCADE;
+
+--
+-- Name: key_report_coa_hierarchy_recommendations key_report_coa_hierarchy_recommendations_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.key_report_coa_hierarchy_recommendations
+    ADD CONSTRAINT key_report_coa_hierarchy_recommendations_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: key_report_coa_hierarchy_recommendations key_report_coa_hierarchy_recommendations_version_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.key_report_coa_hierarchy_recommendations
+    ADD CONSTRAINT key_report_coa_hierarchy_recommendations_version_id_fkey FOREIGN KEY (version_id) REFERENCES public.key_report_versions(id) ON DELETE CASCADE;
 
 --
 -- Name: key_report_file_mappings key_report_file_mappings_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -

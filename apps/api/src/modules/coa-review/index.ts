@@ -1,36 +1,42 @@
 /**
  * Chart-of-accounts reasonableness review.
  *
- * Deliberately incomplete, and the gap is structural rather than an oversight:
- * a Drizzle repository has no table to talk to. The store this feature needs,
- * `key_report_coa_hierarchy_recommendations`, exists only on the `data_room`
- * deployment and is absent from `packages/db/schema-snapshot.sql`, so it needs
- * a migration before an adapter can be written. Wiring a router in ahead of
- * that would mean mounting a route that cannot answer.
+ * A second-pass accounting review that runs AFTER the deterministic chart of
+ * accounts is built, flagging accounts whose placement is technically possible
+ * but reads wrong on a financial statement. Advisory only: no report engine
+ * reads its output, and a row reaches `chart_of_accounts` only when a person
+ * accepts it.
  *
- * What is here is everything that does not depend on the table:
+ *   ports.ts               store, classifier, hierarchy writer
+ *   service.ts             orchestration, reaching the world only through them
+ *   repository.drizzle.ts  the real store, over migration 0005
+ *   repository.memory.ts   in-memory store, stub classifier, recording writer
  *
- *   ports.ts             the three seams — store, classifier, hierarchy writer
- *   service.ts           the orchestration, reaching the world only through them
- *   repository.memory.ts an in-memory store plus stub classifier and recording
- *                        writer, which is what makes the service testable at all
- *
- * The decision logic — every rule that decides whether a model proposal becomes
- * a recommendation, and whether a recommendation may be applied — lives in
+ * The decision logic — every rule deciding whether a model proposal becomes a
+ * recommendation, and whether one may be applied — is in
  * `@datahub/financial-engine/coa-recommendation` and is pure.
  *
- * To finish the module:
- *   1. a migration creating the recommendations table, with the uniqueness key
- *      (version_id, account_id, recommended_rollup) the upsert relies on;
- *   2. `repository.drizzle.ts` — note the upsert must NOT write `status`, or a
- *      re-run silently reopens decisions people have already made;
- *   3. a `ReasonablenessClassifier` adapter over the model provider;
- *   4. a `HierarchyWriter` adapter pointing at whatever owns account hierarchy
- *      at that time — legacy `updateAccountHierarchy` today, the folders/reports
- *      module after its cutover;
- *   5. `router.ts` behind a module flag, per ADR-0003.
+ * ## Still to do before this serves a request
+ *
+ * 1. A `ReasonablenessClassifier` adapter over the model provider. The port
+ *    returns raw text on purpose: parsing and validation are the engine's job,
+ *    and an adapter that "helpfully" parsed would be a second place where a
+ *    malformed answer could be repaired into a plausible one.
+ * 2. A `HierarchyWriter` adapter pointing at whatever owns account hierarchy at
+ *    the time — legacy `updateAccountHierarchy` today, the reports module after
+ *    its cutover. Deliberately one narrow port: applying a recommendation must
+ *    go through the same function the manual grid uses, and a second hierarchy
+ *    writer is the thing this design exists to avoid.
+ * 3. `router.ts`, behind a module flag per ADR-0003. Note the route contract the
+ *    original had: a stale recommendation is a 409, not a generic error —
+ *    `acceptRecommendation` throws with `conflict: true` for exactly that.
+ *
+ * `chart_of_accounts.system_id` does not exist in this schema. Legacy migration
+ * 052 added it on the branch this was ported from and `ba/rearch` never took it,
+ * so the adapter reports null rather than selecting a column that is not there.
  */
 
+export { DrizzleCoaReviewRepository } from "./repository.drizzle.js";
 export {
   createMemoryCoaReviewRepository,
   createRecordingHierarchyWriter,

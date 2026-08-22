@@ -27,7 +27,12 @@ describe("schema snapshot", () => {
     ).toBe(sourceHash());
   });
 
-  it("loads into PGlite without an error, so tests can use it as-is", async () => {
+  // Building the whole schema in WASM is the slowest thing in this package, and
+  // it gets slower every time a migration lands — 0005 took it from ~4s to
+  // within a few hundred ms of the 5s default, which is a flake waiting for a
+  // loaded CI box. The budget is generous on purpose: this assertion is about
+  // the snapshot being loadable at all, never about how fast Postgres starts.
+  it("loads into PGlite without an error, so tests can use it as-is", { timeout: 30_000 }, async () => {
     const db = await createSchemaDb();
     const tables = await db.query<{ n: number }>(
       `select count(*)::int n from information_schema.tables where table_schema='public'`,

@@ -46,6 +46,51 @@ export const chartOfAccounts = pgTable(
      * to Reported EBITDA — deliberately the safe direction.
      */
     ebitdaRole: text("ebitda_role"),
+
+    /**
+     * The hierarchy columns.
+     *
+     * Modelled because the reasonableness review reads them
+     * (`apps/api/src/modules/coa-review`); the QoE bridge does not. They were
+     * absent from this model until then — not because they do not exist, but
+     * because nothing modernized had needed them, which is worth knowing before
+     * assuming a missing column means a missing migration.
+     *
+     * `metadata.is_group` distinguishes a document-driven section node from a
+     * posting account, and `metadata.user_modified` marks a row somebody edited
+     * by hand — which the review must leave alone.
+     */
+    metadata: jsonb("metadata").$type<{ is_group?: boolean; user_modified?: boolean }>(),
+    baseAccount: text("base_account"),
+    adjustedName: text("adjusted_name"),
+    hierarchyPath: text("hierarchy_path"),
+    /**
+     * `level_1`..`level_15`, flattened. The generator pads every column past a
+     * leaf's real depth by repeating its deepest value, so a consumer has to
+     * collapse the trailing repeats — see `columnsToLevels` in
+     * `@datahub/financial-engine`.
+     *
+     * NOTE: there is no `system_id` here. Legacy migration 052 added one on the
+     * branch this review was ported from; `ba/rearch` never took that migration,
+     * so the column does not exist in this schema and the adapter reports null
+     * for it rather than selecting something that is not there.
+     */
+    level1: text("level_1"),
+    level2: text("level_2"),
+    level3: text("level_3"),
+    level4: text("level_4"),
+    level5: text("level_5"),
+    level6: text("level_6"),
+    level7: text("level_7"),
+    level8: text("level_8"),
+    level9: text("level_9"),
+    level10: text("level_10"),
+    level11: text("level_11"),
+    level12: text("level_12"),
+    level13: text("level_13"),
+    level14: text("level_14"),
+    level15: text("level_15"),
+
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
