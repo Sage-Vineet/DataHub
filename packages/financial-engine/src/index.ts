@@ -12,3 +12,4 @@ export * from "./balance-sheet-hierarchy.js";
 export * from "./coa-evidence.js";
 export * from "./coa-hierarchy-evidence.js";
 export * from "./coa-constraints.js";
+export * from "./coa-recommendation.js";
