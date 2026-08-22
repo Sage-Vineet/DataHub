@@ -10,32 +10,49 @@
  *   ports.ts               store, classifier, hierarchy writer
  *   service.ts             orchestration, reaching the world only through them
  *   repository.drizzle.ts  the real store, over migration 0005
+ *   classifier.gemini.ts   the model, with its fallback chain
+ *   hierarchy.legacy.ts    the one write path, over legacy's PATCH route
+ *   router.ts              the HTTP contract legacy already serves
+ *   module.ts              wiring, behind COA_REVIEW_MODULE_ENABLED
  *   repository.memory.ts   in-memory store, stub classifier, recording writer
  *
  * The decision logic — every rule deciding whether a model proposal becomes a
  * recommendation, and whether one may be applied — is in
  * `@datahub/financial-engine/coa-recommendation` and is pure.
  *
- * ## Still to do before this serves a request
+ * ## Notes for whoever touches this next
  *
- * 1. A `ReasonablenessClassifier` adapter over the model provider. The port
- *    returns raw text on purpose: parsing and validation are the engine's job,
- *    and an adapter that "helpfully" parsed would be a second place where a
- *    malformed answer could be repaired into a plausible one.
- * 2. A `HierarchyWriter` adapter pointing at whatever owns account hierarchy at
- *    the time — legacy `updateAccountHierarchy` today, the reports module after
- *    its cutover. Deliberately one narrow port: applying a recommendation must
- *    go through the same function the manual grid uses, and a second hierarchy
- *    writer is the thing this design exists to avoid.
- * 3. `router.ts`, behind a module flag per ADR-0003. Note the route contract the
- *    original had: a stale recommendation is a 409, not a generic error —
- *    `acceptRecommendation` throws with `conflict: true` for exactly that.
+ * The module mounts whether or not `GEMINI_API_KEY` is set. Listing and
+ * deciding are database operations; only *generating* needs a model, and that
+ * path is fail-soft. Withholding a reviewer's queue over a dependency they are
+ * not using would be the worse trade.
+ *
+ * The service is built PER REQUEST, which is unusual here and deliberate: the
+ * hierarchy writer forwards the caller's own credentials to the route that owns
+ * `chart_of_accounts`, so a reviewer who cannot edit an account cannot apply a
+ * recommendation to it either. A boot-time singleton would have to hold a
+ * service identity, which turns the review UI into a privilege escalation.
+ *
+ * `hierarchy.legacy.ts` pays an HTTP hop rather than writing the level columns
+ * directly, because writing them here would make this the second hierarchy
+ * writer in the system — diverging from the manual grid's the moment either
+ * changes, with no audit entry and no user-modified flag. When the chart of
+ * accounts moves in-process, swap that adapter; nothing else changes, because
+ * the module depends on the port rather than on it.
+ *
+ * Still absent: the SPA. `ba/rearch` never took the review UI from `data_room`,
+ * so nothing calls these routes yet — which is why the flag defaults off.
  *
  * `chart_of_accounts.system_id` does not exist in this schema. Legacy migration
  * 052 added it on the branch this was ported from and `ba/rearch` never took it,
  * so the adapter reports null rather than selecting a column that is not there.
  */
 
+export { createCoaReviewModule } from "./module.js";
+export type { CoaReviewModule, CreateCoaReviewModuleOptions } from "./module.js";
+export { createCoaReviewRouter } from "./router.js";
+export { createGeminiClassifier, DEFAULT_MODELS } from "./classifier.gemini.js";
+export { createLegacyHierarchyWriter } from "./hierarchy.legacy.js";
 export { DrizzleCoaReviewRepository } from "./repository.drizzle.js";
 export {
   createMemoryCoaReviewRepository,

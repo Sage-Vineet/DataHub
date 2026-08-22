@@ -53,6 +53,12 @@ export const MODULE_FLAGS = [
   "QA_PRESENTATION_ENABLED",
   "QA_NOMINATIONS_ENABLED",
   "CIM_MODULE_ENABLED",
+  // The chart-of-accounts reasonableness review. Advisory: no report engine
+  // reads its output, so switching it off removes a review queue and changes no
+  // figure anywhere. Generation additionally needs GEMINI_API_KEY — without one
+  // the module still serves, and only generating new recommendations reports
+  // unavailable.
+  "COA_REVIEW_MODULE_ENABLED",
   // Not a capability — plumbing. Re-signs the gateway's session into the HS256
   // shape legacy verifies, so routes that have not been cut over yet keep
   // working for a cookie-session caller. Flagged so it can be switched off in

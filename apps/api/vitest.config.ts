@@ -12,8 +12,16 @@ export default defineConfig({
     // the growing suite quickly.
     pool: "forks",
     poolOptions: { forks: { minForks: 1, maxForks: 3 } },
-    testTimeout: 30_000,
-    hookTimeout: 30_000,
+    // Generous, because the integration tests spin up an embedded Postgres and
+    // the number of them only grows. Two further multipliers apply on top: v8
+    // coverage instrumentation, which is why `test:cov` tipped cases over a
+    // 30s ceiling that `test` cleared comfortably, and a loaded CI box.
+    //
+    // A timeout is a backstop against a hung test, not a performance budget —
+    // the failures it was producing were all "slower than expected", never
+    // "wrong", and a gate that fails for the wrong reason gets ignored.
+    testTimeout: 90_000,
+    hookTimeout: 90_000,
     coverage: {
       provider: "v8",
       reporter: ["text", "text-summary", "lcov"],

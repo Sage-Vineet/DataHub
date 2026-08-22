@@ -28,6 +28,7 @@ import { createQoeModule } from "./modules/qoe/index.js";
 import { createDataRoomModule } from "./modules/dataroom/index.js";
 import { createQaModule } from "./modules/qa/index.js";
 import { createCimModule } from "./modules/cim/index.js";
+import { createCoaReviewModule } from "./modules/coa-review/module.js";
 import { DrizzleCimDataRoomPort, QaServiceAdapter } from "./modules/cim/adapters.js";
 import { unavailableDataRoom } from "./modules/qa/repository.memory.js";
 import { requireSession } from "./shared/session.js";
@@ -91,7 +92,7 @@ function publishFolderResolver(db: Db): (companyId: string) => Promise<string | 
   };
 }
 
-function buildModules(flags: GatewayEnv["flags"]): MountedModule[] {
+function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): MountedModule[] {
   const modules: MountedModule[] = [];
   // Captured so the CIM builder can reach the Q&A service through a typed port
   // rather than over HTTP — the module convention here (ADR-0004).
@@ -255,6 +256,25 @@ function buildModules(flags: GatewayEnv["flags"]): MountedModule[] {
       });
       console.warn("[gateway] CIM module ENABLED at /cim (decks, guided Q&A, publish)");
     }
+
+    // The chart-of-accounts reasonableness review. Advisory: no report engine
+    // reads its output, so switching it off removes a review queue and changes
+    // no figure anywhere — which is what makes it safe to leave off by default.
+    //
+    // Mounts whether or not GEMINI_API_KEY is set. Listing and deciding are
+    // database operations; only generating needs a model, and that path is
+    // fail-soft. Withholding the queue over an unused dependency would be the
+    // worse trade.
+    if (flags.COA_REVIEW_MODULE_ENABLED) {
+      modules.push({
+        path: "/",
+        router: createCoaReviewModule({ db, requireAuth, legacyOrigin }).router,
+      });
+      const generation = process.env.GEMINI_API_KEY
+        ? "generation enabled"
+        : "generation unavailable (no GEMINI_API_KEY) — listing and decisions still work";
+      console.warn(`[gateway] COA review module ENABLED at /key-reports/... (${generation})`);
+    }
   }
   return modules;
 }
@@ -319,8 +339,12 @@ function main(): void {
   // startup error rather than a route-group that silently stayed on legacy.
   const env = loadGatewayEnv(process.env);
   const table = parseRoutingTable(process.env);
+  // `parseRoutingTable` refuses to return without it; the index signature on
+  // `origins` is what loses that, so it is restated rather than asserted away.
+  const legacyOrigin = table.origins.legacy;
+  if (!legacyOrigin) throw new Error("LEGACY_ORIGIN is required.");
   const app = createGateway(table, {
-    modules: buildModules(env.flags),
+    modules: buildModules(env.flags, legacyOrigin),
     corsOrigins: env.corsOrigins,
     activityCapture: buildActivityCapture(env.flags.ACTIVITY_LOG_ENABLED),
     beforeProxy: buildLegacyBridge(env.flags.LEGACY_AUTH_BRIDGE_ENABLED),
