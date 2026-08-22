@@ -190,7 +190,7 @@
 - [x] 8.1 Put panel state in the route for requests, Q&A threads and team members, so they can be
       linked and so browser Back closes the panel instead of leaving the workspace (`design.md` D6)
 - [ ] 8.2 **Vitest (web):** a deep link opens the right panel on a cold load
-- [ ] 8.3 One primary action colour. Green, navy, orange and blue are all used as primary today;
+- [x] 8.3 One primary action colour. Green, navy, orange and blue are all used as primary today;
       Deal Team puts three filled buttons of three different colours on one small screen, none of
       which is the main action. Land this in `packages/ui` tokens, not per screen
 - [x] 8.4 (F‑31) One destructive treatment, and stop giving it the most weight on the page. Request detail
