@@ -270,3 +270,28 @@ describe("uploads router — documents under a folder (real Postgres)", () => {
     expect((await request(app).get(`/folders/${folderId}/documents`)).status).toBe(403);
   });
 });
+
+/**
+ * Only the uploader's id reached the client, and the file explorer has no user
+ * directory to resolve it against — so every document in the data room read
+ * "Uploaded by: Unknown". In a product whose value proposition is provenance,
+ * that is the one field that must never be blank.
+ */
+describe("uploads router — a document says who uploaded it", () => {
+  it("returns the uploader's name alongside the id", async () => {
+    const up = (await request(app).post("/uploads")
+      .set("Content-Type", "application/pdf").set("x-file-name", "ledger.pdf")
+      .send(Buffer.from("pdf"))).body;
+    await request(app)
+      .post(`/folders/${folderId}/documents`)
+      .send({ name: "Ledger.pdf", upload_id: up.id, size: "3", ext: "pdf" })
+      .expect(201);
+
+    const listed = await request(app).get(`/folders/${folderId}/documents`).expect(200);
+    const doc = listed.body[0];
+
+    expect(doc.uploaded_by).toBe(BROKER.id);
+    expect(doc.uploaded_by_name).toBe(BROKER.name);
+    expect(doc.uploaded_by_name).not.toBe("Unknown");
+  });
+});

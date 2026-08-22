@@ -6,6 +6,7 @@
         "DELETE /companies/:p",
         "GET /companies",
         "GET /companies/:p",
+        "GET /companies/:p/activity",
         "PATCH /companies/:p",
         "POST /companies"
       ],
@@ -80,6 +81,7 @@
       "compare": [
         "DELETE /message-groups/:p/members/:p",
         "GET /companies/:p/direct-messages/:p",
+        "GET /companies/:p/direct-messages/contacts",
         "GET /companies/:p/message-groups",
         "GET /companies/:p/messages",
         "GET /message-groups/:p/members",
@@ -133,8 +135,6 @@
     "GET /bank-vs-books",
     "GET /broker/activity",
     "GET /cim-questionnaire",
-    "GET /companies/:p/activity",
-    "GET /companies/:p/direct-messages/contacts",
     "GET /companies/:p/groups",
     "GET /companies/:p/reminders",
     "GET /companies/test",

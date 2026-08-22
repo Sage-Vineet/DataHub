@@ -5,6 +5,7 @@ import {
   check,
   customType,
   date,
+  index,
   integer,
   jsonb,
   pgEnum,
@@ -233,6 +234,42 @@ export const documentActivity = pgTable("document_activity", {
   action: text("action").notNull(),
   at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * The deal activity feed.
+ *
+ * The table has existed and been written to all along; it was only ever READ
+ * through the legacy handler, which queries Supabase. With no Supabase the read
+ * fails, `safeQuery` swallows it, and the endpoint answers `200 []` — so three
+ * activity panels showed "No activity yet" over rows that were sitting right
+ * here. An unreachable data source and an empty one are not the same thing, and
+ * the legacy path could not tell them apart.
+ */
+export const activityType = pgEnum("activity_type", [
+  "upload",
+  "request",
+  "approved",
+  "reminder",
+]);
+
+export const activityLog = pgTable(
+  "activity_log",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    type: activityType("type").notNull(),
+    message: text("message").notNull(),
+    createdBy: uuid("created_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    byCompany: index("idx_activity_company").on(table.companyId),
+  }),
+);
 
 export const requestCategoryEnum = pgEnum("request_category", [
   "Finance",

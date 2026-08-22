@@ -32,6 +32,7 @@ export class InMemoryUsersRepository implements UsersRepository {
       occupation: null,
       address: null,
       brokerCompany: null,
+      createdAt: new Date(0).toISOString(),
       ...record,
     } as UserRecord;
     this.users.set(full.id, full);
@@ -67,6 +68,7 @@ export class InMemoryUsersRepository implements UsersRepository {
       occupation: null,
       address: null,
       brokerCompany: null,
+      createdAt: new Date(0).toISOString(),
     };
     this.users.set(record.id, record);
     return record;

@@ -73,6 +73,19 @@ export function createCompaniesRouter(deps: CompaniesRouterDeps): Router {
     }),
   );
 
+  // Activity feed — bare array (legacy parity).
+  //
+  // Above the `/:id` PATCH and below `/:id` GET; `/:id/activity` cannot collide
+  // with `/:id`, but keeping the activity route adjacent to the read it belongs
+  // to makes the surface easier to read.
+  router.get(
+    "/:id/activity",
+    handle(async (req, res) => {
+      const limit = req.query.limit === undefined ? undefined : Number(req.query.limit);
+      res.json(await service.activity(req.user!, req.params.id!, limit));
+    }),
+  );
+
   // Update safe fields — bare object.
   router.patch(
     "/:id",

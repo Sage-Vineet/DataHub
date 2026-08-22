@@ -116,5 +116,14 @@ export const userResponse = z.object({
   company_ids: z.array(z.string().uuid()),
   assigned_companies: z.array(assignedCompany),
   is_team_invite: z.boolean().optional(),
+  /**
+   * When this person joined the deal. Absent from the response until now, so the
+   * team card read `u.created_at` off an object that never carried it and
+   * rendered the string "Joined Invalid Date" for every member.
+   *
+   * Nullable because a row genuinely may not have one; the UI shows "—" then,
+   * rather than inventing a date or printing a formatter error.
+   */
+  created_at: z.string().nullable().optional(),
 });
 export type UserResponse = z.infer<typeof userResponse>;

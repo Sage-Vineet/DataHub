@@ -317,6 +317,7 @@ export class UsersService {
       company_id: record.companyId,
       company_ids: companyIds,
       assigned_companies: companies,
+      created_at: record.createdAt,
       ...(isTeamInvite !== undefined ? { is_team_invite: isTeamInvite } : {}),
     };
   }

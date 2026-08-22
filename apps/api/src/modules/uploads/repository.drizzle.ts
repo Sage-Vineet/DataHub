@@ -8,7 +8,7 @@ import type {
   DocumentsRepository,
 } from "./ports.js";
 
-const { documents, documentActivity } = schema;
+const { documents, documentActivity, users } = schema;
 type DocRow = typeof documents.$inferSelect;
 type ActRow = typeof documentActivity.$inferSelect;
 
@@ -81,12 +81,25 @@ export class DrizzleDocumentsRepository implements DocumentsRepository {
     return toDoc(rows[0]!);
   }
 
+  /**
+   * Documents in a folder, each with its uploader's name resolved.
+   *
+   * A left join, not a second query per row: the name is wanted on every row of
+   * every listing, and the file explorer has no directory of its own to resolve
+   * the id against — which is why every document read "Uploaded by: Unknown".
+   * Left, so a document whose uploader has been removed still lists.
+   */
   async listByFolder(folderId: string, includeArchived: boolean): Promise<DocumentRecord[]> {
     const where = includeArchived
       ? eq(documents.folderId, folderId)
       : and(eq(documents.folderId, folderId), isNull(documents.archivedAt));
-    const rows = await this.db.select().from(documents).where(where).orderBy(asc(documents.uploadedAt));
-    return rows.map(toDoc);
+    const rows = await this.db
+      .select({ doc: documents, uploaderName: users.name })
+      .from(documents)
+      .leftJoin(users, eq(users.id, documents.uploadedBy))
+      .where(where)
+      .orderBy(asc(documents.uploadedAt));
+    return rows.map((r) => ({ ...toDoc(r.doc), uploadedByName: r.uploaderName ?? null }));
   }
 
   async getById(id: string): Promise<DocumentRecord | null> {

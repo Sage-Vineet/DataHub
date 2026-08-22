@@ -49,8 +49,21 @@ export interface CompanyStats {
  * Data access for companies. Two adapters: Drizzle (runtime) and in-memory
  * (tests). Raw SQL lives only in the Drizzle adapter (blueprint rule).
  */
+/** One row of the deal activity feed, with the actor's name already resolved. */
+export interface ActivityRecord {
+  id: string;
+  companyId: string;
+  type: "upload" | "request" | "approved" | "reminder";
+  message: string;
+  actorId: string | null;
+  actorName: string | null;
+  createdAt: string;
+}
+
 export interface CompaniesRepository {
   getById(id: string): Promise<CompanyRecord | null>;
+  /** Most recent activity on a deal, newest first. */
+  listActivity(companyId: string, limit: number): Promise<ActivityRecord[]>;
   listAll(): Promise<CompanyRecord[]>;
   listByIds(ids: readonly string[]): Promise<CompanyRecord[]>;
   create(input: CompanyCreateInput): Promise<CompanyRecord>;

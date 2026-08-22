@@ -58,12 +58,26 @@ const permissionFlags = {
  */
 export const folderAccessCreate = z
   .object({
-    user_id: uuid.optional(),
-    group_id: uuid.optional(),
+    // `.nullish()`, not `.optional()`. The RESPONSE carries `group_id: null` for
+    // a user grant, so a client that echoes that shape back — which is the
+    // obvious thing to do, and what the file explorer did — was rejected with
+    // "Expected string, received null". Every attempt to save folder access from
+    // the UI 400'd, so the whole staged-disclosure capability looked absent when
+    // it was one nullable away from working.
+    //
+    // Null is normalized to undefined below so the refinement and everything
+    // downstream see exactly one shape.
+    user_id: uuid.nullish(),
+    group_id: uuid.nullish(),
     ...permissionFlags,
   })
+  .transform((v) => ({
+    ...v,
+    user_id: v.user_id ?? undefined,
+    group_id: v.group_id ?? undefined,
+  }))
   .refine((v) => (v.user_id != null) !== (v.group_id != null), {
-    message: "Exactly one of user_id or group_id is required.",
+    message: "Provide exactly one of user_id or group_id.",
   });
 export type FolderAccessCreate = z.infer<typeof folderAccessCreate>;
 

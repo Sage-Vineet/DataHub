@@ -4,6 +4,7 @@ import type {
   CompanyCreateInput,
   CompanyRecord,
   CompanyUpdatePatch,
+  ActivityRecord,
 } from "./ports.js";
 
 /**
@@ -20,6 +21,16 @@ export class InMemoryCompaniesRepository implements CompaniesRepository {
   seed(record: CompanyRecord): CompanyRecord {
     this.companies.set(record.id, record);
     return record;
+  }
+
+  /** Test seam: the in-memory repo has no activity table, so a test declares it. */
+  activity: ActivityRecord[] = [];
+
+  async listActivity(companyId: string, limit: number): Promise<ActivityRecord[]> {
+    return this.activity
+      .filter((a) => a.companyId === companyId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, limit);
   }
 
   async getById(id: string): Promise<CompanyRecord | null> {

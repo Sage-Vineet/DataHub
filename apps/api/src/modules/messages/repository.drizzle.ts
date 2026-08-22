@@ -1,15 +1,27 @@
-import { and, asc, eq, gt, ne, or } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, ne, or } from "drizzle-orm";
 import { schema, type Db } from "@datahub/db";
 import type { GroupType } from "@datahub/contracts";
 import type {
+  CompanyRecord,
   CreateGroupInput,
+  DirectContactRecord,
   GroupMessageRecord,
   GroupRecord,
   MessageRecord,
   MessagesRepository,
 } from "./ports.js";
 
-const { companyMessages, directMessages, messageGroups, messageGroupMembers, groupMessages, groupMessageReads } = schema;
+const {
+  companies,
+  companyMessages,
+  directMessages,
+  messageGroups,
+  messageGroupMembers,
+  groupMessages,
+  groupMessageReads,
+  userCompanies,
+  users,
+} = schema;
 
 type CmRow = typeof companyMessages.$inferSelect;
 type DmRow = typeof directMessages.$inferSelect;
@@ -39,6 +51,80 @@ export class DrizzleMessagesRepository implements MessagesRepository {
   async sendCompany(companyId: string, senderId: string, body: string): Promise<MessageRecord> {
     const rows = await this.db.insert(companyMessages).values({ companyId, senderId, body }).returning();
     return toCompanyMsg(rows[0]!);
+  }
+
+  async getCompany(companyId: string): Promise<CompanyRecord | null> {
+    const rows = await this.db
+      .select({ id: companies.id, name: companies.name })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  /**
+   * `users.company_id` union `user_companies` — the same association
+   * `canAccessCompany` reads, so who may be messaged cannot drift from who may
+   * see the deal.
+   */
+  async listCompanyMembers(companyId: string): Promise<DirectContactRecord[]> {
+    const direct = await this.db
+      .select({ id: users.id, name: users.name, email: users.email, role: users.role })
+      .from(users)
+      .where(eq(users.companyId, companyId));
+
+    const joinedIds = await this.db
+      .select({ userId: userCompanies.userId })
+      .from(userCompanies)
+      .where(eq(userCompanies.companyId, companyId));
+
+    const extra = joinedIds
+      .map((j) => j.userId)
+      .filter((id) => !direct.some((d) => d.id === id));
+
+    const joined =
+      extra.length > 0
+        ? await this.db
+            .select({ id: users.id, name: users.name, email: users.email, role: users.role })
+            .from(users)
+            .where(inArray(users.id, extra))
+        : [];
+
+    return [...direct, ...joined];
+  }
+
+  /**
+   * One pass over the deal's direct messages, newest first, keeping the first
+   * row seen per counterparty. Cheaper than a query per contact, and the caller
+   * only needs the latest.
+   */
+  async latestDirectByContact(
+    companyId: string,
+    userId: string,
+    contactIds: string[],
+  ): Promise<Map<string, MessageRecord>> {
+    const out = new Map<string, MessageRecord>();
+    if (contactIds.length === 0) return out;
+
+    const rows = await this.db
+      .select()
+      .from(directMessages)
+      .where(
+        and(
+          eq(directMessages.companyId, companyId),
+          or(
+            and(eq(directMessages.senderId, userId), inArray(directMessages.recipientId, contactIds)),
+            and(inArray(directMessages.senderId, contactIds), eq(directMessages.recipientId, userId)),
+          ),
+        ),
+      )
+      .orderBy(desc(directMessages.createdAt));
+
+    for (const r of rows) {
+      const other = r.senderId === userId ? r.recipientId : r.senderId;
+      if (other && !out.has(other)) out.set(other, toDirectMsg(r));
+    }
+    return out;
   }
 
   async listDirect(companyId: string, a: string, b: string): Promise<MessageRecord[]> {

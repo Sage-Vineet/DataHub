@@ -104,3 +104,23 @@ export const companyResponse = z.object({
   completed_request_count: z.number().int(),
 });
 export type CompanyResponse = z.infer<typeof companyResponse>;
+
+/**
+ * One event on a deal's activity feed.
+ *
+ * The rows have always been written; only the READ went through legacy, which
+ * queries Supabase and — with none configured — answered `200 []`. Three
+ * activity panels reported "No activity yet" over data that was in Postgres the
+ * whole time, and nothing distinguished an empty feed from an unreachable one.
+ */
+export const activityEvent = z.object({
+  id: z.string().uuid(),
+  company_id: z.string().uuid(),
+  type: z.enum(["upload", "request", "approved", "reminder"]),
+  message: z.string(),
+  actor_id: z.string().uuid().nullable(),
+  /** Resolved so the feed can name a person rather than print an id. */
+  actor_name: z.string().nullable(),
+  created_at: z.string(),
+});
+export type ActivityEvent = z.infer<typeof activityEvent>;

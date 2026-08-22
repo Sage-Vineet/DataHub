@@ -146,3 +146,48 @@ describe("folders router — access grants enforce one subject (D4)", () => {
     expect((await request(app).post(`/folders/${folder.id}/access`).send({ can_read: true })).status).toBe(400);
   });
 });
+
+/**
+ * A grant response carries `group_id: null` for a user grant. Echoing that shape
+ * back on create is the obvious thing for a client to do — and it is exactly
+ * what the file explorer did, so every attempt to save folder access from the UI
+ * returned 400 "Expected string, received null".
+ *
+ * The capability was fully built on both sides; nobody could use it. Staged
+ * disclosure — the reason a broker buys a data room — was unreachable.
+ */
+describe("folders router — a grant accepts the shape it returns", () => {
+  it("accepts an explicit null for the subject that does not apply", async () => {
+    const folder = (await request(app).post(`/companies/${companyId}/folders`).send({ name: "Phase 1" })).body;
+
+    const created = await request(app)
+      .post(`/folders/${folder.id}/access`)
+      .send({ user_id: BROKER.id, group_id: null, can_read: true, can_download: true })
+      .expect(201);
+
+    expect(created.body.user_id).toBe(BROKER.id);
+    expect(created.body.group_id).toBeNull();
+    expect(created.body.can_read).toBe(true);
+    expect(created.body.can_download).toBe(true);
+  });
+
+  it("round-trips: a returned grant can be sent straight back", async () => {
+    const folder = (await request(app).post(`/companies/${companyId}/folders`).send({ name: "Phase 2" })).body;
+    const first = (await request(app)
+      .post(`/folders/${folder.id}/access`)
+      .send({ user_id: BROKER.id, can_read: true })).body;
+
+    // The exact payload the API just produced, minus its identity.
+    const { id: _id, folder_id: _folderId, created_by: _createdBy, ...echoed } = first;
+    const other = (await request(app).post(`/companies/${companyId}/folders`).send({ name: "Phase 3" })).body;
+    await request(app).post(`/folders/${other.id}/access`).send(echoed).expect(201);
+  });
+
+  it("still refuses both subjects, and still refuses neither", async () => {
+    const folder = (await request(app).post(`/companies/${companyId}/folders`).send({ name: "G" })).body;
+    // Null must not be mistaken for "provided" — user_id null + group_id null is
+    // still neither, and must fail.
+    expect((await request(app).post(`/folders/${folder.id}/access`).send({ user_id: null, group_id: null })).status).toBe(400);
+    expect((await request(app).post(`/folders/${folder.id}/access`).send({ user_id: BROKER.id, group_id: randomUUID() })).status).toBe(400);
+  });
+});

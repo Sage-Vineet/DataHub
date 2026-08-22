@@ -20,6 +20,7 @@ export type {
   CompanyUpdate,
   CompanyListQuery,
   CompanyResponse,
+  ActivityEvent,
 } from "./companies.js";
 
 export * as users from "./users.js";
@@ -90,6 +91,8 @@ export type {
   GroupMessageResponse,
   GroupResponse,
   UnreadCountResponse,
+  DirectContact,
+  DirectContactsResponse,
 } from "./messages.js";
 
 export * as activity from "./activity.js";

@@ -4,6 +4,7 @@ import type {
   CompanyUpdate,
   ProfitMetric,
   SessionUser,
+  ActivityEvent,
 } from "@datahub/contracts";
 import { normalizeProfitMetric } from "@datahub/contracts";
 import { canAccessCompany } from "../../shared/access.js";
@@ -58,6 +59,30 @@ export class CompaniesService {
   async get(user: SessionUser, id: string): Promise<CompanyResponse> {
     const record = await this.requireAccessible(user, id);
     return this.oneWithStats(record);
+  }
+
+  /**
+   * A deal's activity feed.
+   *
+   * Reads Postgres directly. The legacy handler for this route queries Supabase
+   * and swallows the failure into an empty array, so with no Supabase it
+   * answered `200 []` — three activity panels showed "No activity yet" over rows
+   * that were sitting in the table. An unreachable source now fails loudly
+   * rather than impersonating an empty one.
+   */
+  async activity(user: SessionUser, id: string, limit = 50): Promise<ActivityEvent[]> {
+    await this.requireAccessible(user, id);
+    const capped = Math.min(Math.max(Number(limit) || 50, 1), 200);
+    const rows = await this.repo.listActivity(id, capped);
+    return rows.map((r) => ({
+      id: r.id,
+      company_id: r.companyId,
+      type: r.type,
+      message: r.message,
+      actor_id: r.actorId,
+      actor_name: r.actorName,
+      created_at: r.createdAt,
+    }));
   }
 
   /** Create a company (broker/admin only), normalize, then run side effects. */

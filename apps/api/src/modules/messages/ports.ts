@@ -35,10 +35,40 @@ export interface CreateGroupInput {
   memberIds: string[];
 }
 
+/** A person on the deal who can be messaged, plus the company they were resolved against. */
+export interface DirectContactRecord {
+  id: string;
+  name: string | null;
+  email: string | null;
+  role: string | null;
+}
+
+export interface CompanyRecord {
+  id: string;
+  name: string | null;
+}
+
 export interface MessagesRepository {
   // Company conversation.
   listCompany(companyId: string): Promise<MessageRecord[]>;
   sendCompany(companyId: string, senderId: string, body: string): Promise<MessageRecord>;
+
+  /**
+   * Who the caller may message on this deal, and the deal itself.
+   *
+   * `users.company_id` union `user_companies` — the same association
+   * `canAccessCompany` reads, so "may see this deal" and "may be messaged on
+   * this deal" cannot drift apart.
+   */
+  getCompany(companyId: string): Promise<CompanyRecord | null>;
+  listCompanyMembers(companyId: string): Promise<DirectContactRecord[]>;
+
+  /** The most recent message either way between `userId` and each of `contactIds`. */
+  latestDirectByContact(
+    companyId: string,
+    userId: string,
+    contactIds: string[],
+  ): Promise<Map<string, MessageRecord>>;
 
   // Direct conversation (symmetric).
   listDirect(companyId: string, a: string, b: string): Promise<MessageRecord[]>;

@@ -18,6 +18,8 @@ export interface UserRecord {
   occupation: string | null;
   address: string | null;
   brokerCompany: string | null;
+  /** Row creation time, surfaced as `created_at`. Null when the row predates it. */
+  createdAt: string | null;
 }
 
 /** Fields written on create (validated + normalized; hash already computed). */

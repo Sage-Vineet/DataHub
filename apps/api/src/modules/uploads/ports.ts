@@ -55,6 +55,15 @@ export interface DocumentRecord {
   ext: string;
   status: DocumentStatus;
   uploadedBy: string;
+  /**
+   * Resolved display name for `uploadedBy`; null when that user has been
+   * removed, undefined on paths that do not join the user table.
+   *
+   * Only the id used to reach the client, and the file explorer has no
+   * directory to resolve it against — so every document read
+   * "Uploaded by: Unknown" in a product whose value proposition is provenance.
+   */
+  uploadedByName?: string | null;
   archivedAt: string | null;
 }
 

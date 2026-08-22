@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type {
+  CompanyRecord,
   CreateGroupInput,
+  DirectContactRecord,
   GroupMessageRecord,
   GroupRecord,
   MessageRecord,
@@ -14,6 +16,8 @@ export class InMemoryMessagesRepository implements MessagesRepository {
   private readonly members = new Set<string>(); // `${groupId}:${userId}`
   private readonly groupMsgs: GroupMessageRecord[] = [];
   private readonly reads = new Map<string, number>(); // `${groupId}:${userId}` → epoch ms
+  private readonly companies = new Map<string, CompanyRecord>();
+  private readonly companyMembers = new Map<string, DirectContactRecord[]>();
   private clock = 1;
 
   private now(): string {
@@ -28,6 +32,48 @@ export class InMemoryMessagesRepository implements MessagesRepository {
     this.company.push(m);
     return m;
   }
+  /**
+   * Test seams. The in-memory repository has no user table, so a test declares
+   * the deal's roster explicitly rather than inferring it from messages sent —
+   * otherwise a contact never spoken to could not be represented, and that is
+   * precisely the case the listing has to get right.
+   */
+  seedCompany(company: CompanyRecord, members: DirectContactRecord[] = []): void {
+    this.companies.set(company.id, company);
+    this.companyMembers.set(company.id, members);
+  }
+
+  async getCompany(companyId: string): Promise<CompanyRecord | null> {
+    return this.companies.get(companyId) ?? null;
+  }
+
+  async listCompanyMembers(companyId: string): Promise<DirectContactRecord[]> {
+    return [...(this.companyMembers.get(companyId) ?? [])];
+  }
+
+  async latestDirectByContact(
+    companyId: string,
+    userId: string,
+    contactIds: string[],
+  ): Promise<Map<string, MessageRecord>> {
+    const out = new Map<string, MessageRecord>();
+    if (contactIds.length === 0) return out;
+    const wanted = new Set(contactIds);
+    const relevant = this.direct
+      .filter(
+        (m) =>
+          m.companyId === companyId &&
+          ((m.senderId === userId && m.recipientId !== null && wanted.has(m.recipientId)) ||
+            (m.recipientId === userId && wanted.has(m.senderId))),
+      )
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    for (const m of relevant) {
+      const other = m.senderId === userId ? m.recipientId : m.senderId;
+      if (other && !out.has(other)) out.set(other, m);
+    }
+    return out;
+  }
+
   async listDirect(companyId: string, a: string, b: string) {
     return this.direct.filter(
       (m) => m.companyId === companyId &&

@@ -1,4 +1,4 @@
-import { eq, inArray, sql } from "drizzle-orm";
+import { desc, eq, inArray, sql } from "drizzle-orm";
 import { schema, type Db } from "@datahub/db";
 import type { ProfitMetric } from "@datahub/contracts";
 import type {
@@ -8,7 +8,7 @@ import type {
   CompanyUpdatePatch,
 } from "./ports.js";
 
-const { companies, userCompanies } = schema;
+const { activityLog, companies, userCompanies, users } = schema;
 type Row = typeof companies.$inferSelect;
 
 function toRecord(row: Row): CompanyRecord {
@@ -54,6 +54,40 @@ const DIRECT_COMPANY_TABLES = [
 /** Drizzle-backed `CompaniesRepository` (single typed path — no Supabase fallback, D6). */
 export class DrizzleCompaniesRepository implements CompaniesRepository {
   constructor(private readonly db: Db) {}
+
+  /**
+   * A deal's activity, newest first, with the actor's name joined in.
+   *
+   * Left join so an event whose actor has since been removed still appears —
+   * losing the person must not lose the history.
+   */
+  async listActivity(companyId: string, limit: number) {
+    const rows = await this.db
+      .select({
+        id: activityLog.id,
+        companyId: activityLog.companyId,
+        type: activityLog.type,
+        message: activityLog.message,
+        actorId: activityLog.createdBy,
+        actorName: users.name,
+        createdAt: activityLog.createdAt,
+      })
+      .from(activityLog)
+      .leftJoin(users, eq(users.id, activityLog.createdBy))
+      .where(eq(activityLog.companyId, companyId))
+      .orderBy(desc(activityLog.createdAt))
+      .limit(limit);
+
+    return rows.map((r) => ({
+      id: r.id,
+      companyId: r.companyId,
+      type: r.type as "upload" | "request" | "approved" | "reminder",
+      message: r.message,
+      actorId: r.actorId ?? null,
+      actorName: r.actorName ?? null,
+      createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
+    }));
+  }
 
   async getById(id: string): Promise<CompanyRecord | null> {
     const rows = await this.db.select().from(companies).where(eq(companies.id, id)).limit(1);

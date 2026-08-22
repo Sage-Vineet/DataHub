@@ -58,3 +58,34 @@ export type GroupResponse = z.infer<typeof groupResponse>;
 
 export const unreadCountResponse = z.object({ group_id: uuid, unread: z.number().int() });
 export type UnreadCountResponse = z.infer<typeof unreadCountResponse>;
+
+/**
+ * One person the caller may message on a deal, with the most recent thing said
+ * either way so the list can be ordered by recency without a second round trip.
+ *
+ * `last_message` is null for a contact never spoken to — a real state, not an
+ * error, and the list still shows them.
+ */
+export const directContact = z.object({
+  id: uuid,
+  name: z.string().nullable(),
+  email: z.string().nullable(),
+  role: z.string().nullable(),
+  last_message: messageResponse.nullable(),
+});
+export type DirectContact = z.infer<typeof directContact>;
+
+/**
+ * The contacts listing for one company.
+ *
+ * This is the entry point to direct messaging: every messaging view requests it
+ * before it can render anything, so losing it takes the whole capability out.
+ * It did exactly that — the TypeScript rewrite defined only
+ * `/direct-messages/:recipientId`, so `contacts` was parsed as a recipient id
+ * and the conversation query failed with a 500 on every load.
+ */
+export const directContactsResponse = z.object({
+  company: z.object({ id: uuid, name: z.string().nullable() }),
+  contacts: z.array(directContact),
+});
+export type DirectContactsResponse = z.infer<typeof directContactsResponse>;

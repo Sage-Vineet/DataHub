@@ -42,6 +42,7 @@ function toRecord(row: Row): UserRecord {
     occupation: row.occupation,
     address: row.address,
     brokerCompany: row.brokerCompany,
+    createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : (row.createdAt ?? null),
   };
 }
 

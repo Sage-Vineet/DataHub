@@ -57,6 +57,15 @@ export const documentResponse = z.object({
   ext: z.string(),
   status: documentStatus,
   uploaded_by: uuid,
+  /**
+   * Who uploaded it, by name.
+   *
+   * Only the id was returned, and the file explorer has no user directory to
+   * resolve it against — so every document reported "Uploaded by: Unknown" in a
+   * product whose whole value proposition is provenance. Null when the uploader
+   * has since been removed.
+   */
+  uploaded_by_name: z.string().nullable().optional(),
   archived_at: z.string().nullable(),
 });
 export type DocumentResponse = z.infer<typeof documentResponse>;

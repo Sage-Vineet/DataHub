@@ -185,3 +185,65 @@ describe("companies router — transactional cascade delete (design D4)", () => 
     expect(survivor[0]!.companyId).toBeNull(); // …with company_id nulled
   });
 });
+
+/**
+ * The activity feed reads Postgres directly.
+ *
+ * The legacy handler for this route queries Supabase through `safeQuery`, which
+ * swallows a failure into an empty array — so with no Supabase configured the
+ * endpoint answered `200 []`, and the broker dashboard, the deal tracker and the
+ * client dashboard all reported "No activity yet" over rows that were sitting in
+ * `activity_log` the whole time. An unreachable source and an empty one are
+ * different facts and must not render identically.
+ */
+describe("companies router — deal activity feed (real Postgres)", () => {
+  async function seedCompany(): Promise<string> {
+    const created = (await request(app).post("/api/companies").send({ name: "Acme" })).body;
+    // Membership, not the broker role, is what grants access — mirror what the
+    // create actually did.
+    current = { ...current, company_ids: [created.id] };
+    await db.update(schema.users).set({ companyId: created.id }).where(eq(schema.users.id, BROKER.id));
+    return created.id as string;
+  }
+
+  it("returns the rows that exist, newest first, naming the actor", async () => {
+    const companyId = await seedCompany();
+    await db.insert(schema.activityLog).values([
+      { companyId, type: "request", message: "Requested \"FY2024 statements\"", createdBy: BROKER.id,
+        createdAt: new Date("2026-08-10T10:00:00Z") },
+      { companyId, type: "upload", message: "Uploaded Lease.pdf", createdBy: BROKER.id,
+        createdAt: new Date("2026-08-12T10:00:00Z") },
+    ]);
+
+    const res = await request(app).get(`/api/companies/${companyId}/activity`).expect(200);
+    expect(res.body).toHaveLength(2);
+    expect(res.body[0].message).toBe("Uploaded Lease.pdf"); // newest first
+    expect(res.body[0].type).toBe("upload");
+    expect(res.body[0].actor_name).toBe(BROKER.name); // not a bare uuid
+    expect(res.body[1].message).toContain("FY2024");
+  });
+
+  it("returns an empty array only when the deal genuinely has no activity", async () => {
+    const companyId = await seedCompany();
+    await request(app).get(`/api/companies/${companyId}/activity`).expect(200).expect([]);
+  });
+
+  it("honours a limit and caps it", async () => {
+    const companyId = await seedCompany();
+    await db.insert(schema.activityLog).values(
+      Array.from({ length: 5 }, (_, i) => ({
+        companyId, type: "upload" as const, message: `Uploaded ${i}.pdf`, createdBy: BROKER.id,
+        createdAt: new Date(Date.UTC(2026, 7, i + 1)),
+      })),
+    );
+    expect((await request(app).get(`/api/companies/${companyId}/activity?limit=2`).expect(200)).body).toHaveLength(2);
+    // A nonsense limit falls back rather than throwing or returning everything.
+    expect((await request(app).get(`/api/companies/${companyId}/activity?limit=abc`).expect(200)).body).toHaveLength(5);
+  });
+
+  it("refuses a deal the caller cannot access", async () => {
+    const companyId = await seedCompany();
+    current = { ...BROKER, company_id: null, company_ids: [] };
+    await request(app).get(`/api/companies/${companyId}/activity`).expect(403);
+  });
+});

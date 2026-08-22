@@ -1,4 +1,5 @@
 import type {
+  DirectContactsResponse,
   GroupCreate,
   GroupMessageResponse,
   GroupResponse,
@@ -36,6 +37,41 @@ export class MessagesService {
   }
 
   // ── Direct conversation (symmetric) ───────────────────────────────────────
+
+  /**
+   * Who the caller may message on this deal.
+   *
+   * The caller is excluded — nobody messages themselves — and contacts are
+   * ordered by most recent activity, then by name, so the list opens on whoever
+   * spoke last. A contact never spoken to sorts last and still appears.
+   */
+  async directContacts(user: SessionUser, companyId: string): Promise<DirectContactsResponse> {
+    this.requireCompany(user, companyId);
+    const company = await this.repo.getCompany(companyId);
+    if (!company) throw new NotFoundError("Company not found.");
+
+    const members = (await this.repo.listCompanyMembers(companyId)).filter((m) => m.id !== user.id);
+    const latest = await this.repo.latestDirectByContact(
+      companyId,
+      user.id,
+      members.map((m) => m.id),
+    );
+
+    const contacts = members
+      .map((m) => {
+        const last = latest.get(m.id);
+        return { ...m, last_message: last ? toMessage(last) : null };
+      })
+      .sort((a, b) => {
+        const aAt = a.last_message?.created_at ?? "";
+        const bAt = b.last_message?.created_at ?? "";
+        if (aAt !== bAt) return bAt.localeCompare(aAt); // most recent first
+        return (a.name ?? "").localeCompare(b.name ?? "");
+      });
+
+    return { company: { id: company.id, name: company.name }, contacts };
+  }
+
   async directList(user: SessionUser, companyId: string, recipientId: string): Promise<MessageResponse[]> {
     this.requireCompany(user, companyId);
     return (await this.repo.listDirect(companyId, user.id, recipientId)).map(toMessage);

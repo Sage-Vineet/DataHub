@@ -53,6 +53,16 @@ export function createMessagesRouter(deps: MessagesRouterDeps): Router {
   }));
 
   // Direct conversation.
+  //
+  // ORDER MATTERS. `/contacts` is a literal segment and MUST stay above
+  // `/:recipientId`, or Express matches the param route first and the listing is
+  // handled as a conversation with a recipient named "contacts". That is exactly
+  // how this broke: the rewrite dropped the literal route that legacy declares
+  // first (`backend/src/routes/messages.js:19`), and every messaging view — which
+  // loads contacts before it can render — got a 500. Do not reorder these two.
+  router.get("/companies/:companyId/direct-messages/contacts", handle(async (req, res) => {
+    res.json(await service.directContacts(req.user!, req.params.companyId!));
+  }));
   router.get("/companies/:companyId/direct-messages/:recipientId", handle(async (req, res) => {
     res.json(await service.directList(req.user!, req.params.companyId!, req.params.recipientId!));
   }));
