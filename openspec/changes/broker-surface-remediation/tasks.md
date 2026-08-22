@@ -229,7 +229,12 @@
 
 - [ ] 9.1 **Does the ~620-field CIM Prep form survive?** Not an audit call. §7.8 presents one CIM
       destination without answering it. Needs a product owner
-- [ ] 9.2 **When does the `reports` cutover start?** Until it does there is no working P&L anywhere
+- [x] 9.2a STARTED, for the P&L. `buildIncomeStatement` was already in the engine and tested
+      against the workbook; it now has a route (`GET /qoe/income-statement`) and the reports view
+      reads it. There is a working profit and loss statement for the first time. The rest of 9.2
+      — `report-sources`, `chart-of-accounts`, cash flow, and decomposing the 9,088-line
+      `manualGlMultiYearService.js` — stays open
+- [ ] 9.2 **When does the rest of the `reports` cutover start?** Until it does there is no working P&L anywhere
       in the product, the EBITDA bridge computes from 3 of 39 accounts, and four financial screens
       500 after 7–24 seconds. The navigation cut is designed so Financials can be re-promoted once
       it works
