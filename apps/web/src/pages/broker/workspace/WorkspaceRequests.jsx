@@ -602,7 +602,7 @@ function CategoryCard({ category, requestsInCategory, onClick }) {
   );
 }
 
-function RequestRow({ item, onView, onApprove, approving }) {
+function RequestRow({ item, onView, onApprove, approving, onRemind, reminded }) {
   const priority = getPriorityMeta(item.priority);
   const canApprove = item.submissionSource === 'user' && item.approvalStatus === 'pending';
   const canReview = item.workflowStatus === 'in-review';
@@ -662,6 +662,21 @@ function RequestRow({ item, onView, onApprove, approving }) {
               Review
             </button>
           )}
+          {/*
+            Chasing happens here, not one level down.
+            "Send Reminder" lived only on the request detail, so nudging the
+            overdue item meant opening it first — and the list is where a broker
+            decides who to chase. Offered for anything still outstanding.
+          */}
+          {onRemind && item.status !== 'completed' && (
+            <button
+              onClick={() => onRemind(item)}
+              disabled={reminded}
+              className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs font-semibold text-[#6D6E71] hover:bg-gray-50 disabled:opacity-60 transition-colors"
+            >
+              {reminded ? 'Reminded' : 'Remind'}
+            </button>
+          )}
           <button
             onClick={() => onView(item)}
             className="px-3 py-1.5 rounded-lg bg-[#05164D] text-white text-xs font-semibold hover:bg-[#0b2a79] transition-colors"
@@ -674,7 +689,7 @@ function RequestRow({ item, onView, onApprove, approving }) {
   );
 }
 
-function RequestTable({ rows, onView, onApprove, approvingRequestId }) {
+function RequestTable({ rows, onView, onApprove, approvingRequestId, onRemind, remindedIds }) {
   return (
     <div className="bg-white rounded-2xl shadow-card overflow-x-auto">
       <table className="w-full min-w-[980px]">
@@ -697,6 +712,8 @@ function RequestTable({ rows, onView, onApprove, approvingRequestId }) {
               onView={onView}
               onApprove={onApprove}
               approving={approvingRequestId === r.id}
+              onRemind={onRemind}
+              reminded={remindedIds?.has(r.id)}
             />
           ))}
         </tbody>
@@ -705,7 +722,7 @@ function RequestTable({ rows, onView, onApprove, approvingRequestId }) {
   );
 }
 
-function CategoryGroupedTable({ grouped, onView, onApprove, approvingRequestId }) {
+function CategoryGroupedTable({ grouped, onView, onApprove, approvingRequestId, onRemind, remindedIds }) {
   return (
     <div className="bg-white rounded-2xl shadow-card overflow-x-auto">
       <table className="w-full min-w-[980px]">
@@ -751,6 +768,8 @@ function CategoryGroupedTable({ grouped, onView, onApprove, approvingRequestId }
                     onView={onView}
                     onApprove={onApprove}
                     approving={approvingRequestId === r.id}
+                    onRemind={onRemind}
+                    reminded={remindedIds?.has(r.id)}
                   />
                 ))}
               </Fragment>
@@ -1516,6 +1535,33 @@ export default function WorkspaceRequests() {
    * A query parameter rather than a path segment, so the requests route itself
    * is untouched and an existing link keeps working.
    */
+  /**
+   * Requests nudged in this session, so the row button can say so.
+   *
+   * Not persisted: reminder history lives on the request, and this is only the
+   * immediate feedback that the click did something — without it the button
+   * looked inert, which is why chasing felt like it did not work.
+   */
+  const [remindedIds, setRemindedIds] = useState(() => new Set());
+  const handleRemindRow = useCallback(async (request) => {
+    if (!request?.id) return;
+    setRemindedIds((prev) => new Set(prev).add(request.id));
+    try {
+      await createRequestReminder(request.id, {
+        sent_at: new Date().toISOString(),
+        sent_by: user?.id || null,
+      });
+    } catch {
+      // Reverting the label is more honest than leaving "Reminded" over a
+      // reminder that never went.
+      setRemindedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(request.id);
+        return next;
+      });
+    }
+  }, [user?.id]);
+
   const [searchParams, setSearchParams] = useSearchParams();
   const activeRequestId = searchParams.get('request');
   const setActiveRequestId = useCallback((id) => {
@@ -1989,6 +2035,8 @@ export default function WorkspaceRequests() {
                   onView={(r) => setActiveRequestId(r.id)}
                   onApprove={handleApproveRequest}
                   approvingRequestId={approvingRequestId}
+              onRemind={handleRemindRow}
+              remindedIds={remindedIds}
                 />
               )}
             </div>
@@ -2061,6 +2109,8 @@ export default function WorkspaceRequests() {
               onView={(r) => setActiveRequestId(r.id)}
               onApprove={handleApproveRequest}
               approvingRequestId={approvingRequestId}
+              onRemind={handleRemindRow}
+              remindedIds={remindedIds}
             />
           )}
         </div>

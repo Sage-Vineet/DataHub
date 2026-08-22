@@ -70,14 +70,36 @@ export default function NominatePanel({ categories, onClose }) {
               Nobody on this deal has raised or been assigned a question yet.
             </p>
           ) : (
+            <>
+            {categories.some((c) => c.nominees.length === 0) && (
+              <p className="mb-4 rounded-xl border border-[#F0DFB8] bg-[#FCF7EC] px-4 py-3 text-sm text-[#8A5E10]">
+                {categories.filter((c) => c.nominees.length === 0).length} of {categories.length}{' '}
+                categories have nobody assigned. Questions raised in those still reach the deal —
+                they just arrive without a named owner.
+              </p>
+            )}
             <ul className="space-y-4">
               {categories.map((category) => (
                 <li key={category.id} className="rounded-xl border border-[#E5E7EB] p-4">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-2">
                     <p className="text-sm font-medium text-[#111827]">{category.label}</p>
-                    {busy === category.id && (
-                      <Loader2 className="animate-spin text-[#9CA3AF]" size={14} />
-                    )}
+                    <div className="flex items-center gap-2">
+                      {/*
+                        An unassigned category is worth saying out loud. Finance
+                        and Legal were nominated and the other five were not, with
+                        nothing on screen indicating where a question raised in
+                        them would go — so the gap read as a deliberate state
+                        rather than an omission.
+                      */}
+                      {category.nominees.length === 0 && (
+                        <span className="rounded-full bg-[#FAF0DC] px-2 py-0.5 text-[11px] font-semibold text-[#8A5E10]">
+                          Nobody assigned
+                        </span>
+                      )}
+                      {busy === category.id && (
+                        <Loader2 className="animate-spin text-[#9CA3AF]" size={14} />
+                      )}
+                    </div>
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {[...people.entries()].map(([userId, name]) => {
@@ -101,6 +123,7 @@ export default function NominatePanel({ categories, onClose }) {
                 </li>
               ))}
             </ul>
+            </>
           )}
         </div>
       </div>
