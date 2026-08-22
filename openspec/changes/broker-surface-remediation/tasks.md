@@ -148,7 +148,7 @@
 
 ## 7. Navigation and information architecture (F‑20 – F‑25)
 
-- [ ] 7.1 (F‑21) Implement the five-destination sidebar from `design.md` D1: Overview · Dataroom ·
+- [x] 7.1 (F‑21) Implement the five-destination sidebar from `design.md` D1: Overview · Dataroom ·
       Requests & Q&A · CIM · Financials · People. Nothing is deleted — Key Reports, Bank Rec and
       Tax Rec move under Financials
 - [ ] 7.2 Move Invoices out of the deal workspace to a firm-level area. It is how the brokerage
@@ -156,7 +156,7 @@
       Recent Invoices panel on the Analytics page
 - [ ] 7.3 Merge Analytics into Overview, keeping the panels worth keeping. Its page title is
       *Dashboard* — the third thing in the product called a dashboard
-- [ ] 7.4 Move Connections to workspace settings
+- [x] 7.4 Move Connections to workspace settings
 - [x] 7.5 (F‑24) One name per destination. `Deal Team` opens a page titled *Users* at `/dataroom/users`;
       `Reports` opens *Financial Reports*; `Analytics` opens *Dashboard*. Align nav label, page
       title and route
@@ -164,7 +164,13 @@
       while appearing as top-level items in the sidebar
 - [ ] 7.7 Remove the duplicated period controls on Analytics — two independent pickers with two
       Apply buttons, one nested inside the other
-- [ ] 7.8 Present one CIM destination (`design.md` D2). CIM Builder is the surface; CIM Prep is
+- [x] 7.2a Invoices grouped under Financials as an interim step. It is no longer a top-level
+      peer of the data room, but it has NOT left the deal workspace — the firm-level area it
+      belongs in does not exist, and deleting the only route to it would lose the screen. 7.2
+      stays open
+- [x] 7.6a Navigation regrouped WITHOUT changing any route, deliberately: bookmarks and deep
+      links keep working, and the URL clean-up in 7.6 can happen separately, with redirects
+- [x] 7.8 Present one CIM destination (`design.md` D2). CIM Builder is the surface; CIM Prep is
       reachable from it as the PowerPoint export path. Do **not** delete CIM Prep — `cim-builder/design.md:49`
       records that it "is untouched and stays" — and do not pre-empt `cim-builder` task 9.4
 - [ ] 7.9 Give CIM Prep a way back. It takes over the entire screen with no nav, no company
@@ -200,7 +206,7 @@
       (Finance, Legal, Tax…) as one axis, five of which have no data
 - [ ] 8.9 Fix the Q&A status that reads `Answered` on a thread whose last message is an unanswered
       broker follow-up, while the Follow-up counter reads 0
-- [ ] 8.10 (F‑29) Fix the document preview contradiction: "Preview not available for this file type" on a
+- [x] 8.10 (F‑29) Fix the document preview contradiction: "Preview not available for this file type" on a
       CSV, beside a panel saying spreadsheets render, on a file the same panel types as
       *Spreadsheet*
 - [x] 8.11 Populate `Uploaded by`. It reads `Unknown` on every document, in a product whose value
