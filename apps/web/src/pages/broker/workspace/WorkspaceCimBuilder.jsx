@@ -62,6 +62,8 @@ export default function WorkspaceCimBuilder() {
   const [health, setHealth] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  /** block_key → 'saving' | 'saved' | 'failed'. Cleared a moment after success. */
+  const [blockState, setBlockState] = useState({});
   const [composing, setComposing] = useState(false);
   const [selected, setSelected] = useState({});
   const [editing, setEditing] = useState({});
@@ -259,15 +261,34 @@ export default function WorkspaceCimBuilder() {
     window.open(URL.createObjectURL(blob), '_blank', 'noopener');
   }
 
+  /**
+   * Save one answer, and say so.
+   *
+   * A CIM is filled in over days, often by the business owner. There was no save
+   * button, no dirty state and no confirmation — the answer went on blur and the
+   * writer had nothing telling them it had been kept. For a long document that
+   * is not a polish issue: it is the reason people retype things, or copy them
+   * into a Word file first.
+   */
   async function saveBlock(block, value) {
     setBusy(true);
+    setBlockState((prev) => ({ ...prev, [block.block_key]: 'saving' }));
     try {
       await saveCimBlocksRequest(deck.current_version_id, {
         blocks: [{ block_key: block.block_key, content: value }],
       });
       await refresh();
+      setBlockState((prev) => ({ ...prev, [block.block_key]: 'saved' }));
+      // The tick is reassurance, not a permanent badge — it clears once read.
+      window.setTimeout(
+        () => setBlockState((prev) => (prev[block.block_key] === 'saved'
+          ? { ...prev, [block.block_key]: undefined }
+          : prev)),
+        2500,
+      );
     } catch (err) {
       setError(err.message);
+      setBlockState((prev) => ({ ...prev, [block.block_key]: 'failed' }));
     } finally {
       setBusy(false);
     }
@@ -301,13 +322,70 @@ export default function WorkspaceCimBuilder() {
     );
   }
 
+  /**
+   * Answered means answered — the same rule the server applies.
+   *
+   * The counts here tested `populated_by` alone, which is set the moment a field
+   * is saved for the first time. Saving a field and then clearing it left it
+   * marked as written, so "12 of 29 sections written" could include blanks and
+   * the gap count would miss them. The service's own `hasContent` requires both
+   * a writer AND actual content; this mirrors it so the two agree.
+   */
+  const isAnswered = (block) => {
+    if (!block.populated_by) return false;
+    const c = block.content;
+    if (c === null || c === undefined) return false;
+    if (typeof c === 'string') return c.trim().length > 0;
+    if (Array.isArray(c)) return c.length > 0;
+    if (typeof c === 'object') return Object.keys(c).length > 0;
+    return true;
+  };
+
   const filled = detail
-    ? detail.sections.flatMap((s) => s.slides.flatMap((sl) => sl.blocks)).filter((b) => b.populated_by)
-        .length
+    ? detail.sections.flatMap((s) => s.slides.flatMap((sl) => sl.blocks)).filter(isAnswered).length
     : 0;
   const total = detail
     ? detail.sections.flatMap((s) => s.slides.flatMap((sl) => sl.blocks)).length
     : 0;
+
+  /** Per-section written/total, for the outline. */
+  const sectionProgress = detail
+    ? detail.sections.map((section) => {
+        const blocks = section.slides.flatMap((sl) => sl.blocks);
+        return {
+          id: section.id,
+          title: section.title,
+          total: blocks.length,
+          written: blocks.filter(isAnswered).length,
+        };
+      })
+    : [];
+
+  /** Every question still unanswered, in document order. */
+  const unansweredKeys = detail
+    ? detail.sections
+        .flatMap((s) => s.slides.flatMap((sl) => sl.blocks))
+        .filter((b) => !isAnswered(b))
+        .map((b) => b.block_key)
+    : [];
+
+  /**
+   * Move to the next gap, cycling from wherever the reader is.
+   *
+   * Focus rather than just scroll: the point of jumping to a blank field is to
+   * answer it, and landing next to it with the cursor somewhere else would make
+   * the reader click again.
+   */
+  function goToNextGap() {
+    if (unansweredKeys.length === 0) return;
+    const active = document.activeElement?.closest('[id^="cim-block-"]')?.id;
+    const activeKey = active ? active.replace('cim-block-', '') : null;
+    const from = activeKey ? unansweredKeys.indexOf(activeKey) : -1;
+    const nextKey = unansweredKeys[(from + 1) % unansweredKeys.length];
+    const el = document.getElementById(`cim-block-${nextKey}`);
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el?.querySelector('textarea')?.focus({ preventScroll: true });
+  }
 
   return (
     <div className="space-y-6">
@@ -507,39 +585,113 @@ export default function WorkspaceCimBuilder() {
       )}
 
       {detail && (
-        <section className="space-y-4">
-          {detail.sections.map((section) => (
-            <div key={section.id} className="rounded-2xl bg-white p-5 shadow-card">
-              <h3 className="text-sm font-semibold text-[#111827]">{section.title}</h3>
-              <ul className="mt-3 space-y-3">
-                {section.slides.flatMap((slide) =>
-                  slide.blocks.map((block) => (
-                    <li key={block.id}>
-                      <label className="text-xs text-[#6B7280]">{block.label}</label>
-                      <textarea
-                        defaultValue={typeof block.content === 'string' ? block.content : ''}
-                        onBlur={(e) => {
-                          const next = e.target.value;
-                          const current = typeof block.content === 'string' ? block.content : '';
-                          if (next !== current) saveBlock(block, next);
-                        }}
-                        rows={2}
-                        disabled={detail.version.status !== 'draft'}
-                        placeholder="Not written yet"
-                        className="mt-1 w-full rounded-xl border border-[#E5E7EB] p-3 text-sm disabled:bg-[#F9FAFB]"
-                      />
-                      {block.content_class_locked && (
-                        <p className="mt-1 flex items-center gap-1 text-xs text-[#9CA3AF]">
-                          <Lock size={11} />
-                          Came from the company&apos;s answer — stays with this deal.
-                        </p>
-                      )}
-                    </li>
-                  )),
-                )}
-              </ul>
-            </div>
-          ))}
+        /*
+          Two columns: an outline that stays put, and the questions.
+
+          29 questions across ten sections used to be one unbroken scroll with no
+          way to see the shape of the document, jump to a section, or find the
+          gaps the header was counting. Reaching the last section meant scrolling
+          past everything — and the wide empty right-hand side was doing nothing.
+        */
+        <section className="grid gap-5 lg:grid-cols-[220px_minmax(0,1fr)] lg:items-start">
+          <nav className="rounded-2xl bg-white p-4 shadow-card lg:sticky lg:top-5">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-[#9CA3AF]">
+              Sections
+            </p>
+            <ul className="mt-3 space-y-1">
+              {sectionProgress.map((s) => (
+                <li key={s.id}>
+                  <a
+                    href={`#cim-section-${s.id}`}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      document.getElementById(`cim-section-${s.id}`)
+                        ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }}
+                    className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-sm text-[#374151] hover:bg-[#F3F4F6]"
+                  >
+                    <span className="truncate">{s.title}</span>
+                    <span
+                      className={`shrink-0 text-[11px] font-semibold ${
+                        s.written === s.total ? 'text-[#1B6152]' : 'text-[#9CA3AF]'
+                      }`}
+                    >
+                      {s.written}/{s.total}
+                    </span>
+                  </a>
+                </li>
+              ))}
+            </ul>
+
+            {/*
+              The header counts the gaps; this is how you get to one. Without it
+              "17 unanswered" was a number with nothing behind it, and the blank
+              fields are only distinguishable from filled ones by the grey of
+              their placeholder.
+            */}
+            {unansweredKeys.length > 0 && (
+              <button
+                type="button"
+                onClick={goToNextGap}
+                className="mt-4 w-full rounded-xl border border-[#F0DFB8] bg-[#FCF7EC] px-3 py-2 text-xs font-semibold text-[#8A5E10] hover:bg-[#FAF0DC]"
+              >
+                Next unanswered ({unansweredKeys.length})
+              </button>
+            )}
+          </nav>
+
+          <div className="space-y-4">
+            {detail.sections.map((section) => (
+              <div
+                key={section.id}
+                id={`cim-section-${section.id}`}
+                className="scroll-mt-5 rounded-2xl bg-white p-5 shadow-card"
+              >
+                <h3 className="text-sm font-semibold text-[#111827]">{section.title}</h3>
+                <ul className="mt-3 space-y-3">
+                  {section.slides.flatMap((slide) =>
+                    slide.blocks.map((block) => {
+                      const written = isAnswered(block);
+                      const state = blockState[block.block_key];
+                      return (
+                        <li key={block.id} id={`cim-block-${block.block_key}`} className="scroll-mt-24">
+                          <div className="flex items-center justify-between gap-2">
+                            <label className="text-xs text-[#6B7280]">{block.label}</label>
+                            <span className="text-[11px]">
+                              {state === 'saving' && <span className="text-[#9CA3AF]">Saving…</span>}
+                              {state === 'saved' && <span className="text-[#1B6152]">Saved</span>}
+                              {state === 'failed' && <span className="text-[#B91C1C]">Not saved</span>}
+                              {!state && !written && <span className="text-[#B08415]">Unanswered</span>}
+                            </span>
+                          </div>
+                          <textarea
+                            defaultValue={typeof block.content === 'string' ? block.content : ''}
+                            onBlur={(e) => {
+                              const next = e.target.value;
+                              const current = typeof block.content === 'string' ? block.content : '';
+                              if (next !== current) saveBlock(block, next);
+                            }}
+                            rows={2}
+                            disabled={detail.version.status !== 'draft'}
+                            placeholder="Not written yet"
+                            className={`mt-1 w-full rounded-xl border p-3 text-sm disabled:bg-[#F9FAFB] ${
+                              written ? 'border-[#E5E7EB]' : 'border-[#F0DFB8] bg-[#FFFDF8]'
+                            }`}
+                          />
+                          {block.content_class_locked && (
+                            <p className="mt-1 flex items-center gap-1 text-xs text-[#9CA3AF]">
+                              <Lock size={11} />
+                              Came from the company&apos;s answer — stays with this deal.
+                            </p>
+                          )}
+                        </li>
+                      );
+                    }),
+                  )}
+                </ul>
+              </div>
+            ))}
+          </div>
         </section>
       )}
     </div>
