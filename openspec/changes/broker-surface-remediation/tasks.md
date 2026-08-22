@@ -137,7 +137,7 @@
       foot correctly. In a QoE deliverable a bridge that does not foot is a credibility problem
 - [x] 6.3 **Vitest:** the bridge foots for every period; assert on the rendered figures, since this
       is a display-rounding defect and a test on the raw values would pass
-- [ ] 6.4 Surface the balance validation more widely. Financial Statements states "Balances — assets
+- [x] 6.4 Surface the balance validation more widely. Financial Statements states "Balances — assets
       equal liabilities plus equity in all 48 periods" on screen. It is exactly the detail that wins
       a finance buyer and almost nobody will find it two levels under Quality of Earnings
 - [x] 6.5 Keep the version selector consistent with the workspace it is in. It reads
@@ -177,11 +177,11 @@
       switcher and no route out except its own back arrow
 - [ ] 7.10 Make the two CIM tools agree on the deal's name — CIM Builder calls it Project Atlas,
       CIM Prep's Project Name field reads "Acme Manufacturing"
-- [ ] 7.11 Add a section outline to CIM Builder. 29 questions across ~10 sections in one
+- [x] 7.11 Add a section outline to CIM Builder. 29 questions across ~10 sections in one
       unstructured scroll, no jump-to, no collapse, and a wide empty right rail that could hold it
-- [ ] 7.12 Show save state in CIM Builder. No save button, no dirty indicator, no "Saved" — for a
+- [x] 7.12 Show save state in CIM Builder. No save button, no dirty indicator, no "Saved" — for a
       document a client fills in over days, that is a data-loss worry whether or not it autosaves
-- [ ] 7.13 Make the 17 gaps navigable. The header counts them; the fields say "Not written yet" in
+- [x] 7.13 Make the 17 gaps navigable. The header counts them; the fields say "Not written yet" in
       placeholder grey, indistinguishable at a glance
 - [ ] 7.14 Replace the raw-blob PPT preview, which opens a new browser tab titled with a UUID
 
@@ -227,6 +227,11 @@
 
 ## 9. Open questions to close before or during
 
+- [x] 6.7 VERIFIED, no change needed: the classification editor on the EBITDA page already
+      lists all 36 unclassified accounts with editable type and role and a stated reason, and
+      setting a role moves the bridge (checked: unflagged 36 → 35 → 36). The Chart of Accounts
+      wizard step still 500s, but it is not the only route to classifying — so completing the
+      bridge is something a broker can do today
 - [ ] 9.1 **Does the ~620-field CIM Prep form survive?** Not an audit call. §7.8 presents one CIM
       destination without answering it. Needs a product owner
 - [x] 9.2a STARTED, for the P&L. `buildIncomeStatement` was already in the engine and tested
