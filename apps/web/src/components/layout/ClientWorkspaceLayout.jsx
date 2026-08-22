@@ -146,53 +146,106 @@ function WorkspaceSidebar({ company, onClose }) {
 
   const profitMetricConfig = getProfitMetricConfig(company);
 
+  /**
+   * The workspace navigation, organised around what a broker is actually doing.
+   *
+   * It used to be eleven top-level destinations, TEN of which were financial
+   * tooling: Key Reports, Financial Reports, Analytics, Invoices, the earnings
+   * bridge, a Quality of Earnings folder with three children of its own, and
+   * Connections. The four things this product is for — the data room, the
+   * requests and questions, the CIM, and a view of the numbers — shared the
+   * remaining space with a module that bills the client. The shape of the
+   * sidebar said "accounting platform" before a single screen loaded.
+   *
+   * Nothing has been deleted and NO URL has changed. Every route still resolves
+   * exactly where it did, so bookmarks, deep links and anything a broker has
+   * pinned keep working. What changed is which things are peers: the financial
+   * screens are now children of one destination rather than nine siblings of the
+   * data room.
+   *
+   * Feature flags behave as before — a disabled capability is omitted entirely
+   * rather than greyed out, because a control the user can click and get nothing
+   * from is worse than one they cannot see.
+   */
   const navStructure = [
-    { label: "Deal Tracker", icon: Target, to: `${basePath}/dataroom/deal-tracker` },
-    { label: "Deal Team", icon: Users, to: `${basePath}/dataroom/users` },
+    { label: "Overview", icon: Target, to: `${basePath}/dataroom/deal-tracker` },
+
+    // ── Pillar 1 — the data room ────────────────────────────────────────────
     {
       type: 'folder',
       label: "Dataroom",
       icon: FolderOpen,
       children: [
-        { label: "Requests", icon: ClipboardList, to: `${basePath}/dataroom/requests` },
         { label: "Documents", icon: FileText, to: `${basePath}/dataroom/documents` },
-        // Omitted entirely when the module is off — not greyed out. A disabled
-        // feature the user can still click is worse than one they cannot see.
+        { label: "Activity", icon: TrendingUp, to: `${basePath}/dataroom/activity` },
+      ],
+    },
+
+    // ── Pillar 2 — what is outstanding ──────────────────────────────────────
+    // Requests and questions are the same job: chasing the seller for something,
+    // differing only in whether the answer is a file or a sentence. They were
+    // siblings that never referred to each other.
+    {
+      type: 'folder',
+      label: "Requests & Q&A",
+      icon: ClipboardList,
+      children: [
+        { label: "Requests", icon: ClipboardList, to: `${basePath}/dataroom/requests` },
         ...(qaEnabled
-          ? [{ label: "Q&A", icon: MessageSquareText, to: `${basePath}/dataroom/qa` }]
+          ? [{ label: "Questions", icon: MessageSquareText, to: `${basePath}/dataroom/qa` }]
           : []),
-        ...(cimEnabled
-          ? [{ label: "CIM Builder", icon: BookOpen, to: `${basePath}/dataroom/cim` }]
-          : []),
-        { label: "Messages", icon: MessageSquare, to: `${basePath}/dataroom/messages` },
         { label: "Reminders", icon: Bell, to: `${basePath}/dataroom/reminders` },
       ],
     },
-    { label: "Key Reports", icon: FileCheck, to: `${basePath}/dataroom/key-reports` },
-    { label: "Financial Reports", icon: BarChart3, to: `${basePath}/reports` },
-    { label: "Analytics", icon: TrendingUp, to: `${basePath}/analytics` },
-    { label: "Invoices", icon: Receipt, to: `${basePath}/invoices` },
-    // The earnings bridge and Financial Statements both read /qoe, which legacy
-    // does not serve. With the module off they are hidden rather than left to
-    // fetch into the catch-all proxy. Bank and Tax Reconciliation are legacy
-    // screens and stay, so the folder survives losing one child.
-    ...(qoeEnabled
-      ? [{ label: profitMetricConfig.navLabel, icon: Calculator, to: `${basePath}/ebitda` }]
-      : []),
+
+    // ── Pillar 3 — the CIM ──────────────────────────────────────────────────
+    // One destination, two surfaces. CIM Prep is the PowerPoint path and stays
+    // (cim-builder/design.md D-49 records that decision); it is no longer a
+    // top-level peer of the builder, which made the product look like it shipped
+    // two unrelated CIM tools and left the reader to guess which was real.
+    ...(cimEnabled
+      ? [{
+          type: 'folder',
+          label: "CIM",
+          icon: BookOpen,
+          children: [
+            { label: "Builder", icon: BookOpen, to: `${basePath}/dataroom/cim` },
+            { label: "Slide deck", icon: FileText, to: `${basePath}/cim-prep` },
+          ],
+        }]
+      : [{ label: "CIM Prep", icon: BookOpen, to: `${basePath}/cim-prep` }]),
+
+    // ── Pillar 4 — the numbers ──────────────────────────────────────────────
+    // Nine destinations become one with children. Statements first because it is
+    // the one that works and was buried two levels down, under a page that
+    // cannot produce a statement.
     {
       type: 'folder',
-      label: "Quality of Earnings Report",
-      icon: Scale,
+      label: "Financials",
+      icon: BarChart3,
       children: [
         ...(qoeEnabled
-          ? [{ label: "Financial Statements", icon: BarChart3, to: `${basePath}/statements` }]
+          ? [
+              { label: "Statements", icon: BarChart3, to: `${basePath}/statements` },
+              { label: profitMetricConfig.navLabel, icon: Calculator, to: `${basePath}/ebitda` },
+            ]
           : []),
+        { label: "Key Reports", icon: FileCheck, to: `${basePath}/dataroom/key-reports` },
+        { label: "Reports", icon: BarChart3, to: `${basePath}/reports` },
+        { label: "Analytics", icon: TrendingUp, to: `${basePath}/analytics` },
         { label: "Bank Reconciliation", icon: Scale, to: `${basePath}/reconciliation` },
         { label: "Tax Reconciliation", icon: FileCheck, to: `${basePath}/tax-reconciliation` },
+        // Billing the client is not part of running their deal. It belongs in a
+        // firm-level area, which does not exist yet — parked here rather than
+        // made unreachable. See broker-surface-remediation §7.2.
+        { label: "Invoices", icon: Receipt, to: `${basePath}/invoices` },
       ],
     },
-    { label: "Connections",         icon: Link2,        to: `${basePath}/connections` },
-    { label: "CIM Prep",            icon: FileText,     to: `${basePath}/cim-prep` },
+
+    { label: "Messages", icon: MessageSquare, to: `${basePath}/dataroom/messages` },
+    { label: "People", icon: Users, to: `${basePath}/dataroom/users` },
+    // Configuration, not a place you work. Last, where settings live.
+    { label: "Connections", icon: Link2, to: `${basePath}/connections` },
   ];
 
   const companyMessageCount = notifications.filter((item) => String(item.companyId) === String(clientId)).length;
