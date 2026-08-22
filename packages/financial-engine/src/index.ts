@@ -9,3 +9,6 @@ export * from "./classify.js";
 export * from "./balance-sheet.js";
 export * from "./trial-balance.js";
 export * from "./balance-sheet-hierarchy.js";
+export * from "./coa-evidence.js";
+export * from "./coa-hierarchy-evidence.js";
+export * from "./coa-constraints.js";
