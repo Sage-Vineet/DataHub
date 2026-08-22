@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../../context/AuthContext';
 import {
   ArrowLeft,
@@ -877,6 +877,8 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
   // Keep the draft EMPTY on load — the saved narrative is shown in the display card above.
   // The textarea is only for typing NEW/UPDATED content before hitting Save.
   const [narrativeDraft, setNarrativeDraft] = useState('');
+  /** Second-click guard when completing a request nothing has satisfied. */
+  const [confirmingComplete, setConfirmingComplete] = useState(false);
   const [previewDocument, setPreviewDocument] = useState(null);
   const [requestDraft, setRequestDraft] = useState({
     name: request?.name || '',
@@ -922,6 +924,22 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
    * request is a closed record, and everything else is still being worked.
    */
   const canAttachDocuments = !isCompleted;
+
+  /**
+   * What this request asked for and still has not got.
+   *
+   * Derived from the response type, which is the request's own statement of what
+   * would satisfy it — so the check cannot drift from the promise.
+   */
+  const unmetExpectations = (() => {
+    const type = (request.responseType || '').toLowerCase();
+    const wantsDocument = type === 'upload' || type === 'both';
+    const wantsNarrative = type === 'narrative' || type === 'both';
+    const missing = [];
+    if (wantsDocument && request.linkedDocuments.length === 0) missing.push('a document');
+    if (wantsNarrative && !(request.narrativeResponse || '').trim()) missing.push('a written answer');
+    return missing;
+  })();
 
   const allLinkedNames = allRequests.flatMap(r => r.linkedDocuments.map(d => d.name.toLowerCase()));
 
@@ -1114,13 +1132,58 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
                   </p>
                 </div>
                 {canMarkReviewed && (
-                  <button
-                    type="button"
-                    onClick={() => onMarkReviewed?.(request.id)}
-                    className="rounded-xl bg-[#8BC53D] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#476E2C]"
-                  >
-                    Mark Reviewed
-                  </button>
+                  /*
+                    Completion states what it is completing.
+
+                    The Documents column read 0 for every request in the demo
+                    INCLUDING the one marked Completed — a completed diligence
+                    request with nothing attached to it has not been completed,
+                    and reporting it as such is what makes the requests pillar
+                    untrustworthy rather than merely incomplete.
+
+                    A warning, not a hard block: a request is often satisfied out
+                    of band — on a call, or in a meeting — and a tool that refuses
+                    to record that is a tool people work around. What it must not
+                    do is complete silently over a gap.
+                  */
+                  <div className="flex flex-col items-stretch gap-2 sm:items-end">
+                    {unmetExpectations.length > 0 && confirmingComplete && (
+                      <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-left">
+                        <p className="text-xs font-semibold text-amber-900">
+                          Nothing is on the record for this request
+                        </p>
+                        <p className="mt-0.5 text-xs text-amber-800">
+                          It expects {unmetExpectations.join(' and ')}. Complete it anyway only if
+                          it was satisfied somewhere else.
+                        </p>
+                      </div>
+                    )}
+                    <div className="flex gap-2 sm:justify-end">
+                      {confirmingComplete && (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmingComplete(false)}
+                          className="rounded-xl border border-gray-200 px-4 py-2.5 text-sm font-semibold text-[#6D6E71] hover:bg-gray-50"
+                        >
+                          Cancel
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (unmetExpectations.length > 0 && !confirmingComplete) {
+                            setConfirmingComplete(true);
+                            return;
+                          }
+                          setConfirmingComplete(false);
+                          onMarkReviewed?.(request.id);
+                        }}
+                        className="rounded-xl bg-[#8BC53D] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#476E2C]"
+                      >
+                        {confirmingComplete ? 'Complete anyway' : 'Mark Reviewed'}
+                      </button>
+                    </div>
+                  </div>
                 )}
               </div>
             </div>
@@ -1172,11 +1235,19 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
               </div>
             </div>
 
+            {/*
+              The narrative is writable on any open request, matching
+              attachments. Gated on `canEditResponse` it was editable only in
+              'in-review' — a state the CLIENT puts the request into — so a
+              broker recording what they were told on a call had nowhere to put
+              it, and the panel read "No narrative has been added yet" with no
+              way to add one.
+            */}
             {(request.responseType === 'Narrative' || request.responseType === 'Both') && (
               <NarrativeCard
                 content={request.narrativeResponse}
                 author={request.narrativeAuthor}
-                canEdit={canEditResponse}
+                canEdit={canAttachDocuments}
                 draft={narrativeDraft}
                 onDraftChange={setNarrativeDraft}
                 onSave={saveNarrative}
@@ -1433,7 +1504,30 @@ export default function WorkspaceRequests() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [priorityFilter, setPriorityFilter] = useState('all');
   const [search, setSearch] = useState('');
-  const [activeRequestId, setActiveRequestId] = useState(null);
+  /**
+   * The open request lives in the URL.
+   *
+   * It was component state, so opening a request left the address bar unchanged:
+   * a broker could not send a colleague a link to the blocked one, and the back
+   * button jumped out of the workspace instead of closing the panel, because
+   * there was no history entry to pop. For a tool whose whole subject is a team
+   * chasing items, that removed the cheapest coordination mechanism available.
+   *
+   * A query parameter rather than a path segment, so the requests route itself
+   * is untouched and an existing link keeps working.
+   */
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeRequestId = searchParams.get('request');
+  const setActiveRequestId = useCallback((id) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (id) next.set('request', id);
+      else next.delete('request');
+      return next;
+    // `replace: false` on open so Back closes the panel; replace on close so
+    // dismissing does not leave a redundant entry to walk back through.
+    }, { replace: !id });
+  }, [setSearchParams]);
 
   useEffect(() => {
     if (!activeRequestId) return;

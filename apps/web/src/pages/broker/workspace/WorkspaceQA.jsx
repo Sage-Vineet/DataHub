@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { formatCalendarDate, parseCalendarDate } from '../../../lib/calendarDate';
 import {
   CheckCircle2,
@@ -109,6 +109,38 @@ export default function WorkspaceQA() {
   useEffect(() => {
     if (clientId) load(clientId);
   }, [clientId, load]);
+
+  /**
+   * The open thread lives in the URL.
+   *
+   * Opening a question left the address bar unchanged, so a broker could not
+   * send anyone a link to the thread they wanted a second opinion on, and Back
+   * left the workspace instead of closing the drawer. A query parameter, so the
+   * Q&A route itself is untouched and existing links keep working.
+   */
+  const [searchParams, setSearchParams] = useSearchParams();
+  const openQuestionId = searchParams.get('question');
+
+  // URL → drawer. Also covers arriving by a pasted link on a cold load.
+  useEffect(() => {
+    if (openQuestionId && detail?.item?.id !== openQuestionId) openItem(openQuestionId);
+    if (!openQuestionId && detail) closeItem();
+  }, [openQuestionId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const showQuestion = (id) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('question', id);
+      return next;
+    });
+  };
+  const hideQuestion = () => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete('question');
+      return next;
+    }, { replace: true });
+  };
 
   const counts = useMemo(() => {
     const out = { open: 0, answered: 0, follow_up: 0, closed: 0 };
@@ -292,7 +324,7 @@ export default function WorkspaceQA() {
                 <li key={item.id}>
                   <button
                     type="button"
-                    onClick={() => openItem(item.id)}
+                    onClick={() => showQuestion(item.id)}
                     className="flex w-full min-h-[44px] flex-wrap items-center gap-3 p-4 text-left hover:bg-[#FAFAFA]"
                   >
                     <span className="w-14 font-mono text-xs text-[#9CA3AF]">{item.reference}</span>
@@ -324,7 +356,7 @@ export default function WorkspaceQA() {
         )}
       </div>
 
-      {detail && <QAItemDrawer detail={detail} onClose={closeItem} currentUser={user} />}
+      {detail && <QAItemDrawer detail={detail} onClose={hideQuestion} currentUser={user} />}
       {nominating && (
         <NominatePanel categories={categories} onClose={() => setNominating(false)} />
       )}
