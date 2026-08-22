@@ -90,18 +90,39 @@ if [[ "${DEMO_BUILD_HOST_NETWORK:-0}" == "1" ]]; then
       --driver-opt network=host \
       --buildkitd-flags '--allow-insecure-entitlement network.host' >/dev/null
   fi
-  # Service -> Dockerfile straight out of the compose file, so a service added
-  # later is picked up rather than silently skipped by a hardcoded list.
+  # Service -> Dockerfile -> build args, straight out of the compose file, so a
+  # service added later is picked up rather than silently skipped by a hardcoded
+  # list.
+  #
+  # The build ARGS are the part this used to drop. `docker buildx build` does not
+  # inherit them from the compose file the way `compose up --build` does, so the
+  # SPA was built with VITE_API_BASE_URL unset and Vite folded in each call
+  # site's fallback instead — `http://localhost:4000` in AuthContext, which is
+  # legacy's port and is not published to the host. The bundle looked fine and
+  # every API call in it pointed somewhere that could never answer.
+  #
+  # Tab-separated and read into an array: a build arg value may contain spaces,
+  # and word-splitting an unquoted string would corrupt it silently.
+  BUILD_PLAN=$(mktemp)
   $COMPOSE config --format json \
     | python3 -c 'import json,sys
 for name, svc in json.load(sys.stdin)["services"].items():
     build = svc.get("build")
-    if build: print(name, build["dockerfile"])' \
-    | while read -r svc dockerfile; do
-        echo "   building $svc via $BUILDER (host network)"
-        docker buildx build --builder "$BUILDER" --allow network.host --network host \
-          -f "$dockerfile" -t "datahub-demo-${svc}:latest" --load .
-      done
+    if not build: continue
+    args = build.get("args") or {}
+    print("\t".join([name, build["dockerfile"]] + [f"{k}={v}" for k, v in args.items()]))' \
+    > "$BUILD_PLAN"
+
+  while IFS=$'\t' read -r -a fields; do
+    [[ ${#fields[@]} -ge 2 ]] || continue
+    svc="${fields[0]}"; dockerfile="${fields[1]}"
+    build_args=()
+    for ((i = 2; i < ${#fields[@]}; i++)); do build_args+=(--build-arg "${fields[i]}"); done
+    echo "   building $svc via $BUILDER (host network)${build_args[*]:+ with ${#build_args[@]} build arg(s)}"
+    docker buildx build --builder "$BUILDER" --allow network.host --network host \
+      "${build_args[@]}" -f "$dockerfile" -t "datahub-demo-${svc}:latest" --load .
+  done < "$BUILD_PLAN"
+  rm -f "$BUILD_PLAN"
   $COMPOSE up -d --no-build
 else
   $COMPOSE up -d --build
@@ -114,7 +135,7 @@ for _ in $(seq 1 60); do
 done
 psql_demo -c 'select 1' >/dev/null
 
-step "1/6 Loading the legacy schema (tolerating the objects it never creates)"
+step "1/7 Loading the legacy schema (tolerating the objects it never creates)"
 # No ON_ERROR_STOP: psql reports each orphaned statement and carries on. Anything
 # beyond the expected 14 is new and worth reading in the output.
 #
@@ -131,23 +152,23 @@ else
   echo "     schema has changed — read the errors above before trusting this stack."
 fi
 
-step "2/6 Applying the legacy tables the Drizzle migrations build on"
+step "2/7 Applying the legacy tables the Drizzle migrations build on"
 # 049/050 create general_ledger_entries and its raw-row columns; both are
 # idempotent. They must precede db:migrate because 0002_qoe_bridge ALTERs them.
 psql_demo -v ON_ERROR_STOP=1 < backend/sql/migrations/049_key_reports_entry_tables.sql >/dev/null
 psql_demo -v ON_ERROR_STOP=1 < backend/sql/migrations/050_general_ledger_entries_new_columns.sql >/dev/null
 
-step "3/6 Applying the Drizzle migrations"
+step "3/7 Applying the Drizzle migrations"
 DATABASE_URL="$DB_URL" pnpm --filter @datahub/db db:migrate
 
-step "4/6 Seeding demo data and backfilling Better Auth identities"
+step "4/7 Seeding demo data and backfilling Better Auth identities"
 psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed.sql >/dev/null
 DATABASE_URL="$DB_URL" pnpm --filter @datahub/demo backfill
 
-step "5/6 Loading the QoE engagement"
+step "5/7 Loading the QoE engagement"
 DATABASE_URL="$DB_URL" pnpm --filter @datahub/demo seed-qoe
 
-step "6/6 Seeding the data room, Q&A, requests and CIM"
+step "6/7 Seeding the data room, Q&A, requests and CIM"
 # Content, not just rows: documents with real bytes and version history, a Q&A
 # thread with a superseded answer and a published rewording, and a CIM with one
 # version already published into the data room. A stack that works perfectly and
@@ -157,6 +178,17 @@ psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-qa.sql >/dev/null
 psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-requests.sql >/dev/null
 psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-cim-questions.sql >/dev/null
 DATABASE_URL="$DB_URL" pnpm --filter @datahub/demo seed-cim
+
+step "7/7 Seeding the rest of the portfolio"
+# Breadth, not depth: five more companies, twelve more people, and the tables that
+# were empty on every screen a visitor could reach — activity, reminders,
+# messages, folder grants, buyer groups. Adds nothing to Acme, whose exact counts
+# the checks below assert.
+psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-extra.sql >/dev/null
+# Again, and deliberately: the step 4 backfill ran before these people existed, so
+# without a second pass every account seeded here fails to sign in the moment
+# BETTER_AUTH_ENABLED is true. Idempotent, so the first eleven are left alone.
+DATABASE_URL="$DB_URL" pnpm --filter @datahub/demo backfill
 
 step "Verifying the stack"
 GW="http://127.0.0.1:${GATEWAY_PORT}"
@@ -245,6 +277,27 @@ if [[ "${LEGACY_AUTH_BRIDGE_ENABLED}" == "true" ]]; then
 fi
 
 check "SPA is served" 200 "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${WEB_PORT}/")"
+
+# The SPA's API base URL is inlined by Vite at BUILD time. If the build arg never
+# reaches Vite, the bundle still compiles and still serves — but every call site
+# folds in its own literal fallback instead, and AuthContext's fallback is
+# `http://localhost:4000`. That is legacy's port, which this compose file does
+# not publish to the host, so those calls can never be answered by anything.
+#
+# Asserted against the bytes the browser actually downloads rather than against
+# the build command, because the failure has been reachable from more than one
+# build path: `compose up --build` passes the args and the buildx host-network
+# escape hatch used to drop them.
+SPA_ASSETS=$(curl -s "http://127.0.0.1:${WEB_PORT}/" | grep -oE '/assets/[A-Za-z0-9_.-]+\.js' | sort -u)
+spa_gateway=0
+spa_legacy_port=0
+for asset in $SPA_ASSETS; do
+  asset_body=$(curl -s "http://127.0.0.1:${WEB_PORT}${asset}")
+  grep -q "localhost:${GATEWAY_PORT}" <<<"$asset_body" && spa_gateway=1
+  grep -q "localhost:4000"            <<<"$asset_body" && spa_legacy_port=1
+done
+check "SPA bundle points at the gateway" 1 "$spa_gateway"
+check "SPA bundle has no unsubstituted :4000" 0 "$spa_legacy_port"
 
 # ── the three new surfaces ──────────────────────────────────────────────────
 #
@@ -480,6 +533,74 @@ if [[ "${QOE_MODULE_ENABLED}" == "true" ]]; then
   check "QoE P&L accounts open at zero"  "0"    "$(jqt "len([r for e in d['entries'] for r in e['rows'] if r['statementType']=='profit_loss' and r['openingBalance']!=0])")"
   check "QoE BS accounts have openings"  "True" "$(jqt "any(r['openingBalance']!=0 for e in d['entries'] for r in e['rows'] if r['statementType']=='balance_sheet')")"
 fi
+
+# ── the rest of the portfolio (tools/demo/seed-extra.sql) ───────────────────
+# Asserted through the gateway rather than against the database, for the same
+# reason every other check here is: a row that exists but does not survive tenant
+# scoping, folder resolution or the module boundary is not content a visitor can
+# reach. HPM is the first of the five seeded mandates.
+HPM=90000000-0000-4000-8000-000000000001
+
+check "portfolio: broker sees seven companies" 7 \
+  "$(curl -s "$GW/companies" -b "$JAR" | jq_len)"
+# Cardinal still belongs to nobody, so the count above is a scoping result and
+# not simply "every company in the database".
+check "portfolio: Cardinal still denied" 403 \
+  "$(curl -s -o /dev/null -w '%{http_code}' "$GW/companies/$CARDINAL" -b "$JAR")"
+check "portfolio: HPM folder tree" 200 \
+  "$(curl -s -o /dev/null -w '%{http_code}' "$GW/companies/$HPM/folders/tree" -b "$JAR")"
+check "portfolio: HPM has eight folders" 8 \
+  "$(curl -s "$GW/companies/$HPM/folders" -b "$JAR" | jq_len)"
+check "portfolio: HPM requests board" 9 \
+  "$(curl -s "$GW/companies/$HPM/requests" -b "$JAR" | jq_len)"
+check "portfolio: HPM has one awaiting approval" 1 \
+  "$(curl -s "$GW/companies/$HPM/requests" -b "$JAR" | jq_get "len([r for r in d if r['approval_status']=='pending'])")"
+
+if [[ "${QA_MODULE_ENABLED}" == "true" ]]; then
+  check "portfolio: HPM Q&A" 6 "$(curl -s "$GW/qa/companies/$HPM/items" -b "$JAR" | jq_len)"
+  check "portfolio: HPM Q&A categories" 7 \
+    "$(curl -s "$GW/qa/companies/$HPM/categories" -b "$JAR" | jq_len)"
+fi
+
+if [[ "${DATAROOM_MODULE_ENABLED}" == "true" ]]; then
+  HPM_FIN=$(curl -s "$GW/companies/$HPM/folders" -b "$JAR" \
+    | python3 -c "import json,sys;print(next(f['id'] for f in json.load(sys.stdin) if f['name']=='Financials'))" 2>/dev/null || echo "")
+  check "portfolio: HPM Financials resolves" "true" \
+    "$([[ -n "$HPM_FIN" ]] && echo true || echo false)"
+  if [[ -n "$HPM_FIN" ]]; then
+    HPM_DOC=$(curl -s "$GW/folders/$HPM_FIN/documents" -b "$JAR" \
+      | python3 -c "import json,sys;print(next(d['id'] for d in json.load(sys.stdin) if d['name']=='Trial Balance FY2025.txt'))" 2>/dev/null || echo "")
+    # Real bytes, and the company's own: the breadth seed writes the company name
+    # into every file so five mandates are not five copies of one placeholder.
+    if [[ "${DATAROOM_VERSIONS_ENABLED}" == "true" && -n "$HPM_DOC" ]]; then
+      HPM_V1=$(curl -s "$GW/dataroom/documents/$HPM_DOC/versions" -b "$JAR" \
+        | python3 -c "import json,sys;print(next(v['id'] for v in json.load(sys.stdin)['versions'] if v['version_no']==1))" 2>/dev/null || echo "")
+      check "portfolio: HPM v1 is HPM's own bytes" \
+        "Trial balance, FY2025 — unaudited — Harbor Point Medical Supply (v1)" \
+        "$(curl -s "$GW/dataroom/versions/$HPM_V1/content" -b "$JAR")"
+    fi
+  fi
+fi
+
+# Everyone the seed creates must be able to sign in, or they are names on a
+# dropdown. This is the assertion that catches a missing Better Auth backfill —
+# the step-4 pass runs before these people exist.
+for demo_account in broker2@demo.test analyst@demo.test buyer.tanaka@demo.test owner.lin@demo.test; do
+  check "portfolio: $demo_account signs in" 200 \
+    "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$GW/auth/login" \
+       -H 'Content-Type: application/json' \
+       -d "{\"email\":\"$demo_account\",\"password\":\"demo1234\"}")"
+done
+
+# Tenant scoping, from the other side: a buyer on one mandate must not see the
+# other four. Asserted as a number rather than a 403 because the failure mode
+# that matters is a list that quietly includes too much.
+BUYER_JAR=$(mktemp)
+curl -s -X POST "$GW/auth/login" -H 'Content-Type: application/json' \
+  -d '{"email":"buyer.tanaka@demo.test","password":"demo1234"}' -c "$BUYER_JAR" -o /dev/null
+check "portfolio: a buyer sees only their mandate" 1 \
+  "$(curl -s "$GW/companies" -b "$BUYER_JAR" | jq_len)"
+rm -f "$BUYER_JAR"
 
 if [[ "$FAILED" != "0" ]]; then
   echo
