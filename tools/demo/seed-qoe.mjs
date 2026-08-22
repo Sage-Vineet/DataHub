@@ -32,6 +32,24 @@ await client.connect();
 try {
   await client.query("BEGIN");
 
+  // Name the engagement after the company it is being loaded into.
+  //
+  // `engagementFixture.company.name` is the anonymized name the golden suite
+  // asserts on, and it is NOT this demo's company. Using it here put a second,
+  // real-sounding company's name in Acme Manufacturing's version selector on
+  // four financial screens, and on a file in Acme's Financials folder. The rows
+  // were correctly owned — it was only the label — but on a projector that is
+  // indistinguishable from one customer seeing another's data, which is the
+  // worst thing a multi-tenant product can appear to do.
+  const { rows: companyRows } = await client.query(
+    `SELECT name FROM companies WHERE id = $1`,
+    [COMPANY_ID],
+  );
+  if (!companyRows[0]) {
+    throw new Error("Run tools/demo/seed.sql first — the QoE seed needs its company to exist.");
+  }
+  const companyName = companyRows[0].name;
+
   await client.query(
     // `last_synced_at` is what opens the Chart of Accounts step in the wizard —
     // this version genuinely is synced, so it carries the timestamp.
@@ -39,7 +57,7 @@ try {
      VALUES ($1, $2, 1, $3, 'synced', true, now())
      ON CONFLICT (id) DO UPDATE SET version_name = EXCLUDED.version_name,
        is_active = true, last_synced_at = now()`,
-    [VERSION_ID, COMPANY_ID, `${engagementFixture.company.name} — QoE`],
+    [VERSION_ID, COMPANY_ID, `${companyName} — QoE`],
   );
 
   // Re-running the seed resets the engagement, add-backs included, so the demo
@@ -65,14 +83,18 @@ try {
     throw new Error("Run tools/demo/seed.sql first — the QoE seed needs a folder and a user.");
   }
   await client.query(
+    // A stated size, not '0'. A zero-byte document renders in the file list as
+    // "0 B" with no failed-upload indicator, so a seeded artifact reads as a
+    // broken one. This row stands in for a real multi-year GL export; size it
+    // like one.
     `INSERT INTO documents (id, company_id, folder_id, name, file_url, size, ext, status, uploaded_by)
-     VALUES ($1, $2, $3, $4, '', '0', 'xlsx', 'verified', $5)
-     ON CONFLICT (id) DO NOTHING`,
+     VALUES ($1, $2, $3, $4, '', '2411008', 'xlsx', 'verified', $5)
+     ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, size = EXCLUDED.size`,
     [
       SOURCE_FILE_ID,
       COMPANY_ID,
       folders[0].id,
-      `${engagementFixture.company.name} — General Ledger 2022-2025.xlsx`,
+      `${companyName} — General Ledger 2022-2025.xlsx`,
       uploaders[0].id,
     ],
   );
