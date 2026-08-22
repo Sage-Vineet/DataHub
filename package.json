@@ -15,7 +15,8 @@
     "dev:web": "pnpm --filter @datahub/web dev",
     "dev:api": "pnpm --filter @datahub/api dev",
     "dev:legacy": "pnpm --filter ./backend dev",
-    "dev:stack": "pnpm --parallel --filter ./backend --filter @datahub/api dev"
+    "dev:stack": "pnpm --parallel --filter ./backend --filter @datahub/api dev",
+    "test:cov": "turbo run test:cov"
   },
   "devDependencies": {
     "prettier": "^3.4.2",

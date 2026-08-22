@@ -12,7 +12,8 @@
     "parity": "tsx src/cli.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:cov": "vitest run --coverage"
   },
   "devDependencies": {
     "@datahub/config": "workspace:*",

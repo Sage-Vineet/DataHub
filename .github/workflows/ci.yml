@@ -63,8 +63,21 @@ jobs:
       - name: Lint
         run: pnpm run lint
 
-      - name: Test (with coverage gate)
+      - name: Test
         run: pnpm run test
+
+      # The coverage ratchet. Every package that declares thresholds enforces
+      # them here; `pnpm run test` above does not, because `vitest run` without
+      # --coverage ignores them entirely — so the step that used to be labelled
+      # "test (with coverage gate)" was not gating anything.
+      #
+      # The legacy thresholds are low on purpose (backend 4.5%, web 1.9%): they
+      # are set at what the suite actually covers so the only thing they forbid
+      # is regression. Raise the number in the package's vitest config when you
+      # add tests. ADR-0005's 90%+ standard applies to new code, which the
+      # TypeScript packages gate at separately.
+      - name: Coverage thresholds
+        run: pnpm run test:cov
 
       # Dependency audit. Non-blocking for now: xlsx / pdf-parse carry high
       # advisories with no upstream fix (audit finding H7); this step ratchets
