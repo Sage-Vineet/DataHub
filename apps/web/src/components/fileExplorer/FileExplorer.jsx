@@ -1064,7 +1064,7 @@ function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFol
             )}
             {item.type === 'folder' && (
               <div className="flex items-center gap-2">
-                <p className="text-xs text-[#A5A5A5]">{(item.children || []).length} items</p>
+                <p className="text-xs text-[#A5A5A5]">{plural((item.children || []).length, 'item')}</p>
                 {sharedMeta?.count > 0 && (
                   <span
                     title={sharedMeta.tooltip}
@@ -1080,13 +1080,22 @@ function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFol
         </div>
       </td>
       <td className="px-3 py-2.5 text-xs text-[#6D6E71] whitespace-nowrap">
+        {item.type === 'folder' ? '—' : (item.uploadedBy || 'Unknown')}
+      </td>
+      <td className="px-3 py-2.5 text-xs text-[#6D6E71] whitespace-nowrap">
         {item.uploadedAt || item.createdAt || '—'}
       </td>
       <td className="px-3 py-2.5 text-xs text-[#6D6E71] whitespace-nowrap">
         {item.size || '—'}
       </td>
       <td className="px-3 py-2.5">
-        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        {/*
+          Visible at rest, not hover-only. At `opacity-0` a reader had no way to
+          know a row carried preview, download, activity, versions and comments
+          at all — and hover does not exist on a tablet, which is what the 44px
+          tap targets elsewhere in this file are written for.
+        */}
+        <div className="flex items-center gap-1 opacity-60 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
           {item.type === 'file' && (
             <>
               <button
@@ -1203,7 +1212,14 @@ function FileTable({
         <thead>
           <tr className="border-b border-gray-100">
             <th className="pl-4 pr-2 py-2 w-8"></th>
+            {/*
+              Provenance belongs in the list, not two clicks away in a drawer.
+              Name / Modified / Size / Actions told a broker nothing about who
+              put a document in the room — the question a data room exists to
+              answer.
+            */}
             <th className="px-2 py-2 text-left text-xs font-semibold text-[#6D6E71]">Name</th>
+            <th className="px-3 py-2 text-left text-xs font-semibold text-[#6D6E71]">Uploaded by</th>
             <th className="px-3 py-2 text-left text-xs font-semibold text-[#6D6E71]">Modified</th>
             <th className="px-3 py-2 text-left text-xs font-semibold text-[#6D6E71]">Size</th>
             <th className="px-3 py-2 text-left text-xs font-semibold text-[#6D6E71]">Actions</th>
@@ -1211,7 +1227,7 @@ function FileTable({
         </thead>
         <tbody>
           {newFolderParentId === currentFolderId && role === 'broker' && (
-            <tr><td colSpan={5} className="px-4 py-2">
+            <tr><td colSpan={6} className="px-4 py-2">
               <NewFolderInput parentId={currentFolderId} />
             </td></tr>
           )}
