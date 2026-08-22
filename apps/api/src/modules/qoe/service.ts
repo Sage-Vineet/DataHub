@@ -1,5 +1,7 @@
 import {
   buildBridge,
+  buildIncomeStatement,
+  buildPeriods,
   buildTrialBalance,
   classifyAccounts,
   rollForwardBalanceSheet,
@@ -9,6 +11,7 @@ import {
   type BalanceSheetResult,
   type ClassificationReport,
   type DataSource,
+  type IncomeStatement,
   type EarningsMetric,
   type TrialBalanceResult,
 } from "@datahub/financial-engine";
@@ -53,6 +56,27 @@ function toEngineAddback(record: AddbackRecord): Addback {
   };
 }
 
+/**
+ * The P&L over the wire.
+ *
+ * Flat rather than the engine's Map-bearing shape: `res.json` serialises a Map
+ * to `{}`, so shipping the engine type directly would have produced an empty
+ * per-account breakdown that reads as "no accounts" rather than as a bug.
+ */
+export interface IncomeStatementResponse {
+  periods: IncomeStatement["periods"];
+  revenue: Record<string, number>;
+  expenses: Record<string, number>;
+  net_income: Record<string, number>;
+  lines: Array<{
+    account_id: string;
+    account_name: string;
+    account_type: string | null;
+    amounts: Record<string, number>;
+    ledger_amounts: Record<string, number>;
+  }>;
+}
+
 export class QoeService {
   constructor(private readonly deps: QoeServiceDeps) {}
 
@@ -84,6 +108,58 @@ export class QoeService {
       metric: options.metric ?? data.profitMetric,
       marketRateReplacementSalary: data.marketRateReplacementSalary,
     });
+  }
+
+  /**
+   * The profit and loss statement, from the general ledger.
+   *
+   * `buildIncomeStatement` has existed, tested against the workbook, with no
+   * route to it — so the product had no working P&L anywhere. The Reports page
+   * asked legacy for one, legacy reached for Supabase, and the tab stayed
+   * disabled.
+   *
+   * It is derived from the ledger rather than read from `profit_loss_entries`
+   * for the reason the engine documents at length: QuickBooks exports revenue
+   * AND expenses as positive amounts, so that table contains revenue plus
+   * expenses — FY2024 reports $4,975,913 against a true net income of $47,568.
+   * The sign convention comes from each account's type, which is why an
+   * unclassified P&L account is a hard error here and not a silent zero.
+   */
+  async incomeStatement(
+    user: SessionUser,
+    versionId: string,
+    options: { years?: number[]; aggregation?: Aggregation } = {},
+  ): Promise<IncomeStatementResponse> {
+    const data = await this.engagement(user, versionId);
+    const years = options.years?.length ? options.years : data.fiscalYears;
+    const aggregation = options.aggregation ?? "annual";
+    const periods = buildPeriods(data.entries, years, aggregation);
+    const statement = buildIncomeStatement(data.accounts, data.entries, periods, aggregation);
+
+    // The engine returns Maps for the per-account breakdowns. `res.json` turns a
+    // Map into `{}` without complaining, so they are converted here rather than
+    // shipped as an empty object that looks like "no accounts".
+    const byId = new Map(data.accounts.map((a) => [a.id, a]));
+    const lines = [...statement.byAccount.entries()]
+      .map(([accountId, amounts]) => {
+        const account = byId.get(accountId);
+        return {
+          account_id: accountId,
+          account_name: account?.name ?? "Unknown account",
+          account_type: account?.accountType ?? null,
+          amounts,
+          ledger_amounts: statement.ledgerByAccount.get(accountId) ?? {},
+        };
+      })
+      .sort((a, b) => a.account_name.localeCompare(b.account_name));
+
+    return {
+      periods: statement.periods,
+      revenue: statement.revenue,
+      expenses: statement.expenses,
+      net_income: statement.netIncome,
+      lines,
+    };
   }
 
   async listAddbacks(user: SessionUser, versionId: string): Promise<AddbackRecord[]> {

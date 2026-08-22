@@ -107,3 +107,13 @@ export function fetchTrialBalance({ versionId, years, aggregation } = {}, option
     options,
   );
 }
+
+/**
+ * The profit and loss statement, built from the general ledger.
+ */
+export function fetchIncomeStatement({ versionId, years, aggregation } = {}, options = {}) {
+  return request(
+    `/qoe/income-statement${query({ version_id: versionId, years, aggregation })}`,
+    options,
+  );
+}

@@ -8,6 +8,8 @@ import {
   CheckCircle, AlertTriangle, TrendingUp, DollarSign, Activity,
 } from "lucide-react";
 import { getFinancialStatements } from "../../lib/api";
+import { fetchIncomeStatement } from "../../services/qoeApi";
+import { toProfitAndLossReport } from "../../services/incomeStatementAdapter";
 
 // ─── QB-style formatters ──────────────────────────────────────────────────────
 const fmt = (v, showDollar = false) => {
@@ -929,9 +931,41 @@ export default function FinancialStatementsView({
     try {
       const res = await getFinancialStatements(versionId, {
         year: yearFilter ? Number(yearFilter) : undefined,
+      }).catch((err) => ({ success: false, error: err?.message }));
+
+      /*
+        The P&L comes from the engine, whatever legacy says.
+
+        `getFinancialStatements` is served by the un-migrated handler, which
+        reaches for Supabase and — with none configured — fails outright. Even
+        when it answers, its P&L is built from `profit_loss_entries`, the table
+        that contains revenue PLUS expenses: FY2024 reports $4,975,913 against a
+        true net income of $47,568.
+
+        `buildIncomeStatement` derives the statement from the general ledger with
+        the sign convention taken from each account's type, and has been tested
+        against the source workbook all along — it simply had no route to it.
+        So the P&L is always taken from there, and the legacy response is used
+        only for the statements the engine does not yet produce.
+      */
+      const pl = await fetchIncomeStatement({
+        versionId,
+        years: yearFilter ? [Number(yearFilter)] : undefined,
+      })
+        .then((payload) => toProfitAndLossReport(payload, "annual"))
+        .catch(() => null);
+
+      if (res?.success === false && !pl) {
+        throw new Error(res.error || "Generation failed");
+      }
+
+      setData({
+        ...(res && res.success !== false ? res : {}),
+        reports: {
+          ...(res && res.success !== false ? res.reports : {}),
+          ...(pl ? { profitAndLoss: pl } : {}),
+        },
       });
-      if (res.success === false) throw new Error(res.error || "Generation failed");
-      setData(res);
       const warnCount = (res.missingData?.length || 0) + (res.validation?.length || 0);
       if (warnCount && notify) notify(`Generated with ${warnCount} warning(s)`, "warning");
     } catch (err) {
@@ -1154,7 +1188,18 @@ export default function FinancialStatementsView({
                     ? <AllYearsBSGrid yearly={bsYearly} />
                     : bsYear
                       ? <BalanceSheetTable statement={bsYear.statement} />
-                      : <EmptyState message={`No Balance Sheet data for FY ${yearFilter}.`} />)
+                      : <EmptyState message={
+                          /*
+                            The P&L on this page comes from the engine; the
+                            balance sheet here still comes from the legacy
+                            extract, which has no data without Supabase. Point
+                            the reader at the one that works rather than leaving
+                            them at a dead end — Financials → Statements rolls
+                            the balance sheet from the general ledger and checks
+                            that it balances in every period.
+                          */
+                          `No balance sheet for ${yearFilter ? `FY ${yearFilter}` : "this version"} here. Financials → Statements has one, rolled from the general ledger.`
+                        } />)
                 : <MonthlyBSGrid data={bsMonths} />
             )}
 
@@ -1164,7 +1209,7 @@ export default function FinancialStatementsView({
                     ? <AllYearsCFGrid yearly={cfYearly} />
                     : cfYear
                       ? <CashFlowTable statement={cfYear.statement} />
-                      : <EmptyState message={`No Cash Flow data for FY ${yearFilter}.`} />)
+                      : <EmptyState message={`No cash flow statement for ${yearFilter ? `FY ${yearFilter}` : "this version"}. Cash flow is not derived from the ledger yet.`} />)
                 : <MonthlyCFGrid data={cfMonths} />
             )}
           </div>

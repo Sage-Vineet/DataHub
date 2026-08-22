@@ -75,6 +75,23 @@ export function createQoeRouter(deps: QoeRouterDeps): Router {
   );
 
   router.get(
+    "/qoe/income-statement",
+    handle(async (req, res) => {
+      const parsed = contracts.statementQuery.safeParse(req.query);
+      if (!parsed.success) {
+        res.status(400).json({ error: firstError(parsed.error) });
+        return;
+      }
+      res.json(
+        await service.incomeStatement(req.user!, parsed.data.version_id, {
+          years: parsed.data.years,
+          aggregation: parsed.data.aggregation,
+        }),
+      );
+    }),
+  );
+
+  router.get(
     "/qoe/trial-balance",
     handle(async (req, res) => {
       const parsed = contracts.statementQuery.safeParse(req.query);

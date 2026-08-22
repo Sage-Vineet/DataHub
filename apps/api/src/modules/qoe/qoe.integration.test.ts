@@ -468,3 +468,81 @@ describe("QoE bridge over HTTP (real Postgres, real ledger)", () => {
     await request(app).get(`/qoe/bridge?version_id=${versionId}`).expect(403);
   });
 });
+
+/**
+ * The product had no working P&L anywhere.
+ *
+ * `buildIncomeStatement` has existed and been tested against the workbook the
+ * whole time; nothing routed to it. The Reports page asked legacy, legacy
+ * reached for Supabase, and the Profit & Loss tab stayed disabled.
+ *
+ * These assertions pin the two things that make the statement worth trusting:
+ * it ties to the same net income the bridge and balance sheet already agree on,
+ * and it does NOT reproduce the revenue-plus-expenses inversion that the
+ * extracted `profit_loss_entries` table contains — FY2024 reports $4,975,913
+ * there against a true net income of $47,568.
+ */
+describe("income statement over HTTP (real Postgres, real ledger)", () => {
+  it("ties to the net income the rest of the engagement reports", async () => {
+    const res = await request(app)
+      .get(`/qoe/income-statement?version_id=${versionId}`)
+      .expect(200);
+
+    expect(res.body.net_income["2024"]).toBeCloseTo(47568.23, 2);
+    expect(res.body.net_income["2025"]).toBeCloseTo(169495.9, 2);
+  });
+
+  it("does not reproduce the revenue-plus-expenses inversion", async () => {
+    const res = await request(app).get(`/qoe/income-statement?version_id=${versionId}`);
+    // The inverted table's FY2024 figure. Anything near it means the sign
+    // convention was lost somewhere between the ledger and the wire.
+    expect(res.body.net_income["2024"]).toBeLessThan(1_000_000);
+    expect(res.body.revenue["2024"]).toBeGreaterThan(0);
+    expect(res.body.expenses["2024"]).toBeGreaterThan(0);
+  });
+
+  it("foots: revenue minus expenses equals net income, every period", async () => {
+    const res = await request(app).get(`/qoe/income-statement?version_id=${versionId}`);
+    for (const period of res.body.periods) {
+      const key = String(period.fiscalYear);
+      const derived = res.body.revenue[key] - res.body.expenses[key];
+      expect(derived, `FY${key} must foot`).toBeCloseTo(res.body.net_income[key], 2);
+    }
+  });
+
+  it("serialises the per-account breakdown instead of shipping an empty Map", async () => {
+    const res = await request(app).get(`/qoe/income-statement?version_id=${versionId}`);
+    expect(Array.isArray(res.body.lines)).toBe(true);
+    expect(res.body.lines.length).toBeGreaterThan(0);
+    const line = res.body.lines[0];
+    expect(line.account_name).toBeTruthy();
+    expect(line.account_name).not.toBe("Unknown account");
+    expect(Object.keys(line.amounts).length).toBeGreaterThan(0);
+  });
+
+  it("honours a year filter and monthly aggregation", async () => {
+    const annual = await request(app)
+      .get(`/qoe/income-statement?version_id=${versionId}&years=2025`)
+      .expect(200);
+    expect(annual.body.periods).toHaveLength(1);
+
+    const monthly = await request(app)
+      .get(`/qoe/income-statement?version_id=${versionId}&years=2025&aggregation=monthly`)
+      .expect(200);
+    expect(monthly.body.periods).toHaveLength(12);
+
+    // Monthly columns must sum back to the annual figure.
+    const summed = monthly.body.periods.reduce(
+      (total: number, p: { fiscalYear: number; month: number }) =>
+        total + monthly.body.net_income[`${p.fiscalYear}-${String(p.month).padStart(2, "0")}`],
+      0,
+    );
+    expect(summed).toBeCloseTo(annual.body.net_income["2025"], 2);
+  });
+
+  it("refuses a version the caller cannot access", async () => {
+    await request(app)
+      .get(`/qoe/income-statement?version_id=${randomUUID()}`)
+      .expect((r) => expect([403, 404]).toContain(r.status));
+  });
+});
