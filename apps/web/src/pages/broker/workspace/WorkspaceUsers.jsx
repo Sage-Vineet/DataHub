@@ -213,7 +213,25 @@ function TeamSummaryCard({ title, subtitle, ownerName, ownerLabel, color, bg, bo
       )}
 
       <div className="flex gap-2 pt-1">
-        <button onClick={onViewTeam} className="flex-1 py-2 rounded-xl text-xs font-bold text-white transition-colors" style={{ background: color }}>View Team</button>
+        {/*
+          Outline, not filled.
+
+          This was a filled button painted in each team's own accent, so the
+          Broker Team card rendered an orange primary and the Client Team card a
+          navy one, side by side, with the page's actual primary — Add Member —
+          in green a few pixels away. Three filled accent colours on one small
+          screen and no way to tell which was the main thing to do.
+
+          The team's colour still identifies the card; it just no longer competes
+          for the role of primary action. Viewing a team is navigation.
+        */}
+        <button
+          onClick={onViewTeam}
+          className="flex-1 rounded-xl border bg-white/70 py-2 text-xs font-bold transition-colors hover:bg-white"
+          style={{ color, borderColor }}
+        >
+          View Team
+        </button>
         <button onClick={onAdd} className="py-2 px-3 rounded-xl border text-xs font-semibold flex items-center gap-1 hover:bg-white/60 transition-colors" style={{ color, borderColor }}>
           <Plus size={12} /> Add
         </button>

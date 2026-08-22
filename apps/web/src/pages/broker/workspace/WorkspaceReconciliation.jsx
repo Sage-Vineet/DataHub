@@ -695,7 +695,7 @@ function AddbackPickerModal({
                 setManualName("");
               }}
               disabled={!manualName.trim()}
-              className="self-start px-4 py-2 bg-blue-600 text-white text-[12px] font-medium rounded-lg hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="self-start px-4 py-2 bg-[#8BC53D] text-white text-[12px] font-medium rounded-lg hover:bg-[#476E2C] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               Add Item
             </button>

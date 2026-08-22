@@ -1029,7 +1029,7 @@ export default function FinancialStatementsView({
         <button
           onClick={generate}
           disabled={loading || !hasSyncedData}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="flex items-center gap-2 px-4 py-2 bg-[#8BC53D] text-white rounded text-sm font-medium hover:bg-[#476E2C] disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
           {data ? "Regenerate" : "Generate"} Reports
@@ -1162,7 +1162,7 @@ export default function FinancialStatementsView({
                 <button
                   key={p}
                   onClick={() => setPeriod(p)}
-                  className={`px-3 py-1 text-xs rounded ${period === p ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
+                  className={`px-3 py-1 text-xs rounded ${period === p ? "bg-[#05164D] text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
                 >
                   {p.charAt(0).toUpperCase() + p.slice(1)}
                 </button>
