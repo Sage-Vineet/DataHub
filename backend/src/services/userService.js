@@ -243,6 +243,84 @@ function flattenUser(user) {
  * and sets effective_role to the DB role (buyer → "user" as a safe default)
  * so downstream filtering code never receives undefined.
  */
+/**
+ * Read a user's company assignments straight from Postgres.
+ *
+ * `attachAssignedCompanies` reaches `user_companies` through Supabase and only
+ * falls back to Postgres when that call errors. The `getUserById` /
+ * `getUserByEmail` fallbacks never got that far: having already dropped to
+ * Postgres for the user row, they finished with `_enrichFromCompanyIdOnly`,
+ * which derives `company_ids` from `users.company_id` alone. So while Supabase
+ * was unavailable, every multi-company user silently lost access to all but
+ * their primary company — `canAccessCompany` reads exactly that list.
+ *
+ * Takes `query` rather than reaching for the pool itself so it can be tested.
+ * Vitest externalises this package's CommonJS, so a test cannot intercept
+ * `require("pg")` inside it; passing the executor in is what makes the SQL
+ * below reachable from a test at all. See `backend/vitest.config.mjs`.
+ *
+ * @param {(text: string, params: any[]) => Promise<{rows: any[]}>} query
+ * @param {string[]} userIds
+ * @returns {Promise<Map<string, Array<{id: string, name: string|null, contact_email: string|null}>>>}
+ */
+async function loadAssignedCompaniesFromPg(query, userIds) {
+  const byUserId = new Map();
+  if (!userIds?.length) return byUserId;
+
+  const { rows } = await query(
+    `SELECT uc.user_id, c.id, c.name, c.contact_email
+       FROM user_companies uc
+       JOIN companies c ON c.id = uc.company_id
+      WHERE uc.user_id = ANY($1)`,
+    [userIds],
+  );
+
+  for (const row of rows || []) {
+    const key = String(row.user_id);
+    if (!byUserId.has(key)) byUserId.set(key, []);
+    byUserId.get(key).push({
+      id: row.id,
+      name: row.name ?? null,
+      contact_email: row.contact_email ?? null,
+    });
+  }
+  return byUserId;
+}
+
+/**
+ * Enrich a user row read from Postgres with the assignments read alongside it.
+ *
+ * Keeps the primary `company_id` in the list even when `user_companies` has no
+ * row for it — the post-migration case `_enrichFromCompanyIdOnly` was written
+ * for — so widening access to the assignment table never narrows it for a user
+ * whose only link is the column.
+ */
+function _enrichFromPgAssignments(user, assignedCompanies) {
+  const assigned = dedupeCompanies(assignedCompanies || []);
+  const hasPrimary = user.company_id
+    && assigned.some((c) => String(c.id) === String(user.company_id));
+  const companies = hasPrimary || !user.company_id
+    ? assigned
+    : [{ id: user.company_id, name: user.company_name || null }, ...assigned];
+
+  const normalizedEmail = String(user.email || "").trim().toLowerCase();
+  const isSeller = companies.some((c) => (
+    String(c.contact_email || "").trim().toLowerCase() === normalizedEmail
+  ));
+
+  return {
+    ...user,
+    effective_role: user.role === "client"
+      ? "client"
+      : user.role === "buyer"
+        ? (CLIENT_SIDE_SUB_ROLES.includes(user.sub_role) || isSeller ? "client" : "user")
+        : user.role,
+    company_ids: companies.map((c) => c.id).filter(Boolean),
+    direct_company_ids: assigned.map((c) => c.id).filter(Boolean),
+    assigned_companies: companies,
+  };
+}
+
 function _enrichFromCompanyIdOnly(userList, isSingle) {
   const enriched = userList.map((u) => ({
     ...u,
@@ -615,9 +693,19 @@ async function getUserById(id) {
       broker_company: r.broker_company || null,
       created_at: r.created_at, updated_at: r.updated_at,
     };
-    // Apply minimal enrichment so canAccessCompany() works even when
-    // Supabase is unreachable and we can't run attachAssignedCompanies.
-    return _enrichFromCompanyIdOnly([base], true);
+    // Postgres is evidently reachable — the user row above came from it — so
+    // read the assignments too rather than settling for users.company_id. That
+    // shortcut silently reduced a multi-company user to one company for the
+    // whole duration of any Supabase outage.
+    try {
+      const assignments = await loadAssignedCompaniesFromPg((t, p) => pool.query(t, p), [id]);
+      return _enrichFromPgAssignments(base, assignments.get(String(id)) || []);
+    } catch (assignErr) {
+      // Assignments unavailable but the user row is good: fall back to the
+      // primary company rather than failing the request outright.
+      console.warn("[getUserById] user_companies fallback failed:", assignErr.message);
+      return _enrichFromCompanyIdOnly([base], true);
+    }
   } catch (pgErr) {
     console.warn("[getUserById] Direct Postgres fallback failed:", pgErr.message);
     return null;
@@ -668,9 +756,16 @@ async function getUserByEmail(email) {
       created_at: r.created_at,
       updated_at: r.updated_at,
     };
-    // Apply minimal enrichment so canAccessCompany() works even when
-    // Supabase is unreachable and we can't run attachAssignedCompanies.
-    return _enrichFromCompanyIdOnly([base], true);
+    // Same reasoning as getUserById: Postgres answered, so read the assignments
+    // rather than inferring a single company from users.company_id. This path
+    // feeds login, so narrowing it silently narrows the session that follows.
+    try {
+      const assignments = await loadAssignedCompaniesFromPg((t, p) => pool.query(t, p), [r.id]);
+      return _enrichFromPgAssignments(base, assignments.get(String(r.id)) || []);
+    } catch (assignErr) {
+      console.warn("[getUserByEmail] user_companies fallback failed:", assignErr.message);
+      return _enrichFromCompanyIdOnly([base], true);
+    }
   } catch (pgErr) {
     console.warn("[getUserByEmail] Direct Postgres fallback failed:", pgErr.message);
     return null;
@@ -1094,4 +1189,11 @@ module.exports = {
   resolveReplacementUserId,
   reassignUserRecords,
   getClientTeamMembersForCompany,
+  // Exported for tests. The Supabase-unavailable fallback cannot be reached
+  // through the module graph — vitest externalises this package's CommonJS, so
+  // `require("pg")` inside it is not interceptable — so the logic takes its
+  // query executor as an argument and is verified directly.
+  // See backend/vitest.config.mjs.
+  loadAssignedCompaniesFromPg,
+  _enrichFromPgAssignments,
 };
