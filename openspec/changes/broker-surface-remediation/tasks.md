@@ -44,7 +44,7 @@
       (pin the test clock; this bug is invisible in the middle of a day)
 - [x] 2.4 Make overdue visible where a broker triages. The requests table has no due-date column
       and badges the overdue item the same as the pending ones — the status chip is the only signal
-- [ ] 2.5 Add `Send Reminder` to the request row. It exists on the detail, one level down, which is
+- [x] 2.5 Add `Send Reminder` to the request row. It exists on the detail, one level down, which is
       not where chasing happens
 - [x] 2.6 Fix the Reminders page, which sits on "Loading reminders…" indefinitely behind four
       filter dropdowns and a search box, against 0 reminders and a critical overdue request
@@ -90,7 +90,7 @@
 - [x] 4.5 **Walk the loop end to end as two users:** broker asks → nomination assigns Dana →
       Dana finds it from her own navigation → answers → broker sees it. This is the acceptance
       test for the whole pillar, and it currently fails at step three
-- [ ] 4.6 Warn when a Q&A category has no nominee. "Who answers what" nominates for Finance and
+- [x] 4.6 Warn when a Q&A category has no nominee. "Who answers what" nominates for Finance and
       Legal; Compliance, HR, Tax, M&A and Other are unassigned with no indication of where those
       questions go
 
@@ -104,10 +104,10 @@
       already exposed
 - [x] 5.4 A read-only *who can see this* affordance on the document row, resolving the inherited
       grant, so "why can this bidder see that file" is answerable in one click
-- [ ] 5.5 Introduce a `contribute` grant level: upload into granted folders, no structural edits,
+- [x] 5.5 Introduce a `contribute` grant level: upload into granted folders, no structural edits,
       no delete. Express the client's narrowed scope as a grant level, not a role check, so it
       composes with 5.1 rather than forking a second authorization path (`design.md` D5)
-- [ ] 5.6 Apply it to the client's file explorer, which today offers Upload, New Folder,
+- [x] 5.6 Apply it to the client's file explorer, which today offers Upload, New Folder,
       multi-select, archive and delete across all 7 files including the broker's Financials folder
 - [ ] 5.7 **Vitest/supertest:** a grant opens exactly the intended folder and nothing above it;
       revoking removes access to children; a `contribute` user can upload and cannot delete;
@@ -193,7 +193,7 @@
 - [ ] 8.3 One primary action colour. Green, navy, orange and blue are all used as primary today;
       Deal Team puts three filled buttons of three different colours on one small screen, none of
       which is the main action. Land this in `packages/ui` tokens, not per screen
-- [ ] 8.4 (F‑31) One destructive treatment, and stop giving it the most weight on the page. Request detail
+- [x] 8.4 (F‑31) One destructive treatment, and stop giving it the most weight on the page. Request detail
       has a filled red `Block Request` and an outlined red `Delete Request` dominating the rail
       while `Save Request Details` is a modest green button; Edit User puts Delete beside Cancel
 - [x] 8.5 (F‑27) Fix `Joined Invalid Date` on the team member card and `1 items` on folder rows
@@ -211,9 +211,9 @@
       *Spreadsheet*
 - [x] 8.11 Populate `Uploaded by`. It reads `Unknown` on every document, in a product whose value
       proposition is provenance
-- [ ] 8.12 (F‑30) Add the columns a dataroom is judged on: uploaded by, version, visibility, linked
+- [x] 8.12 (F‑30) Add the columns a dataroom is judged on: uploaded by, version, visibility, linked
       request, seen/unseen. Today: name, modified, size, actions
-- [ ] 8.13 Surface row actions without hover, and lift versions and comments out of a hover-only
+- [x] 8.13 Surface row actions without hover, and lift versions and comments out of a hover-only
       kebab two levels down. Both features exist and work
 - [ ] 8.14 Default the file list to list view, not grid tiles, and reconcile the folder counts —
       a tile reads "3 items" where the tree reads "5 files" for the same folder
