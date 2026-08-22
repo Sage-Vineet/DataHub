@@ -98,6 +98,39 @@ Observed today a column headed `Type` renders `Both` and `Narrative` with no leg
 - **THEN** what it expects — a document, a written answer, or both — is stated without the reader
   needing to infer it
 
+### Requirement: A reminder that was sent can be seen
+
+The system SHALL show every reminder that was sent against a request, on the page a broker uses to
+chase, and SHALL NOT report a send that did not happen.
+
+The reminders board is derived from requests and their send history — there is a `reminders` table
+and it is not what this reads. Observed today the read is served by legacy against a dead Supabase
+and 500s, so a broker can press Remind, have the row written, and see 0 Due / 0 Scheduled / 0
+Resolved: chasing a client leaves no trace they can find. Separately, legacy defaulted the first and
+last send timestamps to the request's approval or creation time, so the board reported "Last
+Reminder 14 Aug" beside "Sent Count 0".
+
+#### Scenario: A reminder sent from the request list shows on the board
+
+- **WHEN** a broker sends a reminder for a request
+- **THEN** the reminders board shows that request with the send counted, dated, and attributed to
+  the person who sent it
+- **AND** the next automatic reminder moves out by the request's cadence, so the request stops
+  asking to be chased again immediately
+
+#### Scenario: Nothing sent is reported as nothing sent
+
+- **WHEN** no reminder has ever been sent for a request
+- **THEN** the board says so, rather than reporting the request's creation or approval time as a
+  send
+
+#### Scenario: The board is scoped to the deal and the reader
+
+- **WHEN** the board is requested for a company
+- **THEN** it carries only that company's requests
+- **AND** a reader who is not a broker or admin sees only requests that are approved and visible to
+  them, plus any they raised themselves
+
 ## MODIFIED Requirements
 
 ### Requirement: Completion means the request was satisfied

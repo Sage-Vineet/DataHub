@@ -62,6 +62,7 @@
     "requests": {
       "compare": [
         "DELETE /requests/:p",
+        "GET /companies/:p/reminders",
         "GET /companies/:p/requests",
         "GET /requests/:p",
         "GET /requests/:p/documents",
@@ -136,7 +137,6 @@
     "GET /broker/activity",
     "GET /cim-questionnaire",
     "GET /companies/:p/groups",
-    "GET /companies/:p/reminders",
     "GET /companies/test",
     "GET /customers",
     "GET /ebitda-adjustment-types",

@@ -40,7 +40,7 @@
       deadline a day earlier than the one that was set
 - [x] 2.2 Audit every date the two roles both see for the same off-by-one and fix at the formatter,
       not per call site
-- [ ] 2.3 **Vitest:** a due date renders identically for both roles across a timezone boundary
+- [x] 2.3 **Vitest:** a due date renders identically for both roles across a timezone boundary
       (pin the test clock; this bug is invisible in the middle of a day)
 - [x] 2.4 Make overdue visible where a broker triages. The requests table has no due-date column
       and badges the overdue item the same as the pending ones — the status chip is the only signal
@@ -50,8 +50,15 @@
       filter dropdowns and a search box, against 0 reminders and a critical overdue request
 - [ ] 2.7 Do not render four filters and a search box above an empty set. Filters appear when there
       is something to filter
-- [ ] 2.8 **Vitest/supertest:** a reminder raised from the list attaches to the right request and
+- [x] 2.8 **Vitest/supertest:** a reminder raised from the list attaches to the right request and
       appears on the Reminders page
+- [x] 2.10 Cut the reminders read over to the TypeScript `requests` module. `GET /companies/:id/
+      reminders` was still on legacy and 500ing against a dead Supabase, so the board showed
+      0 Due / 0 Scheduled while the Remind button (already migrated) wrote rows nobody could see —
+      a broker could chase a client and never see that they had
+- [x] 2.11 Stop reporting sends that never happened. Legacy defaulted `first_sent_at`/`last_sent_at`
+      to the approval or creation timestamp, so the board read "Last Reminder 14 Aug" beside
+      "Sent Count 0" — telling a broker they had chased someone they had not
 - [x] 2.9 Delivery stays in-app. No mailer — the notifications hub is still absent and building a
       bespoke one is what `deal-qa-module` explicitly forbade
 

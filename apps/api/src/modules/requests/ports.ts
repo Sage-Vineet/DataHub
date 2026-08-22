@@ -72,6 +72,33 @@ export interface ReminderRecord {
   sentAt: string;
 }
 
+/**
+ * One request, as the reminders view needs it.
+ *
+ * Reminders are not rows — legacy derives them from requests plus the send
+ * history, and the chase cadence comes from the request's priority. This is the
+ * request read widened with the fields that derivation needs (timestamps to date
+ * the cadence from, and the company contact a broker would actually call).
+ */
+export interface ReminderSourceRow {
+  request: RequestRecord;
+  createdAt: string;
+  approvedAt: string | null;
+  companyName: string | null;
+  companyContactName: string | null;
+  companyContactEmail: string | null;
+  companyContactPhone: string | null;
+}
+
+/** One send, with the sender resolved — "sent by 3a7f…" tells a broker nothing. */
+export interface ReminderHistoryRow {
+  requestId: string;
+  sentAt: string;
+  sentBy: string;
+  sentByName: string | null;
+  sentByEmail: string | null;
+}
+
 export interface NarrativeRecord {
   requestId: string;
   content: string;
@@ -97,6 +124,8 @@ export interface RequestsRepository {
 
   appendReminder(requestId: string, sentBy: string): Promise<ReminderRecord>;
   listReminders(requestId: string): Promise<ReminderRecord[]>;
+  listReminderSources(companyId: string): Promise<ReminderSourceRow[]>;
+  listReminderHistory(requestIds: string[]): Promise<ReminderHistoryRow[]>;
 
   getNarrative(requestId: string): Promise<NarrativeRecord | null>;
   upsertNarrative(requestId: string, content: string, updatedBy: string): Promise<NarrativeRecord>;

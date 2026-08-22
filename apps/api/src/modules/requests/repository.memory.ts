@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import type {
   CreateRequestInput,
   NarrativeRecord,
+  ReminderHistoryRow,
   ReminderRecord,
+  ReminderSourceRow,
   RequestDocumentLinkRecord,
   RequestRecord,
   RequestsRepository,
@@ -79,6 +81,29 @@ export class InMemoryRequestsRepository implements RequestsRepository {
   }
   async listReminders(requestId: string): Promise<ReminderRecord[]> {
     return [...this.reminders.values()].filter((r) => r.requestId === requestId);
+  }
+
+  // The in-memory repo carries no companies or users, so the joined fields come
+  // back null. The derivation is exercised directly in `reminders.test.ts`, and
+  // the joins against real Postgres in the integration test.
+  async listReminderSources(companyId: string): Promise<ReminderSourceRow[]> {
+    return (await this.listByCompany(companyId)).map((request) => ({
+      request,
+      createdAt: new Date(0).toISOString(),
+      approvedAt: null,
+      companyName: null,
+      companyContactName: null,
+      companyContactEmail: null,
+      companyContactPhone: null,
+    }));
+  }
+
+  async listReminderHistory(requestIds: string[]): Promise<ReminderHistoryRow[]> {
+    const wanted = new Set(requestIds);
+    return [...this.reminders.values()]
+      .filter((r) => wanted.has(r.requestId))
+      .sort((a, b) => b.sentAt.localeCompare(a.sentAt))
+      .map((r) => ({ requestId: r.requestId, sentAt: r.sentAt, sentBy: r.sentBy, sentByName: null, sentByEmail: null }));
   }
   async getNarrative(requestId: string): Promise<NarrativeRecord | null> {
     return this.narratives.get(requestId) ?? null;

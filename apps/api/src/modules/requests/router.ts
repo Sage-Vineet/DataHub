@@ -37,6 +37,11 @@ export function createRequestsRouter(deps: RequestsRouterDeps): Router {
     res.json(await service.list(req.user!, req.params.companyId!));
   }));
 
+  // Derived from requests, not from the `reminders` table — see `reminders.ts`.
+  router.get("/companies/:companyId/reminders", handle(async (req, res) => {
+    res.json(await service.listReminders(req.user!, req.params.companyId!));
+  }));
+
   router.post("/companies/:companyId/requests", handle(async (req, res) => {
     const parsed = contracts.requestCreate.safeParse(req.body);
     if (!parsed.success) {

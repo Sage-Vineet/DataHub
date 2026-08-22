@@ -1,11 +1,13 @@
-import { asc, eq } from "drizzle-orm";
+import { asc, desc, eq, inArray } from "drizzle-orm";
 import { schema, type Db } from "@datahub/db";
 import type { RequestPriority } from "@datahub/contracts";
 import type {
   ApprovalStatusValue,
   CreateRequestInput,
   NarrativeRecord,
+  ReminderHistoryRow,
   ReminderRecord,
+  ReminderSourceRow,
   RequestCategory,
   RequestDocumentLinkRecord,
   RequestRecord,
@@ -16,7 +18,7 @@ import type {
   UpdateRequestPatch,
 } from "./ports.js";
 
-const { requests, requestReminders, requestNarratives, requestDocuments } = schema;
+const { requests, requestReminders, requestNarratives, requestDocuments, companies, users } = schema;
 type Row = typeof requests.$inferSelect;
 
 function toRecord(r: Row): RequestRecord {
@@ -114,6 +116,43 @@ export class DrizzleRequestsRepository implements RequestsRepository {
   async listReminders(requestId: string): Promise<ReminderRecord[]> {
     const rows = await this.db.select().from(requestReminders).where(eq(requestReminders.requestId, requestId)).orderBy(asc(requestReminders.sentAt));
     return rows.map((r) => ({ id: r.id, requestId: r.requestId, sentBy: r.sentBy, sentAt: r.sentAt.toISOString() }));
+  }
+
+  async listReminderSources(companyId: string): Promise<ReminderSourceRow[]> {
+    const rows = await this.db
+      .select({ request: requests, company: companies })
+      .from(requests)
+      .leftJoin(companies, eq(companies.id, requests.companyId))
+      .where(eq(requests.companyId, companyId))
+      .orderBy(desc(requests.createdAt));
+
+    return rows.map((r) => ({
+      request: toRecord(r.request),
+      createdAt: r.request.createdAt.toISOString(),
+      approvedAt: r.request.approvedAt?.toISOString() ?? null,
+      companyName: r.company?.name ?? null,
+      companyContactName: r.company?.contactName ?? null,
+      companyContactEmail: r.company?.contactEmail ?? null,
+      companyContactPhone: r.company?.contactPhone ?? null,
+    }));
+  }
+
+  async listReminderHistory(requestIds: string[]): Promise<ReminderHistoryRow[]> {
+    if (requestIds.length === 0) return [];
+    const rows = await this.db
+      .select({ reminder: requestReminders, sender: users })
+      .from(requestReminders)
+      .leftJoin(users, eq(users.id, requestReminders.sentBy))
+      .where(inArray(requestReminders.requestId, requestIds))
+      .orderBy(desc(requestReminders.sentAt));
+
+    return rows.map((r) => ({
+      requestId: r.reminder.requestId,
+      sentAt: r.reminder.sentAt.toISOString(),
+      sentBy: r.reminder.sentBy,
+      sentByName: r.sender?.name ?? null,
+      sentByEmail: r.sender?.email ?? null,
+    }));
   }
 
   async getNarrative(requestId: string): Promise<NarrativeRecord | null> {

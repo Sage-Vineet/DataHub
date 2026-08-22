@@ -25,6 +25,74 @@ export function resolveReminderFrequencyDays(priority: RequestPriority, explicit
   return priorityFreq;
 }
 
+/**
+ * How a reminder cadence reads to a person.
+ *
+ * Only the priority defaults get a friendly name; an explicit override says the
+ * number, because "Weekly" would hide that someone chose 7 deliberately.
+ */
+export function buildReminderFrequencyLabel(
+  priority: RequestPriority,
+  explicitDays?: number | null,
+): string {
+  const days = resolveReminderFrequencyDays(priority, explicitDays);
+  if (REMINDER_DAYS[priority] === days) {
+    if (days === 1) return "Daily";
+    if (days === 2) return "Every 2 days";
+    if (days === 7) return "Weekly";
+  }
+  return days === 1 ? "Daily" : `Every ${days} days`;
+}
+
+/** `base` plus N days, in UTC. Null when the base is unparseable. */
+export function addDays(base: string | Date | null | undefined, days: number): string | null {
+  const date = base ? new Date(base) : new Date();
+  if (Number.isNaN(date.getTime())) return null;
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next.toISOString();
+}
+
+/** End of the due day — chasing past the deadline is not a reminder, it is noise. */
+export function getReminderDeadline(due?: string | null): string | null {
+  if (!due) return null;
+  const date = new Date(`${String(due).slice(0, 10)}T23:59:59.999Z`);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+/** When the next chase falls due, ignoring the deadline. */
+export function resolveScheduledReminderAt(
+  base: string | Date | null | undefined,
+  priority: RequestPriority,
+  explicitDays?: number | null,
+): string | null {
+  return addDays(base, resolveReminderFrequencyDays(priority, explicitDays));
+}
+
+/**
+ * The next chase, or null if it would land after the request was due.
+ *
+ * A schedule that keeps firing past the deadline tells a broker nothing they do
+ * not already know — the request is overdue, which the request itself says.
+ */
+export function resolveNextReminderAt(
+  base: string | Date | null | undefined,
+  priority: RequestPriority,
+  explicitDays: number | null | undefined,
+  due: string | null | undefined,
+): string | null {
+  const next = resolveScheduledReminderAt(base, priority, explicitDays);
+  if (!next) return null;
+  const deadline = getReminderDeadline(due);
+  if (deadline && new Date(next) > new Date(deadline)) return null;
+  return next;
+}
+
+/** A request nobody needs chasing about any more. */
+export function isRequestResolved(status?: string | null): boolean {
+  return ["completed", "rejected"].includes(String(status ?? "").trim().toLowerCase());
+}
+
 const dueDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "due_date must be in YYYY-MM-DD format");
 const uuid = z.string().uuid();
 

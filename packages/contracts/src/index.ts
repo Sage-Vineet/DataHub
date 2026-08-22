@@ -67,7 +67,15 @@ export type {
 } from "./uploads.js";
 
 export * as requests from "./requests.js";
-export { resolveReminderFrequencyDays } from "./requests.js";
+export {
+  resolveReminderFrequencyDays,
+  buildReminderFrequencyLabel,
+  addDays,
+  getReminderDeadline,
+  resolveScheduledReminderAt,
+  resolveNextReminderAt,
+  isRequestResolved,
+} from "./requests.js";
 export type {
   RequestPriority,
   RequestCreate,

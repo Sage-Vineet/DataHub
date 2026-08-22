@@ -7,6 +7,7 @@ import type {
   SessionUser,
 } from "@datahub/contracts";
 import { resolveReminderFrequencyDays } from "@datahub/contracts";
+import { buildReminders, type ReminderView } from "./reminders.js";
 import { canAccessCompany } from "../../shared/access.js";
 import { BadRequestError, ForbiddenError, NotFoundError } from "../../shared/errors.js";
 import type {
@@ -35,6 +36,20 @@ export class RequestsService {
   async list(user: SessionUser, companyId: string): Promise<RequestResponse[]> {
     this.requireCompany(user, companyId);
     return (await this.repo.listByCompany(companyId)).map(toResponse);
+  }
+
+  /**
+   * The reminders board for a company.
+   *
+   * Derived from requests and their send history — see `reminders.ts` for why
+   * this does not read the `reminders` table.
+   */
+  async listReminders(user: SessionUser, companyId: string): Promise<ReminderView[]> {
+    this.requireCompany(user, companyId);
+    const sources = await this.repo.listReminderSources(companyId);
+    const visible = sources.filter((s) => s.request.companyId === companyId);
+    const history = await this.repo.listReminderHistory(visible.map((s) => s.request.id));
+    return buildReminders(user, visible, history);
   }
 
   async get(user: SessionUser, id: string): Promise<RequestResponse> {

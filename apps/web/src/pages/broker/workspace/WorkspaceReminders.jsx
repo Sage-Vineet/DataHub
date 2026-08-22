@@ -28,10 +28,10 @@ function getPriorityTone(priority) {
   return { bg: '#DBEAFE', color: '#1D4ED8' };
 }
 
-function formatDateTime(value) {
-  if (!value) return 'Not scheduled';
+function formatDateTime(value, empty = 'Not scheduled') {
+  if (!value) return empty;
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'Not scheduled';
+  if (Number.isNaN(date.getTime())) return empty;
   return date.toLocaleString('en-IN', {
     year: 'numeric',
     month: 'short',
@@ -251,11 +251,11 @@ export default function WorkspaceReminders() {
                           </div>
                           <div>
                             <p className="text-[#A5A5A5]">First Reminder</p>
-                            <p className="mt-1 font-semibold text-[#050505]">{formatDateTime(reminder.first_sent_at)}</p>
+                            <p className="mt-1 font-semibold text-[#050505]">{formatDateTime(reminder.first_sent_at, 'Never sent')}</p>
                           </div>
                           <div>
                             <p className="text-[#A5A5A5]">Last Reminder</p>
-                            <p className="mt-1 font-semibold text-[#050505]">{formatDateTime(reminder.last_sent_at)}</p>
+                            <p className="mt-1 font-semibold text-[#050505]">{formatDateTime(reminder.last_sent_at, 'Never sent')}</p>
                           </div>
                           <div>
                             <p className="text-[#A5A5A5]">Next Automatic Reminder</p>
