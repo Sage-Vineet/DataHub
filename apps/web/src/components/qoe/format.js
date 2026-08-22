@@ -33,3 +33,30 @@ export function periodKey(period) {
     ? String(period.fiscalYear)
     : `${period.fiscalYear}-${String(period.month).padStart(2, "0")}`;
 }
+
+/**
+ * Make a displayed column add up.
+ *
+ * The engine is exact — its subtotals equal the sum of its components to the
+ * cent. Presentation rounds to whole dollars, and rounding each figure
+ * independently can leave the column not footing: FY2023's components round to
+ * 715,930 while its true subtotal, 715,929.37, rounds to 715,929. A reader who
+ * adds the column up finds a dollar missing, and in a quality-of-earnings
+ * deliverable a bridge that does not foot is a credibility problem well out of
+ * proportion to a dollar.
+ *
+ * So the subtotal shown is the sum of the ROUNDED components rather than the
+ * rounded exact subtotal. The underlying value is untouched — this is a
+ * presentation rule, applied where the numbers are read.
+ *
+ * `components` are the exact values that make up the subtotal, in any order.
+ * Returns the whole-dollar figure to display for the subtotal.
+ */
+export function footedSubtotal(components) {
+  return (components || [])
+    .map((v) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.round(n) : 0;
+    })
+    .reduce((a, b) => a + b, 0);
+}

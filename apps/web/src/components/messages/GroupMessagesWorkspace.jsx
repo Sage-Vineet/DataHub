@@ -404,7 +404,14 @@ function ChatInput({ onSend, disabled }) {
 
 // ─── Empty / no-groups state ──────────────────────────────────────────────────
 
-function NoGroupsState({ onRefresh, loading }) {
+/**
+ * Empty, not failed — the failure path renders `groupError` separately.
+ *
+ * The copy is role-aware because it was not: a broker, in their own workspace,
+ * was told to "ask your broker to add users". Telling someone to ask another
+ * person to do the thing they are the one who does is worse than saying nothing.
+ */
+function NoGroupsState({ onRefresh, loading, isBroker }) {
   return (
     <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-6">
       <div className="w-16 h-16 rounded-full bg-[#E8ECF5] flex items-center justify-center">
@@ -413,7 +420,9 @@ function NoGroupsState({ onRefresh, loading }) {
       <div>
         <p className="text-base font-bold text-[#05164D]">No message groups yet</p>
         <p className="text-sm text-gray-400 mt-1.5 max-w-xs">
-          Groups are created automatically when users are added to a deal. Try refreshing or ask your broker to add users.
+          {isBroker
+            ? 'Groups are created automatically as people are added to the deal. Add someone on the Deal Team page to start a conversation.'
+            : 'Groups are created automatically as people are added to the deal. One will appear here once your advisor adds you to a conversation.'}
         </p>
       </div>
       <button
@@ -587,10 +596,36 @@ export default function GroupMessagesWorkspace({
   })();
 
   // ── No groups state ───────────────────────────────────────────────────────────
+  //
+  // The tab switcher stays. This early return used to replace the entire
+  // component, switcher included, so a deal with no groups became a dead end:
+  // the reader could not reach Chats — where the direct conversations are —
+  // without leaving the page. An empty state must never remove the navigation
+  // that leads out of it.
   if (!loadingGroups && groups.length === 0 && !groupError) {
     return (
-      <div className="flex h-full min-h-0 overflow-hidden rounded-2xl border border-gray-200 shadow-sm bg-white">
-        <NoGroupsState onRefresh={loadGroups} loading={loadingGroups} />
+      <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-gray-200 shadow-sm bg-white">
+        {onTabChange && (
+          <div className="flex flex-shrink-0 items-center gap-3 border-b border-gray-200 bg-[#F0F2F5] px-4 py-3.5">
+            <div className="flex flex-shrink-0 items-center gap-0.5 rounded-full border border-gray-200 bg-white p-0.5">
+              <button
+                onClick={() => onTabChange('groups')}
+                className={`px-3 py-1 rounded-full text-[11px] font-semibold transition-all ${tab === 'groups' ? 'bg-[#05164D] text-white' : 'text-gray-500 hover:text-[#05164D]'}`}
+              >Groups</button>
+              <button
+                onClick={() => onTabChange('chats')}
+                className={`px-3 py-1 rounded-full text-[11px] font-semibold transition-all ${tab === 'chats' ? 'bg-[#05164D] text-white' : 'text-gray-500 hover:text-[#05164D]'}`}
+              >Chats</button>
+            </div>
+          </div>
+        )}
+        <div className="min-h-0 flex-1">
+          <NoGroupsState
+            onRefresh={loadGroups}
+            loading={loadingGroups}
+            isBroker={user?.role === 'broker' || user?.role === 'admin'}
+          />
+        </div>
       </div>
     );
   }

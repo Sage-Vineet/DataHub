@@ -17,19 +17,39 @@ export default function QBDisconnectedBanner() {
 
     let cancelled = false;
 
+    // Three states, not two. "Never connected" and "was connected, now
+    // disconnected" are different situations, and a failed health check is
+    // neither — it tells us nothing about the connection.
+    //
+    // This banner used to treat all three as disconnection, because the catch
+    // below returned `{ isConnected: false }` and the check was `!isConnected`.
+    // The result was an amber "Showing last synced data" alarm on three
+    // financial pages of an environment that had never held a QuickBooks
+    // credential, above figures that came from an uploaded general ledger.
+    // Warning about the loss of something you never had is noise, and it reads
+    // as breakage to anyone being shown the product.
     getConnectionStatus()
-      .catch(() => ({ isConnected: false }))
       .then((qbData) => {
         if (cancelled) return;
-        if (!qbData?.isConnected) {
-          setShow(true);
-          setLastSyncAt(
-            qbData?.lastSyncAt ||
-            qbData?.lastSyncedAt ||
-            qbData?.lastCacheSyncedAt ||
-            null,
-          );
-        }
+        if (qbData?.isConnected) return; // connected — nothing to say
+
+        const syncedAt =
+          qbData?.lastSyncAt ||
+          qbData?.lastSyncedAt ||
+          qbData?.lastCacheSyncedAt ||
+          null;
+
+        // A prior successful sync is the evidence that a connection once
+        // existed. Without it there is nothing to have been disconnected from.
+        if (!syncedAt) return;
+
+        setLastSyncAt(syncedAt);
+        setShow(true);
+      })
+      .catch(() => {
+        // Status could not be checked. That is not a disconnection, and
+        // claiming otherwise sends the user to reconnect a connection that may
+        // be perfectly healthy. The Connections page reports check failures.
       });
 
     return () => {

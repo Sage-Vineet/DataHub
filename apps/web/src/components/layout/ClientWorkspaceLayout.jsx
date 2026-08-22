@@ -169,7 +169,7 @@ function WorkspaceSidebar({ company, onClose }) {
       ],
     },
     { label: "Key Reports", icon: FileCheck, to: `${basePath}/dataroom/key-reports` },
-    { label: "Reports", icon: BarChart3, to: `${basePath}/reports` },
+    { label: "Financial Reports", icon: BarChart3, to: `${basePath}/reports` },
     { label: "Analytics", icon: TrendingUp, to: `${basePath}/analytics` },
     { label: "Invoices", icon: Receipt, to: `${basePath}/invoices` },
     // The earnings bridge and Financial Statements both read /qoe, which legacy

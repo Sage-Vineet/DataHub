@@ -26,9 +26,6 @@ import UserLayout from "./components/layout/UserLayout";
 import Login from "./pages/Login";
 import ForgotPassword from "./pages/ForgotPassword";
 import BrokerDashboard from "./pages/broker/Dashboard";
-import BrokerRequests from "./pages/broker/Requests";
-import BrokerDocuments from "./pages/broker/Documents";
-import BrokerReminders from "./pages/broker/Reminders";
 import ClientDashboard from "./pages/client/Dashboard";
 import ClientRequests from "./pages/client/Requests";
 import ClientUpload from "./pages/client/Upload";
@@ -288,30 +285,29 @@ function AppRoutes() {
       />
       {/* /broker/companies is now merged into the dashboard */}
       <Route path="/broker/companies" element={<Navigate to="/broker/dashboard" replace />} />
-      <Route
-        path="/broker/requests"
-        element={
-          <ProtectedRoute allowedRole="broker">
-            <BrokerRequests />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/broker/documents"
-        element={
-          <ProtectedRoute allowedRole="broker">
-            <BrokerDocuments />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/broker/reminders"
-        element={
-          <ProtectedRoute allowedRole="broker">
-            <BrokerReminders />
-          </ProtectedRoute>
-        }
-      />
+      {/*
+        Cross-deal broker views: wanted, but not built.
+
+        Nothing in the UI ever linked to these three — they were reachable only
+        by typing the URL, and all three were broken in different ways:
+
+          /broker/requests   rendered a blank page. Not a data failure: the
+                             component holds two modals, both closed on mount,
+                             and a comment reading "Currently no UI for listing
+                             requests". A stub that got wired into the router.
+          /broker/documents  rendered a file explorer with no nav rail, no page
+                             title and no indication of whose files were shown.
+                             For a broker with seven deals, worse than nothing.
+          /broker/reminders  never resolved its loading state.
+
+        Redirected rather than deleted so an old bookmark lands somewhere real.
+        What a broker actually needs across deals is a product question, and it
+        deserves a proposal rather than a revival of these stubs — see
+        openspec/changes/broker-surface-remediation §9.4.
+      */}
+      <Route path="/broker/requests" element={<Navigate to="/broker/dashboard" replace />} />
+      <Route path="/broker/documents" element={<Navigate to="/broker/dashboard" replace />} />
+      <Route path="/broker/reminders" element={<Navigate to="/broker/dashboard" replace />} />
       <Route
         path="/broker/profile"
         element={

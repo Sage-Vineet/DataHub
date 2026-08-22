@@ -907,6 +907,8 @@ export default function FinancialStatementsView({
 }) {
   const [data,          setData]          = useState(null);
   const [loading,       setLoading]       = useState(false);
+  /** A failed generation. Held here because the reports page passes notify={null}. */
+  const [error,         setError]         = useState("");
   const [internalReport,setInternalReport]= useState("pl");
   const [period,        setPeriod]        = useState("yearly");
   const [yearFilter,    setYearFilter]    = useState(null);
@@ -923,6 +925,7 @@ export default function FinancialStatementsView({
   const generate = useCallback(async () => {
     if (!versionId || !hasSyncedData) return;
     setLoading(true);
+    setError("");
     try {
       const res = await getFinancialStatements(versionId, {
         year: yearFilter ? Number(yearFilter) : undefined,
@@ -932,6 +935,14 @@ export default function FinancialStatementsView({
       const warnCount = (res.missingData?.length || 0) + (res.validation?.length || 0);
       if (warnCount && notify) notify(`Generated with ${warnCount} warning(s)`, "warning");
     } catch (err) {
+      // Hold the failure locally as well as notifying.
+      //
+      // This used to report failures ONLY through `notify` — and the reports
+      // page mounts this component with `notify={null}`. So every failed
+      // generation was discarded in full: `data` stayed null, the view fell back
+      // to "Click Generate Reports to build P&L, Balance Sheet, and Cash Flow",
+      // and the reader was told to do the thing they had just done.
+      setError(err?.message || "The financial statements could not be generated.");
       if (notify) notify(err.message, "error");
     } finally {
       setLoading(false);
@@ -1004,7 +1015,20 @@ export default function FinancialStatementsView({
         )}
       </div>
 
-      {!data && !loading && (
+      {!data && !loading && error && (
+        <div className="py-16 text-center">
+          <p className="text-sm font-semibold text-gray-700">The statements couldn’t be generated</p>
+          <p className="mx-auto mt-1 max-w-md text-sm text-gray-500">{error}</p>
+          <button
+            onClick={generate}
+            className="mx-auto mt-4 flex items-center gap-2 rounded border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+          >
+            <RefreshCw size={14} /> Try again
+          </button>
+        </div>
+      )}
+
+      {!data && !loading && !error && (
         <div className="py-16 text-center text-gray-400">
           <p className="text-sm">Click "Generate Reports" to build P&L, Balance Sheet, and Cash Flow from your uploaded data.</p>
         </div>

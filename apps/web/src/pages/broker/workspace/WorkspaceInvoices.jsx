@@ -1035,8 +1035,8 @@ export default function WorkspaceInvoices() {
               Invoices
             </h1>
             <p className="mt-1 max-w-2xl text-[14px] text-[#667085]">
-              Monthly invoice performance laid out like the spreadsheet view
-              from your reference, with live numbers from `GET /invoices`.
+              Invoiced amounts, collections and balances by month for this
+              engagement.
             </p>
           </div>
 

@@ -10,13 +10,17 @@ import {
   FileText,
   FolderKanban,
   Loader2,
+  MessagesSquare,
   TrendingUp,
   Upload,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { formatCalendarDate, isPastDue } from '../../lib/calendarDate';
+import { plural } from '../../lib/plural';
 import {
   getCompanyRequest,
   listCompanyActivity,
+  listQaItemsRequest,
   listCompanyFolders,
   listCompanyReminders,
   listCompanyRequests,
@@ -38,7 +42,6 @@ const REMINDER_STATUS_META = {
   resolved: { label: 'Resolved', tone: '#166534', bg: '#DCFCE7' },
 };
 
-const CATEGORY_COLORS = ['#8BC53D', '#00648F', '#F68C1F', '#742982', '#476E2C', '#00B0F0', '#05164D'];
 const DASHBOARD_CACHE_TTL_MS = 60 * 1000;
 const REFRESH_THROTTLE_MS = 30 * 1000;
 
@@ -93,20 +96,20 @@ function normalizeWorkflowStatus(status) {
 function getDisplayStatus(status, dueDate) {
   if (status === 'blocked') return 'blocked';
   if (status === 'completed') return 'completed';
-  if (dueDate) {
-    const due = new Date(dueDate);
-    if (!Number.isNaN(due.getTime()) && due < new Date()) return 'overdue';
-  }
+  // Day-to-day, not instant-to-instant: a request due today is not overdue at
+  // one minute past midnight.
+  if (dueDate && isPastDue(dueDate)) return 'overdue';
   return status;
 }
 
+/**
+ * A due date is a calendar day, so parse it as one. Reading it through
+ * `new Date('2026-08-19')` made it UTC midnight, which every timezone behind UTC
+ * then rendered as the previous day — the seller saw a deadline one day earlier
+ * than the broker had set.
+ */
 function formatDate(value, options = {}) {
-  if (!value) return 'Not set';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'Not set';
-  return date.toLocaleDateString('en-IN', options.year
-    ? options
-    : { year: 'numeric', month: 'short', day: 'numeric', ...options });
+  return formatCalendarDate(value, options, 'en-GB', 'Not set');
 }
 
 function formatDateTime(value) {
@@ -144,6 +147,10 @@ export default function ClientDashboard() {
   const [reminders, setReminders] = useState([]);
   const [folders, setFolders] = useState([]);
   const [activity, setActivity] = useState([]);
+  // Questions put to this company that nobody has answered yet. Surfaced here
+  // because the page that lists them had no entry point at all — see the
+  // Questions item in the client nav.
+  const [openQuestions, setOpenQuestions] = useState(0);
   const [documentCount, setDocumentCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -183,27 +190,49 @@ export default function ClientDashboard() {
     setError('');
 
     try {
-      const [
-        companyResult,
-        requestsResult,
-        remindersResult,
-        foldersResult,
-        activityResult,
-      ] = await Promise.allSettled([
+      // Two waves, deliberately.
+      //
+      // The seller's landing page used to await all five calls together, so it
+      // rendered at the speed of the slowest one. Two of the five — reminders and
+      // the activity log — are still served by legacy, which reaches for Supabase
+      // first on every read; with no credentials that is ~15s of retrying before
+      // it gives up. The whole dashboard sat behind a spinner waiting for two
+      // panels, while the three that answer in milliseconds had nothing to wait
+      // for. A partial dashboard beats a spinner.
+      //
+      // Wave 1 is the in-process modules: the company, its requests, its folders.
+      // Everything above the fold comes from these, and they clear `loading`.
+      // Wave 2 fills the reminder and activity panels in when they arrive.
+      const [companyResult, requestsResult, foldersResult, qaResult] = await Promise.allSettled([
         getCompanyRequest(companyId).catch(() => null),
         listCompanyRequests(companyId).catch(() => []),
-        listCompanyReminders(companyId).catch(() => []),
         listCompanyFolders(companyId).catch(() => []),
-        listCompanyActivity(companyId).catch(() => []),
+        // In-process (the qa module), so it belongs in the fast wave.
+        listQaItemsRequest(companyId).catch(() => []),
       ]);
 
       if (requestSequenceRef.current !== requestSequence) return;
 
       const companyPayload = companyResult.status === 'fulfilled' ? companyResult.value : null;
       const requestRows = requestsResult.status === 'fulfilled' ? (requestsResult.value || []) : [];
-      const reminderRows = remindersResult.status === 'fulfilled' ? (remindersResult.value || []) : [];
       const folderRows = foldersResult.status === 'fulfilled' ? (foldersResult.value || []) : [];
-      const activityRows = activityResult.status === 'fulfilled' ? (activityResult.value || []) : [];
+      const qaRows = qaResult.status === 'fulfilled' ? (qaResult.value || []) : [];
+
+      // Wave 2 — legacy-owned, not awaited here. Each panel updates on arrival,
+      // and a failure leaves that panel empty rather than blocking the page.
+      let reminderRows = [];
+      let activityRows = [];
+      const secondary = Promise.allSettled([
+        listCompanyReminders(companyId).catch(() => []),
+        listCompanyActivity(companyId).catch(() => []),
+      ]).then(([remindersResult, activityResult]) => {
+        if (requestSequenceRef.current !== requestSequence) return;
+        reminderRows = remindersResult.status === 'fulfilled' ? (remindersResult.value || []) : [];
+        activityRows = activityResult.status === 'fulfilled' ? (activityResult.value || []) : [];
+        setReminders(reminderRows);
+        setActivity(activityRows);
+      });
+      void secondary;
 
       const normalizedRequests = requestRows.map((request) => {
         const workflowStatus = normalizeWorkflowStatus(request.status);
@@ -224,9 +253,10 @@ export default function ClientDashboard() {
 
       setCompany(companyPayload);
       setRequests(normalizedRequests);
-      setReminders(reminderRows);
       setFolders(folderRows);
-      setActivity(activityRows);
+      setOpenQuestions(qaRows.filter((q) => q.status === 'open' || q.status === 'follow_up').length);
+      // Reminders and activity are set by wave 2 — setting them here would
+      // clobber a result that has already landed.
 
       const requestSignature = normalizedRequests
         .map((r) => `${r.id}:${r.updatedAt || r.createdAt || ''}`)
@@ -250,7 +280,23 @@ export default function ClientDashboard() {
         requestSignature,
       });
 
+      // The page is usable now. Wave 2 is still in flight.
       setLoading(false);
+
+      // Re-write the cache once the legacy panels land, so a return visit opens
+      // with them already filled rather than empty.
+      void secondary.then(() => {
+        if (requestSequenceRef.current !== requestSequence) return;
+        writeDashboardCache(companyId, {
+          company: companyPayload,
+          requests: normalizedRequests,
+          reminders: reminderRows,
+          folders: folderRows,
+          activity: activityRows,
+          documentCount: hasMatchingDocCount ? cached.documentCount : 0,
+          requestSignature,
+        });
+      });
 
       if (!normalizedRequests.length) {
         setDocumentCount(0);
@@ -327,6 +373,7 @@ export default function ClientDashboard() {
     : 0;
 
   const stats = [
+    { label: 'Questions to Answer', value: openQuestions, icon: MessagesSquare, color: '#1B6152', bg: '#E2F0EB', cta: '/client/qa' },
     { label: 'Pending Requests', value: requestSummary.pending + requestSummary.inReview, icon: ClipboardList, color: '#A86F0B', bg: '#FEF3C7', cta: '/client/requests' },
     { label: 'Documents Shared', value: documentCount, icon: Upload, color: '#00648F', bg: '#DBF0FB', cta: '/client/upload' },
     { label: 'Total Folders', value: folders.length, icon: FolderKanban, color: '#742982', bg: '#F3E8FF', cta: '/client/documents' },
@@ -348,13 +395,19 @@ export default function ClientDashboard() {
       return acc;
     }, {});
     return Object.entries(grouped)
-      .map(([category, items], index) => {
+      .map(([category, items]) => {
         const completed = items.filter((i) => i.displayStatus === 'completed').length;
+        const pct = items.length ? Math.round((completed / items.length) * 100) : 0;
         return {
           category,
           total: items.length,
-          pct: items.length ? Math.round((completed / items.length) * 100) : 0,
-          color: CATEGORY_COLORS[index % CATEGORY_COLORS.length],
+          pct,
+          // Colour by what the number MEANS, not by where the category happens
+          // to sit in the list. Picking from a palette by index put a fully
+          // complete category's bar in warning orange — the colour a reader
+          // takes as "something is wrong" against the one state that is
+          // unambiguously right.
+          color: pct === 100 ? '#1B6152' : pct > 0 ? '#00648F' : '#9CA3AF',
         };
       })
       .sort((a, b) => b.total - a.total);
@@ -470,7 +523,7 @@ export default function ClientDashboard() {
                         <div className="h-2 overflow-hidden rounded-full bg-gray-100">
                           <div className="h-full rounded-full transition-all" style={{ width: `${cat.pct}%`, backgroundColor: cat.color }} />
                         </div>
-                        <p className="mt-1 text-[11px] text-[#A5A5A5]">{cat.total} request(s)</p>
+                        <p className="mt-1 text-[11px] text-[#A5A5A5]">{plural(cat.total, 'request')}</p>
                       </div>
                     ))
                   )}

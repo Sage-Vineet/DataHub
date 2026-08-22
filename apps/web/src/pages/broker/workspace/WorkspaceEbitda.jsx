@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
+import { AlertTriangle } from "lucide-react";
 import BridgeTable from "../../../components/qoe/BridgeTable";
 import AddbackWizard from "../../../components/qoe/AddbackWizard";
 import ClassificationPanel from "../../../components/qoe/ClassificationPanel";
@@ -298,6 +299,22 @@ export default function WorkspaceEbitda() {
     [addbacks],
   );
 
+  /**
+   * How much of the chart of accounts this bridge actually rests on.
+   *
+   * "Incomplete" is any unclassified account at all: in a quality-of-earnings
+   * deliverable there is no comfortable threshold below which a missing account
+   * stops mattering, and the reader is entitled to know the denominator.
+   */
+  const coverage = useMemo(() => {
+    if (!bridge) return null;
+    const classified = bridge.ebitLines?.length ?? 0;
+    const unclassified = bridge.unflaggedAccounts?.length ?? 0;
+    const total = classified + unclassified;
+    if (total === 0) return null;
+    return { classified, unclassified, total, incomplete: unclassified > 0 };
+  }, [bridge]);
+
   const headline = useMemo(() => {
     if (!bridge) return null;
     const last = bridge.periods[bridge.periods.length - 1];
@@ -383,6 +400,43 @@ export default function WorkspaceEbitda() {
       {versionId && (
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
         <div className="transition">
+          {/*
+            Coverage, stated above the numbers rather than under them.
+
+            This used to be a grey line beneath the table: "3 accounts classified
+            into EBIT lines · 36 left out", sitting below a confident four-year
+            bridge ending in an Adjusted EBITDA figure. A broker will screenshot
+            that figure into a teaser. A bridge built from 3 of 39 accounts is not
+            a number to quote, and the interface has to say so where the number
+            is read, not in a footnote after it.
+          */}
+          {bridge && coverage && coverage.incomplete && (
+            <div
+              role="status"
+              className="mb-3 flex flex-wrap items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3"
+            >
+              <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-600" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-amber-900">
+                  {coverage.classified === 0
+                    ? 'No accounts are classified yet — these figures are not a bridge'
+                    : `Built from ${coverage.classified} of ${coverage.total} accounts`}
+                </p>
+                <p className="mt-0.5 text-[13px] leading-relaxed text-amber-800">
+                  {coverage.classified === 0
+                    ? 'Reported EBITDA currently equals net income. Classify the chart of accounts before using anything below.'
+                    : `${coverage.unclassified} account${coverage.unclassified === 1 ? '' : 's'} are not classified into EBIT lines, so every figure below understates the bridge. Do not quote these numbers until the classification is complete.`}
+                </p>
+              </div>
+              <button
+                onClick={openClassification}
+                className="shrink-0 rounded-md border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100"
+              >
+                Review classification
+              </button>
+            </div>
+          )}
+
           <BridgeTable
             bridge={bridge}
             selectedLineKey={selectedLine?.key}

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { money, percent, periodKey } from "./format";
+import { footedSubtotal, money, percent, periodKey } from "./format";
 
 const TONE_CLASSES = {
   normal: "hover:bg-slate-50",
@@ -41,6 +41,24 @@ function BridgeRow({ line, keys, indent = 0, tone = "normal", onClick, selectedK
  * appear under user-defined subtotal headers that collapse without losing the
  * underlying account-level detail.
  */
+/**
+ * Recompute a subtotal row so each period equals the sum of its rounded parts.
+ *
+ * Falls back to the engine's own value for any period whose components are
+ * missing — a partially-loaded column must not silently read as zero.
+ */
+function footedAmounts(keys, exactAmounts, componentMaps) {
+  const out = {};
+  for (const key of keys) {
+    const parts = componentMaps
+      .filter(Boolean)
+      .map((m) => m?.[key])
+      .filter((v) => v !== undefined && v !== null);
+    out[key] = parts.length > 0 ? footedSubtotal(parts) : exactAmounts?.[key];
+  }
+  return out;
+}
+
 export default function BridgeTable({ bridge, onSelectLine, selectedLineKey }) {
   const [collapsed, setCollapsed] = useState(() => new Set());
 
@@ -88,8 +106,20 @@ export default function BridgeTable({ bridge, onSelectLine, selectedLineKey }) {
             />
           ))}
 
+          {/*
+            Reported EBITDA is shown as the sum of the rounded rows above it, so
+            the column foots for a reader adding it up. The engine's exact value
+            is unchanged; see `footedSubtotal`.
+          */}
           <BridgeRow keys={keys} selectedKey={selectedLineKey}
-            line={{ key: "reported_ebitda", label: "Reported EBITDA", amounts: bridge.reportedEbitda }}
+            line={{
+              key: "reported_ebitda",
+              label: "Reported EBITDA",
+              amounts: footedAmounts(keys, bridge.reportedEbitda, [
+                bridge.netIncome?.amounts,
+                ...bridge.ebitLines.map((l) => l.amounts),
+              ]),
+            }}
             tone="subtotal"
           />
 

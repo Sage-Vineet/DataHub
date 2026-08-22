@@ -8,7 +8,7 @@ import {
   ChevronRight, UserPlus,
 } from 'lucide-react';
 import {
-  listCompaniesRequest, listBrokerActivity,
+  listCompaniesRequest, listCompanyActivity,
   createCompanyRequest, updateCompanyRequest, deleteCompanyRequest,
   createUserRequest, triggerAutoCreateMessageGroups,
 } from '../../lib/api';
@@ -224,12 +224,22 @@ function CompanyCard({ company, onOpenWorkspace, onView, onEdit }) {
 
       {/* Action buttons */}
       <div className="px-4 pb-4 pt-3 flex items-center gap-2 border-t border-gray-50">
+        {/*
+          Straight into the deal.
+
+          "View" used to open a Company Details modal showing the name,
+          industry, contact, email and request counts — every one of which is
+          already on this card — plus an empty Phone and "Client Since N/A",
+          before offering "Open Workspace". A click that restates the card you
+          clicked, on the primary path into the product. The modal is still
+          reachable from the workspace; it is no longer in the way.
+        */}
         <button
-          onClick={() => onView(company)}
-          title="View details"
+          onClick={() => onOpenWorkspace(company)}
+          title="Open this deal"
           className="flex-1 py-1.5 rounded-lg border border-gray-200 text-xs font-semibold text-gray-600 hover:bg-gray-50 flex items-center justify-center gap-1.5 transition-colors"
         >
-          <Eye size={12} /> View
+          <Eye size={12} /> Open
         </button>
         <button
           onClick={() => onEdit(company)}
@@ -252,6 +262,7 @@ export default function BrokerDashboard() {
   // ── Data state ──────────────────────────────────────────────────────────────
   const [companies, setCompanies] = useState([]);
   const [activity, setActivity] = useState([]);
+  const [activityError, setActivityError] = useState('');
   const [loadingCompanies, setLoadingCompanies] = useState(true);
   const [loadingActivity, setLoadingActivity] = useState(true);
   const [pageError, setPageError] = useState('');
@@ -296,11 +307,52 @@ export default function BrokerDashboard() {
   useEffect(() => {
     let cancelled = false;
 
-    listBrokerActivity(30)
-      .then((acts) => { if (!cancelled) setActivity(acts); })
-      .catch(() => { })
-      .finally(() => { if (!cancelled) setLoadingActivity(false); });
+    /**
+     * The cross-deal feed, assembled from the per-company feeds.
+     *
+     * `/broker/activity` is legacy-owned and reads Supabase; with none
+     * configured it answers 503, and this panel rendered that as "No recent
+     * activity yet" — a dead data source presented as a quiet fact. The
+     * per-company endpoint reads Postgres directly, so the feed is built from
+     * those and a genuine failure is reported as one.
+     */
+    const loadActivity = async () => {
+      try {
+        const companies = await listCompaniesRequest().catch(() => []);
+        const ids = (Array.isArray(companies) ? companies : []).map((c) => c.id).filter(Boolean);
+        if (ids.length === 0) {
+          if (!cancelled) { setActivity([]); setActivityError(''); }
+          return;
+        }
 
+        const results = await Promise.allSettled(ids.map((id) => listCompanyActivity(id)));
+        if (cancelled) return;
+
+        const merged = results
+          .filter((r) => r.status === 'fulfilled')
+          .flatMap((r) => r.value || [])
+          .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+          .slice(0, 30);
+
+        // Every deal failing is a failure, not an empty feed. Some failing is a
+        // partial view, and saying nothing about it would overstate the answer.
+        const failed = results.filter((r) => r.status === 'rejected').length;
+        setActivity(merged);
+        setActivityError(
+          failed === results.length
+            ? 'Activity could not be loaded.'
+            : failed > 0
+              ? `Activity for ${failed} of ${results.length} deals could not be loaded.`
+              : '',
+        );
+      } catch {
+        if (!cancelled) setActivityError('Activity could not be loaded.');
+      } finally {
+        if (!cancelled) setLoadingActivity(false);
+      }
+    };
+
+    void loadActivity();
     Promise.resolve().then(loadCompanies);
 
     return () => { cancelled = true; };
@@ -744,7 +796,13 @@ export default function BrokerDashboard() {
             {loadingActivity && (
               <p className="px-5 py-10 text-center text-sm text-[#A5A5A5] animate-pulse">Loading activity…</p>
             )}
-            {!loadingActivity && activity.length === 0 && (
+            {!loadingActivity && activityError && (
+              <div className="flex flex-col items-center gap-2 px-5 py-10 text-center">
+                <Activity size={28} className="text-amber-400" />
+                <p className="text-sm text-[#6D6E71]">{activityError}</p>
+              </div>
+            )}
+            {!loadingActivity && !activityError && activity.length === 0 && (
               <div className="flex flex-col items-center gap-2 px-5 py-10 text-center">
                 <Activity size={28} className="text-[#D1D5DB]" />
                 <p className="text-sm text-[#A5A5A5]">No recent activity yet.</p>

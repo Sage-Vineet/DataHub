@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
+import { formatCalendarDate, parseCalendarDate } from '../../../lib/calendarDate';
 import {
   CheckCircle2,
   Clock,
@@ -45,6 +46,27 @@ function StatusChip({ status }) {
 /** Minimum 44px targets throughout: this is used on a tablet, by a thumb. */
 const TAP = 'min-h-[44px] px-4';
 
+/** Items still owed an answer. Used for ordering and for the age treatment. */
+const OUTSTANDING = new Set(['open', 'follow_up']);
+
+/**
+ * How long this has been outstanding, in the words a broker chasing it would
+ * use. Answered items report when they were answered instead — the age of a
+ * closed question is not what anyone is looking for.
+ */
+function describeAge(item) {
+  const asked = parseCalendarDate(item.asked_at);
+  if (!asked) return '—';
+  if (!OUTSTANDING.has(item.status)) {
+    const answered = parseCalendarDate(item.answered_at || item.closed_at);
+    return answered ? formatCalendarDate(answered, { month: 'short', day: 'numeric' }) : '—';
+  }
+  const days = Math.floor((Date.now() - asked.getTime()) / 86400000);
+  if (days <= 0) return 'today';
+  if (days === 1) return '1 day';
+  return `${days} days`;
+}
+
 export default function WorkspaceQA() {
   const { clientId } = useParams();
   const { user } = useAuth();
@@ -61,6 +83,25 @@ export default function WorkspaceQA() {
     closeItem,
     ask,
   } = useQaStore();
+  /**
+   * Outstanding first, oldest first within that — the order a broker triages in.
+   *
+   * The list previously rendered in whatever order the API returned, which came
+   * out as QA-005, 001, 003, 002, 004: no ordering a reader could name, and no
+   * control to change it. The one open question sat last.
+   */
+  const sortedItems = useMemo(() => {
+    const rank = (i) => (OUTSTANDING.has(i.status) ? 0 : i.status === 'answered' ? 1 : 2);
+    return [...items].sort((a, b) => {
+      const byState = rank(a) - rank(b);
+      if (byState !== 0) return byState;
+      const aAsked = a.asked_at || '';
+      const bAsked = b.asked_at || '';
+      // Oldest outstanding first; most recently resolved first.
+      return rank(a) === 0 ? aAsked.localeCompare(bAsked) : bAsked.localeCompare(aAsked);
+    });
+  }, [items]);
+
   const [asking, setAsking] = useState(false);
   const [nominating, setNominating] = useState(false);
   const [draft, setDraft] = useState({ title: '', body: '', category_id: '' });
@@ -232,29 +273,54 @@ export default function WorkspaceQA() {
             No questions yet. Ask the company something and it lands here.
           </div>
         ) : (
-          <ul className="divide-y divide-[#F3F4F6]">
-            {items.map((item) => (
-              <li key={item.id}>
-                <button
-                  type="button"
-                  onClick={() => openItem(item.id)}
-                  className="flex w-full min-h-[44px] flex-wrap items-center gap-3 p-4 text-left hover:bg-[#FAFAFA]"
-                >
-                  <span className="font-mono text-xs text-[#9CA3AF]">{item.reference}</span>
-                  <span className="flex-1 text-sm font-medium text-[#111827]">{item.title}</span>
-                  {item.category_label && (
-                    <span className="rounded-full bg-[#F3F4F6] px-2 py-0.5 text-xs text-[#4B5563]">
-                      {item.category_label}
+          <>
+            {/*
+              A header row, because the columns needed naming. The right-hand
+              column showed a bare name — "Dana Client" — on a thread the detail
+              view says was asked by someone else, so a reader could not tell
+              whether they were looking at the asker or the answerer.
+            */}
+            <div className="flex items-center gap-3 border-b border-[#F3F4F6] px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-[#9CA3AF]">
+              <span className="w-14">Ref</span>
+              <span className="flex-1">Question</span>
+              <span className="w-24 text-right">Asked</span>
+              <span className="w-20 text-center">Status</span>
+              <span className="w-36 text-right">Answering</span>
+            </div>
+            <ul className="divide-y divide-[#F3F4F6]">
+              {sortedItems.map((item) => (
+                <li key={item.id}>
+                  <button
+                    type="button"
+                    onClick={() => openItem(item.id)}
+                    className="flex w-full min-h-[44px] flex-wrap items-center gap-3 p-4 text-left hover:bg-[#FAFAFA]"
+                  >
+                    <span className="w-14 font-mono text-xs text-[#9CA3AF]">{item.reference}</span>
+                    <span className="flex-1 min-w-0">
+                      <span className="block truncate text-sm font-medium text-[#111827]">{item.title}</span>
+                      {item.category_label && (
+                        <span className="mt-0.5 inline-block rounded-full bg-[#F3F4F6] px-2 py-0.5 text-[11px] text-[#4B5563]">
+                          {item.category_label}
+                        </span>
+                      )}
                     </span>
-                  )}
-                  <StatusChip status={item.status} />
-                  <span className="text-xs text-[#9CA3AF]">
-                    {item.assignees.map((a) => a.name).filter(Boolean).join(', ') || 'Unassigned'}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
+                    {/*
+                      How long this has been outstanding — the question a Q&A
+                      list exists to answer, and the one it could not. The dates
+                      were in the payload all along; only the list ignored them.
+                    */}
+                    <span className="w-24 text-right text-xs text-[#6B7280]" title={item.asked_at ? formatCalendarDate(item.asked_at) : ''}>
+                      {describeAge(item)}
+                    </span>
+                    <span className="w-20 text-center"><StatusChip status={item.status} /></span>
+                    <span className="w-36 truncate text-right text-xs text-[#6B7280]">
+                      {item.assignees.map((a) => a.name).filter(Boolean).join(', ') || 'Unassigned'}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
         )}
       </div>
 

@@ -5,6 +5,24 @@ import { useAuth } from '../../context/AuthContext';
 import MessageNotificationsMenu from './MessageNotificationsMenu';
 import datahublogo from '../../assets/datahublogo.png';
 
+/**
+ * One word for the signed-in person's role.
+ *
+ * This was hardcoded to "Administrator" for every user, while the workspace
+ * sidebar called the same person "Broker" — so the product disagreed with itself
+ * about who you were depending on which chrome you happened to be looking at.
+ */
+function roleLabel(user) {
+  switch (user?.role) {
+    case 'admin': return 'Administrator';
+    case 'broker': return 'Broker';
+    case 'client': return 'Client';
+    case 'buyer': return 'Buyer';
+    case 'user': return 'User';
+    default: return '';
+  }
+}
+
 export default function Navbar({ onMenuClick }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
@@ -86,7 +104,7 @@ export default function Navbar({ onMenuClick }) {
                   </div>
                   <div className="hidden text-left sm:block">
                     <p className="text-[13px] font-semibold leading-none text-text-primary">{user?.name}</p>
-                    <p className="mt-0.5 text-[11px] leading-none text-text-muted">Administrator</p>
+                    <p className="mt-0.5 text-[11px] leading-none text-text-muted">{roleLabel(user)}</p>
                   </div>
                   <ChevronDown
                     size={14}

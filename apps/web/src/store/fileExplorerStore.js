@@ -267,13 +267,18 @@ export const useFileExplorerStore = create(
         await Promise.all(existing.map((entry) => deleteFolderAccess(entry.id)));
         await Promise.all(entries.map((entry) => {
           const subjectId = entry.subjectId || entry.id;
+          // Send the subject that applies and omit the other entirely. A grant
+          // names exactly one subject; sending `group_id: null` alongside a
+          // user grant is how this used to fail validation on every save.
+          //
+          // `created_by` is not sent: the server records the granting user from
+          // the session, which is the only trustworthy source for "who gave this
+          // party access".
           return createFolderAccess(folderId, {
-            user_id: entry.type === 'user' ? subjectId : null,
-            group_id: entry.type === 'group' ? subjectId : null,
+            ...(entry.type === 'group' ? { group_id: subjectId } : { user_id: subjectId }),
             can_read: !!entry.permissions.read,
             can_write: !!entry.permissions.write,
             can_download: !!entry.permissions.download,
-            created_by: get().createdBy || null,
           });
         }));
       },

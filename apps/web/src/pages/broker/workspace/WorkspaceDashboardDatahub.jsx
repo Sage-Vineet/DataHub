@@ -1191,8 +1191,13 @@ export default function WorkspaceDashboardDatahub() {
         <QBDisconnectedBanner />
         <div className="flex items-center justify-between flex-wrap gap-4">
           <div className="flex items-center gap-3 flex-wrap">
+            {/*
+              Named for the nav item that opens it. It was titled "Dashboard" —
+              the third thing in the product with that name, and not the word the
+              reader clicked to get here.
+            */}
             <h1 className="text-[24px] font-bold text-text-primary">
-              Dashboard
+              Analytics
             </h1>
             <button
               onClick={handleSync}

@@ -25,6 +25,7 @@ import {
   Users,
 } from 'lucide-react';
 import { getCompanyRequest, listCompanyActivity, listCompanyReminders, listCompanyRequests } from '../../../lib/api';
+import { formatCalendarDate, isPastDue } from '../../../lib/calendarDate';
 import StatusBadge from '../../../components/common/StatusBadge';
 
 // ─── Activity meta (mirrors WorkspaceActivity) ────────────────────────────────
@@ -218,14 +219,45 @@ export default function WorkspaceDealTracker() {
     return () => { cancelled = true; window.clearInterval(intervalId); };
   }, [clientId]);
 
+  /**
+   * A request's status as a reader should see it: overdue outranks pending, and
+   * a calendar-day comparison decides it (an instant comparison against a
+   * date-only string calls a request due today overdue, and lands a day early in
+   * any timezone behind UTC).
+   */
+  const displayStatus = (req) => {
+    const status = req.status;
+    if (status === 'completed' || status === 'blocked') return status;
+    return isPastDue(req.due_date || req.dueDate) ? 'overdue' : status;
+  };
+
+  /**
+   * One derivation, used by every counter on this page.
+   *
+   * Three panels here used to count the same requests three different ways and
+   * report 4, 3 and 6 for one set of six. Each was individually defensible —
+   * "open" and "pending" are not the same question — but nothing on screen said
+   * which question it was answering, and none of them accounted for blocked or
+   * overdue at all. Buckets are mutually exclusive and sum to the total, so the
+   * numbers can be reconciled by looking at them.
+   */
   const requestSummary = useMemo(() => {
-    const pending    = requests.filter((r) => r.status === 'pending').length;
-    const inReview   = requests.filter((r) => r.status === 'in-review').length;
-    const completed  = requests.filter((r) => r.status === 'completed').length;
-    const overdue    = requests.filter((r) =>
-      r.status !== 'completed' && new Date(r.due_date || r.dueDate) < new Date()
-    ).length;
-    return { pending, inReview, completed, overdue };
+    const counts = { pending: 0, inReview: 0, overdue: 0, blocked: 0, completed: 0 };
+    for (const r of requests) {
+      const status = displayStatus(r);
+      if (status === 'overdue') counts.overdue += 1;
+      else if (status === 'in-review') counts.inReview += 1;
+      else if (status === 'blocked') counts.blocked += 1;
+      else if (status === 'completed') counts.completed += 1;
+      else counts.pending += 1;
+    }
+    return {
+      ...counts,
+      total: requests.length,
+      // Everything still owed by someone. Named for what it means so it can be
+      // checked against the buckets rather than guessed at.
+      outstanding: counts.pending + counts.inReview + counts.overdue + counts.blocked,
+    };
   }, [requests]);
 
   const activeReminders = useMemo(
@@ -268,10 +300,14 @@ export default function WorkspaceDealTracker() {
       {/* ── Stat cards ── */}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {[
-          { label: 'Open Requests',    value: requestSummary.pending + requestSummary.inReview, icon: ClipboardList, tone: '#05164D', bg: '#E8ECF7' },
-          { label: 'Active Reminders', value: activeReminders.length,  icon: Bell,          tone: '#742982', bg: '#F2E6F6' },
-          { label: 'Completed',        value: requestSummary.completed, icon: CheckCircle2,  tone: '#476E2C', bg: '#E8F3D8' },
+          // Every card names the bucket it counts, and the buckets reconcile:
+          // outstanding + completed = total. Previously "Open Requests" (4),
+          // "Pending" (3) and the six-row list below disagreed with no way to
+          // tell which question any of them was answering.
+          { label: `Outstanding of ${requestSummary.total}`, value: requestSummary.outstanding, icon: ClipboardList, tone: '#05164D', bg: '#E8ECF7' },
           { label: 'Overdue',          value: requestSummary.overdue,   icon: AlertCircle,   tone: '#C62026', bg: '#FDECEC' },
+          { label: 'Completed',        value: requestSummary.completed, icon: CheckCircle2,  tone: '#476E2C', bg: '#E8F3D8' },
+          { label: 'Active Reminders', value: activeReminders.length,  icon: Bell,          tone: '#742982', bg: '#F2E6F6' },
         ].map((card) => (
           <div key={card.label} className="rounded-2xl bg-white p-5 shadow-card">
             <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl" style={{ background: card.bg }}>
@@ -289,44 +325,32 @@ export default function WorkspaceDealTracker() {
         {/* LEFT — company overview + requests */}
         <div className="space-y-5">
 
-          {/* Company overview */}
-          <div className="rounded-2xl bg-white p-5 shadow-card">
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="font-semibold text-[#050505]">Company Overview</h2>
-              <button
-                onClick={() => navigate(`/broker/client/${clientId}/dataroom/requests`)}
-                className="text-xs font-semibold text-[#8BC53D] hover:underline"
-              >
-                Open DataRoom
-              </button>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              {[
-                { label: 'Company Name',  value: company?.project_name || company?.name || '—', icon: Building2 },
-                { label: 'Industry',      value: company?.industry || '—',                       icon: Building2 },
-                { label: 'Open Requests', value: requestSummary.pending + requestSummary.inReview, icon: ClipboardList },
-                { label: 'Active Reminders', value: activeReminders.length,                        icon: Bell },
-                { label: 'Completed Requests', value: requestSummary.completed,                    icon: CheckCircle },
-                { label: 'Activity Events', value: activityFeed.length,                            icon: Activity },
-              ].map((row) => (
-                <div key={row.label} className="flex items-center justify-between rounded-xl border border-gray-100 px-4 py-3">
-                  <span className="flex items-center gap-2 text-sm text-[#6D6E71]">
-                    <row.icon size={14} className="text-[#A5A5A5]" />
-                    {row.label}
-                  </span>
-                  <span className="text-sm font-semibold text-[#050505]">{loading ? '—' : row.value}</span>
-                </div>
-              ))}
-            </div>
-          </div>
+          {/*
+            The "Company Overview" panel stood here. It was six cells repeating
+            the page header (name, industry) and the KPI strip directly above it
+            (open, completed, reminders), plus an Activity Events count that was
+            always 0. Removed rather than reworked: a panel whose every value
+            appears elsewhere on the same screen has nothing to say.
+          */}
 
           {/* DataRoom analytics strip */}
           <div className="rounded-2xl bg-white p-5 shadow-card">
-            <h2 className="mb-4 font-semibold text-[#050505]">DataRoom Analytics</h2>
+            {/*
+              Called "DataRoom Analytics" until it was read carefully: it reports
+              request statuses and deal activity, neither of which is analytics
+              about the data room. Blocked was missing entirely, so the buckets
+              could not add up to the six rows below.
+            */}
+            <h2 className="mb-4 font-semibold text-[#050505]">Deal Activity</h2>
             <div className="grid gap-4 sm:grid-cols-3">
               {[
+                // The five workflow buckets, all of them. They are mutually
+                // exclusive and sum to the request total, so a reader can check
+                // them against the list below rather than take them on trust.
                 { label: 'Pending',     value: requestSummary.pending,   color: '#F68C1F', bg: '#FEF3C7' },
+                { label: 'Overdue',     value: requestSummary.overdue,   color: '#C62026', bg: '#FDECEC' },
                 { label: 'In Review',   value: requestSummary.inReview,  color: '#00648F', bg: '#E5F4FB' },
+                { label: 'Blocked',     value: requestSummary.blocked,   color: '#8A5E10', bg: '#FAF0DC' },
                 { label: 'Completed',   value: requestSummary.completed, color: '#476E2C', bg: '#E8F3D8' },
                 { label: 'Uploads',     value: activitySummary.uploads,  color: '#05164D', bg: '#E8ECF7' },
                 { label: 'Messages',    value: activitySummary.messages, color: '#742982', bg: '#F2E6F6' },
@@ -369,10 +393,16 @@ export default function WorkspaceDealTracker() {
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold text-[#050505]">{req.title || req.name}</p>
                     <p className="mt-0.5 text-xs text-[#A5A5A5]">
-                      {req.category} · Due {req.due_date || req.dueDate}
+                      {req.category} · Due {formatCalendarDate(req.due_date || req.dueDate)}
                     </p>
                   </div>
-                  <StatusBadge value={req.status} size="xs" />
+                  {/*
+                    Derived, not raw. The API stores `pending` for a request whose
+                    due date has passed; overdue is a function of that date, and
+                    computing it here is what stops this panel from disagreeing
+                    with the requests table about the same row.
+                  */}
+                  <StatusBadge value={displayStatus(req)} size="xs" />
                 </div>
               ))}
             </div>
@@ -390,7 +420,7 @@ export default function WorkspaceDealTracker() {
         <div className="flex items-center gap-3 rounded-2xl border border-[#F68C1F]/30 bg-[#FAC086]/40 px-4 py-3">
           <AlertCircle size={16} className="text-[#b45e08] flex-shrink-0" />
           <p className="text-sm font-medium text-[#b45e08]">
-            <strong>{requestSummary.overdue} overdue request{requestSummary.overdue !== 1 ? 's' : ''}</strong> need follow-up for this company.
+            <strong>{requestSummary.overdue} overdue request{requestSummary.overdue !== 1 ? 's' : ''}</strong> {requestSummary.overdue === 1 ? 'needs' : 'need'} follow-up for this company.
           </p>
           <button
             onClick={() => navigate(`/broker/client/${clientId}/dataroom/requests`)}

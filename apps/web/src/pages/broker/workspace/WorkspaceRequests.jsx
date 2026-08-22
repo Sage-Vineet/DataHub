@@ -41,6 +41,8 @@ import {
   updateRequestNarrative,
 } from '../../../lib/api';
 import { CLIENT_SUB_ROLES, ROLE_META, inferSubRole } from '../../../lib/roles';
+import { formatCalendarDate, isPastDue } from '../../../lib/calendarDate';
+import { plural } from '../../../lib/plural';
 import NewRequestModal from '../../../components/NewRequestModal';
 import RequestDocumentPreviewModal from '../../../components/RequestDocumentPreviewModal';
 import { buildFolderOptionsFromTree } from '../../../lib/folderOptions';
@@ -372,9 +374,11 @@ function normalizeWorkflowStatus(status) {
 
 function getDisplayStatus(workflowStatus, dueDate) {
   if (workflowStatus === 'blocked') return 'blocked';
-  const date = new Date(dueDate);
-  const isOverdue = date < new Date() && workflowStatus !== 'completed';
-  if (isOverdue) return 'overdue';
+  // A due date is a calendar day. Comparing it as an instant made a request due
+  // today read as overdue from one minute past midnight, and — because
+  // `new Date('2026-08-19')` is UTC midnight — made the whole comparison land a
+  // day early in any timezone behind UTC.
+  if (dueDate && isPastDue(dueDate) && workflowStatus !== 'completed') return 'overdue';
   return workflowStatus;
 }
 
@@ -409,17 +413,27 @@ function getPriorityMeta(priority) {
   };
 }
 
+/**
+ * What a request expects back, in words.
+ *
+ * The column rendered the internal vocabulary — "Upload", "Narrative", "Both" —
+ * with no legend anywhere in the product. "Both" means the request wants a
+ * document AND a written answer, which a reader could only discover by opening
+ * the request and inferring it.
+ */
 function normalizeType(item) {
   const type = (item.responseType || '').toLowerCase();
   const hasFolderBinding = Boolean((item.subLabel || '').trim());
-  if (type === 'upload') {
-    return hasFolderBinding ? 'Both' : item.responseType;
-  }
-  if (type === 'both') return item.responseType;
-  if (type === 'narrative') {
-    return hasFolderBinding ? 'Both' : item.responseType;
-  }
-  return hasFolderBinding ? 'Both' : 'Narrative';
+
+  const resolved =
+    type === 'both' ? 'both'
+    : type === 'upload' ? (hasFolderBinding ? 'both' : 'upload')
+    : type === 'narrative' ? (hasFolderBinding ? 'both' : 'narrative')
+    : hasFolderBinding ? 'both' : 'narrative';
+
+  if (resolved === 'both') return 'Document + answer';
+  if (resolved === 'upload') return 'Document';
+  return 'Written answer';
 }
 
 function formatToday() {
@@ -621,8 +635,12 @@ function RequestRow({ item, onView, onApprove, approving }) {
       <td className="px-4 py-3 text-center text-sm font-semibold text-[#050505]">{item.linkedDocuments.length}</td>
       <td className="px-4 py-3"><StatusBadge status={item.status} /></td>
       <td className="px-4 py-3 text-center">
+        {/*
+          "Yes" answered a question the column header never asked. The header is
+          now "Client sees" and the value says what is true of the request.
+        */}
         <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${item.visible ? 'bg-[#E6F3D3] text-[#476E2C]' : 'bg-gray-100 text-[#A5A5A5]'}`}>
-          {item.visible ? 'Yes' : 'No'}
+          {item.visible ? 'Visible' : 'Hidden'}
         </span>
       </td>
       <td className="px-4 py-3 text-center">
@@ -663,11 +681,11 @@ function RequestTable({ rows, onView, onApprove, approvingRequestId }) {
         <thead>
           <tr className="bg-gray-50 border-b border-gray-100">
             <th className="px-4 py-3 text-left text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Request Name</th>
-            <th className="px-4 py-3 text-left text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Type</th>
+            <th className="px-4 py-3 text-left text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Expects</th>
             <th className="px-4 py-3 text-left text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Priority</th>
             <th className="px-4 py-3 text-center text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Documents Count</th>
             <th className="px-4 py-3 text-left text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Status</th>
-            <th className="px-4 py-3 text-center text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Client Visibility</th>
+            <th className="px-4 py-3 text-center text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Client sees</th>
             <th className="px-4 py-3 text-center text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Action</th>
           </tr>
         </thead>
@@ -693,7 +711,7 @@ function CategoryGroupedTable({ grouped, onView, onApprove, approvingRequestId }
       <table className="w-full min-w-[980px]">
         <thead>
           <tr className="bg-gray-50 border-b border-gray-100">
-            {['Request Name', 'Type', 'Priority', 'Documents', 'Status', 'Visibility', 'Action'].map(h => (
+            {['Request Name', 'Expects', 'Priority', 'Documents', 'Status', 'Client sees', 'Action'].map(h => (
               <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">{h}</th>
             ))}
           </tr>
@@ -714,7 +732,7 @@ function CategoryGroupedTable({ grouped, onView, onApprove, approvingRequestId }
                         <Icon size={14} style={{ color: meta.color }} />
                       </div>
                       <span className="font-bold text-sm" style={{ color: meta.color }}>{g.category}</span>
-                      <span className="text-xs text-[#6D6E71]">· {rows.length} requests · {completed} completed</span>
+                      <span className="text-xs text-[#6D6E71]">· {plural(rows.length, 'request')} · {completed} completed</span>
                       <div className="ml-auto flex items-center gap-2">
                         <span className="text-xs font-semibold" style={{ color: meta.color }}>{pct}%</span>
                         <div className="w-24 h-1.5 rounded-full overflow-hidden" style={{ background: meta.bg }}>
@@ -888,8 +906,9 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
   if (!request) return null;
 
   const priority = getPriorityMeta(request.priority);
-  const due = new Date(request.dueDate);
-  const isOverdue = due < new Date() && request.workflowStatus !== 'completed' && request.workflowStatus !== 'blocked';
+  const isOverdue = isPastDue(request.dueDate)
+    && request.workflowStatus !== 'completed'
+    && request.workflowStatus !== 'blocked';
   const currentStatus = getDisplayStatus(request.workflowStatus, request.dueDate);
   const CategoryIcon = CATEGORY_META[request.category].icon;
   const needsApproval = request.submissionSource === 'user' && request.approvalStatus === 'pending';
@@ -898,11 +917,16 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
   const canEditResponse = request.workflowStatus === 'in-review';
   const isCompleted = request.workflowStatus === 'completed';
   const isBlocked = request.workflowStatus === 'blocked';
+  /**
+   * Whether documents can be attached. Any state except completed — a completed
+   * request is a closed record, and everything else is still being worked.
+   */
+  const canAttachDocuments = !isCompleted;
 
   const allLinkedNames = allRequests.flatMap(r => r.linkedDocuments.map(d => d.name.toLowerCase()));
 
   const addFiles = (files) => {
-    if (!canEditResponse) return;
+    if (!canAttachDocuments) return;
     const duplicates = files.map(f => f.name).filter(name => allLinkedNames.includes(name.toLowerCase()));
     setDuplicateWarning(duplicates);
 
@@ -1101,12 +1125,31 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
               </div>
             </div>
 
-            {canEditResponse && (request.responseType === 'Upload' || request.responseType === 'Both') && (
+            {/*
+              Attaching is available on any open request, not only one the client
+              has already responded to.
+
+              This used to require `canEditResponse`, which is true only in the
+              'in-review' state — a state a request reaches when the CLIENT
+              submits. So a broker who received the audited statements by email,
+              or pulled them from the data room, had no way to attach them: the
+              panel below said "Linked Documents (0)" with no affordance, on a
+              request that stayed pending forever. Documents arrive out of band
+              all the time; the tool has to accept that.
+            */}
+            {canAttachDocuments && (
               <FileUpload onAddFiles={addFiles} duplicateNames={duplicateWarning} />
             )}
 
             <div className="bg-white rounded-2xl shadow-card p-5">
               <h3 className="font-semibold text-[#050505] mb-3">Linked Documents ({request.linkedDocuments.length})</h3>
+              {request.linkedDocuments.length === 0 && (
+                <p className="mb-1 text-sm text-[#6D6E71]">
+                  {canAttachDocuments
+                    ? 'Nothing attached yet. Attach what satisfies this request so it is on the record against the ask.'
+                    : 'No documents were attached to this request.'}
+                </p>
+              )}
               <div className="space-y-2">
                 {request.linkedDocuments.map(doc => (
                   <div key={doc.id} className="flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
@@ -1150,7 +1193,7 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
                   { label: 'Current Status', value: <StatusBadge status={currentStatus} /> },
                   { label: 'Priority', value: <span className="inline-flex rounded-full px-2.5 py-1 text-xs font-bold" style={{ background: priority.bg, color: priority.color }}>{priority.label}</span> },
                   { label: 'Category', value: <span className="inline-flex items-center gap-1.5 font-semibold text-[#050505]"><CategoryIcon size={14} style={{ color: CATEGORY_META[request.category].color }} />{request.category}</span> },
-                  { label: 'Due Date', value: <span className={`font-semibold ${isOverdue ? 'text-[#B91C1C]' : 'text-[#050505]'}`}>{request.dueDate}</span> },
+                  { label: 'Due Date', value: <span className={`font-semibold ${isOverdue ? 'text-[#B91C1C]' : 'text-[#050505]'}`}>{formatCalendarDate(request.dueDate)}</span> },
                   { label: 'Response Type', value: <span className="font-semibold text-[#050505]">{request.responseType}</span> },
                   { label: 'Assigned To', value: (
                     <div className="flex items-center gap-2">
@@ -1264,24 +1307,37 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
                     {unblocking ? 'Unblocking…' : 'Unblock Request'}
                   </button>
                 ) : (
+                  /*
+                    Blocking is reversible — the button right above it unblocks —
+                    so it does not get the treatment reserved for deletion. As a
+                    filled red button it was the heaviest thing on the page,
+                    outweighing "Save Request Details", which is what the screen
+                    is actually for.
+                  */
                   <button
                     onClick={() => onUpdateRequest(request.id, { workflowStatus: 'blocked', updatedAt: formatToday() })}
-                    className="w-full py-2.5 rounded-xl bg-red-500 hover:bg-red-600 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2"
+                    className="w-full py-2.5 rounded-xl border border-amber-300 bg-amber-50 text-sm font-semibold text-amber-800 hover:bg-amber-100 transition-colors flex items-center justify-center gap-2"
                   >
                     <AlertTriangle size={14} /> Block Request
                   </button>
                 )
               )}
-              <button
-                onClick={() => onDeleteRequest?.(request.id)}
-                disabled={deletingRequestId === request.id}
-                className="w-full rounded-xl border border-[#FECACA] bg-[#FEF2F2] py-2.5 text-sm font-semibold text-[#B91C1C] transition-colors hover:bg-[#FEE2E2] disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                <span className="inline-flex items-center justify-center gap-2">
-                  <Trash2 size={14} />
-                  {deletingRequestId === request.id ? 'Deleting...' : 'Delete Request'}
-                </span>
-              </button>
+              {/*
+                Deletion is the only irreversible action here, and it was the
+                second-heaviest element on the page. It keeps its red, loses its
+                weight, and sits below a rule so it is not adjacent to the things
+                a broker clicks all day.
+              */}
+              <div className="pt-2 border-t border-gray-100">
+                <button
+                  onClick={() => onDeleteRequest?.(request.id)}
+                  disabled={deletingRequestId === request.id}
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#B91C1C] transition-colors hover:underline disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <Trash2 size={13} />
+                  {deletingRequestId === request.id ? 'Deleting…' : 'Delete this request'}
+                </button>
+              </div>
               {!!request.reminderHistory?.length && (
                 <div className="pt-2 border-t border-gray-100">
                   <p className="text-xs font-semibold text-[#6D6E71] mb-1.5 flex items-center gap-1"><Bell size={12} /> Reminder History</p>
@@ -1806,8 +1862,8 @@ export default function WorkspaceRequests() {
                 <div className="flex items-center gap-3">
                   <span className="text-xs text-[#A5A5A5]">
                     {hasTableFilters
-                      ? `${tableFilteredTotal} of ${requestState.length} requests`
-                      : `${requestState.length} requests`}
+                      ? `${tableFilteredTotal} of ${plural(requestState.length, 'request')}`
+                      : plural(requestState.length, 'request')}
                   </span>
                   <button
                     onClick={() => {

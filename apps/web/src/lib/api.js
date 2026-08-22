@@ -118,6 +118,65 @@ export function setStoredToken(token) {
 }
 
 
+/**
+ * How long a request may run before the client gives up on it.
+ *
+ * Set below the legacy Supabase retry budget (observed: ~24.5s for three
+ * attempts), so a reader is told the truth well before the server finishes
+ * deciding it. Long operations pass `timeoutMs: 0` to opt out.
+ */
+const DEFAULT_TIMEOUT_MS = 15000;
+
+/**
+ * Work that is legitimately slow: uploading, parsing, syncing, AI extraction and
+ * report generation. These are exempt from the client timeout — cutting them off
+ * would break the feature rather than protect the reader, and they already show
+ * their own progress. Everything else is a read that should be quick.
+ */
+const LONG_RUNNING = [
+  "/upload",
+  "/manual-gl/",
+  "/manual-report-uploads/",
+  "/manual-upload/",
+  "/process-gl",
+  "/ebitda/generate-comments",
+  "/sync",
+];
+
+function isLongRunning(path) {
+  return LONG_RUNNING.some((fragment) => path.includes(fragment));
+}
+
+/**
+ * Turn a server error into something a person can act on.
+ *
+ * Handlers on the un-migrated path surface their internals: a failed Supabase
+ * call arrives as the string "TypeError: fetch failed", which was rendered
+ * verbatim under "Couldn’t load the Chart of Accounts". That tells the reader
+ * nothing and reads like a crash.
+ *
+ * The original text is preserved on `error.rawMessage` for logs. Messages that
+ * were clearly written for a user are passed through untouched.
+ */
+export function humanizeApiError(raw, status) {
+  const text = String(raw || '').trim();
+
+  // A stack-y or exception-shaped message is internal detail, not an explanation.
+  const looksInternal =
+    /^[A-Za-z]*Error\b/.test(text) ||
+    /fetch failed|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|socket hang up|getaddrinfo/i.test(text);
+
+  if (!text || looksInternal) {
+    if (status === 401) return 'Your session has expired. Sign in again to continue.';
+    if (status === 403) return 'You do not have access to this.';
+    if (status === 404) return 'That is no longer available.';
+    if (status >= 500) return 'The server could not complete this request. It may be temporarily unavailable.';
+    return 'That request could not be completed.';
+  }
+
+  return text;
+}
+
 export async function request(path, options = {}) {
   const token = options.token ?? getStoredToken();
 
@@ -144,13 +203,42 @@ export async function request(path, options = {}) {
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const response = await fetch(buildUrl(path), {
-    method: options.method || 'GET',
-    headers,
-    body: options.body ? JSON.stringify(options.body) : undefined,
-    cache: 'no-store',
-    credentials: options.credentials || 'include',
-  });
+  // Fail before the server does.
+  //
+  // The un-migrated financial handlers still try Supabase on every read. Without
+  // credentials that fetch fails, retries three times, and returns 500 after as
+  // much as 24 seconds — during which the caller shows a spinner and the reader
+  // has no idea anything is wrong. Whatever the server eventually decides, a
+  // person needs to be told sooner than that.
+  //
+  // Opt out with `timeoutMs: 0` for genuinely long operations (uploads, sync).
+  const timeoutMs = options.timeoutMs ?? (isLongRunning(path) ? 0 : DEFAULT_TIMEOUT_MS);
+  const controller = timeoutMs > 0 ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+
+  let response;
+  try {
+    response = await fetch(buildUrl(path), {
+      method: options.method || 'GET',
+      headers,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      cache: 'no-store',
+      credentials: options.credentials || 'include',
+      signal: controller?.signal,
+    });
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      const timeout = new Error(
+        `This is taking longer than expected and was stopped after ${Math.round(timeoutMs / 1000)}s. The server may be unavailable.`,
+      );
+      timeout.status = 0;
+      timeout.timedOut = true;
+      throw timeout;
+    }
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 
   if (response.status === 204) {
     return null;
@@ -159,8 +247,12 @@ export async function request(path, options = {}) {
   const data = await response.json().catch(() => null);
 
   if (!response.ok) {
-    const error = new Error(data?.error || data?.message || 'Request failed');
+    const raw = data?.error || data?.message || '';
+    const error = new Error(humanizeApiError(raw, response.status));
     error.status = response.status;
+    // The original text is kept for logs and bug reports; only the message a
+    // person reads is rewritten.
+    error.rawMessage = raw;
     if (data && typeof data === 'object') {
       error.payload = data;
     }

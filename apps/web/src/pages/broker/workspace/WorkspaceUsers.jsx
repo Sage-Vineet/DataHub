@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { formatCalendarDate } from '../../../lib/calendarDate';
 import { createPortal } from 'react-dom';
 import { useParams } from 'react-router-dom';
 import {
@@ -11,6 +12,7 @@ import {
   createUserRequest, deleteUserRequest, listCompaniesRequest,
   listUsersRequest, updateUserRequest, triggerAutoCreateMessageGroups,
   findUserByEmailRequest, addUserToCompaniesRequest, inviteBrokerToTeamRequest,
+  forgotPasswordRequest,
 } from '../../../lib/api';
 import {
   BROKER_SUB_ROLES, BUYER_SUB_ROLES, CLIENT_SUB_ROLES, ROLE_META,
@@ -27,7 +29,14 @@ const initials = (name = '') => name.split(' ').filter(Boolean).map((p) => p[0])
 const isValidEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v || '').trim());
 const fmtPhone = (raw) => { const d = (raw || '').replace(/\D/g, '').slice(0, 10); if (d.length <= 3) return d; if (d.length <= 6) return `(${d.slice(0, 3)}) ${d.slice(3)}`; return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`; };
 const fmtApiError = (err) => { const m = String(err?.message || err || ''); if (/duplicate|already exists|unique constraint|email.*taken/i.test(m)) return 'A user with this email already exists.'; return m || 'Something went wrong.'; };
-const fmtDate = (v) => { try { return new Date(v).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }); } catch { return '—'; } };
+/**
+ * `new Date(undefined).toLocaleDateString()` returns the string "Invalid Date"
+ * — it does not throw — so the try/catch this replaces never fired, and every
+ * team card read "Joined Invalid Date". The value was missing because the users
+ * API did not carry `created_at` at all; it does now, and this renders "—" when
+ * a row genuinely has none.
+ */
+const fmtDate = (v) => formatCalendarDate(v, { day: '2-digit', month: 'short', year: 'numeric' }, 'en-GB', '—');
 
 function normalizeUser(u) {
   if (!u) return null;
@@ -465,6 +474,19 @@ function TeamMemberRow({ member, index, onChange, onRemove, roleOptions }) {
 
 function UserFormModal({ initial, roleOptions, dbRole, onSave, onClose, onDelete, submitting, error, showTeamMembers, teamMemberRoleOptions = [], companyId }) {
   const isEdit = !!initial?.id;
+  // Reset-link state for the edit form. Kept local: it is a one-shot action, not
+  // part of the record being edited, so it must not participate in Save.
+  const [resetState, setResetState] = useState('idle');
+  const onSendReset = async () => {
+    if (!form.email) return;
+    setResetState('sending');
+    try {
+      await forgotPasswordRequest({ email: form.email });
+      setResetState('sent');
+    } catch {
+      setResetState('failed');
+    }
+  };
   const [form, setForm] = useState(() => {
     const s = initial || EMPTY_FORM;
     const { firstName, lastName } = s.name ? splitName(s.name) : { firstName: s.firstName || '', lastName: s.lastName || '' };
@@ -604,12 +626,49 @@ function UserFormModal({ initial, roleOptions, dbRole, onSave, onClose, onDelete
             </div>
           )}
 
-          {/* Password */}
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 mb-1.5">{isEdit ? 'Password Reset' : 'Password'}{!isEdit && ' *'}</label>
-            <input type="password" value={form.password} onChange={(e) => setField({ password: e.target.value })} placeholder={isEdit ? 'Leave blank to keep existing' : 'Min 8 characters'} className={inputCls('password')} />
-            {fe.password && <p className="text-xs text-red-500 mt-1">{fe.password}</p>}
-          </div>
+          {/*
+            Password — on create only.
+
+            Editing a user used to carry a free-text "Password Reset" field
+            labelled "Leave blank to keep existing", sitting between Role and
+            Status. A broker updating a client's job title was one field away
+            from setting that person's password, and knew it afterwards. Nobody
+            should be able to set someone else's credential, and a routine
+            profile edit is the last place that capability belongs.
+
+            Recovery goes through the reset flow the product already has: the
+            person receives a link and chooses their own password, which the
+            broker never sees.
+          */}
+          {!isEdit ? (
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1.5">Password *</label>
+              <input type="password" value={form.password} onChange={(e) => setField({ password: e.target.value })} placeholder="Min 8 characters" className={inputCls('password')} />
+              {fe.password && <p className="text-xs text-red-500 mt-1">{fe.password}</p>}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
+              <p className="text-xs font-semibold text-gray-600">Password</p>
+              <p className="mt-1 text-xs text-gray-500">
+                Only {form.name || 'this person'} can set their own password. Send them a reset
+                link and they will choose a new one.
+              </p>
+              <button
+                type="button"
+                onClick={onSendReset}
+                disabled={resetState === 'sending' || !form.email}
+                className="mt-2.5 inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+              >
+                {resetState === 'sending' ? 'Sending…' : 'Send password reset'}
+              </button>
+              {resetState === 'sent' && (
+                <p className="mt-2 text-xs text-green-700">Reset link sent to {form.email}.</p>
+              )}
+              {resetState === 'failed' && (
+                <p className="mt-2 text-xs text-red-500">Could not send the reset link. Try again.</p>
+              )}
+            </div>
+          )}
 
           {/* Status (edit only) */}
           {isEdit && (
@@ -657,20 +716,28 @@ function UserFormModal({ initial, roleOptions, dbRole, onSave, onClose, onDelete
         </div>
 
         <div className="px-6 py-4 border-t border-gray-100 flex flex-col gap-3 flex-shrink-0">
+          {/*
+            Cancel and Save sit together; Delete is separated onto its own row
+            below a rule. It used to be immediately left of Cancel — the two
+            adjacent buttons a reader reaches for when they mean "get me out of
+            here", one of which destroys the record. Removing someone from a deal
+            is not a sibling of dismissing a dialog.
+          */}
           <div className="flex gap-3">
-            {/* Delete button — only shown when editing, sits on the left */}
-            {isEdit && onDelete && (
-              <button
-                onClick={() => onDelete(initial)}
-                disabled={submitting}
-                className="px-4 py-2.5 rounded-xl border border-red-200 text-sm font-semibold text-red-500 hover:bg-red-50 transition-colors disabled:opacity-50 flex-shrink-0"
-              >
-                Delete
-              </button>
-            )}
             <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50">Cancel</button>
             <button onClick={handleSave} disabled={submitting} className="flex-1 py-2.5 rounded-xl bg-[#8BC53D] hover:bg-[#476E2C] disabled:opacity-50 text-white text-sm font-bold transition-colors">{submitting ? 'Saving...' : isEdit ? 'Save Changes' : 'Add User'}</button>
           </div>
+          {isEdit && onDelete && (
+            <div className="border-t border-gray-100 pt-3">
+              <button
+                onClick={() => onDelete(initial)}
+                disabled={submitting}
+                className="text-xs font-semibold text-red-500 hover:text-red-600 hover:underline transition-colors disabled:opacity-50"
+              >
+                Remove {form.name || 'this person'} from the deal
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>,
@@ -978,7 +1045,7 @@ export default function WorkspaceUsers() {
         <>
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-2xl font-bold text-[#05164D]">Users</h1>
+              <h1 className="text-2xl font-bold text-[#05164D]">Deal Team</h1>
               <p className="text-sm text-gray-500 mt-0.5">{allUsers.length} total · {companyInfo?.name || ''}</p>
             </div>
           </div>

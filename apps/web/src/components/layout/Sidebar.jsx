@@ -12,6 +12,7 @@ import {
   MoreHorizontal,
   FileText,
   MessageSquare,
+  MessagesSquare,
   Settings,
 } from "lucide-react";
 import datahublogo from "../../assets/datahublogo.png";
@@ -23,6 +24,11 @@ const brokerNav = [
 const clientNav = [
   { label: "Dashboard", icon: LayoutDashboard, to: "/client/dashboard" },
   { label: "My Requests", icon: ClipboardList, to: "/client/requests" },
+  // Questions the broker has put to this company. The page at /client/qa was
+  // built and worked, and appeared in no navigation and on no dashboard — so a
+  // question could be asked, categorised and routed to a nominee who then had
+  // no way to reach it. The Q&A loop was closed end to end for want of a link.
+  { label: "Questions", icon: MessagesSquare, to: "/client/qa" },
   { label: "Documents", icon: FileText, to: "/client/upload" },
   { label: "CIM Questionnaire", icon: ClipboardList, to: "/client/cim-questionnaire" },
   { label: "Messages", icon: MessageSquare, to: "/client/messages" },
@@ -37,7 +43,13 @@ export default function Sidebar({ onClose }) {
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const userMenuRef = useRef(null);
   const nav = user?.role === "broker" ? brokerNav : clientNav;
-  const accountLabel = user?.role === "broker" ? "Administrator" : user?.role === "user" ? "User" : "Client";
+  // Same vocabulary as the top bar — a broker is a Broker in both places.
+  const accountLabel =
+    user?.role === "admin" ? "Administrator"
+    : user?.role === "broker" ? "Broker"
+    : user?.role === "buyer" ? "Buyer"
+    : user?.role === "user" ? "User"
+    : "Client";
 
   const handleLogout = async () => {
     await logout();

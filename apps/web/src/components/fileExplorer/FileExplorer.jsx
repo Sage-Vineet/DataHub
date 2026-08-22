@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { useFileExplorerStore, findById, getPathTo } from '../../store/fileExplorerStore';
 import { useFeature } from '../../context/useFeature';
+import { plural } from '../../lib/plural';
 import DocumentDetailDrawer from './DocumentDetailDrawer';
 import {
   fetchProtectedFileBlob,
@@ -23,7 +24,20 @@ import { strFromU8, unzipSync } from 'fflate';
 // ── File Type Helpers ────────────────────────────────────────────────────────
 const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg'];
 const PDF_EXTENSIONS = ['pdf'];
-const SPREADSHEET_EXTENSIONS = ['xls', 'xlsx'];
+/**
+ * CSV belongs here.
+ *
+ * `getDocumentTypeLabel` calls a .csv a "Spreadsheet" (line ~64) and the preview
+ * panel promises that "PDFs, spreadsheets, Word documents, and images render
+ * inside this preview" — while this list excluded csv, so the same panel that
+ * typed the file as a spreadsheet and said spreadsheets render then reported
+ * "Preview not available for this file type". Three statements about one file,
+ * two of them contradicting the third.
+ *
+ * SheetJS parses CSV through the same `XLSX.read` path as xls/xlsx, so this is
+ * a one-word fix rather than a new code path.
+ */
+const SPREADSHEET_EXTENSIONS = ['xls', 'xlsx', 'csv'];
 const WORD_EXTENSIONS = ['doc', 'docx'];
 const TEXT_EXTENSIONS = ['txt', 'md', 'json'];
 const PREVIEWABLE_EXTENSIONS = [
@@ -1336,6 +1350,15 @@ function getAccessSubjectKey(subject) {
   return `${subject.type || 'user'}:${subject.subjectId || subject.id}`;
 }
 
+/** Which side of the deal someone is on, for the access picker. */
+function describeAccessRole(user) {
+  const effective = (user.effective_role || user.role || '').toLowerCase();
+  const sub = (user.sub_role || '').toLowerCase();
+  if (sub === 'buyer' || effective === 'user') return 'Buyer';
+  if (effective === 'client') return 'Client team';
+  return effective ? effective.charAt(0).toUpperCase() + effective.slice(1) : '';
+}
+
 function ShareAccessModal({ isOpen, folder, entries, people, onSave, onClose }) {
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState([]);
@@ -2005,7 +2028,18 @@ function PreviewModal({ onDownloadFile }) {
   const isText = TEXT_EXTENSIONS.includes(normalizedExt);
   const isSpreadsheet = SPREADSHEET_EXTENSIONS.includes(normalizedExt);
   const isWordDoc = WORD_EXTENSIONS.includes(normalizedExt);
-  const canPreview = canInlinePreview(previewItem?.ext) && Boolean(previewItem?.fileUrl);
+  const typeIsPreviewable = canInlinePreview(previewItem?.ext);
+  const hasStoredFile = Boolean(previewItem?.fileUrl);
+  const canPreview = typeIsPreviewable && hasStoredFile;
+
+  /** Why nothing is rendering — stated accurately, because the three cases differ. */
+  const previewUnavailableReason = previewError
+    ? previewError
+    : !typeIsPreviewable
+      ? `Preview isn’t supported for ${(previewItem?.ext || 'this').toString().toUpperCase()} files. Download it to open in another application.`
+      : !hasStoredFile
+        ? 'There is no file stored for this document yet, so there is nothing to preview.'
+        : 'This file could not be read.';
 
   useEffect(() => {
     let revokedUrl = '';
@@ -2168,11 +2202,16 @@ function PreviewModal({ onDownloadFile }) {
                   </div>
                   <div>
                     <p className="text-lg font-semibold text-[#050505]">{previewItem.name}</p>
-                    <p className="text-sm text-[#6D6E71] mt-1">
-                      {canPreview
-                        ? 'Preview not available for this file type.'
-                        : 'Preview not available for this file type.'}
-                    </p>
+                    {/*
+                      Both branches of this ternary used to read "Preview not
+                      available for this file type" — a placeholder nobody
+                      finished, which told a CSV owner their file type was
+                      unsupported when the panel had already labelled it a
+                      Spreadsheet and promised spreadsheets render. The reason
+                      matters: an unsupported type is permanent, a missing file
+                      is something to go and fix.
+                    */}
+                    <p className="text-sm text-[#6D6E71] mt-1">{previewUnavailableReason}</p>
                   </div>
                 </div>
               )}
@@ -2385,16 +2424,31 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
       .then(([users, groups]) => {
         if (cancelled) return;
         const people = users
+          // Everyone on the deal who is not a broker.
+          //
+          // This used to require `effectiveRole === 'user'`, which is the value a
+          // BUYER carries — the seller's own people resolve to 'client'. So the
+          // picker silently excluded the company owner and their team, and on a
+          // deal whose only non-broker member is the owner it came up empty:
+          // "Select users or groups to assign access" above nothing to select.
+          // Staged disclosure could not be set up at all, which read as the
+          // feature being absent rather than mis-filtered.
+          //
+          // Brokers are excluded deliberately — they administer the room and
+          // granting them access to it is meaningless.
           .filter((user) => {
             const userCompanyId = user.company_id || user.companyId;
             const userCompanyIds = user.company_ids || user.companyIds || [userCompanyId].filter(Boolean);
             const effectiveRole = (user.effective_role || user.role || '').toLowerCase();
-            return userCompanyIds.some((id) => String(id) === String(companyId)) && effectiveRole === 'user';
+            const onThisDeal = userCompanyIds.some((id) => String(id) === String(companyId));
+            return onThisDeal && effectiveRole !== 'broker' && effectiveRole !== 'admin';
           })
           .map((user) => ({
             id: user.id,
             name: user.name || user.email || 'Unnamed user',
-            meta: user.email || user.phone || 'Client user',
+            // Say which side they are on — a broker granting access needs to know
+            // whether they are opening a folder to the seller or to a bidder.
+            meta: [user.email, describeAccessRole(user)].filter(Boolean).join(' · '),
             type: 'user',
           }));
         const groupTargets = groups.map((group) => ({

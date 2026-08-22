@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 import {
   RefreshCw, Loader2, Table2, Check, X, Pencil, RotateCcw, Search, Undo2, Download,
+  AlertTriangle,
 } from "lucide-react";
 import {
   getChartOfAccounts,
@@ -71,6 +72,10 @@ const TOTAL_COLS = 5 + MAX_LEVELS + 4;
 export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }) {
   const [flat, setFlat]               = useState([]);
   const [loading, setLoading]         = useState(false);
+  // Failed is its own state. It used to be reported only as a toast, which
+  // disappears — leaving an empty table under copy that says "Click Regenerate",
+  // advice that cannot work when the server is the thing that is broken.
+  const [error, setError]             = useState("");
   const [regenerating, setRegenerating] = useState(false);
   const [resettingAll, setResettingAll] = useState(false);
   const [editingId, setEditingId]     = useState(null);
@@ -81,11 +86,12 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
   const load = useCallback(async () => {
     if (!versionId) { setFlat([]); return; }
     setLoading(true);
+    setError("");
     try {
       const res = await getChartOfAccounts(versionId);
       setFlat(res?.flat || []);
     } catch (e) {
-      notify?.(e.message || "Failed to load Chart of Accounts.", "error");
+      setError(e.message || "Failed to load Chart of Accounts.");
       setFlat([]);
     } finally {
       setLoading(false);
@@ -331,10 +337,24 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
         </div>
       </div>
 
-      {/* ── Loading ──────────────────────────────────────────────────────────── */}
+      {/* ── Loading / failed / empty — three states, never collapsed ─────────── */}
       {loading ? (
         <div className="flex items-center gap-2 px-4 py-10 text-sm text-text-muted">
           <Loader2 size={15} className="animate-spin" /> Loading…
+        </div>
+      ) : error ? (
+        <div className="px-4 py-10 text-center">
+          <AlertTriangle size={26} className="mx-auto text-amber-500" />
+          <p className="mt-3 text-sm font-semibold text-text-primary">
+            Couldn’t load the Chart of Accounts
+          </p>
+          <p className="mx-auto mt-1 max-w-md text-sm text-secondary">{error}</p>
+          <button
+            onClick={load}
+            className="mx-auto mt-4 flex items-center gap-1.5 rounded-xl border border-border bg-white px-4 py-2 text-sm font-semibold text-text-primary hover:bg-bg-page"
+          >
+            <RefreshCw size={14} /> Try again
+          </button>
         </div>
       ) : flat.length === 0 ? (
         <p className="px-4 py-10 text-center text-sm text-text-muted">

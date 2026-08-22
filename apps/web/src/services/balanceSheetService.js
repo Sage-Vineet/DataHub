@@ -1057,12 +1057,20 @@ export async function getBalanceSheetDetail(
         reportType: "balance_sheet_monthly_detail",
       };
     } catch (err) {
+      // Report the failure alongside the empty result rather than instead of it.
+      //
+      // This used to return bare empty rows, so the caller logged
+      // "generated successfully" and the page fell back to its "Click Generate
+      // Reports" prompt — a dead data source presented as a report the user had
+      // simply not run yet. `error` lets the caller tell the two apart; the
+      // empty shape is preserved so nothing downstream has to change.
       console.warn("[KeyReports][BS][Detail] Entry table fetch failed:", err.message);
       return {
         rows: [],
         columns: { yearCols: [], changeCols: [], currentMonth: "" },
         source: "key_reports_entry_tables",
         reportType: "balance_sheet_monthly_detail",
+        error: err?.message || "The balance sheet data could not be loaded.",
       };
     }
   }

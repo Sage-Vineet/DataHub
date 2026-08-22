@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import Header from "../../../components/Header";
 import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
 import {
+  AlertTriangle,
   ChevronDown,
   Download,
   FileSpreadsheet,
@@ -406,6 +407,8 @@ export default function WorkspaceReports() {
   const [appliedAccountingMethod, setAppliedAccountingMethod] =
     useState(storedState?.appliedAccountingMethod || "Accrual");
   const [isLoading, setIsLoading] = useState(false);
+  // A failed generation is its own state — not the empty prompt, and not silence.
+  const [generationError, setGenerationError] = useState("");
   const [isSyncing, setIsSyncing] = useState(false);
   const [company, setCompany] = useState(null);
   // Key Reports is the single source of truth: when the company has a selected
@@ -1314,6 +1317,7 @@ export default function WorkspaceReports() {
     const slotKey = `${selectedTab}|${effectiveReportType}`;
     const signatureAtStart = currentSignatureRef.current;
     setIsLoading(true);
+    setGenerationError("");
 
     try {
       const rawDates = getDates();
@@ -1548,11 +1552,32 @@ export default function WorkspaceReports() {
         });
       }
 
+      // A result that carries an error is not a success, however well-formed it
+      // is. The data services return an empty-but-valid shape when their source
+      // fails, so without this check the page logged "generated successfully"
+      // over nothing and fell back to its "Click Generate Reports" prompt —
+      // indistinguishable from never having pressed the button.
+      const sourceError = summary?.error || detail?.error || null;
+      if (sourceError) {
+        if (currentSignatureRef.current === signatureAtStart) setGenerationError(sourceError);
+        console.warn(`[Reports] ${selectedTab} / ${reportType} produced no data:`, sourceError);
+        return;
+      }
+
       console.log(
         `✅ [Reports] ${selectedTab} / ${reportType} generated successfully`,
       );
     } catch (error) {
+      // Surface it. This used to log and nothing else, so a failed generation
+      // returned the page to its "Click Generate Reports" prompt with no
+      // indication anything had gone wrong — indistinguishable from never
+      // having pressed the button.
       console.error("[WorkspaceReports] Generation failed:", error);
+      if (currentSignatureRef.current === signatureAtStart) {
+        setGenerationError(
+          error?.message || "The financial statements could not be generated.",
+        );
+      }
     } finally {
       setIsLoading(false);
     }
@@ -2433,6 +2458,22 @@ export default function WorkspaceReports() {
                 <p className="animate-pulse text-[14px] font-medium text-text-muted">
                   Fetching latest financial records from {selectedSourceLabel}...
                 </p>
+              </div>
+            ) : generationError ? (
+              <div className="flex flex-1 flex-col items-center justify-center py-24 text-center">
+                <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full border-2 border-amber-300 bg-amber-50">
+                  <AlertTriangle size={22} className="text-amber-600" />
+                </div>
+                <p className="mb-1 text-[15px] font-semibold text-text-primary">
+                  The statements couldn’t be generated
+                </p>
+                <p className="max-w-md text-[13px] text-text-muted">{generationError}</p>
+                <button
+                  onClick={handleGenerateReport}
+                  className="mt-5 inline-flex items-center gap-2 rounded-xl border border-border bg-white px-4 py-2 text-[13px] font-semibold text-text-primary hover:bg-bg-page"
+                >
+                  <RefreshCw size={14} /> Try again
+                </button>
               </div>
             ) : isManualGlEmptyState ? (
               <div className="flex flex-1 flex-col items-center justify-center py-24 text-center">
