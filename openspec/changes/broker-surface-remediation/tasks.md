@@ -59,13 +59,13 @@
 
 - [x] 3.1 Attach a dataroom document to a request from the request detail. `Linked Documents (0)`
       is a bare heading with no affordance today
-- [ ] 3.2 Add a narrative response composer. `Narrative Response — no narrative has been added yet`
+- [x] 3.2 Add a narrative response composer. `Narrative Response — no narrative has been added yet`
       has no way to add one, on a request whose response type is `Both`
 - [ ] 3.3 Show the link from the other side: a document displays the request it satisfies
 - [x] 3.4 Populate the Documents column in the requests table. It reads 0 for all six requests
       including the one marked **Completed** — a completed diligence request with nothing attached
       has not been completed
-- [ ] 3.5 Gate completion on the response type being satisfied: a request expecting a document
+- [x] 3.5 DECIDED: a warning, not a hard block — a request is often satisfied out of band, and a tool that refuses to record that is one people work around. Gate completion on the response type being satisfied: a request expecting a document
       cannot be completed with none attached. Decide whether this is a hard block or a warning and
       record which in `design.md`
 - [x] 3.6 Label the response type in words. `Type: Both` with no legend means "expects a document
@@ -187,7 +187,7 @@
 
 ## 8. Deep links and craft (F‑23, F‑26 – F‑33)
 
-- [ ] 8.1 Put panel state in the route for requests, Q&A threads and team members, so they can be
+- [x] 8.1 Put panel state in the route for requests, Q&A threads and team members, so they can be
       linked and so browser Back closes the panel instead of leaving the workspace (`design.md` D6)
 - [ ] 8.2 **Vitest (web):** a deep link opens the right panel on a cold load
 - [ ] 8.3 One primary action colour. Green, navy, orange and blue are all used as primary today;
