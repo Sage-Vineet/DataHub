@@ -37,9 +37,20 @@ describe("the committed legacy surface", () => {
     expect({ added, removed }).toEqual({ added: [], removed: [] });
   });
 
-  it("is non-empty, which an absent backend/ would not be", () => {
-    // The assertion that would have caught the silent-empty failure mode.
-    expect(legacyRoutes().size).toBeGreaterThan(200);
+  it("keeps the SPA-facing surface whole as legacy shrinks", () => {
+    // The silent-empty failure mode this guards: an absent `backend/` derives an
+    // EMPTY legacy surface, every module route becomes additive, nothing is
+    // comparable, and the harness reports a clean run having compared nothing.
+    //
+    // Asserted on the contract surface rather than on legacy, because reaping is
+    // *supposed* to shrink legacy — a floor under it would fail the moment the
+    // migration made progress, and would be raised out of the way rather than
+    // investigated.
+    expect(contractRoutes().size).toBeGreaterThan(200);
+  });
+
+  it.skipIf(!legacySourceAvailable())("derives a non-empty surface while legacy exists", () => {
+    expect(deriveLegacyRoutesFromSource().size).toBeGreaterThan(0);
   });
 
   it("holds normalized METHOD /path keys", () => {

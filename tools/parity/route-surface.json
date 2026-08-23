@@ -3,14 +3,15 @@
   "domains": {
     "companies": {
       "compare": [
+        "GET /companies/:p/activity"
+      ],
+      "additive": [
         "DELETE /companies/:p",
         "GET /companies",
         "GET /companies/:p",
-        "GET /companies/:p/activity",
         "PATCH /companies/:p",
         "POST /companies"
-      ],
-      "additive": []
+      ]
     },
     "users": {
       "compare": [],
@@ -28,7 +29,8 @@
       ]
     },
     "folders": {
-      "compare": [
+      "compare": [],
+      "additive": [
         "DELETE /folder-access/:p",
         "DELETE /folders/:p",
         "GET /companies/:p/folders",
@@ -42,11 +44,11 @@
         "POST /folders/:p/archive",
         "POST /folders/:p/move",
         "POST /folders/:p/unarchive"
-      ],
-      "additive": []
+      ]
     },
     "uploads": {
-      "compare": [
+      "compare": [],
+      "additive": [
         "DELETE /documents/:p",
         "GET /documents/:p/activity",
         "GET /folders/:p/documents",
@@ -56,8 +58,7 @@
         "POST /documents/:p/unarchive",
         "POST /folders/:p/documents",
         "POST /uploads"
-      ],
-      "additive": []
+      ]
     },
     "requests": {
       "compare": [],

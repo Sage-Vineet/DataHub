@@ -8,11 +8,7 @@ const { timingMiddleware } = require("./middleware/timing");
 const authRoutes = require("./routes/auth");
 const publicRoutes = require("./routes/public");
 const { quickBooksAuth } = require("./middleware/quickbooksAuth");
-const companyRoutes = require("./routes/companies");
-const folderRoutes = require("./routes/folders");
-const folderAccessRoutes = require("./routes/folderAccess");
 const activityRoutes = require("./routes/activity");
-const uploadRoutes = require("./routes/uploads");
 const messageRoutes = require("./routes/messages");
 const workspacePageStateRoutes = require("./routes/workspacePageState");
 const manualGlRoutes = require("./routes/manualGl");
@@ -118,9 +114,7 @@ app.get("/health", (req, res) => res.json({ ok: true }));
 // Standard Routes
 app.use("/auth", authRoutes);
 app.use("/public", publicRoutes);
-app.use("/companies", companyRoutes);
 app.use("/", tokenRoutes);
-app.use("/", uploadRoutes);
 app.use("/", workspacePageStateRoutes);
 app.use("/", manualGlRoutes);
 app.use("/", manualReportUploadRoutes);
@@ -153,12 +147,11 @@ financialRoutes.forEach(route => {
 
 // Non-QuickBooks Routes
 //
-// users, groups, requests, reminders and message-groups are NOT mounted here:
+// companies, folders, folder-access, uploads, users, groups, requests, reminders
+// and message-groups are NOT mounted here:
 // their modules in apps/api serve every route they defined, so the gateway never
 // proxies those paths. See tools/parity/route-surface.json for what is still
 // legacy-only.
-app.use("/", folderRoutes);
-app.use("/", folderAccessRoutes);
 app.use("/", activityRoutes);
 app.use("/", messageRoutes);
 
