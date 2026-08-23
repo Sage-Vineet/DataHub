@@ -9,7 +9,7 @@
  *
  * WHAT THE VERSION THIS REPLACES DID
  * ----------------------------------
- *   text.replace(/^```(?:json)?\s*​/i, "").replace(/\s*​```$/, "")
+ *   Strip a leading ```json fence, then strip a trailing one, then parse.
  *
  * That handles exactly one shape: a fence with nothing outside it. A reply with
  * any prose around the fence keeps the prose and fails to parse. A reply with
@@ -124,7 +124,7 @@ export function modelNumber(value: unknown): number | null {
   if (text === "") return null;
 
   const negative = /^\(.*\)$/.test(text);
-  const cleaned = text.replace(/[()]/g, "").replace(/[^0-9.\-]/g, "");
+  const cleaned = text.replace(/[()]/g, "").replace(/[^0-9.-]/g, "");
   if (cleaned === "" || cleaned === "-" || cleaned === ".") return null;
   const parsed = Number.parseFloat(cleaned);
   if (!Number.isFinite(parsed)) return null;

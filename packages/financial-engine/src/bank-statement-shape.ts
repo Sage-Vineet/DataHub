@@ -93,7 +93,7 @@ const num = (value: unknown): number => {
   const text = String(value ?? "").trim();
   if (text === "") return 0;
   const negative = /^\(.*\)$/.test(text);
-  const cleaned = text.replace(/[()]/g, "").replace(/[^0-9.\-]/g, "");
+  const cleaned = text.replace(/[()]/g, "").replace(/[^0-9.-]/g, "");
   const parsed = Number.parseFloat(cleaned);
   if (!Number.isFinite(parsed)) return 0;
   return negative ? -Math.abs(parsed) : parsed;

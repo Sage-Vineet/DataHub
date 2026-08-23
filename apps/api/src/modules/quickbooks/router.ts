@@ -8,12 +8,14 @@ import { QuickBooksAuthError, QuickBooksRequestError, type QbReportType } from "
 import type { QuickBooksEntitiesService } from "./reports/entities.js";
 import type { QuickBooksReportsService } from "./reports/service.js";
 import type { QuickBooksSyncStatusService } from "./reports/status.js";
+import type { QuickBooksSyncService } from "./reports/sync.js";
 import type { QuickBooksService } from "./service.js";
 
 export interface QuickBooksRouterDeps {
   service: QuickBooksService;
   reports: QuickBooksReportsService;
   syncStatus: QuickBooksSyncStatusService;
+  sync: QuickBooksSyncService;
   entities: QuickBooksEntitiesService;
   requireAuth: RequestHandler;
 }
@@ -29,7 +31,7 @@ export interface QuickBooksRouterDeps {
  * `withCommonMiddleware` leaves possible.
  */
 export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
-  const { service, reports, syncStatus, entities, requireAuth } = deps;
+  const { service, reports, syncStatus, sync, entities, requireAuth } = deps;
   const router = express.Router();
   withCommonMiddleware(router, [helmet(), pinoHttp(), express.json(), requireAuth]);
 
@@ -55,6 +57,16 @@ export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
         }
         next(err);
       });
+
+  /** A flag as a caller sends it: `true` in JSON, `"true"` in a query string. */
+  const isTrue = (value: unknown): boolean => value === true || value === "true";
+
+  /** A number a caller sent, or null when they sent nothing usable. */
+  const numberOf = (value: unknown): number | null => {
+    if (value === undefined || value === null || value === "") return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
 
   const companyOf = (req: Request): string =>
     String(
@@ -231,6 +243,62 @@ export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
       totalInserted: served.totalInserted,
       source: served.source,
       lastSyncAt: served.lastSyncAt,
+    });
+  }));
+
+  /**
+   * Pull the company's whole reporting history from QuickBooks.
+   *
+   * Two ways to wait. By default the response comes when the sync is done,
+   * because that is what the SPA assumes — it shows "Reports Ready" and
+   * regenerates the report the moment this resolves, and answering early
+   * would have it render the data the sync was about to replace.
+   *
+   * `background: true` answers 202 as soon as the run EXISTS and drives it
+   * afterwards, for a caller that would rather watch `/sync-status`. Legacy
+   * offered the same choice but answered after a sixty-millisecond sleep,
+   * hoping the row had appeared; on a slow database it had not and the
+   * response named no run at all.
+   */
+  router.post("/api/quickbooks/sync", handle(async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const companyId = companyOf(req);
+    const options = {
+      ...(numberOf(body.yearsBack ?? req.query.yearsBack) !== null
+        ? { yearsBack: numberOf(body.yearsBack ?? req.query.yearsBack)! }
+        : {}),
+      accountingMethod: String(body.accountingMethod ?? req.query.accountingMethod ?? "Accrual"),
+    };
+
+    const started = await sync.start(req.user!, companyId, options);
+
+    if (isTrue(body.background ?? req.query.background)) {
+      // Deliberately not awaited. The run row already exists, so a caller
+      // polling `/sync-status` sees it whatever happens next, and `run` closes
+      // the run itself on any failure rather than leaving it open.
+      void sync.run(req.user!, companyId, started.run.id, options).catch(() => undefined);
+      res.status(202).json({
+        success: true,
+        source: "sync_job",
+        message: "Background sync started.",
+        runId: started.run.id,
+        totalSteps: started.totalSteps,
+      });
+      return;
+    }
+
+    const outcome = await sync.run(req.user!, companyId, started.run.id, options);
+    res.json({
+      success: true,
+      source: "sync_job",
+      message:
+        outcome.failed.length > 0
+          ? `Synced ${outcome.fetched} reports; ${outcome.failed.length} could not be fetched.`
+          : "All reports synced successfully",
+      runId: started.run.id,
+      totalSteps: started.totalSteps,
+      fetched: outcome.fetched,
+      failed: outcome.failed,
     });
   }));
 

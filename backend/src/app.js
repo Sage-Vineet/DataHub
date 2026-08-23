@@ -15,7 +15,6 @@ const invoiceFinanceRoutes = require("./routes/quickbooks/invoices/invoices");
 const reconciliationRoutes = require("./routes/quickbooks/reconciliation/Reconciliation");
 const geminipdf = require("./routes/quickbooks/tax_reconciliation/geminiPdf");
 const bankVsBooksRoutes = require("./routes/quickbooks/reconciliation/bankVsBooks");
-const syncRoutes = require("./routes/quickbooks/sync");
 
 const app = express();
 
@@ -108,7 +107,6 @@ const financialRoutes = [
   reconciliationRoutes,
   geminipdf,
   bankVsBooksRoutes,
-  syncRoutes,
 ];
 
 financialRoutes.forEach(route => {

@@ -138,6 +138,7 @@
         "GET /key-reports/versions/:p/chart-of-accounts/history",
         "PATCH /key-reports/chart-of-accounts/:p",
         "POST /key-reports/chart-of-accounts/:p/reset",
+        "POST /key-reports/versions/:p/chart-of-accounts/regenerate",
         "POST /key-reports/versions/:p/chart-of-accounts/reset",
         "POST /key-reports/versions/:p/chart-of-accounts/save"
       ]
@@ -193,15 +194,25 @@
     "statements": {
       "compare": [],
       "additive": [
+        "GET /extract-bank-pdf-records",
+        "GET /manual-report-uploads/bs-bank-balances",
+        "GET /manual-report-uploads/manual-upload-dashboard",
+        "GET /manual-report-uploads/pl-for-tax",
+        "GET /manual-report-uploads/qms-bank-data",
+        "GET /manual-report-uploads/qms-dashboard",
         "GET /manual-report-uploads/qms-reports/:p/all",
         "GET /manual-report-uploads/qms-reports/:p/latest",
         "GET /manual-report-uploads/qms-source-tree",
         "GET /manual-report-uploads/reports/:p/all",
         "GET /manual-report-uploads/reports/:p/latest",
         "GET /manual-report-uploads/source-tree",
+        "GET /manual-report-uploads/tax-data",
+        "GET /manual-upload/bank-data",
         "GET /manual-upload/cashflow",
         "GET /manual-upload/cashflow/periods",
-        "GET /qb-bank-activity/saved"
+        "GET /qb-bank-activity/saved",
+        "GET /tax-data",
+        "POST /parse-bank-statement"
       ]
     },
     "taxOverrides": {
@@ -219,12 +230,16 @@
         "GET /api/auth/status",
         "GET /api/quickbooks/sync-status",
         "GET /balance-sheet",
+        "GET /bank-reconciliation-line-items",
         "GET /customers",
         "GET /general-ledger",
         "GET /invoices",
         "GET /invoices/doc/:p",
         "GET /profit-and-loss-statement",
-        "GET /qb-cashflow"
+        "GET /qb-cashflow",
+        "GET /qb-general-ledger",
+        "GET /quickbooks-pl",
+        "POST /api/quickbooks/sync"
       ]
     },
     "sync": {
@@ -258,30 +273,15 @@
   "backlog": [
     "GET /api/auth/callback",
     "GET /api/auth/quickbooks",
-    "GET /bank-reconciliation-line-items",
-    "GET /extract-bank-pdf-records",
-    "GET /manual-report-uploads/bs-bank-balances",
-    "GET /manual-report-uploads/manual-upload-dashboard",
-    "GET /manual-report-uploads/pl-for-tax",
-    "GET /manual-report-uploads/qms-bank-data",
-    "GET /manual-report-uploads/qms-dashboard",
-    "GET /manual-report-uploads/tax-data",
-    "GET /manual-upload/bank-data",
     "GET /qb-bank-activity",
-    "GET /qb-general-ledger",
     "GET /qb-one-bank-activity",
-    "GET /quickbooks-pl",
     "GET /refresh-token",
-    "GET /tax-data",
     "POST /api/auth/transfer-confirm",
-    "POST /api/quickbooks/sync",
     "POST /customers",
-    "POST /key-reports/versions/:p/chart-of-accounts/regenerate",
     "POST /key-reports/versions/:p/sync",
     "POST /manual-report-uploads/qms-parse-documents",
     "POST /manual-report-uploads/sync-qms-source",
     "POST /manual-report-uploads/sync-source",
-    "POST /parse-bank-statement",
     "PUT /api/invoices/:p"
   ]
 }

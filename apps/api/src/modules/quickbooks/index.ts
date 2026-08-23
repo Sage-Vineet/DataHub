@@ -4,10 +4,12 @@ import { DrizzleReconciliationTransactionsRepository } from "../bank-reconciliat
 import { DrizzleDatasetsRepository } from "../datasets/repository.drizzle.js";
 import { DrizzleStatementsRepository } from "../statements/repository.drizzle.js";
 import { DrizzleSyncRepository } from "../sync/repository.drizzle.js";
+import { SyncService } from "../sync/service.js";
 import { QuickBooksReportClient, QUICKBOOKS_BASE_URLS, type ReportFetcher } from "./reports/client.js";
 import { QuickBooksEntitiesService } from "./reports/entities.js";
 import { QuickBooksReportsService } from "./reports/service.js";
 import { QuickBooksSyncStatusService } from "./reports/status.js";
+import { QuickBooksSyncService } from "./reports/sync.js";
 import { DrizzleQuickBooksRepository } from "./repository.drizzle.js";
 import { createQuickBooksRouter } from "./router.js";
 import { QuickBooksService } from "./service.js";
@@ -17,6 +19,7 @@ export interface QuickBooksModule {
   service: QuickBooksService;
   reports: QuickBooksReportsService;
   syncStatus: QuickBooksSyncStatusService;
+  sync: QuickBooksSyncService;
   entities: QuickBooksEntitiesService;
 }
 
@@ -64,11 +67,17 @@ export function createQuickBooksModule(
 
   // The sync's state is a read across three tables rather than a stored
   // duplicate of it. See `reports/status.ts`.
+  const runs = new DrizzleSyncRepository(opts.db);
   const syncStatus = new QuickBooksSyncStatusService({
-    runs: new DrizzleSyncRepository(opts.db),
+    runs,
     datasets: new DrizzleDatasetsRepository(opts.db),
     statements,
   });
+
+  // The sync goes through `SyncService` rather than the repository, so the
+  // reaping and the refusal of a second concurrent run are the same code every
+  // other sync uses.
+  const sync = new QuickBooksSyncService({ runs: new SyncService({ repo: runs }), reports });
 
   const entities = new QuickBooksEntitiesService({ statements, connections: repo, fetcher });
 
@@ -77,12 +86,14 @@ export function createQuickBooksModule(
       service,
       reports,
       syncStatus,
+      sync,
       entities,
       requireAuth: opts.requireAuth,
     }),
     service,
     reports,
     syncStatus,
+    sync,
     entities,
   };
 }
@@ -100,6 +111,7 @@ export {
 export type { QbReportType, ReportFetcher } from "./reports/client.js";
 export { QuickBooksReportsService, QUICKBOOKS_SOURCE_KEY } from "./reports/service.js";
 export { QuickBooksSyncStatusService } from "./reports/status.js";
+export { QuickBooksSyncService, buildSyncPlan, SYNC_REPORT_TYPES } from "./reports/sync.js";
 export { QuickBooksEntitiesService } from "./reports/entities.js";
 export type { QuickBooksSyncStatus } from "./reports/status.js";
 export type { ConnectionRecord, QuickBooksRepository } from "./ports.js";

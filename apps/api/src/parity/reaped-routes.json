@@ -123,6 +123,7 @@
   "PATCH /requests/:p",
   "PATCH /requests/:p/narrative",
   "PATCH /users/:p",
+  "POST /api/quickbooks/sync",
   "POST /auth/broker/signup",
   "POST /auth/forgot-password",
   "POST /auth/login",

@@ -118,6 +118,7 @@ export class QuickBooksReportsService {
     companyId: string,
     reportType: QbReportType,
     rawQuery: Record<string, unknown>,
+    options: { force?: boolean } = {},
   ): Promise<ServedReport> {
     this.requireCompany(user, companyId);
     const query = toReportQuery(rawQuery);
@@ -128,7 +129,11 @@ export class QuickBooksReportsService {
     const cached = await this.cachedFor(companyId, reportType);
     const verdict = verdictFor(query, cached ? toCached(cached) : null);
 
-    if (verdict.kind === "exact" && cached) {
+    // `force` is an explicit option rather than a query key, because a sync
+    // that served the cache would make the button do nothing on its second
+    // press — and a magic key in the query is one a caller can send by
+    // accident and one this code can silently stop reading.
+    if (!options.force && verdict.kind === "exact" && cached) {
       return this.fromCache(cached, disconnected);
     }
 

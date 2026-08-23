@@ -5,7 +5,6 @@
   "GET /qb-one-bank-activity",
   "GET /refresh-token",
   "POST /api/auth/transfer-confirm",
-  "POST /api/quickbooks/sync",
   "POST /customers",
   "POST /key-reports/versions/:p/sync",
   "POST /manual-report-uploads/qms-parse-documents",

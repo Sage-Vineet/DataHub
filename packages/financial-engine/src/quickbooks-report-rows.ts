@@ -225,7 +225,7 @@ export function toAmount(value: string | null | undefined): number | null {
   const text = String(value ?? "").trim();
   if (text === "") return null;
   const negative = /^\(.*\)$/.test(text);
-  const cleaned = text.replace(/[()]/g, "").replace(/[^0-9.\-]/g, "");
+  const cleaned = text.replace(/[()]/g, "").replace(/[^0-9.-]/g, "");
   if (cleaned === "" || cleaned === "-" || cleaned === ".") return null;
   const parsed = Number.parseFloat(cleaned);
   if (!Number.isFinite(parsed)) return null;

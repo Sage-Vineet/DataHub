@@ -7,6 +7,7 @@ import { QuickBooksAuthError, QuickBooksRequestError } from "./reports/client.js
 import type { QuickBooksEntitiesService } from "./reports/entities.js";
 import type { QuickBooksReportsService } from "./reports/service.js";
 import type { QuickBooksSyncStatusService } from "./reports/status.js";
+import type { QuickBooksSyncService } from "./reports/sync.js";
 import { createQuickBooksRouter } from "./router.js";
 import type { QuickBooksService } from "./service.js";
 
@@ -81,6 +82,12 @@ function stub(over: Record<string, unknown> = {}) {
     status: record("status", { companyId: COMPANY, syncStatus: "idle" }),
   } as unknown as QuickBooksSyncStatusService;
 
+  const sync = {
+    start: record("syncStart", { run: { id: "run-1" }, totalSteps: 17 }),
+    run: record("syncRun", { fetched: 17, failed: [] }),
+    ...(over.sync as object | undefined),
+  } as unknown as QuickBooksSyncService;
+
   const entities = {
     list: record("list", SERVED),
     invoiceByDocNumber: record("invoiceByDocNumber", { ...SERVED, data: { Id: "42" } }),
@@ -93,6 +100,7 @@ function stub(over: Record<string, unknown> = {}) {
       service,
       reports,
       syncStatus,
+      sync,
       entities,
       requireAuth: authAs("caller-1"),
     }),
@@ -256,6 +264,93 @@ describe("the connection and the sync", () => {
     const { app } = stub();
     const res = await get(app, "/api/quickbooks/sync-status").expect(200);
     expect(res.body.syncStatus).toBe("idle");
+  });
+});
+
+describe("starting a sync", () => {
+  const post = (app: express.Express, body: Record<string, unknown> = {}) =>
+    request(app).post("/api/quickbooks/sync").set("x-client-id", COMPANY).send(body);
+
+  it("waits for the sync by default", async () => {
+    // The SPA shows "Reports Ready" and regenerates the report the moment this
+    // resolves. Answering early would have it render the data the sync was
+    // about to replace.
+    const { app, calls } = stub();
+    const res = await post(app).expect(200);
+
+    expect(calls.map((c) => c.method)).toEqual(["syncStart", "syncRun"]);
+    expect(res.body).toMatchObject({
+      success: true,
+      runId: "run-1",
+      fetched: 17,
+      message: "All reports synced successfully",
+    });
+  });
+
+  it("says how many reports could not be fetched", async () => {
+    const { app } = stub({
+      sync: {
+        run: () =>
+          Promise.resolve({
+            fetched: 15,
+            failed: [{ reportType: "cash_flow", period: "2019", message: "gone" }],
+          }),
+      },
+    });
+    const res = await post(app).expect(200);
+    expect(res.body.message).toMatch(/15 reports; 1 could not be fetched/);
+  });
+
+  it("answers 202 for a background sync, naming a run that already exists", async () => {
+    // Legacy slept sixty milliseconds hoping the row had appeared, then
+    // reported whatever it found — which on a slow database was nothing.
+    const { app, calls } = stub();
+    const res = await post(app, { background: true }).expect(202);
+
+    expect(res.body).toMatchObject({ runId: "run-1", totalSteps: 17 });
+    expect(argsOf(calls, "syncStart")).toBeTruthy();
+  });
+
+  it("takes the flag as a query string too", async () => {
+    const { app } = stub();
+    await request(app)
+      .post("/api/quickbooks/sync?background=true")
+      .set("x-client-id", COMPANY)
+      .send({})
+      .expect(202);
+  });
+
+  it("still answers 202 when the background run fails outright", async () => {
+    // The run row exists and closes itself; an unhandled rejection here would
+    // take the process down instead.
+    const { app } = stub({ sync: { run: () => Promise.reject(new Error("Intuit is down")) } });
+    await post(app, { background: true }).expect(202);
+  });
+
+  it("passes the years and the accounting method through", async () => {
+    const { app, calls } = stub();
+    await post(app, { yearsBack: 2, accountingMethod: "Cash" }).expect(200);
+    expect(argsOf(calls, "syncStart")[2]).toEqual({ yearsBack: 2, accountingMethod: "Cash" });
+  });
+
+  it("defaults the accounting method and leaves the years to the service", async () => {
+    const { app, calls } = stub();
+    await post(app).expect(200);
+    expect(argsOf(calls, "syncStart")[2]).toEqual({ accountingMethod: "Accrual" });
+  });
+
+  it("ignores a years value that is not a number", async () => {
+    const { app, calls } = stub();
+    await post(app, { yearsBack: "lots" }).expect(200);
+    expect(argsOf(calls, "syncStart")[2]).toEqual({ accountingMethod: "Accrual" });
+  });
+
+  it("reports an expired connection as a reconnect, not a 500", async () => {
+    const { app } = stub({
+      sync: { start: () => Promise.reject(new QuickBooksAuthError("Token expired")) },
+    });
+    const res = await post(app).expect(401);
+    expect(res.body.reconnectRequired).toBe(true);
   });
 });
 
