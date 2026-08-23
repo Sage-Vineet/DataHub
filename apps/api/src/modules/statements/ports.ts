@@ -41,6 +41,8 @@ export interface StatementExtract {
   /** Null when the statement came from an API pull rather than a file. */
   documentId: string | null;
   documentName: string | null;
+  /** The folder the document sits in, when it came from one. */
+  folderName: string | null;
   /** The run that pulled it, when it was pulled. */
   syncRunId: string | null;
   datasetVersionId: string | null;
@@ -92,6 +94,15 @@ export interface ListFilter {
   sourceKey?: string;
   statementType?: string;
   fiscalYear?: number;
+  /**
+   * Only statements read out of these documents.
+   *
+   * How "the statements for THIS key-report version" is asked: the version
+   * names its documents, and this narrows to what was read out of them. An
+   * empty array means the version links nothing, which is a real answer and
+   * must return nothing rather than everything.
+   */
+  documentIds?: readonly string[];
 }
 
 /** One document a company has on file, with what has been read out of it. */

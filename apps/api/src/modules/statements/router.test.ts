@@ -120,10 +120,10 @@ describe("the latest statement", () => {
   it("passes each narrowing option through", async () => {
     const { app, calls } = stub();
     await latest(app, `?extractId=${EXTRACT}`).expect(200);
-    expect(argsOf(calls, "resolve")[3]).toEqual({ extractId: EXTRACT });
+    expect(argsOf(calls, "resolve")[3]).toEqual({ sourceKey: "manual_upload_excel_pdf", extractId: EXTRACT });
 
     await latest(app, `?keyReportVersionId=${VERSION}`).expect(200);
-    expect(argsOf(calls, "resolve")[3]).toEqual({ keyReportVersionId: VERSION });
+    expect(argsOf(calls, "resolve")[3]).toEqual({ sourceKey: "manual_upload_excel_pdf", keyReportVersionId: VERSION });
 
     await latest(app, "?sourceKey=quickbooks_online").expect(200);
     expect(argsOf(calls, "resolve")[3]).toEqual({ sourceKey: "quickbooks_online" });
@@ -132,7 +132,7 @@ describe("the latest statement", () => {
   it("still answers to `rowId`, which is what legacy called it", async () => {
     const { app, calls } = stub();
     await latest(app, `?rowId=${EXTRACT}`).expect(200);
-    expect(argsOf(calls, "resolve")[3]).toEqual({ extractId: EXTRACT });
+    expect(argsOf(calls, "resolve")[3]).toEqual({ sourceKey: "manual_upload_excel_pdf", extractId: EXTRACT });
   });
 
   it("omits an option the caller left blank rather than passing an empty string", async () => {
@@ -140,7 +140,7 @@ describe("the latest statement", () => {
     // whose id is "", and 404 instead of falling through to the latest.
     const { app, calls } = stub();
     await latest(app, "?extractId=&keyReportVersionId=").expect(200);
-    expect(argsOf(calls, "resolve")[3]).toEqual({});
+    expect(argsOf(calls, "resolve")[3]).toEqual({ sourceKey: "manual_upload_excel_pdf" });
   });
 
   it("404s when nothing has been extracted", async () => {
@@ -168,15 +168,53 @@ describe("the latest statement", () => {
 });
 
 describe("every statement of a type", () => {
-  it("answers a list in the same per-item shape", async () => {
+  it("answers files a person could pick between, named by their file", async () => {
+    // The picker's option label. An extract with no name to show is an entry
+    // in a dropdown that cannot be told from its neighbour.
     const { app } = stub();
     const res = await request(app)
       .get("/manual-report-uploads/reports/balance_sheet/all")
       .set("x-client-id", COMPANY)
       .expect(200);
-    expect(res.body.reports).toHaveLength(1);
-    expect(res.body.reports[0].documentName).toBe("BS 2024.pdf");
-    expect(res.body.reports[0].data).toEqual({ rows: [{ name: "Cash", amount: 100 }] });
+    expect(res.body.files).toHaveLength(1);
+    expect(res.body.files[0].fileName).toBe("BS 2024.pdf");
+    expect(res.body.files[0].data).toEqual({ rows: [{ name: "Cash", amount: 100 }] });
+  });
+
+  it("keys each file by the id the picker sets as its value", async () => {
+    // `rowId` is legacy's name for the extract id. The Reports page reads it
+    // to decide which file stays selected across a reload; renaming it empties
+    // the dropdown silently.
+    const { app } = stub();
+    const res = await request(app)
+      .get("/manual-report-uploads/reports/balance_sheet/all")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(res.body.files[0].rowId).toBe(EXTRACT);
+  });
+
+  it("says which file it could not name rather than omitting the field", async () => {
+    // A statement pulled from an API has no document. The picker still has to
+    // render a row for it, and `undefined` renders as nothing at all.
+    const { app } = stub({
+      list: () => Promise.resolve([{ ...EXTRACT_ROW, documentId: null, documentName: null }]),
+    });
+    const res = await request(app)
+      .get("/manual-report-uploads/reports/balance_sheet/all")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(res.body.files[0].fileName).toBe("Unknown file");
+  });
+
+  it("narrows the list to a key-report version when one is named", async () => {
+    // The picker has to agree with what the page is showing. Options the
+    // version was never signed off against are worse than no options.
+    const { app, calls } = stub();
+    await request(app)
+      .get("/manual-report-uploads/reports/balance_sheet/all?keyReportVersionId=v-1")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "list")[3]).toEqual({ sourceKey: "manual_upload_excel_pdf", keyReportVersionId: "v-1" });
   });
 
   it("passes a fiscal year filter, and ignores one that is not a year", async () => {
@@ -185,13 +223,13 @@ describe("every statement of a type", () => {
       .get("/manual-report-uploads/reports/balance_sheet/all?fiscalYear=2024")
       .set("x-client-id", COMPANY)
       .expect(200);
-    expect(argsOf(calls, "list")[3]).toEqual({ fiscalYear: 2024 });
+    expect(argsOf(calls, "list")[3]).toEqual({ sourceKey: "manual_upload_excel_pdf", fiscalYear: 2024 });
 
     await request(app)
       .get("/manual-report-uploads/reports/balance_sheet/all?fiscalYear=recent")
       .set("x-client-id", COMPANY)
       .expect(200);
-    expect(argsOf(calls, "list")[3]).toEqual({});
+    expect(argsOf(calls, "list")[3]).toEqual({ sourceKey: "manual_upload_excel_pdf" });
   });
 
   it("does not read `all` as a statement type", async () => {
@@ -214,7 +252,7 @@ describe("the source tree", () => {
       .expect(200);
     expect(res.body.success).toBe(true);
     expect(res.body.tree[0].documentId).toBe(DOCUMENT);
-    expect(argsOf(calls, "sourceTree")[2]).toEqual({});
+    expect(argsOf(calls, "sourceTree")[2]).toEqual({ sourceKey: "manual_upload_excel_pdf" });
   });
 
   it("narrows to one source when asked", async () => {

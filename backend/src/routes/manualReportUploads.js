@@ -5,12 +5,9 @@ const {
   MANUAL_REPORT_UPLOAD_SOURCE,
   getLatestManualUploadedReport,
   getAllManualUploadedReports,
-  getLatestQMSUploadedReport,
-  getAllQMSUploadedReports,
   syncManualReportFolder,
   syncManualUploadSource,
   getManualUploadSourceTree,
-  getQMSUploadSourceTree,
   syncQMSUploadSource,
   parseAndSaveQMSDocuments,
   getSyncProgress,
@@ -245,16 +242,6 @@ router.post("/manual-report-uploads/sync-source", async (req, res) => {
   }
 });
 
-router.get("/manual-report-uploads/qms-source-tree", async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
-    const tree = await getQMSUploadSourceTree(clientId);
-    return res.json({ success: true, tree });
-  } catch (error) {
-    return res.status(500).json({ success: false, error: error.message });
-  }
-});
 
 router.post("/manual-report-uploads/sync-qms-source", async (req, res) => {
   try {
@@ -298,63 +285,6 @@ router.post("/manual-report-uploads/qms-parse-documents", async (req, res) => {
    GET /manual-report-uploads/qms-reports/:statementType/all
    Same as /reports/:statementType/all but filtered to quickbooks_manual_upload source.
 =========================== */
-router.get("/manual-report-uploads/qms-reports/:statementType/all", async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    const statementType = String(req.params.statementType || "").trim().toLowerCase();
-
-    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
-
-    const validTypes = Object.values(STATEMENT_TYPES);
-    if (!validTypes.includes(statementType)) {
-      return res.status(400).json({ success: false, error: "Invalid statementType." });
-    }
-
-    const keyReportVersionId = String(req.query.keyReportVersionId || "").trim() || null;
-    let rows = await getAllQMSUploadedReports({ companyId: clientId, statementType });
-
-    if (keyReportVersionId) {
-      const categoryMap = {
-        profit_and_loss: "profit_loss",
-        balance_sheet: "balance_sheet",
-        general_ledger: "general_ledger",
-        bank_statement: "bank_statement",
-        tax_return: "tax_return",
-      };
-      const category = categoryMap[statementType];
-      if (category) {
-        const { documents } = await keyReportService.getLinkedDocuments(clientId, category, { versionId: keyReportVersionId });
-        const linkedDocIds = new Set(documents.map(d => d.id));
-        rows = rows.filter(row => linkedDocIds.has(row.report_params?.documentId));
-      }
-    }
-
-    const files = rows.map((row) => {
-      const report = row.data?.manual_report_upload?.report || null;
-      return {
-        rowId: row.id,
-        documentId: row.report_params?.documentId || null,
-        fileName: row.report_params?.fileName || "Unknown file",
-        folderName: row.report_params?.folderName || null,
-        data: report
-          ? {
-            rows: report.rows || [],
-            asOfDate: report.asOfDate || null,
-            periodStart: report.periodStart || null,
-            periodEnd: report.periodEnd || null,
-            ...(report.periods?.length ? { periods: report.periods } : {}),
-          }
-          : null,
-        updatedAt: row.updated_at || null,
-        lastSyncedAt: row.last_synced_at || null,
-      };
-    });
-
-    return res.json({ success: true, statementType, files });
-  } catch (error) {
-    return res.status(500).json({ success: false, error: error.message || "Failed to fetch QMS reports." });
-  }
-});
 
 /* ===========================
    GET /manual-report-uploads/qms-bank-data
@@ -440,90 +370,6 @@ router.get("/manual-report-uploads/manual-upload-dashboard", async (req, res) =>
    Same as /reports/:statementType/latest but filtered to quickbooks_manual_upload source.
    Accepts optional ?rowId= to fetch a specific row by ID.
 =========================== */
-router.get("/manual-report-uploads/qms-reports/:statementType/latest", async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    const statementType = String(req.params.statementType || "").trim().toLowerCase();
-
-    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
-
-    const validTypes = Object.values(STATEMENT_TYPES);
-    if (!validTypes.includes(statementType)) {
-      return res.status(400).json({ success: false, error: "Invalid statementType." });
-    }
-
-    const rowId = String(req.query.rowId || "").trim() || null;
-    const keyReportVersionId = String(req.query.keyReportVersionId || "").trim() || null;
-
-    let row;
-    if (keyReportVersionId) {
-      const categoryMap = {
-        profit_and_loss: "profit_loss",
-        balance_sheet: "balance_sheet",
-        general_ledger: "general_ledger",
-        bank_statement: "bank_statement",
-        tax_return: "tax_return",
-      };
-      const category = categoryMap[statementType];
-      if (category) {
-        const { documents } = await keyReportService.getLinkedDocuments(clientId, category, { versionId: keyReportVersionId });
-        const doc = documents?.[0];
-        if (doc?.upload_id) {
-          const { data: linkedRow, error: linkedErr } = await supabase
-            .from("qb_synced_reports")
-            .select("id, report_type, report_params, data, updated_at, last_synced_at")
-            .eq("company_id", clientId)
-            .eq("report_type", statementType)
-            .eq("report_params->>documentId", doc.id)
-            .maybeSingle();
-          if (!linkedErr && linkedRow) {
-            row = linkedRow;
-          }
-        }
-      }
-    }
-
-    if (!row && rowId) {
-      const { data: specificRow, error: rowErr } = await supabase
-        .from("qb_synced_reports")
-        .select("id, report_type, report_params, data, updated_at, last_synced_at")
-        .eq("id", rowId)
-        .eq("company_id", clientId)
-        .maybeSingle();
-      if (rowErr) throw new Error(rowErr.message);
-      row = specificRow;
-    } else if (!row) {
-      row = await getLatestQMSUploadedReport({ companyId: clientId, statementType });
-    }
-
-    if (!row) {
-      return res.status(404).json({ success: false, error: "No QMS report found." });
-    }
-
-    const report = row.data?.manual_report_upload?.report || null;
-    let asOfDate = report?.asOfDate || null;
-    if (!asOfDate) {
-      try { asOfDate = await extractAndCacheReportAsOfDate(row); } catch { /* ignore */ }
-    }
-
-    const resolvedAsOfDate = asOfDate || report?.asOfDate || null;
-    const reportWithDate = report
-      ? { ...report, asOfDate: resolvedAsOfDate, periodStart: report.periodStart || null, periodEnd: report.periodEnd || resolvedAsOfDate || null }
-      : null;
-
-    return res.json({
-      success: true,
-      source: "quickbooks_manual_upload",
-      statementType,
-      data: reportWithDate,
-      reportParams: row.report_params || {},
-      updatedAt: row.updated_at || null,
-      lastSyncedAt: row.last_synced_at || null,
-    });
-  } catch (error) {
-    return res.status(500).json({ success: false, error: error.message || "Failed to fetch QMS report." });
-  }
-});
 
 /* ===========================
    GET /manual-report-uploads/tax-data

@@ -210,6 +210,116 @@ describe("statement extracts (real Postgres)", () => {
     expect(res.body.documentName).toBe("BS 2023.pdf");
   });
 
+  it("offers only the version's files in the picker, not the whole history", async () => {
+    // The picker has to agree with what the page is showing. `latest` already
+    // resolves through the version; a list that ignored it would offer a file
+    // the version was never signed off against, and picking it would show
+    // figures nobody approved with nothing on screen saying so.
+    const linked = await addDocument("BS 2023.pdf");
+    const unlinked = await addDocument("BS 2024.pdf");
+    await save(linked, { asOfDate: "2023-12-31" });
+    await save(unlinked, { asOfDate: "2024-12-31" });
+
+    const [version] = await db
+      .insert(schema.keyReportVersions)
+      .values({ companyId, versionNumber: 1 })
+      .returning();
+    await db.insert(schema.keyReportFileMappings).values({
+      versionId: version!.id,
+      companyId,
+      reportCategory: "balance_sheet",
+      documentId: linked,
+    });
+
+    const res = await request(app)
+      .get(`/manual-report-uploads/reports/balance_sheet/all?keyReportVersionId=${version!.id}`)
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(res.body.files.map((f: { fileName: string }) => f.fileName)).toEqual(["BS 2023.pdf"]);
+  });
+
+  it("offers nothing for a version that links nothing", async () => {
+    // Not "everything". A version with no balance sheet linked has no balance
+    // sheet, and filling the picker with the company's other files invites
+    // somebody to pick one and believe the version contains it.
+    const documentId = await addDocument("BS 2024.pdf");
+    await save(documentId);
+    const [version] = await db
+      .insert(schema.keyReportVersions)
+      .values({ companyId, versionNumber: 2 })
+      .returning();
+
+    const res = await request(app)
+      .get(`/manual-report-uploads/reports/balance_sheet/all?keyReportVersionId=${version!.id}`)
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(res.body.files).toEqual([]);
+  });
+
+  it("names the folder a file came from", async () => {
+    // The picker shows the file name; two folders can hold a "Balance
+    // Sheet.pdf" each, and the folder is the only thing that tells them apart.
+    const documentId = await addDocument("BS 2024.pdf");
+    await save(documentId);
+    const res = await request(app)
+      .get("/manual-report-uploads/reports/balance_sheet/all")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(res.body.files[0].folderName).toBe("Financials");
+  });
+
+  it("keeps the two manual sources apart on their own routes", async () => {
+    // The page has one picker per source. A QMS route that answered with a
+    // spreadsheet's figures would put them on the QuickBooks tab, where
+    // nothing on screen says they are from a different source.
+    const spreadsheet = await addDocument("Uploaded BS.xlsx");
+    const quickbooks = await addDocument("QMS BS.pdf");
+    await save(spreadsheet);
+    await save(quickbooks, { sourceKey: "quickbooks_manual" });
+
+    const qms = await request(app)
+      .get("/manual-report-uploads/qms-reports/balance_sheet/all")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(qms.body.files.map((f: { fileName: string }) => f.fileName)).toEqual(["QMS BS.pdf"]);
+
+    const manual = await request(app)
+      .get("/manual-report-uploads/reports/balance_sheet/all")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(manual.body.files.map((f: { fileName: string }) => f.fileName)).toEqual([
+      "Uploaded BS.xlsx",
+    ]);
+  });
+
+  it("resolves the latest QMS statement without being told the source", async () => {
+    const spreadsheet = await addDocument("Uploaded BS.xlsx");
+    const quickbooks = await addDocument("QMS BS.pdf");
+    await save(quickbooks, { sourceKey: "quickbooks_manual" });
+    await save(spreadsheet);
+
+    const res = await request(app)
+      .get("/manual-report-uploads/qms-reports/balance_sheet/latest")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(res.body.documentName).toBe("QMS BS.pdf");
+  });
+
+  it("builds a QMS source tree holding only QMS documents", async () => {
+    const spreadsheet = await addDocument("Uploaded BS.xlsx");
+    const quickbooks = await addDocument("QMS BS.pdf");
+    await save(spreadsheet);
+    await save(quickbooks, { sourceKey: "quickbooks_manual" });
+
+    const res = await request(app)
+      .get("/manual-report-uploads/qms-source-tree")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(res.body.tree.map((e: { documentName: string }) => e.documentName)).toEqual([
+      "QMS BS.pdf",
+    ]);
+  });
+
   it("builds a tree that reaches the document and folder names", async () => {
     const documentId = await addDocument("BS 2024.pdf");
     await save(documentId);
@@ -236,7 +346,7 @@ describe("statement extracts (real Postgres)", () => {
       .get("/manual-report-uploads/reports/balance_sheet/all")
       .set("X-Client-Id", companyId)
       .expect(200);
-    expect(all.body.reports.map((r: { documentName: string }) => r.documentName)).toEqual([
+    expect(all.body.files.map((r: { fileName: string }) => r.fileName)).toEqual([
       "BS 2024.pdf",
       "BS 2023.pdf",
     ]);
@@ -245,7 +355,7 @@ describe("statement extracts (real Postgres)", () => {
       .get("/manual-report-uploads/reports/balance_sheet/all?fiscalYear=2023")
       .set("X-Client-Id", companyId)
       .expect(200);
-    expect(only2023.body.reports).toHaveLength(1);
+    expect(only2023.body.files).toHaveLength(1);
   });
 
   it("keeps one source's extracts off another's page", async () => {

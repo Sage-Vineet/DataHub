@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNotNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { schema, type Db } from "@datahub/db";
 import type {
   ListFilter,
@@ -18,6 +18,7 @@ const SELECTION = {
   companyId: statementExtracts.companyId,
   documentId: statementExtracts.documentId,
   documentName: documents.name,
+  folderName: folders.name,
   syncRunId: statementExtracts.syncRunId,
   datasetVersionId: statementExtracts.datasetVersionId,
   reportParams: statementExtracts.reportParams,
@@ -66,6 +67,7 @@ function toExtract(row: Selected): StatementExtract {
     companyId: row.companyId,
     documentId: row.documentId ?? null,
     documentName: row.documentName ?? null,
+    folderName: row.folderName ?? null,
     syncRunId: row.syncRunId ?? null,
     datasetVersionId: row.datasetVersionId ?? null,
     reportParams: (row.reportParams ?? {}) as Record<string, unknown>,
@@ -91,7 +93,10 @@ export class DrizzleStatementsRepository implements StatementsRepository {
     return this.db
       .select(SELECTION)
       .from(statementExtracts)
-      .leftJoin(documents, eq(documents.id, statementExtracts.documentId));
+      .leftJoin(documents, eq(documents.id, statementExtracts.documentId))
+      // LEFT again: a document need not sit in a folder, and an inner join
+      // here would drop every statement read out of a loose upload.
+      .leftJoin(folders, eq(folders.id, documents.folderId));
   }
 
   async list(companyId: string, filter: ListFilter): Promise<StatementExtract[]> {
@@ -102,6 +107,13 @@ export class DrizzleStatementsRepository implements StatementsRepository {
     }
     if (filter.fiscalYear !== undefined) {
       clauses.push(eq(statementExtracts.fiscalYear, filter.fiscalYear));
+    }
+    if (filter.documentIds) {
+      // An empty list is "this version links no documents", which must return
+      // nothing. `inArray` with an empty array is invalid SQL in some
+      // dialects, so the impossible clause is spelled out.
+      if (filter.documentIds.length === 0) return [];
+      clauses.push(inArray(statementExtracts.documentId, [...filter.documentIds]));
     }
 
     const rows = await this.base()

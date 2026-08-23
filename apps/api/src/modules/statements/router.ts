@@ -3,6 +3,7 @@ import type { Request, RequestHandler, Response, Router } from "express";
 import helmet from "helmet";
 import { pinoHttp } from "pino-http";
 import { HttpError } from "../../shared/errors.js";
+import { REPORT_SOURCE_KEYS } from "../report-sources/ports.js";
 import { withCommonMiddleware } from "../../shared/router.js";
 import type { StatementExtract } from "./ports.js";
 import type { StatementsService } from "./service.js";
@@ -72,43 +73,112 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
     lastSyncedAt: extract.extractedAt,
   });
 
-  router.get("/manual-report-uploads/reports/:statementType/latest", handle(async (req, res) => {
-    const extract = await service.resolve(
-      req.user!,
-      companyOf(req),
-      String(req.params.statementType ?? "").toLowerCase(),
-      {
-        ...(str(req.query.sourceKey) ? { sourceKey: str(req.query.sourceKey)! } : {}),
-        // `rowId` is legacy's name for it, kept so existing callers still work.
-        ...(str(req.query.extractId) ?? str(req.query.rowId)
-          ? { extractId: (str(req.query.extractId) ?? str(req.query.rowId))! }
-          : {}),
+  const latestOf = (defaultSourceKey?: string) =>
+    handle(async (req: Request, res: Response) => {
+      const sourceKey = str(req.query.sourceKey) ?? defaultSourceKey;
+      const extract = await service.resolve(
+        req.user!,
+        companyOf(req),
+        String(req.params.statementType ?? "").toLowerCase(),
+        {
+          ...(sourceKey ? { sourceKey } : {}),
+          // `rowId` is legacy's name for it, kept so existing callers still work.
+          ...(str(req.query.extractId) ?? str(req.query.rowId)
+            ? { extractId: (str(req.query.extractId) ?? str(req.query.rowId))! }
+            : {}),
+          ...(str(req.query.keyReportVersionId)
+            ? { keyReportVersionId: str(req.query.keyReportVersionId)! }
+            : {}),
+        },
+      );
+      res.json(asView(extract));
+    });
+
+  /**
+   * The Excel-and-PDF upload source.
+   *
+   * Pinned rather than open, because the page these serve has one picker per
+   * source and an unpinned route would mix them: a QuickBooks export and a
+   * hand-built spreadsheet in one dropdown produce a statement that is from
+   * neither, and nothing on screen would say which row came from where.
+   * `?sourceKey=` still overrides, for a caller that means to ask.
+   */
+  const MANUAL = REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
+
+  router.get("/manual-report-uploads/reports/:statementType/latest", latestOf(MANUAL));
+
+  /**
+   * One entry in the file picker.
+   *
+   * A different shape from `asView` because it answers a different question.
+   * `asView` says "here is the statement"; this says "here is a file you could
+   * choose", and what a person picks by is its NAME — which `asView` has no
+   * reason to carry and legacy's list carried as `fileName`.
+   *
+   * `rowId` is legacy's name for the extract id, kept because it is what the
+   * picker sets as its option value. Renaming it would be a rename for its own
+   * sake that silently empties the dropdown.
+   */
+  const asFile = (extract: StatementExtract) => ({
+    rowId: extract.id,
+    documentId: extract.documentId,
+    fileName: extract.documentName ?? "Unknown file",
+    folderName: extract.folderName,
+    data: extract.payload,
+    periodStart: extract.periodStart,
+    periodEnd: extract.periodEnd,
+    asOfDate: extract.asOfDate,
+    fiscalYear: extract.fiscalYear,
+    updatedAt: extract.updatedAt,
+    lastSyncedAt: extract.extractedAt,
+  });
+
+  const listFiles = (defaultSourceKey?: string) =>
+    handle(async (req: Request, res: Response) => {
+      const year = Number.parseInt(String(req.query.fiscalYear ?? ""), 10);
+      const statementType = String(req.params.statementType ?? "").toLowerCase();
+      const sourceKey = str(req.query.sourceKey) ?? defaultSourceKey;
+      const files = await service.list(req.user!, companyOf(req), statementType, {
+        ...(sourceKey ? { sourceKey } : {}),
+        ...(Number.isInteger(year) ? { fiscalYear: year } : {}),
         ...(str(req.query.keyReportVersionId)
           ? { keyReportVersionId: str(req.query.keyReportVersionId)! }
           : {}),
-      },
-    );
-    res.json(asView(extract));
-  }));
+      });
+      res.json({ success: true, statementType, files: files.map(asFile) });
+    });
 
-  router.get("/manual-report-uploads/reports/:statementType/all", handle(async (req, res) => {
-    const year = Number.parseInt(String(req.query.fiscalYear ?? ""), 10);
-    const reports = await service.list(
-      req.user!,
-      companyOf(req),
-      String(req.params.statementType ?? "").toLowerCase(),
-      {
-        ...(str(req.query.sourceKey) ? { sourceKey: str(req.query.sourceKey)! } : {}),
-        ...(Number.isInteger(year) ? { fiscalYear: year } : {}),
-      },
-    );
-    res.json({ success: true, reports: reports.map(asView) });
-  }));
+  router.get("/manual-report-uploads/reports/:statementType/all", listFiles(MANUAL));
 
   router.get("/manual-report-uploads/source-tree", handle(async (req, res) => {
     const tree = await service.sourceTree(req.user!, companyOf(req), {
-      ...(str(req.query.sourceKey) ? { sourceKey: str(req.query.sourceKey)! } : {}),
+      sourceKey: str(req.query.sourceKey) ?? MANUAL,
     });
+    res.json({ success: true, tree });
+  }));
+
+  /**
+   * The QuickBooks-manual source, as its own three routes.
+   *
+   * Legacy had two parallel sets of handlers for this — `reports/*` and
+   * `qms-reports/*` — differing only in which source they read. They are the
+   * same routes with the source pinned, so they are the same handlers with the
+   * source pinned; the alternative is two implementations that drift.
+   *
+   * They stay as distinct paths rather than becoming `?sourceKey=` because the
+   * page has two independent pickers, one per source, and a single path would
+   * make "which source am I looking at" a query parameter the caller could
+   * forget — which is how you end up showing a spreadsheet's figures on the
+   * QuickBooks tab.
+   */
+  const QMS = REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
+
+  router.get("/manual-report-uploads/qms-reports/:statementType/all", listFiles(QMS));
+
+  router.get("/manual-report-uploads/qms-reports/:statementType/latest", latestOf(QMS));
+
+  router.get("/manual-report-uploads/qms-source-tree", handle(async (req, res) => {
+    const tree = await service.sourceTree(req.user!, companyOf(req), { sourceKey: QMS });
     res.json({ success: true, tree });
   }));
 

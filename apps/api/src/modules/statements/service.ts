@@ -49,17 +49,44 @@ export class StatementsService {
     return statementType;
   }
 
+  /**
+   * Every statement of a type, newest first — the "which one did you mean"
+   * picker behind the Reports page's file selector.
+   *
+   * `keyReportVersionId` narrows to what a version actually links, and it
+   * narrows rather than orders: a version that links two documents offers two
+   * files to choose between, and one that links none offers none. Returning
+   * the company's whole history there would put files the version was never
+   * signed off against in a dropdown that claims to be the version's.
+   *
+   * This is the same question `resolve` answers for a single statement, and it
+   * has to agree with it — a picker whose options exclude the statement the
+   * page is showing is worse than no picker.
+   */
   async list(
     user: SessionUser,
     companyId: string,
     statementType: string,
-    filter: { sourceKey?: string; fiscalYear?: number } = {},
+    filter: { sourceKey?: string; fiscalYear?: number; keyReportVersionId?: string } = {},
   ): Promise<StatementExtract[]> {
     this.requireCompany(user, companyId);
+    const type = this.requireType(statementType);
+
+    let documentIds: readonly string[] | undefined;
+    if (filter.keyReportVersionId) {
+      const category = CATEGORY_OF_STATEMENT[type];
+      // A type nothing is ever filed under — cash flow, which is derived
+      // rather than uploaded — cannot be narrowed by a version, so it is not.
+      documentIds = category
+        ? await this.deps.repo.documentsForVersion(filter.keyReportVersionId, category)
+        : undefined;
+    }
+
     return this.deps.repo.list(companyId, {
-      statementType: this.requireType(statementType),
+      statementType: type,
       ...(filter.sourceKey ? { sourceKey: filter.sourceKey } : {}),
       ...(filter.fiscalYear !== undefined ? { fiscalYear: filter.fiscalYear } : {}),
+      ...(documentIds ? { documentIds } : {}),
     });
   }
 

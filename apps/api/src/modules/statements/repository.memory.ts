@@ -69,7 +69,9 @@ export class InMemoryStatementsRepository implements StatementsRepository {
           (e) =>
             (!filter.sourceKey || e.sourceKey === filter.sourceKey) &&
             (!filter.statementType || e.statementType === filter.statementType) &&
-            (filter.fiscalYear === undefined || e.fiscalYear === filter.fiscalYear),
+            (filter.fiscalYear === undefined || e.fiscalYear === filter.fiscalYear) &&
+            (filter.documentIds === undefined ||
+              (e.documentId !== null && filter.documentIds.includes(e.documentId))),
         )
         .sort((a, b) => (b.extractedAt ?? "").localeCompare(a.extractedAt ?? "")),
     );
@@ -130,6 +132,7 @@ export class InMemoryStatementsRepository implements StatementsRepository {
       id: existing?.id ?? randomUUID(),
       companyId: input.companyId,
       documentName: document?.name ?? null,
+      folderName: document?.folder ?? null,
       ...provenance,
       statementType: input.statementType,
       sourceKey: input.sourceKey,
