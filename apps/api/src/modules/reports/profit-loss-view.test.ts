@@ -253,6 +253,33 @@ describe("the rows the page renders", () => {
   });
 });
 
+describe("a ledger with entries the chart does not explain", () => {
+  it("leaves out an entry whose account is not on the chart", () => {
+    // An amount attributed to an account nobody can name is an amount on the
+    // statement that cannot be drilled into, and it still moves net profit.
+    const orphaned: EngagementData = {
+      ...engagement,
+      entries: [...entries, { accountId: "ghost", fiscalYear: 2024, month: 1, amount: 9_999 }],
+    };
+    const withGhost = buildProfitLossSummary(orphaned, {});
+    const without = buildProfitLossSummary(engagement, {});
+    expect(withGhost.lines).toEqual(without.lines);
+  });
+
+  it("counts an entry with no month in the year, but not in any month", () => {
+    // A year-dated entry belongs to the year. Filed under a month it did not
+    // state, it would appear in a monthly column somebody could not reconcile.
+    const undated: EngagementData = {
+      ...engagement,
+      entries: [{ accountId: "sales", fiscalYear: 2024, month: null as never, amount: 500 }],
+      fiscalYears: [2024],
+    };
+    const result = buildProfitLossSummary(undated, {});
+    expect(result.lines.find((l) => l.key === "revenue")!.valuesByYear[2024]).toBe(500);
+    expect(result.monthlyBreakdown).toEqual([]);
+  });
+});
+
 describe("choosing the years", () => {
   it("shows the latest year alone, with no comparative columns, by default", () => {
     const payload = buildProfitLossSummary(engagement);
@@ -304,6 +331,23 @@ describe("the summary lines", () => {
     const { lines } = buildSummaryLines(rows);
     expect(lines.find((l) => l.key === "revenue")!.consolidated).toBe(300);
     expect(lines.find((l) => l.key === "net_profit")!.consolidated).toBe(90);
+  });
+
+  it("reads a year with no row as zero rather than leaving a hole", () => {
+    // A missing year renders as a blank cell in a column of numbers, which is
+    // read as "not loaded" rather than as "nothing happened".
+    const sparse: PlYearRow[] = [{ ...rows[0]!, fiscalYear: 2023 }];
+    const { lines } = buildSummaryLines([...sparse, { ...rows[1]!, fiscalYear: Number.NaN }]);
+    expect(lines[0]!.valuesByYear[2023]).toBe(100);
+  });
+
+  it("leaves out a year that is not one", () => {
+    // A row whose fiscal year never parsed cannot head a column.
+    const { years } = buildSummaryLines([
+      { ...rows[0]!, fiscalYear: Number.NaN },
+      { ...rows[1]!, fiscalYear: 2024 },
+    ]);
+    expect(years).toEqual([2024]);
   });
 });
 

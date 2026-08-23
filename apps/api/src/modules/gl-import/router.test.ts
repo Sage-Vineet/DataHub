@@ -2,7 +2,7 @@ import express from "express";
 import type { RequestHandler } from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { BadRequestError } from "../../shared/errors.js";
+import { BadRequestError, ForbiddenError } from "../../shared/errors.js";
 import type { SyncService } from "../sync/service.js";
 import { createGlImportRouter } from "./router.js";
 import { SheetParseError } from "./sheet.js";
@@ -257,6 +257,55 @@ describe("starting an import", () => {
     expect(argsOf(calls, "finish")[3]).toMatchObject({
       status: "completed",
       result: { inserted: 2 },
+    });
+  });
+});
+
+describe("naming the company", () => {
+  it("takes it from the header, the query, or the body", async () => {
+    // Different screens supply it differently; all three must work.
+    const { app, calls } = stub();
+    await request(app).get(`/manual-gl/columns/${UPLOAD}`).set("x-client-id", COMPANY).expect(200);
+    expect(argsOf(calls, "columns")[1]).toBe(COMPANY);
+
+    const { app: byQuery, calls: queryCalls } = stub();
+    await request(byQuery).get(`/manual-gl/columns/${UPLOAD}?clientId=${COMPANY}`).expect(200);
+    expect(argsOf(queryCalls, "columns")[1]).toBe(COMPANY);
+
+    const { app: byBody, calls: bodyCalls } = stub();
+    await request(byBody)
+      .post("/manual-gl/save-mapping")
+      .send({ clientId: COMPANY, uploadId: UPLOAD, mapping: {} })
+      .expect(200);
+    expect(argsOf(bodyCalls, "saveMapping")[1]).toBe(COMPANY);
+  });
+
+  it("passes an empty company on, for the service to refuse", async () => {
+    const { app, calls } = stub();
+    await request(app).get(`/manual-gl/columns/${UPLOAD}`).expect(200);
+    expect(argsOf(calls, "columns")[1]).toBe("");
+  });
+
+  it("maps a service refusal to its own status rather than 500ing", async () => {
+    const { app } = stub({
+      service: { columns: () => Promise.reject(new ForbiddenError("Access denied")) },
+    });
+    await request(app).get(`/manual-gl/columns/${UPLOAD}`).set("x-client-id", COMPANY).expect(403);
+  });
+
+  it("records a failure that is not an Error at all on the run", async () => {
+    // A thrown string reaches the same place a thrown Error does — the run —
+    // and must be readable there rather than logged as "[object Object]".
+    const { app, calls } = stub({ service: { stage: () => Promise.reject("the sheet is corrupt") } });
+    await post(app, "/manual-gl/staging/multi-year", {
+      versionId: VERSION,
+      uploadIds: [UPLOAD],
+    }).expect(202);
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(argsOf(calls, "finish")[3]).toMatchObject({
+      status: "failed",
+      errorMessage: "the sheet is corrupt",
     });
   });
 });
