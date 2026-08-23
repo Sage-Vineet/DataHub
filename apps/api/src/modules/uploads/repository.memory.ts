@@ -23,7 +23,12 @@ export class InMemoryDocumentsRepository implements DocumentsRepository {
   }
 
   async createDocument(input: CreateDocumentInput): Promise<DocumentRecord> {
-    const record: DocumentRecord = { id: randomUUID(), archivedAt: null, ...input };
+    const record: DocumentRecord = {
+      id: randomUUID(),
+      archivedAt: null,
+      uploadedAt: new Date().toISOString(),
+      ...input,
+    };
     this.docs.set(record.id, record);
     return record;
   }

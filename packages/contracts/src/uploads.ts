@@ -66,6 +66,15 @@ export const documentResponse = z.object({
    * has since been removed.
    */
   uploaded_by_name: z.string().nullable().optional(),
+  /**
+   * When it arrived.
+   *
+   * The file explorer sorts and labels by it, and it was not on the wire at
+   * all — so a data room whose whole value is provenance showed documents with
+   * no indication of when any of them appeared. Nullable rather than required,
+   * because a row predating the column has no honest answer.
+   */
+  uploaded_at: z.string().nullable(),
   archived_at: z.string().nullable(),
 });
 export type DocumentResponse = z.infer<typeof documentResponse>;

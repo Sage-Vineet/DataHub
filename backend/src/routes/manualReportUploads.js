@@ -206,25 +206,6 @@ router.use((req, res, next) => {
   return next();
 });
 
-router.get("/manual-report-uploads/folder-files", async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    const folderId = String(req.query.folderId || "").trim();
-    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
-    if (!folderId) return res.status(400).json({ success: false, error: "Missing folderId." });
-
-    const { data: documents, error } = await supabase
-      .from("documents")
-      .select("id, name, file_url, upload_id, size, ext, uploaded_at")
-      .eq("folder_id", folderId)
-      .order("uploaded_at", { ascending: false });
-
-    if (error) throw new Error(error.message);
-    return res.json({ success: true, files: documents || [] });
-  } catch (error) {
-    return res.status(500).json({ success: false, error: error.message });
-  }
-});
 
 router.post("/manual-report-uploads/sync-source", async (req, res) => {
   try {

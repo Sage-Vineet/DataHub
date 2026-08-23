@@ -296,3 +296,71 @@ describe("uploads router — a document says who uploaded it", () => {
     expect(doc.uploaded_by_name).not.toBe("Unknown");
   });
 });
+
+describe("uploads router — the manual-upload flow's name for the same documents", () => {
+  const addDocument = async (name: string) => {
+    const up = (
+      await request(app)
+        .post("/uploads")
+        .set("Content-Type", "application/pdf")
+        .set("x-file-name", name)
+        .send(Buffer.from("pdf"))
+    ).body;
+    await request(app)
+      .post(`/folders/${folderId}/documents`)
+      .send({ name, upload_id: up.id, size: "3", ext: "pdf" })
+      .expect(201);
+  };
+
+  it("answers the envelope the page reads", async () => {
+    // The page does `res?.files ?? []`, so a bare array leaves it empty with
+    // nothing on screen to explain why.
+    await addDocument("BS 2024.pdf");
+    const res = await request(app)
+      .get(`/manual-report-uploads/folder-files?folderId=${folderId}`)
+      .expect(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.files.map((f: { name: string }) => f.name)).toEqual(["BS 2024.pdf"]);
+  });
+
+  it("says when each document arrived", async () => {
+    // Not on the wire at all before: a data room whose whole value is
+    // provenance showed documents with no indication of when any appeared.
+    await addDocument("BS 2024.pdf");
+    const res = await request(app)
+      .get(`/manual-report-uploads/folder-files?folderId=${folderId}`)
+      .expect(200);
+    expect(res.body.files[0].uploaded_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("checks folder access, which legacy's second copy did not", async () => {
+    // Legacy read `documents` directly here and performed no access check at
+    // all, so anybody who knew a folder id could list its contents. One
+    // handler now, so the check cannot be missing from one of two copies.
+    const [stranger] = await db
+      .insert(schema.users)
+      .values({
+        name: "Mallory",
+        email: "mallory@example.test",
+        passwordHash: "!",
+        role: "buyer",
+      })
+      .returning();
+    current = {
+      ...BROKER,
+      id: stranger!.id,
+      name: "Mallory",
+      role: "buyer",
+      company_ids: [],
+      company_id: null,
+    };
+
+    await request(app)
+      .get(`/manual-report-uploads/folder-files?folderId=${folderId}`)
+      .expect(403);
+  });
+
+  it("400s without a folder", async () => {
+    await request(app).get("/manual-report-uploads/folder-files").expect(400);
+  });
+});

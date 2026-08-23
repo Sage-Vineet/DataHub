@@ -177,6 +177,7 @@ export function toDocumentResponse(d: DocumentRecord): DocumentResponse {
     status: d.status,
     uploaded_by: d.uploadedBy,
     uploaded_by_name: d.uploadedByName ?? null,
+    uploaded_at: d.uploadedAt,
     archived_at: d.archivedAt,
   };
 }

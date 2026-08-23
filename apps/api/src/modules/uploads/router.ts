@@ -99,6 +99,29 @@ export function createUploadsRouter(deps: UploadsRouterDeps): Router {
     res.json(documents);
   }));
 
+  /**
+   * The same documents, under the name the manual-upload flow calls them.
+   *
+   * Legacy had a second handler for this reading `documents` directly and
+   * answering `{ success, files }` — a duplicate of `/folders/:id/documents`
+   * with a different envelope and, notably, WITHOUT the folder access check
+   * the other one performs. Anybody who knew a folder id could list its
+   * contents.
+   *
+   * One handler now, so the check cannot be missing from one of two copies.
+   * The envelope stays as the caller reads it: the page does `res?.files ?? []`
+   * and a bare array would leave it empty with nothing to explain why.
+   */
+  router.get("/manual-report-uploads/folder-files", handle(async (req, res) => {
+    const folderId = String(req.query.folderId ?? "").trim();
+    if (!folderId) {
+      res.status(400).json({ success: false, error: "Missing folderId." });
+      return;
+    }
+    const documents = await service.listDocuments(req.user!, folderId, includeArchived(req));
+    res.json({ success: true, files: documents });
+  }));
+
   router.post("/folders/:id/documents", handle(async (req, res) => {
     const parsed = contracts.documentCreate.safeParse(req.body);
     if (!parsed.success) {

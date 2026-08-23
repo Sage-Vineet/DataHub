@@ -8,7 +8,6 @@
   "GET /invoices/doc/:p",
   "GET /key-reports/versions/:p/extracted-data",
   "GET /manual-report-uploads/bs-bank-balances",
-  "GET /manual-report-uploads/folder-files",
   "GET /manual-report-uploads/manual-upload-dashboard",
   "GET /manual-report-uploads/pl-for-tax",
   "GET /manual-report-uploads/qms-bank-data",

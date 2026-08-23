@@ -12,6 +12,19 @@ const { documents, documentActivity, users } = schema;
 type DocRow = typeof documents.$inferSelect;
 type ActRow = typeof documentActivity.$inferSelect;
 
+/**
+ * A timestamp as ISO text, whatever the driver handed back.
+ *
+ * `createDocument` goes through raw SQL rather than the query builder, and
+ * there the driver returns a timestamp as a STRING while the builder returns a
+ * Date. Calling `.toISOString()` on the string throws — which surfaced as a
+ * 500 on every document creation, from a mapper that looked obviously correct.
+ */
+function toIsoString(value: Date | string | null): string | null {
+  if (value === null || value === undefined) return null;
+  return value instanceof Date ? value.toISOString() : String(value);
+}
+
 function toDoc(row: DocRow): DocumentRecord {
   return {
     id: row.id,
@@ -24,7 +37,8 @@ function toDoc(row: DocRow): DocumentRecord {
     ext: row.ext,
     status: row.status as DocumentStatus,
     uploadedBy: row.uploadedBy,
-    archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
+    uploadedAt: toIsoString(row.uploadedAt),
+    archivedAt: toIsoString(row.archivedAt),
   };
 }
 

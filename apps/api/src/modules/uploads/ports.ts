@@ -64,6 +64,14 @@ export interface DocumentRecord {
    * "Uploaded by: Unknown" in a product whose value proposition is provenance.
    */
   uploadedByName?: string | null;
+  /**
+   * When it arrived.
+   *
+   * Carried because the file explorer sorts and labels by it, and because a
+   * data room whose whole value is provenance was showing documents with no
+   * indication of when any of them appeared.
+   */
+  uploadedAt: string | null;
   archivedAt: string | null;
 }
 
