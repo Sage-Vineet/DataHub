@@ -445,29 +445,6 @@ router.get("/bank-vs-books", extractClientId, async (req, res) => {
  *     tags: [Reconciliation]
  *     summary: Fetch bank and books transactions
  */
-router.get("/reconciliation-data", extractClientId, async (req, res) => {
-  try {
-    if (!req.clientId) return res.status(400).json({ error: "Missing Client ID" });
-    const [bankData, booksData] = await Promise.all([
-      supabase.from("bank_transactions").select("txn_date, narration, amount")
-        .eq("client_id", req.clientId).order("txn_date", { ascending: true }),
-      supabase.from("reconciliation_transactions").select("txn_date, name, amount")
-        .eq("client_id", req.clientId).order("txn_date", { ascending: true }),
-    ]);
-
-    if (bankData.error) throw bankData.error;
-    if (booksData.error) throw booksData.error;
-
-    res.json({
-      bank_transactions: (bankData.data || []).map((b) => ({ date: b.txn_date, name: b.narration, amount: b.amount })),
-      reconciliation_transactions: (booksData.data || []).map((r) => ({ date: r.txn_date, name: r.name, amount: r.amount })),
-    });
-  } catch (error) {
-    console.error("Fetch Error:", error);
-    res.status(500).json({ error: "Failed to fetch reconciliation data" });
-  }
-});
-
 /**
  * @swagger
  * /api/reconciliation-variance:
@@ -475,33 +452,6 @@ router.get("/reconciliation-data", extractClientId, async (req, res) => {
  *     tags: [Reconciliation]
  *     summary: Calculate variance between bank and books
  */
-router.get("/reconciliation-variance", extractClientId, async (req, res) => {
-  try {
-    if (!req.clientId) return res.status(400).json({ error: "Missing Client ID" });
-
-    const [bankSumRes, bookSumRes] = await Promise.all([
-      supabase.from("bank_transactions").select("amount").eq("client_id", req.clientId),
-      supabase.from("reconciliation_transactions").select("amount").eq("client_id", req.clientId),
-    ]);
-
-    if (bankSumRes.error) throw bankSumRes.error;
-    if (bookSumRes.error) throw bookSumRes.error;
-
-    const bankTotal = (bankSumRes.data || []).reduce((sum, row) => sum + (parseFloat(row.amount) || 0), 0);
-    const booksTotal = (bookSumRes.data || []).reduce((sum, row) => sum + (parseFloat(row.amount) || 0), 0);
-    const variance_amount = bankTotal - booksTotal;
-    const variance_percentage = booksTotal !== 0 ? (variance_amount / booksTotal) * 100 : 0;
-
-    res.json({
-      bank_total: bankTotal, books_total: booksTotal,
-      variance_amount, variance_percentage: parseFloat(variance_percentage.toFixed(2)),
-    });
-  } catch (error) {
-    console.error("Variance Error:", error);
-    res.status(500).json({ error: "Failed to calculate variance" });
-  }
-});
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared extraction helper — cache-check + live Gemini/Excel extraction.
 // Accepts an explicit (cacheSource, folderRootName) pair so each source can
@@ -776,27 +726,6 @@ router.get("/extract-bank-pdf-records", extractClientId, async (req, res) => {
    Never reads from Quickbooks Manual Source or shared QMS caches.
    Response shape: { success, banks, months, totals } — same as /qms-bank-data.
 =========================== */
-router.get("/manual-report-uploads/manual-bank-data", extractClientId, async (req, res) => {
-  try {
-    if (!req.clientId) {
-      return res.status(400).json({ success: false, error: "Missing clientId." });
-    }
-    const datasetVersion = String(req.query.datasetVersion || "").trim() || null;
-    const keyReportVersionId = String(req.query.keyReportVersionId || "").trim() || null;
-    const { statusCode, body } = await runBankExtraction(
-      req.clientId,
-      MANUAL_REPORT_UPLOAD_SOURCE,   // "manual_report_upload" — never overlaps with QMS cache
-      "Manual Upload Source",         // reads only from this DataRoom folder
-      datasetVersion,                 // scope to the selected Key Reports version when supplied
-      keyReportVersionId,
-    );
-    return res.status(statusCode).json(body);
-  } catch (error) {
-    console.error("[ManualBankData] Error:", error);
-    return res.status(500).json({ success: false, error: error.message || "Failed to fetch manual bank data." });
-  }
-});
-
 /* ===========================
    GET /manual-report-uploads/bs-bank-balances
    Returns bank account balances extracted from the Balance Sheet for a given source.

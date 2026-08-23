@@ -101,42 +101,6 @@ router.get("/qb-general-ledger", async (req, res) => {
  *       - Reconciliation
  *     summary: Fetch transactions for reconciliation
  */
-router.get("/qb-reconciliation-transactions", async (req, res) => {
-  const qb = getQBConfig(req.clientId);
-  const base = `${qb.baseUrl}/v3/company/${qb.realmId}/query`;
-  const headers = {
-    Authorization: `Bearer ${qb.accessToken}`,
-    Accept: "application/json",
-  };
-  const { start_date, end_date, max_results = 50 } = req.query;
-
-  const queries = {
-    invoices: `SELECT * FROM Invoice WHERE TxnDate >= '${start_date}' AND TxnDate <= '${end_date}' MAXRESULTS ${max_results}`,
-    payments: `SELECT * FROM Payment WHERE TxnDate >= '${start_date}' AND TxnDate <= '${end_date}' MAXRESULTS ${max_results}`,
-    deposits: `SELECT * FROM Deposit WHERE TxnDate >= '${start_date}' AND TxnDate <= '${end_date}' MAXRESULTS ${max_results}`,
-    purchases: `SELECT * FROM Purchase WHERE TxnDate >= '${start_date}' AND TxnDate <= '${end_date}' MAXRESULTS ${max_results}`,
-  };
-
-  const results = {};
-  try {
-    for (const key in queries) {
-      const response = await axios.get(base, {
-        headers,
-        proxy: false,
-        params: { query: queries[key], minorversion: 75 },
-      });
-      results[key] = response.data.QueryResponse || {};
-    }
-    res.json(results);
-  } catch (error) {
-    console.error(
-      "Reconciliation Transactions Error:",
-      error.response?.data || error.message,
-    );
-    res.status(500).json({ error: "Failed to fetch transactions" });
-  }
-});
-
 /**
  * @swagger
  * /qb-trial-balance:
@@ -145,34 +109,6 @@ router.get("/qb-reconciliation-transactions", async (req, res) => {
  *       - Reconciliation
  *     summary: Fetch Trial Balance
  */
-router.get("/qb-trial-balance", async (req, res) => {
-  const qb = getQBConfig(req.clientId);
-  try {
-    const response = await axios.get(
-      `${qb.baseUrl}/v3/company/${qb.realmId}/reports/TrialBalance`,
-      {
-        headers: {
-          Authorization: `Bearer ${qb.accessToken}`,
-          Accept: "application/json",
-        },
-        proxy: false,
-        params: {
-          start_date: req.query.start_date,
-          end_date: req.query.end_date,
-          minorversion: 75,
-        },
-      },
-    );
-    res.json(response.data);
-  } catch (error) {
-    console.error(
-      "TrialBalance API Error:",
-      error.response?.data || error.message,
-    );
-    res.status(500).json({ error: "Failed to fetch trial balance" });
-  }
-});
-
 /**
  * @swagger
  * /qb-reconciliation-engine:
@@ -181,89 +117,12 @@ router.get("/qb-trial-balance", async (req, res) => {
  *       - Reconciliation
  *     summary: Fetch combined reconciliation data
  */
-router.get("/qb-reconciliation-engine", async (req, res) => {
-  const qb = getQBConfig(req.clientId);
-  const { start_date, end_date, accounting_method } = req.query;
-  const headers = {
-    Authorization: `Bearer ${qb.accessToken}`,
-    Accept: "application/json",
-  };
-
-  try {
-    const [ledger, accounts, trialBalance] = await Promise.all([
-      axios.get(
-        `${qb.baseUrl}/v3/company/${qb.realmId}/reports/GeneralLedger`,
-        {
-          headers,
-          proxy: false,
-          params: { start_date, end_date, accounting_method, minorversion: 75 },
-        },
-      ),
-      axios.get(`${qb.baseUrl}/v3/company/${qb.realmId}/reports/AccountList`, {
-        headers,
-        proxy: false,
-        params: { minorversion: 75 },
-      }),
-      axios.get(`${qb.baseUrl}/v3/company/${qb.realmId}/reports/TrialBalance`, {
-        headers,
-        proxy: false,
-        params: { start_date, end_date, accounting_method, minorversion: 75 },
-      }),
-    ]);
-
-    res.json({
-      generalLedger: ledger.data,
-      accounts: accounts.data,
-      trialBalance: trialBalance.data,
-    });
-  } catch (error) {
-    console.error(
-      "Reconciliation Engine Error:",
-      error.response?.data || error.message,
-    );
-    res.status(500).json({ error: "Failed to fetch reconciliation data" });
-  }
-});
-
 /**
  * @swagger
  * /bank-transactions:
  *   post:
  *     summary: Store bank statement transactions
  */
-router.post("/bank-transactions", async (req, res) => {
-  const transactions = req.body;
-  try {
-    await supabase
-      .from("bank_transactions")
-      .delete()
-      .eq("client_id", req.clientId);
-
-    if (transactions.length > 0) {
-      const toInsert = transactions.map((txn) => ({
-        client_id: req.clientId,
-        txn_date: txn.date,
-        narration: txn.narration,
-        amount: txn.amount,
-      }));
-
-      const { error: insertError } = await supabase
-        .from("bank_transactions")
-        .insert(toInsert);
-
-      if (insertError) throw insertError;
-    }
-
-    res.json({
-      message: "Bank transactions stored successfully",
-      totalInserted: transactions.length,
-    });
-  } catch (error) {
-    console.error("Bank Transaction Error:", error);
-    res.status(500).json({ error: "Failed to store bank transactions" });
-  }
-});
-
 /**
  * @swagger
  * /qb-profit-loss-detail:
@@ -272,38 +131,6 @@ router.post("/bank-transactions", async (req, res) => {
  *       - Reconciliation
  *     summary: Fetch Profit and Loss Detail report
  */
-router.get("/qb-profit-loss-detail", async (req, res) => {
-  const qb = getQBConfig(req.clientId);
-  const { start_date, end_date, accounting_method } = req.query;
-
-  try {
-    const response = await axios.get(
-      `${qb.baseUrl}/v3/company/${qb.realmId}/reports/ProfitAndLossDetail`,
-      {
-        headers: {
-          Authorization: `Bearer ${qb.accessToken}`,
-          Accept: "application/json",
-        },
-        proxy: false,
-        params: {
-          start_date,
-          end_date,
-          accounting_method,
-          minorversion: 75,
-        },
-      },
-    );
-
-    res.json(response.data);
-  } catch (error) {
-    console.error(
-      "ProfitAndLossDetail API Error:",
-      error.response?.data || error.message,
-    );
-    res.status(500).json({ error: "Failed to fetch Profit & Loss Detail" });
-  }
-});
-
 /**
  * @swagger
  * /qb-balance-sheet:
@@ -312,65 +139,6 @@ router.get("/qb-profit-loss-detail", async (req, res) => {
  *       - Reconciliation
  *     summary: Fetch Balance Sheet report
  */
-router.get("/qb-balance-sheet", async (req, res) => {
-  const qb = getQBConfig(req.clientId);
-  const { start_date, end_date, accounting_method } = req.query;
-
-  if (!qb.accessToken || !qb.realmId) {
-    return res.status(400).json({
-      error: "Missing QuickBooks configuration. Please authenticate first.",
-    });
-  }
-
-  const url = `${qb.baseUrl}/v3/company/${qb.realmId}/reports/BalanceSheet`;
-
-  try {
-    const fetchBalanceSheet = (accessToken) =>
-      axios.get(url, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          Accept: "application/json",
-        },
-        proxy: false,
-        params: {
-          start_date,
-          end_date,
-          accounting_method,
-          minorversion: 75,
-        },
-      });
-
-    try {
-      const response = await fetchBalanceSheet(qb.accessToken);
-      return res.json({ success: true, data: response.data });
-    } catch (error) {
-      if (error.response?.status !== 401) {
-        throw error;
-      }
-
-      console.log("⚠️ Balance Sheet token expired, attempting refresh...");
-      const refreshedToken = await tokenManager.refreshAccessToken(
-        req.clientId,
-      );
-      const retryResponse = await fetchBalanceSheet(refreshedToken);
-      return res.json({
-        success: true,
-        data: retryResponse.data,
-        refreshed: true,
-      });
-    }
-  } catch (error) {
-    console.error(
-      "BalanceSheet API Error:",
-      error.response?.data || error.message,
-    );
-    return res.status(error.response?.status || 500).json({
-      error: "Failed to fetch Balance Sheet",
-      details: error.response?.data || error.message,
-    });
-  }
-});
-
 /**
  * @swagger
  * /qb-financial-reports:
@@ -379,120 +147,6 @@ router.get("/qb-balance-sheet", async (req, res) => {
  *       - Reconciliation
  *     summary: Fetch Profit & Loss Detail and Balance Sheet reports
  */
-router.get("/qb-financial-reports-for-reconciliation", async (req, res) => {
-  // Extract clientId with multiple fallbacks (same as bank statement endpoint)
-  let clientId = req.clientId;
-  if (!clientId && req.query.clientId) {
-    clientId = req.query.clientId;
-  }
-  if (!clientId && req.headers.referer) {
-    const referer = req.headers.referer;
-    const match = referer.match(/\/client\/([^/]+)/);
-    if (match) {
-      clientId = match[1];
-    }
-  }
-
-  if (!clientId) {
-    console.error(
-      "❌ Missing Client ID in qb-financial-reports-for-reconciliation",
-    );
-    return res.status(400).json({
-      error: "Missing Client ID. Please access this from a company workspace.",
-    });
-  }
-
-  req.clientId = clientId;
-  const qb = getQBConfig(clientId);
-  const { start_date, end_date, accounting_method } = req.query;
-
-  console.log(`📊 Fetching financial reports for client: ${clientId}`);
-
-  if (!qb.accessToken || !qb.realmId) {
-    console.error(
-      `❌ Missing QB configuration for client ${clientId}. accessToken: ${Boolean(qb.accessToken)}, realmId: ${qb.realmId}`,
-    );
-    return res.status(401).json({
-      error: "QuickBooks is not connected for this company.",
-      message:
-        "Please connect QuickBooks first from the Connections page before fetching financial reports.",
-    });
-  }
-
-  const headers = {
-    Authorization: `Bearer ${qb.accessToken}`,
-    Accept: "application/json",
-  };
-
-  const params = {
-    start_date,
-    end_date,
-    accounting_method,
-    minorversion: 75,
-  };
-
-  const profitLossUrl = `${qb.baseUrl}/v3/company/${qb.realmId}/reports/ProfitAndLossDetail`;
-  const balanceSheetUrl = `${qb.baseUrl}/v3/company/${qb.realmId}/reports/BalanceSheet`;
-
-  try {
-    const fetchReports = (accessToken) =>
-      Promise.all([
-        axios.get(profitLossUrl, {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            Accept: "application/json",
-          },
-          proxy: false,
-          params,
-        }),
-        axios.get(balanceSheetUrl, {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            Accept: "application/json",
-          },
-          proxy: false,
-          params,
-        }),
-      ]);
-
-    try {
-      const [profitLoss, balanceSheet] = await fetchReports(qb.accessToken);
-
-      return res.json({
-        success: true,
-        profit_and_loss: profitLoss.data,
-        balance_sheet: balanceSheet.data,
-      });
-    } catch (error) {
-      if (error.response?.status !== 401) throw error;
-
-      console.log("⚠️ Token expired, refreshing...");
-
-      const refreshedToken = await tokenManager.refreshAccessToken(
-        req.clientId,
-      );
-      const [profitLoss, balanceSheet] = await fetchReports(refreshedToken);
-
-      return res.json({
-        success: true,
-        refreshed: true,
-        profit_and_loss: profitLoss.data,
-        balance_sheet: balanceSheet.data,
-      });
-    }
-  } catch (error) {
-    console.error(
-      "Financial Reports API Error:",
-      error.response?.data || error.message,
-    );
-
-    return res.status(error.response?.status || 500).json({
-      error: "Failed to fetch financial reports",
-      details: error.response?.data || error.message,
-    });
-  }
-});
-
 // ─────────────────────────────────────────────────────────────────────────────
 // NEW BACKEND ROUTES — add these to your existing reconciliation router
 // ─────────────────────────────────────────────────────────────────────────────
@@ -511,43 +165,6 @@ router.get("/qb-financial-reports-for-reconciliation", async (req, res) => {
  *     description: Returns accounts of type Bank so the UI can map them to
  *                  Holding / Operating / General / Money Market buckets.
  */
-router.get("/qb-bank-accounts", async (req, res) => {
-  let clientId = req.clientId || req.query.clientId;
-  if (!clientId && req.headers.referer) {
-    const m = req.headers.referer.match(/\/client\/([^/]+)/);
-    if (m) clientId = m[1];
-  }
-  if (!clientId) return res.status(400).json({ error: "Missing Client ID." });
-
-  const qb = getQBConfig(clientId);
-  if (!qb.accessToken || !qb.realmId)
-    return res.status(401).json({ error: "QuickBooks not connected." });
-
-  try {
-    const query =
-      "SELECT * FROM Account WHERE AccountType = 'Bank' MAXRESULTS 100";
-    const response = await axios.get(
-      `${qb.baseUrl}/v3/company/${qb.realmId}/query`,
-      {
-        headers: {
-          Authorization: `Bearer ${qb.accessToken}`,
-          Accept: "application/json",
-        },
-        proxy: false,
-        params: { query, minorversion: 75 },
-      },
-    );
-    const accounts = response.data?.QueryResponse?.Account || [];
-    return res.json({ success: true, accounts });
-  } catch (error) {
-    console.error(
-      "QB Bank Accounts Error:",
-      error.response?.data || error.message,
-    );
-    return res.status(500).json({ error: "Failed to fetch bank accounts." });
-  }
-});
-
 /**
  * @swagger
  * /qb-bank-activity:

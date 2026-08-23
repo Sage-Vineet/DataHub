@@ -21,7 +21,6 @@ const customerFinanceRoutes = require("./routes/quickbooks/customers/customers")
 const invoiceFinanceRoutes = require("./routes/quickbooks/invoices/invoices");
 const cashflowRoutes = require("./routes/quickbooks/cash_flow/cash_flow");
 const reconciliationRoutes = require("./routes/quickbooks/reconciliation/Reconciliation");
-const taxReconciliationRoutes = require("./routes/quickbooks/tax_reconciliation/Tax_Reconciliation");
 const geminipdf = require("./routes/quickbooks/tax_reconciliation/geminiPdf");
 const bankStatementRoutes = require("./routes/quickbooks/reconciliation/bankStatement");
 const bankVsBooksRoutes = require("./routes/quickbooks/reconciliation/bankVsBooks");
@@ -124,7 +123,6 @@ const financialRoutes = [
   invoiceFinanceRoutes,
   cashflowRoutes,
   reconciliationRoutes,
-  taxReconciliationRoutes,
   geminipdf,
   bankStatementRoutes,
   bankVsBooksRoutes,
