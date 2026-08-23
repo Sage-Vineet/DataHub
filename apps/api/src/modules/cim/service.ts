@@ -81,6 +81,30 @@ function toVersionSummary(
   };
 }
 
+/**
+ * Where a block sits in the deck.
+ *
+ * Three surfaces need this — the gap list, the review queue and the question
+ * generator — and each had its own copy, each with its own `?? "unclassified"`
+ * and `?? 0`. The fallbacks exist because the maps are typed `Map`, not
+ * because a block can genuinely be orphaned: `slides.section_id` and
+ * `blocks.slide_id` are foreign keys, and deleting a section takes its slides
+ * and their blocks with it.
+ *
+ * Stated once, they are one decision rather than three, and a block that
+ * somehow IS orphaned lands under one heading everywhere rather than under
+ * three different ones.
+ */
+function placementOf(
+  block: { slideId: string } | undefined,
+  slideById: ReadonlyMap<string, { id: string; sectionId: string; slideNo: number }>,
+  sectionById: ReadonlyMap<string, { id: string; sectionKey: string }>,
+): { sectionKey: string; slideNo: number } {
+  const slide = block ? slideById.get(block.slideId) : undefined;
+  const section = slide ? sectionById.get(slide.sectionId) : undefined;
+  return { sectionKey: section?.sectionKey ?? "unclassified", slideNo: slide?.slideNo ?? 0 };
+}
+
 export class CimService {
   private readonly deps: CimServiceDeps;
 
@@ -348,9 +372,7 @@ export class CimService {
     const out: GapResponse[] = [];
     for (const block of blocks) {
       if (hasContent(block)) continue;
-      const slide = slideById.get(block.slideId);
-      const section = slide ? sectionById.get(slide.sectionId) : undefined;
-      const sectionKey = section?.sectionKey ?? "unclassified";
+      const { sectionKey, slideNo } = placementOf(block, slideById, sectionById);
       // The authored label is itself usually a question — the library is seeded
       // from those labels — so it is the fallback before declaring a gap unmapped.
       const question = questionFor(sectionKey, block.blockKey) ?? block.label;
@@ -358,7 +380,7 @@ export class CimService {
         block_id: block.id,
         block_key: block.blockKey,
         section_key: sectionKey,
-        slide_no: slide?.slideNo ?? 0,
+        slide_no: slideNo,
         label: block.label,
         question_text: question,
         unmapped: question === null,
@@ -387,11 +409,10 @@ export class CimService {
     const byId = new Map(blocks.map((b) => [b.id, b]));
     const sections = await this.deps.structure.sectionsFor(versionId);
     const slides = await this.deps.structure.slidesFor(versionId);
-    const sectionKeyForBlock = (blockId: string): string => {
-      const block = byId.get(blockId);
-      const slide = block ? slides.find((s) => s.id === block.slideId) : undefined;
-      return sections.find((s) => s.id === slide?.sectionId)?.sectionKey ?? "unclassified";
-    };
+    const slideById = new Map(slides.map((s) => [s.id, s]));
+    const sectionById = new Map(sections.map((s) => [s.id, s]));
+    const sectionKeyForBlock = (blockId: string): string =>
+      placementOf(byId.get(blockId), slideById, sectionById).sectionKey;
 
     for (const q of input.questions) {
       if (!byId.has(q.block_id)) {
@@ -441,14 +462,14 @@ export class CimService {
       this.deps.structure.sectionsFor(versionId),
       this.deps.structure.slidesFor(versionId),
     ]);
+    const slideById = new Map(slides.map((s) => [s.id, s]));
+    const sectionById = new Map(sections.map((s) => [s.id, s]));
 
     return answers
       .filter((a) => byId.has(a.externalRef) && !decided.has(a.responseId))
       .map((a) => {
         const block = byId.get(a.externalRef)!;
-        const slide = slides.find((s) => s.id === block.slideId);
-        const sectionKey =
-          sections.find((s) => s.id === slide?.sectionId)?.sectionKey ?? "unclassified";
+        const { sectionKey } = placementOf(block, slideById, sectionById);
         return {
           block_id: block.id,
           block_key: block.blockKey,

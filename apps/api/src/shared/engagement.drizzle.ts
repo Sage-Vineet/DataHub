@@ -58,6 +58,56 @@ function toNumber(value: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/** A chart-of-accounts row, as the engagement reads it. */
+export interface CoaRowForEngagement {
+  id: string;
+  accountName: string;
+  statementType: string | null;
+  accountType: string | null;
+  ebitdaRole: string | null;
+}
+
+/**
+ * One stored account as the engine's `Account`.
+ *
+ * Two things here are corrections rather than translation, and both were
+ * silent when they were wrong:
+ *
+ * A balance-sheet account carries a real type. Returning null for one made
+ * every liability and equity account fall back to "asset" in the roll-forward's
+ * balance check, and put the debit/credit split in the trial balance on the
+ * wrong side of the ledger.
+ *
+ * Cost of sales is preserved rather than folded into expense. Folding it kept
+ * net income right — cogs is subtracted either way — but threw away the only
+ * thing gross profit can be derived from, and discarded a QoE reclassification
+ * to `cogs` on the way back out: the write succeeded and every subsequent read
+ * said `expense`.
+ */
+export function toEngagementAccount(row: CoaRowForEngagement): Account {
+  const statementType = row.statementType === "profit_loss" ? "profit_loss" : "balance_sheet";
+  const type = String(row.accountType ?? "").toLowerCase();
+
+  return {
+    id: row.id,
+    name: row.accountName,
+    statementType,
+    accountType:
+      statementType === "profit_loss"
+        // Lower-cased like the other two. Matched case-sensitively, an account
+        // stored as "Revenue" missed the income set and fell through to
+        // EXPENSE — which inverts its sign in every statement derived from it,
+        // and still balances.
+        ? INCOME_TYPES.has(type)
+          ? "income"
+          : COGS_TYPES.has(type)
+            ? "cogs"
+            : "expense"
+        : (SECTION_TO_TYPE[type] ?? null),
+    ebitdaRole: (row.ebitdaRole as EbitdaRole | null) ?? null,
+  };
+}
+
 /** Load one version's accounts, ledger and balance-sheet anchors. */
 export async function loadEngagement(db: Db, versionId: string): Promise<EngagementData | null> {
     const [version] = await db
@@ -82,32 +132,7 @@ export async function loadEngagement(db: Db, versionId: string): Promise<Engagem
       .from(chartOfAccounts)
       .where(eq(chartOfAccounts.versionId, versionId));
 
-    const accounts: Account[] = coaRows.map((row) => {
-      const statementType = row.statementType === "profit_loss" ? "profit_loss" : "balance_sheet";
-      return {
-        id: row.id,
-        name: row.accountName,
-        statementType,
-        // Balance-sheet accounts carry a real type too. Returning null here
-        // made every liability and equity account fall back to "asset" in the
-        // roll-forward's balance check, and put the debit/credit split in the
-        // trial balance on the wrong side of the ledger.
-        // Cost of sales is preserved rather than folded into expense. Folding
-        // it kept net income right — cogs is subtracted either way — but threw
-        // away the only thing gross profit can be derived from, and silently
-        // discarded a QoE reclassification to `cogs` on the way back out: the
-        // write succeeded and every subsequent read said `expense`.
-        accountType:
-          statementType === "profit_loss"
-            ? INCOME_TYPES.has(String(row.accountType))
-              ? "income"
-              : COGS_TYPES.has(String(row.accountType ?? "").toLowerCase())
-                ? "cogs"
-                : "expense"
-            : (SECTION_TO_TYPE[String(row.accountType ?? "").toLowerCase()] ?? null),
-        ebitdaRole: (row.ebitdaRole as EbitdaRole | null) ?? null,
-      };
-    });
+    const accounts: Account[] = coaRows.map(toEngagementAccount);
 
     // Only posted transactions: header, beginning-balance and total rows would
     // double-count the very amounts they summarize.
