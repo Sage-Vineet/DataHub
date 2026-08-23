@@ -730,29 +730,6 @@ export function saveManualGlMapping(payload, options = {}) {
 
 
 
-export function getManualGlProfitLoss(options = {}) {
-  const { params = {}, ...requestOptions } = options || {};
-  const clientId = requestOptions.clientId ?? resolveClientIdFromLocation();
-  const search = new URLSearchParams();
-
-  if (clientId) {
-    search.set("clientId", clientId);
-  }
-
-  Object.entries(params || {}).forEach(([key, value]) => {
-    if (value === undefined || value === null || value === "") return;
-    if (Array.isArray(value)) {
-      if (value.length === 0) return;
-      search.set(key, value.join(","));
-      return;
-    }
-    search.set(key, String(value));
-  });
-
-  const query = search.toString();
-  return request(`/reports/pl${query ? `?${query}` : ""}`, requestOptions);
-}
-
 export function getManualGlBalanceSheet(options = {}) {
   const { params = {}, ...requestOptions } = options || {};
   const clientId = requestOptions.clientId ?? resolveClientIdFromLocation();
@@ -955,60 +932,6 @@ export function getManualStagedProfitLossSummary(options = {}) {
 
   const query = search.toString();
   return request(`/reports/profit-loss${query ? `?${query}` : ""}`, requestOptions);
-}
-
-export function getManualStagedProfitLossDetail(options = {}) {
-  const {
-    clientId: clientIdOption,
-    params = {},
-    ...requestOptions
-  } = options || {};
-  const clientId = clientIdOption ?? resolveClientIdFromLocation();
-  const search = new URLSearchParams();
-  if (clientId) search.set("clientId", clientId);
-
-  Object.entries(params || {}).forEach(([key, value]) => {
-    if (value === undefined || value === null || value === "") return;
-    if (Array.isArray(value)) {
-      if (value.length === 0) return;
-      search.set(key, value.join(","));
-      return;
-    }
-    search.set(key, String(value));
-  });
-
-  const query = search.toString();
-  return request(
-    `/reports/profit-loss/detail${query ? `?${query}` : ""}`,
-    requestOptions,
-  );
-}
-
-export function getManualVendorAnalysis(options = {}) {
-  const {
-    clientId: clientIdOption,
-    params = {},
-    ...requestOptions
-  } = options || {};
-  const clientId = clientIdOption ?? resolveClientIdFromLocation();
-  const search = new URLSearchParams();
-  if (clientId) search.set("clientId", clientId);
-
-  Object.entries(params || {}).forEach(([key, value]) => {
-    if (value === undefined || value === null || value === "") return;
-    if (Array.isArray(value)) {
-      if (value.length === 0) return;
-      search.set(key, value.join(","));
-      return;
-    }
-    search.set(key, String(value));
-  });
-
-  const query = search.toString();
-  return request(
-    `/reports/vendor-analysis${query ? `?${query}` : ""}`,
-    requestOptions,
-  );
 }
 
 export function getManualStagedProfitLossVendorDetail(options = {}) {

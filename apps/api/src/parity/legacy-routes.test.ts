@@ -46,7 +46,18 @@ describe("the committed legacy surface", () => {
     // *supposed* to shrink legacy — a floor under it would fail the moment the
     // migration made progress, and would be raised out of the way rather than
     // investigated.
-    expect(contractRoutes().size).toBeGreaterThan(200);
+    //
+    // The contract is legacy ∪ reaped, so REAPING leaves it unchanged: a route
+    // moves from one set to the other. Only DELETING a route with no caller
+    // shrinks it, and that shrinks it honestly — the surface really is smaller,
+    // because the route no longer exists anywhere. So this is a floor against
+    // truncation (an emptied fixture, a broken parser), not a progress metric,
+    // and it is set well below the current total rather than just under it. If
+    // it ever fails, the question is which fixture lost entries, not what number
+    // would make it pass.
+    expect(contractRoutes().size).toBeGreaterThan(150);
+    expect(legacyRoutes().size).toBeGreaterThan(0);
+    expect(reapedRoutes().size).toBeGreaterThan(0);
   });
 
   it.skipIf(!legacySourceAvailable())("derives a non-empty surface while legacy exists", () => {

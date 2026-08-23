@@ -371,49 +371,6 @@ async function handleGetLatestReport(req, res, statementType) {
   });
 }
 
-router.get("/reports/pl", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
-
-    const filters = parseManualFilterQuery(req.query || {});
-    const activeBatchId = await resolveEffectiveReportBatchId(clientId, filters);
-    const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
-    logManualReportFilterDebug("reports/pl", clientId, cacheFilters, activeBatchId);
-
-    const cached = reportCache.get("pl", clientId, cacheFilters);
-    if (cached) return res.json({ success: true, ...cached, source: cached.source || "MANUAL_STAGED" });
-
-    const snapshotResult = await tryLoadActiveSnapshot(
-      clientId,
-      SNAPSHOT_REPORT_TYPES.PROFIT_LOSS_SUMMARY,
-      cacheFilters,
-    );
-
-    const plHierarchicalRows = snapshotResult.payload?.hierarchicalRows;
-    if (snapshotResult.payload && Array.isArray(plHierarchicalRows) && plHierarchicalRows.length > 0) {
-      const payload = {
-        ...snapshotResult.payload,
-        source: "manual_gl_reporting_snapshot",
-        activeBatchId: snapshotResult.activeBatchId || activeBatchId || null,
-      };
-      reportCache.set("pl", clientId, cacheFilters, payload);
-      return res.json({ success: true, ...payload });
-    }
-
-    const stagedPayload = await getProfitLossSummaryFromStage(clientId, cacheFilters);
-    const payload = {
-      ...stagedPayload,
-      source: stagedPayload.source || "MANUAL_STAGED",
-      activeBatchId: activeBatchId || null,
-    };
-    reportCache.set("pl", clientId, cacheFilters, payload);
-    return res.json({ success: true, ...payload });
-  } catch (error) {
-    return res.status(500).json({ success: false, error: error.message || "Failed to fetch P&L report." });
-  }
-});
-
 router.get("/manual-gl/columns/:uploadId", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     const { uploadId } = req.params;
@@ -579,42 +536,6 @@ router.get("/manual-gl/staging/filter-options", enforceDataSource(REPORT_SOURCE_
   }
 });
 
-router.get("/reports/profit-loss/detail", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
-    const filters = parseManualFilterQuery(req.query || {});
-    const activeBatchId = await resolveEffectiveReportBatchId(clientId, filters);
-    const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
-    logManualReportFilterDebug("reports/profit-loss/detail", clientId, cacheFilters, activeBatchId);
-    const skipSnapshot = hasManualDetailFilterOverrides(cacheFilters);
-
-    if (!skipSnapshot) {
-      const snapshotResult = await tryLoadActiveSnapshot(
-        clientId,
-        SNAPSHOT_REPORT_TYPES.PROFIT_LOSS_DETAIL,
-        cacheFilters,
-      );
-      if (snapshotResult.payload && hasRenderableProfitLossDetailPayload(snapshotResult.payload)) {
-        return res.json({
-          success: true,
-          ...snapshotResult.payload,
-          source: "manual_gl_reporting_snapshot",
-          activeBatchId: snapshotResult.activeBatchId || activeBatchId || null,
-        });
-      }
-    }
-
-    const payload = await getProfitLossDetailFromStage(clientId, cacheFilters);
-    return res.json({ success: true, ...payload, activeBatchId: activeBatchId || null });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: error.message || "Failed to build staged Profit & Loss detail.",
-    });
-  }
-});
-
 router.get("/reports/profit-loss/detail-vendor", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     const clientId = resolveClientId(req);
@@ -652,75 +573,6 @@ router.get("/reports/profit-loss/detail-vendor", enforceDataSource(REPORT_SOURCE
 });
 
 // Vendor Analysis: Account -> Vendor -> Account Total, with dynamic fiscal-year columns.
-router.get("/reports/vendor-analysis", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
-    const filters = parseManualFilterQuery(req.query || {});
-    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
-      ...filters,
-      allowExplicitBatch: isHistoricalBatchMode(filters),
-    });
-    const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
-    logManualReportFilterDebug("reports/vendor-analysis", clientId, cacheFilters, activeBatchId);
-    const skipSnapshot = hasManualDetailFilterOverrides(cacheFilters);
-
-    if (!skipSnapshot) {
-      const snapshotResult = await tryLoadActiveSnapshot(
-        clientId,
-        SNAPSHOT_REPORT_TYPES.VENDOR_ANALYSIS,
-        cacheFilters,
-      );
-      if (snapshotResult.payload) {
-        return res.json({
-          success: true,
-          ...snapshotResult.payload,
-          source: "manual_gl_reporting_snapshot",
-          activeBatchId: snapshotResult.activeBatchId || activeBatchId || null,
-        });
-      }
-    }
-
-    const payload = await getVendorAnalysisFromStage(clientId, cacheFilters);
-    return res.json({ success: true, ...payload, activeBatchId: activeBatchId || null });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: error.message || "Failed to build staged Vendor Analysis report.",
-    });
-  }
-});
-
-router.get("/reports/profit-loss/monthly", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
-    const filters = parseManualFilterQuery(req.query || {});
-    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
-      ...filters,
-      allowExplicitBatch: isHistoricalBatchMode(filters),
-    });
-    console.log(`[ManualGL][Report] Resolved batchId ${activeBatchId} for filters:`, JSON.stringify(filters));
-    const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
-    logManualReportFilterDebug("reports/profit-loss/monthly", clientId, cacheFilters, activeBatchId);
-    const cached = reportCache.get("pl", clientId, cacheFilters);
-    const payload = cached || await getProfitLossSummaryFromStage(clientId, cacheFilters);
-    if (!cached) reportCache.set("pl", clientId, cacheFilters, payload);
-    return res.json({
-      success: true,
-      source: payload.source,
-      reportType: "profit_loss_monthly",
-      filters: payload.filters,
-      monthlyBreakdown: payload.monthlyBreakdown || [],
-    });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: error.message || "Failed to build monthly Profit & Loss breakdown.",
-    });
-  }
-});
-
 router.get("/manual-gl/validation/balance-sheet", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     const clientId = resolveClientId(req);
