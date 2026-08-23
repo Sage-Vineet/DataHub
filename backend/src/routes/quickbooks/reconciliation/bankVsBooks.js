@@ -673,23 +673,6 @@ function filterBankReconByYear(body, fiscalYear) {
    Source: ?source=manual_upload_excel_pdf (default) | quickbooks_manual
    Response: { success, year, bankAccounts: [{name, accountNumber, amount}], source }
 =========================== */
-router.get("/manual-report-uploads/bs-bank-balances", extractClientId, async (req, res) => {
-  try {
-    if (!req.clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
-    const sourceKey = req.query.source || "manual_upload_excel_pdf";
-    const fiscalYear = String(req.query.fiscalYear || "").trim() || null;
-    const datasetVersion = String(req.query.datasetVersion || "").trim() || null;
-    const keyReportVersionId = String(req.query.keyReportVersionId || "").trim() || null;
-    const { cacheSource, folderRootName } = SOURCE_CONFIG[sourceKey] || DEFAULT_SOURCE_CONFIG;
-    console.log(`[BsBankBalances] source="${sourceKey}" → cacheSource="${cacheSource}", folder="${folderRootName}", keyReportVersionId=${keyReportVersionId}, datasetVersion=${datasetVersion}, fiscalYear=${fiscalYear}`);
-    // keyReportVersionId / datasetVersion scope Balance Sheet resolution to the SELECTED Key Reports version.
-    const { statusCode, body } = await runBsBankBalancesExtraction(req.clientId, cacheSource, folderRootName, fiscalYear, datasetVersion, keyReportVersionId);
-    return res.status(statusCode).json(body);
-  } catch (err) {
-    console.error("[BsBankBalances] Error:", err);
-    return res.status(500).json({ success: false, error: err.message || "Failed to fetch balance sheet bank balances." });
-  }
-});
 
 module.exports = router;
 module.exports.runBsBankBalancesExtraction = runBsBankBalancesExtraction;

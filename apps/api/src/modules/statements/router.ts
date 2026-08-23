@@ -361,6 +361,29 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
 
   const QMS = REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
 
+  /**
+   * The bank balances the BALANCE SHEET states.
+   *
+   * The books' side of the reconciliation, against the statements' side that
+   * `/bank-data` answers. The page sets the two beside each other.
+   */
+  router.get("/manual-report-uploads/bs-bank-balances", handle(async (req, res) => {
+    if (!bankStatements) {
+      res.status(503).json({
+        success: false,
+        error: "Balance sheet extraction is not configured on this server.",
+      });
+      return;
+    }
+    const balances = await bankStatements.balanceSheetBalances(req.user!, companyOf(req), {
+      ...(str(req.query.keyReportVersionId)
+        ? { keyReportVersionId: str(req.query.keyReportVersionId)! }
+        : {}),
+      ...(str(req.query.force) ? { force: true } : {}),
+    });
+    res.json({ success: true, ...balances });
+  }));
+
   router.get("/manual-upload/bank-data", bankData(MANUAL));
   router.get("/extract-bank-pdf-records", bankData(MANUAL));
   router.get("/manual-report-uploads/qms-bank-data", bankData(QMS));

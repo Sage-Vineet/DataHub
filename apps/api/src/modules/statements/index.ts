@@ -8,6 +8,7 @@ import { TaxReturnService } from "./tax-return.js";
 import {
   DrizzleBankStatementDocumentPort,
   DrizzleDocumentBytesPort,
+  DrizzleStatementDocumentPort,
   DrizzleTaxReturnDocumentPort,
 } from "./tax-return.drizzle.js";
 import { DrizzleStatementsRepository } from "./repository.drizzle.js";
@@ -66,6 +67,9 @@ export function createStatementsModule(
     ? new BankStatementsService({
         statements: repo,
         documents: new DrizzleBankStatementDocumentPort(opts.db),
+        // The balance sheet a version links, resolved the same way a tax
+        // return is — company on both sides of the join.
+        balanceSheetDocuments: new DrizzleStatementDocumentPort(opts.db, "balance_sheet", /balance\s*sheet|\bbs\b/i),
         bytes: new DrizzleDocumentBytesPort(opts.db),
         reader: opts.reader,
       })

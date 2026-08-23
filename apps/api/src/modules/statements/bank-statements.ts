@@ -9,6 +9,7 @@ import {
 import { canAccessCompany } from "../../shared/access.js";
 import { BadRequestError, ForbiddenError } from "../../shared/errors.js";
 import type { DocumentReader } from "../../shared/gemini.js";
+import { modelNumber } from "../../shared/model-json.js";
 import type { StatementsRepository } from "./ports.js";
 import type { DocumentBytesPort } from "./tax-return.js";
 
@@ -44,6 +45,83 @@ export interface BankStatementsServiceDeps {
       companyId: string,
       options: { sourceKey: string; keyReportVersionId?: string },
     ): Promise<Array<{ id: string; name: string | null }>>;
+  };
+  /** Which document holds the balance sheet, for the per-books bank balances. */
+  balanceSheetDocuments?: {
+    forVersion(
+      companyId: string,
+      versionId: string,
+    ): Promise<Array<{ id: string; name: string | null }>>;
+    latest(companyId: string): Promise<{ id: string; name: string | null } | null>;
+  };
+}
+
+/** A bank account as the balance sheet states it. */
+export interface BalanceSheetBankAccount {
+  name: string;
+  accountNumber: string;
+  amount: number;
+}
+
+export interface BalanceSheetBankBalances {
+  year: number | null;
+  bankAccounts: BalanceSheetBankAccount[];
+  documentId: string;
+  documentName: string | null;
+  source: "stored" | "extracted";
+}
+
+export const BS_BANK_BALANCES_PROMPT = `You are reading a balance sheet.
+
+Find every BANK ACCOUNT it lists under cash or bank accounts, with the balance
+stated against each.
+
+Return ONLY a raw JSON object, with no markdown fence and no commentary:
+
+{
+  "year": 2024,
+  "bankAccounts": [
+    { "name": "Wells Fargo Business Checking", "accountNumber": "0067", "amount": 56671.51 }
+  ]
+}
+
+Rules:
+- "year" is the year the balance sheet is as at.
+- Include only real accounts, never a section total such as "Total Bank
+  Accounts" — a total alongside the accounts it totals double counts the cash.
+- "accountNumber" is whatever digits the statement shows, or "" if none.
+- Amounts are plain numbers: no currency symbols, no thousands separators, no
+  parentheses. Write a negative as a negative number.`;
+
+/** A total row is not an account. */
+const IS_TOTAL = /^(total|subtotal)\b|\btotal$/i;
+
+/** Read the model's object into accounts, coercing every amount. */
+export function toBalanceSheetBankAccounts(parsed: unknown): {
+  year: number | null;
+  bankAccounts: BalanceSheetBankAccount[];
+} {
+  const raw = (parsed ?? {}) as { year?: unknown; bankAccounts?: unknown };
+  const year = modelNumber(raw.year);
+  const accounts = Array.isArray(raw.bankAccounts) ? raw.bankAccounts : [];
+
+  return {
+    year:
+      year !== null && Number.isInteger(year) && year >= 1900 && year <= 2200 ? year : null,
+    bankAccounts: accounts
+      .map((entry) => {
+        const account = (entry ?? {}) as Record<string, unknown>;
+        return {
+          name: String(account.name ?? "").trim(),
+          accountNumber: String(account.accountNumber ?? "").trim(),
+          // `parseFloat(x) || 0` turned "56,671.51" into 0 — an account
+          // reported as holding nothing.
+          amount: modelNumber(account.amount) ?? 0,
+        };
+      })
+      // A nameless row is not an account, and a total alongside the accounts it
+      // totals double counts the company's cash.
+      .filter((account) => account.name !== "" && !IS_TOTAL.test(account.name)),
   };
 }
 
@@ -91,6 +169,15 @@ plain numbers: no currency symbols, no thousands separators, no parentheses.`;
 
 export class BankStatementsService {
   constructor(private readonly deps: BankStatementsServiceDeps) {}
+
+  /** The bank balances the balance sheet states. */
+  balanceSheetBalances(
+    user: SessionUser,
+    companyId: string,
+    options: { keyReportVersionId?: string; force?: boolean } = {},
+  ): Promise<BalanceSheetBankBalances> {
+    return readBalanceSheetBankBalances(this.deps, user, companyId, options);
+  }
 
   /**
    * The grid for a company.
@@ -175,6 +262,71 @@ export class BankStatementsService {
       extractedCount,
     };
   }
+}
+
+/**
+ * The bank balances the BALANCE SHEET states, as against the statements.
+ *
+ * The reconciliation sets the two side by side: what the books say the account
+ * held, and what the bank said. This is the books' side.
+ */
+export async function readBalanceSheetBankBalances(
+  deps: BankStatementsServiceDeps,
+  user: SessionUser,
+  companyId: string,
+  options: { keyReportVersionId?: string; force?: boolean } = {},
+): Promise<BalanceSheetBankBalances> {
+  if (!companyId) throw new BadRequestError("Missing clientId.");
+  if (!canAccessCompany(user, companyId)) throw new ForbiddenError("Access denied");
+  if (!deps.balanceSheetDocuments) {
+    throw new BadRequestError("Balance sheet lookup is not available in this configuration.");
+  }
+
+  const linked = options.keyReportVersionId
+    ? await deps.balanceSheetDocuments.forVersion(companyId, options.keyReportVersionId)
+    : [];
+  const document = linked[0] ?? (await deps.balanceSheetDocuments.latest(companyId));
+  if (!document) {
+    throw new BadRequestError(
+      "No balance sheet is on file for this company. Upload one and link it to a report version.",
+    );
+  }
+
+  if (!options.force) {
+    const stored = await deps.statements.forDocument(companyId, document.id, "balance_sheet");
+    const payload = stored?.payload as { bankAccounts?: unknown } | undefined;
+    // Only a stored extract that actually carries bank accounts answers this.
+    // A balance sheet extracted for the DASHBOARD holds a row tree and no
+    // account list, and treating that as "already read" would answer with no
+    // accounts for a company that has them.
+    if (stored && Array.isArray(payload?.bankAccounts)) {
+      return {
+        ...toBalanceSheetBankAccounts(stored.payload),
+        documentId: document.id,
+        documentName: stored.documentName ?? document.name,
+        source: "stored",
+      };
+    }
+  }
+
+  const file = await deps.bytes.bytesFor(document.id);
+  if (!file) {
+    throw new BadRequestError(
+      `The balance sheet "${document.name ?? document.id}" has no file stored against it.`,
+    );
+  }
+
+  const parsed = await deps.reader.askForJson({
+    prompt: BS_BANK_BALANCES_PROMPT,
+    document: { mimeType: file.mimeType, data: file.bytes.toString("base64") },
+  });
+
+  return {
+    ...toBalanceSheetBankAccounts(parsed),
+    documentId: document.id,
+    documentName: document.name,
+    source: "extracted",
+  };
 }
 
 /** The statements inside a stored extract, whatever shape it holds. */

@@ -66,6 +66,7 @@
   "GET /manual-gl/upload-jobs",
   "GET /manual-gl/upload-jobs/:p",
   "GET /manual-gl/validation/balance-sheet",
+  "GET /manual-report-uploads/bs-bank-balances",
   "GET /manual-report-uploads/folder-files",
   "GET /manual-report-uploads/manual-upload-dashboard",
   "GET /manual-report-uploads/pl-for-tax",

@@ -253,3 +253,114 @@ describe("who may ask", () => {
     await expect(service.grid(USER, "", OPTIONS)).rejects.toThrow(/clientId/);
   });
 });
+
+describe("the bank balances the balance sheet states", () => {
+  const REPLY = {
+    year: 2024,
+    bankAccounts: [
+      { name: "Wells Fargo Business Checking", accountNumber: "0067", amount: "56,671.51" },
+      { name: "Chase Savings", accountNumber: "9911", amount: 12000 },
+      { name: "Total Bank Accounts", accountNumber: "", amount: 68671.51 },
+      { name: "", accountNumber: "", amount: 999 },
+    ],
+  };
+
+  function withBalanceSheet(
+    over: { reply?: unknown; docs?: Array<{ id: string; name: string | null }> } = {},
+  ) {
+    const statements = new InMemoryStatementsRepository();
+    const r = reader({ a: over.reply === undefined ? (REPLY as never) : (over.reply as never) });
+    const docs = over.docs ?? [{ id: "bs-1", name: "Balance Sheet 2024.pdf" }];
+    return {
+      statements,
+      reader: r,
+      service: new BankStatementsService({
+        statements,
+        documents: { forCompany: () => Promise.resolve([]) },
+        balanceSheetDocuments: {
+          forVersion: () => Promise.resolve([]),
+          latest: () => Promise.resolve(docs[0] ?? null),
+        },
+        bytes: bytes({}),
+        reader: r,
+      }),
+    };
+  }
+
+  it("reads the accounts and the year", async () => {
+    const { service } = withBalanceSheet();
+    const result = await service.balanceSheetBalances(USER, COMPANY);
+    expect(result.year).toBe(2024);
+    expect(result.bankAccounts.map((a) => a.name)).toEqual([
+      "Wells Fargo Business Checking",
+      "Chase Savings",
+    ]);
+  });
+
+  it("reads an amount that carries a comma", async () => {
+    // `parseFloat("56,671.51") || 0` is 56 — not zero, WORSE than zero: a
+    // plausible-looking figure three orders of magnitude out.
+    const { service } = withBalanceSheet();
+    const result = await service.balanceSheetBalances(USER, COMPANY);
+    expect(result.bankAccounts[0]!.amount).toBe(56671.51);
+  });
+
+  it("drops a total, which would double count the cash", async () => {
+    const { service } = withBalanceSheet();
+    const result = await service.balanceSheetBalances(USER, COMPANY);
+    expect(result.bankAccounts.some((a) => /total/i.test(a.name))).toBe(false);
+  });
+
+  it("drops a nameless row", async () => {
+    const { service } = withBalanceSheet();
+    const result = await service.balanceSheetBalances(USER, COMPANY);
+    expect(result.bankAccounts).toHaveLength(2);
+  });
+
+  it("names the document it read", async () => {
+    const { service } = withBalanceSheet();
+    const result = await service.balanceSheetBalances(USER, COMPANY);
+    expect(result.documentName).toBe("Balance Sheet 2024.pdf");
+    expect(result.source).toBe("extracted");
+  });
+
+  it("refuses a year that could not be one", async () => {
+    const { service } = withBalanceSheet({ reply: { year: 20244, bankAccounts: [] } });
+    expect((await service.balanceSheetBalances(USER, COMPANY)).year).toBeNull();
+  });
+
+  it("says so when no balance sheet is on file", async () => {
+    const { service } = withBalanceSheet({ docs: [] });
+    await expect(service.balanceSheetBalances(USER, COMPANY)).rejects.toThrow(/balance sheet/i);
+  });
+
+  it("does not treat a dashboard extraction as an answer", async () => {
+    // A balance sheet extracted for the DASHBOARD holds a row tree and no
+    // account list. Reading that as "already read" answers with no accounts
+    // for a company that has them.
+    const { service, statements } = withBalanceSheet();
+    await statements.save({
+      companyId: COMPANY,
+      provenance: { from: "document", documentId: "bs-1" },
+      statementType: "balance_sheet",
+      sourceKey: "manual_upload_excel_pdf",
+      periodStart: null,
+      periodEnd: null,
+      asOfDate: "2024-12-31",
+      fiscalYear: 2024,
+      payload: { rows: [{ name: "Total Assets", amount: 1 }] },
+      extractedBy: null,
+    });
+
+    const result = await service.balanceSheetBalances(USER, COMPANY);
+    expect(result.source).toBe("extracted");
+    expect(result.bankAccounts).toHaveLength(2);
+  });
+
+  it("refuses a company the caller cannot reach", async () => {
+    const { service } = withBalanceSheet();
+    await expect(
+      service.balanceSheetBalances(USER, "dddddddd-dddd-4ddd-8ddd-dddddddddddd"),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+});

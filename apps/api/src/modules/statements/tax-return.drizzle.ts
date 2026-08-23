@@ -158,3 +158,49 @@ export function mimeTypeFor(contentType: string | null, ext: string | null): str
   if (!GENERIC_TYPES.has(stored)) return stored;
   return BY_EXTENSION[String(ext ?? "").trim().toLowerCase()] ?? "application/octet-stream";
 }
+
+/**
+ * A company's document of one statement kind, generalised.
+ *
+ * `DrizzleTaxReturnDocumentPort` is this with the category and the name
+ * pattern fixed. Kept separate rather than merged because the tax-return one
+ * is referenced by name in several places and renaming it would be churn — but
+ * a third caller wanting a third category should use this rather than copy it.
+ */
+export class DrizzleStatementDocumentPort {
+  constructor(
+    private readonly db: Db,
+    private readonly category: string,
+    /** How a document of this kind is usually named, for the fallback. */
+    private readonly namePattern: RegExp,
+  ) {}
+
+  async forVersion(
+    companyId: string,
+    versionId: string,
+  ): Promise<Array<{ id: string; name: string | null }>> {
+    return this.db
+      .select({ id: documents.id, name: documents.name })
+      .from(keyReportFileMappings)
+      .innerJoin(documents, eq(documents.id, keyReportFileMappings.documentId))
+      .where(
+        and(
+          eq(keyReportFileMappings.versionId, versionId),
+          eq(keyReportFileMappings.reportCategory, this.category),
+          // The company on BOTH sides — see the tax-return port above.
+          eq(keyReportFileMappings.companyId, companyId),
+          eq(documents.companyId, companyId),
+        ),
+      )
+      .orderBy(desc(documents.uploadedAt));
+  }
+
+  async latest(companyId: string): Promise<{ id: string; name: string | null } | null> {
+    const rows = await this.db
+      .select({ id: documents.id, name: documents.name })
+      .from(documents)
+      .where(eq(documents.companyId, companyId))
+      .orderBy(desc(documents.uploadedAt));
+    return rows.find((row) => this.namePattern.test(String(row.name ?? ""))) ?? null;
+  }
+}
