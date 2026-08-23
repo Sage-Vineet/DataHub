@@ -43,6 +43,8 @@
   "GET /messages/threads",
   "GET /my-direct-contacts",
   "GET /my-groups",
+  "GET /reports/balance-sheet",
+  "GET /reports/cashflow",
   "GET /reports/profit-loss",
   "GET /requests/:p",
   "GET /requests/:p/documents",

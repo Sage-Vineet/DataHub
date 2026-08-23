@@ -169,20 +169,48 @@ export function createReportsRouter(deps: ReportsRouterDeps): Router {
    * comparative column on the table per year, which is how the multi-select on
    * the Reports page sends it.
    */
-  router.get("/reports/profit-loss", handle(async (req, res) => {
+  /** The company, from any of the three places the SPA sends it. */
+  const companyOf = (req: Request): string => {
     const companyId = String(
       req.query.clientId ?? req.query.company_id ?? req.headers["x-client-id"] ?? "",
     );
     if (!companyId) throw new HttpError(400, "Missing clientId.");
+    return companyId;
+  };
 
+  /**
+   * The years to put comparative columns on.
+   *
+   * Accepts a repeated `fiscalYear` (how the multi-select sends it) and a
+   * comma-separated `fiscalYears`, because both reach these endpoints.
+   */
+  const yearsOf = (req: Request): number[] => {
     const raw = req.query.fiscalYear ?? req.query.fiscalYears;
-    const fiscalYears = (Array.isArray(raw) ? raw : raw === undefined ? [] : [raw])
+    return (Array.isArray(raw) ? raw : raw === undefined ? [] : [raw])
       .flatMap((value) => String(value).split(","))
       .map((value) => Number.parseInt(value.trim(), 10))
       .filter((year) => Number.isInteger(year) && year > 0);
+  };
 
-    const payload = await service.profitLoss(req.user!, companyId, { fiscalYears });
+  router.get("/reports/profit-loss", handle(async (req, res) => {
+    const payload = await service.profitLoss(req.user!, companyOf(req), {
+      fiscalYears: yearsOf(req),
+    });
     // `success` is part of the envelope the page checks before reading the rows.
+    res.json({ success: true, ...payload });
+  }));
+
+  router.get("/reports/balance-sheet", handle(async (req, res) => {
+    const payload = await service.balanceSheet(req.user!, companyOf(req), {
+      fiscalYears: yearsOf(req),
+    });
+    res.json({ success: true, ...payload });
+  }));
+
+  router.get("/reports/cashflow", handle(async (req, res) => {
+    const payload = await service.cashFlow(req.user!, companyOf(req), {
+      fiscalYears: yearsOf(req),
+    });
     res.json({ success: true, ...payload });
   }));
 

@@ -5,7 +5,7 @@ import type {
   SessionUser,
 } from "@datahub/contracts";
 import { canAccessCompany } from "../../shared/access.js";
-import { ForbiddenError, NotFoundError } from "../../shared/errors.js";
+import { ForbiddenError, HttpError, NotFoundError } from "../../shared/errors.js";
 import type { EngagementPort, ReportSyncPort, ReportsRepository, VersionRecord } from "./ports.js";
 import { buildStatements, type BuildStatementsOptions, type FinancialStatements } from "./statements.js";
 import {
@@ -13,6 +13,17 @@ import {
   type ProfitLossFilters,
   type ProfitLossSummaryPayload,
 } from "./profit-loss-view.js";
+import {
+  buildCashFlowReport,
+  type CashFlowFilters,
+  type CashFlowPayload,
+} from "./cash-flow-view.js";
+import {
+  buildBalanceSheet,
+  NoBalanceSheetError,
+  type BalanceSheetFilters,
+  type BalanceSheetPayload,
+} from "./balance-sheet-view.js";
 
 export interface ReportsServiceDeps {
   repo: ReportsRepository;
@@ -67,6 +78,51 @@ export class ReportsService {
     companyId: string,
     filters: ProfitLossFilters = {},
   ): Promise<ProfitLossSummaryPayload> {
+    return buildProfitLossSummary(await this.activeEngagement(user, companyId), filters);
+  }
+
+  /**
+   * The Balance Sheet, company-scoped like the P&L.
+   *
+   * An engagement with no ingested balance sheet is a 422 rather than an empty
+   * statement: a roll-forward with nothing to roll from produces a sheet that
+   * balances perfectly and is wrong in every figure, and the page needs to be
+   * able to tell that apart from a company that genuinely has no activity.
+   */
+  async balanceSheet(
+    user: SessionUser,
+    companyId: string,
+    filters: BalanceSheetFilters = {},
+  ): Promise<BalanceSheetPayload> {
+    const engagement = await this.activeEngagement(user, companyId);
+    try {
+      return buildBalanceSheet(engagement, filters);
+    } catch (err) {
+      if (err instanceof NoBalanceSheetError) throw new HttpError(422, err.message);
+      throw err;
+    }
+  }
+
+  /**
+   * The Cash Flow — a function of the other two statements, so it cannot
+   * disagree with them, and it inherits the balance sheet's precondition.
+   */
+  async cashFlow(
+    user: SessionUser,
+    companyId: string,
+    filters: CashFlowFilters = {},
+  ): Promise<CashFlowPayload> {
+    const engagement = await this.activeEngagement(user, companyId);
+    try {
+      return buildCashFlowReport(engagement, filters);
+    } catch (err) {
+      if (err instanceof NoBalanceSheetError) throw new HttpError(422, err.message);
+      throw err;
+    }
+  }
+
+  /** The engagement behind a company's active key-report version. */
+  private async activeEngagement(user: SessionUser, companyId: string) {
     this.requireCompany(user, companyId);
 
     const versions = await this.repo.listByCompany(companyId);
@@ -75,8 +131,7 @@ export class ReportsService {
 
     const engagement = await this.engagement.load(active.id);
     if (!engagement) throw new NotFoundError("Report version not found.");
-
-    return buildProfitLossSummary(engagement, filters);
+    return engagement;
   }
 
   async list(user: SessionUser, companyId: string): Promise<ReportVersionResponse[]> {

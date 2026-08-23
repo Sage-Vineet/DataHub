@@ -2,7 +2,7 @@ import express from "express";
 import type { RequestHandler } from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { ForbiddenError, NotFoundError } from "../../shared/errors.js";
+import { ForbiddenError, HttpError, NotFoundError } from "../../shared/errors.js";
 import { createReportsRouter } from "./router.js";
 import type { ReportsService } from "./service.js";
 
@@ -57,6 +57,38 @@ const emptyProfitLoss = {
   hierarchicalRows: [],
 };
 
+const emptyBalanceSheet = {
+  source: "general_ledger_entries",
+  reportType: "balance_sheet",
+  filters: {},
+  years: [],
+  displayYear: null,
+  sections: {
+    Assets: { totalByYear: {}, categories: [] },
+    Liabilities: { totalByYear: {}, categories: [] },
+    Equity: { totalByYear: {}, categories: [] },
+  },
+  hierarchicalRows: [],
+  audit: [],
+};
+
+const emptyCashFlow = {
+  source: "general_ledger_entries",
+  reportType: "cash_flow",
+  filters: {},
+  years: [],
+  sections: {
+    Operating: { label: "Operating Activities", items: [], totalByYear: {} },
+    Investing: { label: "Investing Activities", items: [], totalByYear: {} },
+    Financing: { label: "Financing Activities", items: [], totalByYear: {} },
+  },
+  netCashChange: {},
+  hierarchicalRows: [],
+  yearCols: [],
+  beginningCash: {},
+  endingCash: {},
+};
+
 function stub(over: Record<string, unknown> = {}) {
   const calls: Array<{ method: string; args: unknown[] }> = [];
   const record =
@@ -76,6 +108,8 @@ function stub(over: Record<string, unknown> = {}) {
     delete: record("delete", undefined),
     financialStatements: record("financialStatements", emptyStatements),
     profitLoss: record("profitLoss", emptyProfitLoss),
+    balanceSheet: record("balanceSheet", emptyBalanceSheet),
+    cashFlow: record("cashFlow", emptyCashFlow),
     ...over,
   } as unknown as ReportsService;
 
@@ -274,5 +308,86 @@ describe("the profit & loss route", () => {
     // than one that fails: the page draws an empty, confident table.
     const { app } = stub({ profitLoss: () => Promise.reject(new Error("boom")) });
     await request(app).get(`/reports/profit-loss?clientId=${COMPANY}`).expect(500);
+  });
+});
+
+describe("the balance sheet route", () => {
+  it("resolves the company the same three ways, and 400s without one", async () => {
+    const { app, calls } = stub();
+    await request(app).get(`/reports/balance-sheet?clientId=${COMPANY}`).expect(200);
+    await request(app).get(`/reports/balance-sheet?company_id=${COMPANY}`).expect(200);
+    await request(app).get("/reports/balance-sheet").set("x-client-id", COMPANY).expect(200);
+    await request(app).get("/reports/balance-sheet").expect(400);
+
+    expect(calls.filter((c) => c.method === "balanceSheet")).toHaveLength(3);
+  });
+
+  it("passes the requested years through", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .get(`/reports/balance-sheet?clientId=${COMPANY}&fiscalYear=2023&fiscalYear=2024`)
+      .expect(200);
+    expect(argsOf(calls, "balanceSheet")[2]).toEqual({ fiscalYears: [2023, 2024] });
+  });
+
+  it("answers under the success envelope", async () => {
+    const { app } = stub();
+    const res = await request(app).get(`/reports/balance-sheet?clientId=${COMPANY}`).expect(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.reportType).toBe("balance_sheet");
+  });
+
+  it("surfaces 'no balance sheet ingested' as its own status, not as an empty sheet", async () => {
+    // The page has to tell "nothing was uploaded" apart from "a company with
+    // no activity", and a 200 with zeroes says neither.
+    const { app } = stub({
+      balanceSheet: () => Promise.reject(new HttpError(422, "No balance sheet has been ingested")),
+    });
+    const res = await request(app).get(`/reports/balance-sheet?clientId=${COMPANY}`).expect(422);
+    expect(res.body.error).toMatch(/balance sheet/i);
+  });
+
+  it("maps access and missing-version failures to their statuses", async () => {
+    for (const [err, status] of [
+      [new ForbiddenError("denied"), 403],
+      [new NotFoundError("No key-report version for this company."), 404],
+    ] as const) {
+      const { app } = stub({ balanceSheet: () => Promise.reject(err) });
+      await request(app).get(`/reports/balance-sheet?clientId=${COMPANY}`).expect(status);
+    }
+  });
+});
+
+describe("the cash flow route", () => {
+  it("resolves the company the same three ways, and 400s without one", async () => {
+    const { app, calls } = stub();
+    await request(app).get(`/reports/cashflow?clientId=${COMPANY}`).expect(200);
+    await request(app).get(`/reports/cashflow?company_id=${COMPANY}`).expect(200);
+    await request(app).get("/reports/cashflow").set("x-client-id", COMPANY).expect(200);
+    await request(app).get("/reports/cashflow").expect(400);
+
+    expect(calls.filter((c) => c.method === "cashFlow")).toHaveLength(3);
+  });
+
+  it("passes the requested years through, and answers under the envelope", async () => {
+    const { app, calls } = stub();
+    const res = await request(app)
+      .get(`/reports/cashflow?clientId=${COMPANY}&fiscalYears=2023,2024`)
+      .expect(200);
+    expect(argsOf(calls, "cashFlow")[2]).toEqual({ fiscalYears: [2023, 2024] });
+    expect(res.body.success).toBe(true);
+    expect(res.body.reportType).toBe("cash_flow");
+  });
+
+  it("surfaces the missing balance sheet as 422, like its parent statement", async () => {
+    const { app } = stub({
+      cashFlow: () => Promise.reject(new HttpError(422, "No balance sheet has been ingested")),
+    });
+    await request(app).get(`/reports/cashflow?clientId=${COMPANY}`).expect(422);
+  });
+
+  it("passes an unexpected failure on rather than reporting no movement", async () => {
+    const { app } = stub({ cashFlow: () => Promise.reject(new Error("boom")) });
+    await request(app).get(`/reports/cashflow?clientId=${COMPANY}`).expect(500);
   });
 });
