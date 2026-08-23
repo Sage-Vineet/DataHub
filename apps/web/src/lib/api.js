@@ -708,15 +708,6 @@ function buildEbitdaAdjustmentScopeParams(options = {}) {
 
 
 
-export function uploadGl(payload, options = {}) {
-  const clientId = options.clientId ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
-  return request(`/upload-gl${query}`, {
-    method: "POST",
-    body: payload,
-    ...options,
-  }).then((data) => data?.upload || data);
-}
 
 
 export function getManualGlColumns(uploadId, options = {}) {
@@ -735,26 +726,8 @@ export function saveManualGlMapping(payload, options = {}) {
   });
 }
 
-export function saveGlMapping(payload, options = {}) {
-  const clientId = options.clientId ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
-  return request(`/save-mapping${query}`, {
-    method: "POST",
-    body: payload,
-    ...options,
-  });
-}
 
 
-export function processGl(payload, options = {}) {
-  const clientId = options.clientId ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
-  return request(`/process-gl${query}`, {
-    method: "POST",
-    body: payload,
-    ...options,
-  });
-}
 
 
 export function getManualGlProfitLoss(options = {}) {
@@ -931,32 +904,6 @@ export function getManualGlUploadJob(jobId, options = {}) {
   return request(`/manual-gl/upload-jobs/${encodeURIComponent(jobId)}${query}`, options).then(res => res?.job || null);
 }
 
-export function getManualStageTransactions(options = {}) {
-  const {
-    clientId: clientIdOption,
-    params = {},
-    ...requestOptions
-  } = options || {};
-  const clientId = clientIdOption ?? resolveClientIdFromLocation();
-  const search = new URLSearchParams();
-  if (clientId) search.set("clientId", clientId);
-
-  Object.entries(params || {}).forEach(([key, value]) => {
-    if (value === undefined || value === null || value === "") return;
-    if (Array.isArray(value)) {
-      if (value.length === 0) return;
-      search.set(key, value.join(","));
-      return;
-    }
-    search.set(key, String(value));
-  });
-
-  const query = search.toString();
-  return request(
-    `/manual-gl/staging/transactions${query ? `?${query}` : ""}`,
-    requestOptions,
-  );
-}
 
 export function getManualStageFilterOptions(options = {}) {
   const {
@@ -985,15 +932,6 @@ export function getManualStageFilterOptions(options = {}) {
   );
 }
 
-export function getManualGlBatches(options = {}) {
-  const {
-    clientId: clientIdOption,
-    ...requestOptions
-  } = options || {};
-  const clientId = clientIdOption ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
-  return request(`/manual-gl/staging/batches${query}`, requestOptions);
-}
 
 export function getManualStagedProfitLossSummary(options = {}) {
   const {
@@ -1220,14 +1158,6 @@ export function parseQMSDocuments({ clientId: clientIdOption, documents = [], cl
   });
 }
 
-export function syncQMSFolder({ clientId: clientIdOption, folderId, folderName } = {}) {
-  const clientId = clientIdOption ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
-  return request(`/manual-report-uploads/sync${query}`, {
-    method: "POST",
-    body: { folderId, folderName: folderName || "" },
-  });
-}
 
 export function getLatestManualUploadedReport(statementType, options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
@@ -1503,11 +1433,6 @@ export function getKeyReportExtractedData(versionId, { dataType, year, page = 1,
   return request(`/key-reports/versions/${versionId}/extracted-data?${params}`);
 }
 
-export function getKeyReportFileReferences(documentIds = []) {
-  const ids = (Array.isArray(documentIds) ? documentIds : [documentIds]).filter(Boolean);
-  const qs = ids.length ? `?documentIds=${encodeURIComponent(ids.join(','))}` : '';
-  return request(`/key-reports/file-references${qs}`);
-}
 
 export function getKeyReportPopupPreference() {
   return request('/key-reports/popup-preference');

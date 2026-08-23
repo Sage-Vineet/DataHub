@@ -371,14 +371,6 @@ async function handleGetLatestReport(req, res, statementType) {
   });
 }
 
-router.post("/upload-gl", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    return await handleCreateUpload(req, res);
-  } catch (error) {
-    return res.status(500).json({ error: error.message || "Failed to save manual GL upload." });
-  }
-});
-
 router.get("/reports/pl", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     const clientId = resolveClientId(req);
@@ -569,22 +561,6 @@ router.post("/manual-gl/save-mapping", enforceDataSource(REPORT_SOURCE_KEYS.MANU
   }
 });
 
-router.post("/save-mapping", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    return await handleSaveMapping(req, res);
-  } catch (error) {
-    return res.status(500).json({ success: false, error: error.message || "Failed to save mapping." });
-  }
-});
-
-router.post("/process-gl", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    return await handleProcessGl(req, res);
-  } catch (error) {
-    return res.status(500).json({ success: false, error: error.message || "Failed to process GL." });
-  }
-});
-
 router.post("/manual-gl/staging/multi-year", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     const clientId = resolveClientId(req);
@@ -715,21 +691,6 @@ router.post("/manual-gl/staging/multi-year", enforceDataSource(REPORT_SOURCE_KEY
   }
 });
 
-router.get("/manual-gl/staging/transactions", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
-    const filters = parseManualFilterQuery(req.query || {});
-    const payload = await getStageTransactions(clientId, filters);
-    return res.json({ success: true, ...payload });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: error.message || "Failed to fetch staged transactions.",
-    });
-  }
-});
-
 router.get("/manual-gl/staging/filter-options", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     const clientId = resolveClientId(req);
@@ -741,48 +702,6 @@ router.get("/manual-gl/staging/filter-options", enforceDataSource(REPORT_SOURCE_
     return res.status(500).json({
       success: false,
       error: error.message || "Failed to fetch staging filter options.",
-    });
-  }
-});
-
-router.get("/manual-gl/staging/batches", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
-    const batches = await listManualGlBatches(clientId);
-    return res.json({ success: true, batches });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: error.message || "Failed to list manual GL batches.",
-    });
-  }
-});
-
-router.post("/manual-gl/staging/batches/:batchId/activate", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
-
-    const batchId = String(req.params.batchId || "").trim();
-    if (!batchId) {
-      return res.status(400).json({ success: false, error: "batchId is required." });
-    }
-
-    const activated = await activateUploadBatch(clientId, batchId, req.user?.id || null);
-    const activeBatch = activated || (await getActiveUploadBatch(clientId));
-
-    reportCache.invalidateCompany(clientId);
-
-    return res.json({
-      success: true,
-      activeBatchId: activeBatch?.id || batchId,
-      batch: activeBatch || null,
-    });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: error.message || "Failed to activate manual GL batch.",
     });
   }
 });

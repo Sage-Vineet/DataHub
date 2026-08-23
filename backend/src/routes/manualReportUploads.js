@@ -214,34 +214,6 @@ router.use((req, res, next) => {
   return next();
 });
 
-router.post("/manual-report-uploads/sync", async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    const folderId = String(req.body?.folderId || "").trim();
-    const folderName = String(req.body?.folderName || "").trim();
-
-    if (!clientId) {
-      return res.status(400).json({ success: false, error: "Missing clientId." });
-    }
-    if (!folderId) {
-      return res.status(400).json({ success: false, error: "folderId is required." });
-    }
-
-    const result = await syncManualReportFolder({
-      companyId: clientId,
-      folderId,
-      folderName,
-    });
-
-    return res.json({ success: true, ...result });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: error.message || "Failed to sync manual report folder.",
-    });
-  }
-});
-
 router.get("/manual-report-uploads/source-tree", async (req, res) => {
   try {
     const clientId = resolveClientId(req);

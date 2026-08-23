@@ -322,22 +322,6 @@ router.post("/key-reports/versions/:versionId/chart-of-accounts/regenerate", asy
 // Restore the entire version's hierarchy to the original AI classification.
 // ---- File references (deletion guard / "linked" badges) --------------------
 
-router.get("/key-reports/file-references", async (req, res) => {
-  try {
-    const companyId = resolveClientId(req);
-    if (!requireCompanyAccess(req, res, companyId)) return;
-    const idsParam = req.query.documentIds || req.query.documentId;
-    const ids = String(idsParam || "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const counts = await fileReferenceService.getReferenceCountsForDocuments(ids);
-    return res.json({ success: true, counts });
-  } catch (error) {
-    return handleError(res, error, "GET file-references");
-  }
-});
-
 // ---- Educational popup preference (per user) -------------------------------
 
 router.get("/key-reports/popup-preference", async (req, res) => {
