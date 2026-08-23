@@ -143,6 +143,7 @@
   "POST /key-reports/chart-of-accounts/:p/reset",
   "POST /key-reports/versions",
   "POST /key-reports/versions/:p/activate",
+  "POST /key-reports/versions/:p/chart-of-accounts/regenerate",
   "POST /key-reports/versions/:p/chart-of-accounts/reset",
   "POST /key-reports/versions/:p/chart-of-accounts/save",
   "POST /key-reports/versions/:p/duplicate",

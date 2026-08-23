@@ -17,7 +17,8 @@ export interface FolderAccessRecord {
   canRead: boolean;
   canWrite: boolean;
   canDownload: boolean;
-  createdBy: string | null;
+  /** NOT NULL in the table — a grant always records who made it. */
+  createdBy: string;
 }
 
 export interface CreateFolderInput {
@@ -35,7 +36,8 @@ export interface CreateAccessInput {
   canRead: boolean;
   canWrite: boolean;
   canDownload: boolean;
-  createdBy: string | null;
+  /** NOT NULL in the table — a grant always records who made it. */
+  createdBy: string;
 }
 
 export interface FoldersRepository {

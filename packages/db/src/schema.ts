@@ -42,7 +42,9 @@ export const companies = pgTable("companies", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
   projectName: text("project_name"),
-  industry: text("industry"),
+  // NOT NULL in the deployed table, with no default — so an insert that omits
+  // it type-checks and fails at the driver.
+  industry: text("industry").notNull(),
   status: companyStatus("status").notNull().default("active"),
   since: date("since"),
   logo: text("logo"),
@@ -169,7 +171,7 @@ export const folderAccess = pgTable(
     canRead: boolean("can_read").notNull().default(true),
     canWrite: boolean("can_write").notNull().default(false),
     canDownload: boolean("can_download").notNull().default(false),
-    createdBy: uuid("created_by"),
+    createdBy: uuid("created_by").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
@@ -204,7 +206,7 @@ export const documents = pgTable("documents", {
     .notNull()
     .references(() => folders.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
-  fileUrl: text("file_url"),
+  fileUrl: text("file_url").notNull(),
   uploadId: uuid("upload_id").references(() => uploads.id, { onDelete: "set null" }),
   size: text("size").notNull(),
   ext: text("ext").notNull(),
@@ -233,7 +235,9 @@ export const documentActivity = pgTable("document_activity", {
     .notNull()
     .references(() => documents.id, { onDelete: "cascade" }),
   actorId: uuid("actor_id"),
-  action: text("action").notNull(),
+  // Nullable in the deployed table. Declared NOT NULL, an insert omitting it
+  // is refused by the type system for a column the database would accept.
+  action: text("action"),
   at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
 });
 

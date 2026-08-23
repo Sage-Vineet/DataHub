@@ -54,6 +54,20 @@ export function createChartOfAccountsRouter(deps: ChartOfAccountsRouterDeps): Ro
     }),
   );
 
+  /**
+   * Rebuild the chart from what extraction stored.
+   *
+   * Answers the rebuilt chart rather than a count: the page that triggers this
+   * is showing the chart, and making it ask again is a second round trip
+   * during which the two can disagree.
+   */
+  router.post(
+    "/key-reports/versions/:versionId/chart-of-accounts/regenerate",
+    handle(async (req, res) => {
+      res.json({ success: true, ...(await service.regenerate(req.user!, req.params.versionId!)) });
+    }),
+  );
+
   router.get(
     "/key-reports/versions/:versionId/chart-of-accounts/history",
     handle(async (req, res) => {

@@ -19,7 +19,6 @@
   "POST /api/auth/transfer-confirm",
   "POST /api/quickbooks/sync",
   "POST /customers",
-  "POST /key-reports/versions/:p/chart-of-accounts/regenerate",
   "POST /key-reports/versions/:p/sync",
   "POST /manual-report-uploads/qms-parse-documents",
   "POST /manual-report-uploads/sync-qms-source",

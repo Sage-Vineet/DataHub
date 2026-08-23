@@ -4,6 +4,7 @@ import { schema, type Db } from "@datahub/db";
 import type { SessionUser } from "@datahub/contracts";
 import { canAccessCompany } from "../../shared/access.js";
 import { ForbiddenError } from "../../shared/errors.js";
+import { DrizzleChartOfAccountsGenerator } from "./regenerate.drizzle.js";
 import { DrizzleChartOfAccountsRepository } from "./repository.drizzle.js";
 import { createChartOfAccountsRouter } from "./router.js";
 import { ChartOfAccountsService, type VersionAccessPort } from "./service.js";
@@ -51,6 +52,7 @@ export function createChartOfAccountsModule(
   const service = new ChartOfAccountsService({
     repo: new DrizzleChartOfAccountsRepository(opts.db),
     versions: new DrizzleVersionAccessPort(opts.db),
+    generator: new DrizzleChartOfAccountsGenerator(opts.db),
   });
   return {
     router: createChartOfAccountsRouter({ service, requireAuth: opts.requireAuth }),
@@ -75,3 +77,12 @@ export {
 } from "./mapping.js";
 export type { CoaAccount, CoaRow, CoaTreeNode } from "./mapping.js";
 export type { AccountPatch, ChartOfAccountsRepository, HierarchyLevel } from "./ports.js";
+
+export { DrizzleChartOfAccountsGenerator } from "./regenerate.drizzle.js";
+export {
+  accountKeyOf,
+  buildChartOfAccounts,
+  isNonAccountRow,
+  nameKeyOf,
+} from "./generate.js";
+export type { GeneratedAccount, SourceAccountRow } from "./generate.js";

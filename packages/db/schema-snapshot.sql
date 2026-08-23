@@ -28,8 +28,9 @@
 --   packages/db/migrations/0015_statement_extracts_pull_without_run.sql
 --   packages/db/migrations/0016_reconciliation_transaction_integrity.sql
 --   packages/db/migrations/0017_statement_extracts_entity_lists.sql
+--   packages/db/migrations/0018_chart_of_accounts_unnumbered_uniqueness.sql
 --
--- source-sha256: 54ebe2477da818663f8eea1d181133ecd7cfb46c783efa0cda312b0a3a5bcfe9
+-- source-sha256: 534a8cf5b860fc3943b519f34f3eb5de7fe24f4c2509b809b88c39c59a670f7a
 --
 -- PostgreSQL database dump
 --
@@ -2637,13 +2638,6 @@ ALTER TABLE ONLY public.bank_reconciliation_adjustments
     ADD CONSTRAINT uq_bank_recon_adjustment UNIQUE (company_id, month, row_key);
 
 --
--- Name: chart_of_accounts uq_chart_of_accounts_version_account; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.chart_of_accounts
-    ADD CONSTRAINT uq_chart_of_accounts_version_account UNIQUE (version_id, account_number, account_name);
-
---
 -- Name: coa_account_mappings uq_coa_account_mappings; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3572,6 +3566,18 @@ CREATE UNIQUE INDEX qa_responses_current_root_uq ON public.qa_responses USING bt
 --
 
 CREATE INDEX session_user_id_idx ON public.session USING btree (user_id);
+
+--
+-- Name: uq_chart_of_accounts_numbered; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_chart_of_accounts_numbered ON public.chart_of_accounts USING btree (version_id, account_number, account_name) WHERE (account_number IS NOT NULL);
+
+--
+-- Name: uq_chart_of_accounts_unnumbered; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_chart_of_accounts_unnumbered ON public.chart_of_accounts USING btree (version_id, account_name) WHERE (account_number IS NULL);
 
 --
 -- Name: uq_dataset_versions_company_number; Type: INDEX; Schema: public; Owner: -

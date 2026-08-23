@@ -47,7 +47,10 @@ function toActivity(row: ActRow): ActivityRecord {
     id: row.id,
     documentId: row.documentId,
     actorId: row.actorId,
-    action: row.action,
+    // The column is nullable and every writer supplies one, so this is only
+    // ever a row that predates the writer. An activity with no action cannot
+    // be rendered either way.
+    action: row.action ?? "",
     at: row.at.toISOString(),
   };
 }

@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   bigserial,
   boolean,
@@ -9,6 +10,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import { companies, users } from "./schema.js";
@@ -39,7 +41,7 @@ export const chartOfAccounts = pgTable(
     /** balance_sheet | profit_loss */
     statementType: text("statement_type"),
     isActive: boolean("is_active").notNull().default(true),
-    sortOrder: integer("sort_order"),
+    sortOrder: integer("sort_order").notNull().default(0),
     /**
      * The centralized EBITDA classification `QE - 0004` requires in place of
      * matching account labels. NULL means unflagged, which contributes nothing
@@ -60,7 +62,10 @@ export const chartOfAccounts = pgTable(
      * posting account, and `metadata.user_modified` marks a row somebody edited
      * by hand — which the review must leave alone.
      */
-    metadata: jsonb("metadata").$type<{ is_group?: boolean; user_modified?: boolean }>(),
+    metadata: jsonb("metadata")
+      .$type<{ is_group?: boolean; user_modified?: boolean }>()
+      .notNull()
+      .default({}),
     baseAccount: text("base_account"),
     hierarchyPath: text("hierarchy_path"),
     /** `"<number> <name>"`, denormalized for search. */
@@ -106,7 +111,20 @@ export const chartOfAccounts = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("idx_coa_version").on(t.versionId, t.companyId)],
+  (t) => [
+    index("idx_coa_version").on(t.versionId, t.companyId),
+    // Two partial indexes rather than one over `(version_id, account_number,
+    // account_name)`, because `account_number` is nullable and NULL is never
+    // equal to NULL — so the single index did not apply to unnumbered accounts
+    // at all, which is exactly what a QuickBooks export produces. See
+    // migration 0018.
+    uniqueIndex("uq_chart_of_accounts_numbered")
+      .on(t.versionId, t.accountNumber, t.accountName)
+      .where(sql`${t.accountNumber} IS NOT NULL`),
+    uniqueIndex("uq_chart_of_accounts_unnumbered")
+      .on(t.versionId, t.accountName)
+      .where(sql`${t.accountNumber} IS NULL`),
+  ],
 );
 
 /**
@@ -172,9 +190,13 @@ export const generalLedgerEntries = pgTable(
       .references(() => companies.id, { onDelete: "cascade" }),
     transactionDate: date("transaction_date"),
     fiscalYear: integer("fiscal_year"),
-    accountName: text("account_name"),
-    accountNumber: text("account_number"),
-    sourceFileId: uuid("source_file_id"),
+    // Both NOT NULL in the deployed table. Modelling them as nullable made an
+    // insert that omits either one type-check and then fail at the driver —
+    // the exact class of defect this schema is written from the real database
+    // to prevent.
+    accountName: text("account_name").notNull(),
+    accountNumber: text("account_number").notNull(),
+    sourceFileId: uuid("source_file_id").notNull(),
     coaId: uuid("coa_id"),
     /** ACCOUNT_HEADER | BEGINNING_BALANCE | TRANSACTION | TOTAL_ROW */
     rowType: text("row_type").notNull().default("TRANSACTION"),
@@ -249,20 +271,20 @@ export const balanceSheetEntries = pgTable(
     companyId: uuid("company_id")
       .notNull()
       .references(() => companies.id, { onDelete: "cascade" }),
-    sourceFileId: uuid("source_file_id"),
+    sourceFileId: uuid("source_file_id").notNull(),
     asOfDate: date("as_of_date").notNull(),
-    fiscalYear: integer("fiscal_year"),
-    accountName: text("account_name"),
+    fiscalYear: integer("fiscal_year").notNull(),
+    accountName: text("account_name").notNull(),
     accountNumber: text("account_number"),
     accountType: text("account_type"),
     /** assets | liabilities | equity */
     section: text("section"),
     subSection: text("sub_section"),
-    amount: numeric("amount", { precision: 18, scale: 2 }),
+    amount: numeric("amount", { precision: 18, scale: 2 }).notNull().default("0"),
     hierarchyLevel: integer("hierarchy_level"),
     sortOrder: integer("sort_order"),
     isTotal: boolean("is_total"),
-    isGenerated: boolean("is_generated"),
+    isGenerated: boolean("is_generated").notNull().default(false),
     coaId: uuid("coa_id"),
   },
   (t) => [index("idx_bs_entries_version_date").on(t.versionId, t.asOfDate)],

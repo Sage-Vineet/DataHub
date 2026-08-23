@@ -1,5 +1,17 @@
 import type { SessionUser } from "@datahub/contracts";
-import { NotFoundError } from "../../shared/errors.js";
+import { BadRequestError, NotFoundError } from "../../shared/errors.js";
+import type { RegenerateResult } from "./regenerate.drizzle.js";
+
+/**
+ * What rebuilds the chart from the entry tables.
+ *
+ * A port rather than the class, so the service can be constructed without a
+ * database — every other dependency here already can be, and a mandatory
+ * Drizzle generator would make the unit tests need one.
+ */
+export interface ChartOfAccountsGenerator {
+  regenerate(companyId: string, versionId: string): Promise<RegenerateResult>;
+}
 import {
   buildTree,
   isModified,
@@ -39,17 +51,21 @@ export interface ChartOfAccountsServiceDeps {
   versions: VersionAccessPort;
   /** Injected so an edit's timestamps are pinnable in a test. */
   now?: () => Date;
+  /** Absent in unit tests; the rebuild route says so rather than failing at a null. */
+  generator?: ChartOfAccountsGenerator;
 }
 
 export class ChartOfAccountsService {
   private readonly repo: ChartOfAccountsRepository;
   private readonly versions: VersionAccessPort;
   private readonly now: () => Date;
+  private readonly generator: ChartOfAccountsGenerator | undefined;
 
   constructor(deps: ChartOfAccountsServiceDeps) {
     this.repo = deps.repo;
     this.versions = deps.versions;
     this.now = deps.now ?? (() => new Date());
+    this.generator = deps.generator;
   }
 
   private async requireVersion(user: SessionUser, versionId: string): Promise<string> {
@@ -72,6 +88,29 @@ export class ChartOfAccountsService {
     const rows = await this.repo.listByVersion(versionId);
     const flat = rows.filter((r) => !r.metadata?.is_group).map(toAccount);
     return { versionId, flat, tree: buildTree(flat), accountCount: flat.length };
+  }
+
+  /**
+   * Rebuild the chart from what extraction stored.
+   *
+   * Answers the rebuilt chart, not just a count: the page that triggers this
+   * is showing the chart, and making it ask again is a second round trip
+   * during which the two can disagree.
+   *
+   * What a person edited survives — a renamed account, a moved one, one
+   * deactivated. Those cannot be recovered from anything, unlike everything
+   * the rules produce.
+   */
+  async regenerate(
+    user: SessionUser,
+    versionId: string,
+  ): Promise<ChartOfAccountsResponse & RegenerateResult> {
+    const companyId = await this.requireVersion(user, versionId);
+    if (!this.generator) {
+      throw new BadRequestError("Rebuilding the chart is not available in this configuration.");
+    }
+    const summary = await this.generator.regenerate(companyId, versionId);
+    return { ...(await this.list(user, versionId)), ...summary };
   }
 
   /**

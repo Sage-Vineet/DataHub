@@ -114,31 +114,6 @@ async function loadAccountWithAccess(req, res) {
 // Rebuild a version's COA from its entry tables (general_ledger_entries +
 // balance_sheet_entries). batchId=null → reads from Key Reports entry tables,
 // which is correct for all new-style syncs (resolvedBatchId is always null).
-router.post("/key-reports/versions/:versionId/chart-of-accounts/regenerate", async (req, res) => {
-  try {
-    const version = await loadVersionWithAccess(req, res);
-    if (!version) return;
-    console.log(`[KeyReports][Audit] COA regenerate versionId=${version.id} resolvedBatchId=${version.resolvedBatchId || 'null (entry-table path)'}`);
-    const summary = await chartOfAccountsService.generateChartOfAccounts(
-      version.companyId,
-      version.id,
-      version.resolvedBatchId || null,
-    );
-    // Re-run the COA spec checks so a manual rebuild reports its own health.
-    // (Not persisted here — replaceValidationResults would wipe the other data
-    //  types' rows; persistence happens during a full Sync.)
-    let validation = null;
-    try {
-      validation = await chartOfAccountsService.validateChartOfAccounts(version.companyId, version.id);
-    } catch (vErr) {
-      console.warn(`[KeyReports][Audit] COA regenerate validation failed: ${vErr.message}`);
-    }
-    const coa = await chartOfAccountsService.getChartOfAccounts(version.id);
-    return res.json({ success: true, summary, validation: validation ? validation.summary : null, ...coa });
-  } catch (error) {
-    return handleError(res, error, "POST chart-of-accounts/regenerate");
-  }
-});
 
 // Update a single COA account: rename (adjustedName), move/reclassify (levels +
 // accountType/statementType), activate/deactivate. Writes adjustment + history

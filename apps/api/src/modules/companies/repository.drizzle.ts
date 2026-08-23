@@ -129,9 +129,20 @@ export class DrizzleCompaniesRepository implements CompaniesRepository {
   }
 
   async updateSafeFields(id: string, patch: CompanyUpdatePatch): Promise<CompanyRecord | null> {
+    const { industry, ...rest } = patch;
     const rows = await this.db
       .update(companies)
-      .set({ ...patch, updatedAt: new Date() })
+      .set({
+        ...rest,
+        // `industry` is NOT NULL in the table with no default, and the patch
+        // type allows null because the API accepts a company with none stated.
+        // "" is what every caller already means by that, and clearing it to
+        // null would be refused by the driver rather than by anything a caller
+        // can see. Pulled out of the spread rather than overwritten in it,
+        // because a spread keeps the wider type whatever follows it.
+        ...(industry !== undefined ? { industry: industry ?? "" } : {}),
+        updatedAt: new Date(),
+      })
       .where(eq(companies.id, id))
       .returning();
     return rows[0] ? toRecord(rows[0]) : null;
