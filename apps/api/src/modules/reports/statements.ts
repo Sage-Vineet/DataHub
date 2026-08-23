@@ -310,22 +310,30 @@ export function buildStatements(
   );
   const cashFlow = buildCashFlow({ income, balanceSheet });
 
-  const monthKeys = balanceSheet.periods.map((p) => ({
-    year: p.fiscalYear,
-    month: p.month,
-    key: periodKey(p.fiscalYear, p.month),
-  }));
+  // Periods without a month are dropped rather than filed under one. The roll
+  // is monthly, so there should be none — but `Period.month` is nullable
+  // because the same type describes yearly periods, and a yearly total shown
+  // in the monthly view would be twelve months' movement labelled as one.
+  const monthKeys: Array<{ year: number; month: number; key: string }> = [];
+  for (const period of balanceSheet.periods) {
+    if (period.month === null) continue;
+    monthKeys.push({
+      year: period.fiscalYear,
+      month: period.month,
+      key: periodKey(period.fiscalYear, period.month),
+    });
+  }
 
   const balanceSheetMonthly = monthKeys.map((p) => ({
     year: p.year,
-    month: MONTHS[(p.month ?? 1) - 1] ?? "",
-    monthNumber: p.month ?? 0,
+    month: MONTHS[p.month - 1] ?? "",
+    monthNumber: p.month,
     statement: toBalanceSheetStatement(balanceSheet, p.key),
   }));
   const cashFlowMonthly = monthKeys.map((p) => ({
     year: p.year,
-    month: MONTHS[(p.month ?? 1) - 1] ?? "",
-    monthNumber: p.month ?? 0,
+    month: MONTHS[p.month - 1] ?? "",
+    monthNumber: p.month,
     statement: toCashFlowStatement(cashFlow, [p.key]),
   }));
 

@@ -664,3 +664,69 @@ describe("deck health", () => {
     expect(health.publishable).toBe(false);
   });
 });
+
+describe("asking about something that is not there", () => {
+  // Every one of these is a 404 rather than a crash or an empty answer. A CIM
+  // that answers "no blocks" for a version id that does not exist looks like a
+  // CIM somebody emptied.
+  const MISSING = "ffffffff-0000-4000-8000-00000000ffff";
+
+  it("404s a version nobody has", async () => {
+    await expect(service.getVersion(broker, MISSING)).rejects.toThrow(/not found/i);
+    await expect(service.gaps(broker, MISSING)).rejects.toThrow(/not found/i);
+    await expect(service.health(broker, MISSING)).rejects.toThrow(/not found/i);
+    await expect(service.recordApproval(broker, MISSING)).rejects.toThrow(/not found/i);
+  });
+
+  it("404s a deck nobody has", async () => {
+    await expect(service.listVersions(broker, MISSING)).rejects.toThrow(/not found/i);
+    await expect(service.createDraftFrom(broker, MISSING)).rejects.toThrow(/not found/i);
+  });
+
+  it("404s a block nobody has", async () => {
+    await expect(
+      service.acceptAnswer(broker, MISSING, {
+        qa_item_id: "i-1",
+        qa_response_id: "r-1",
+        mode: "skip",
+      }),
+    ).rejects.toThrow(/not found/i);
+    await expect(
+      service.discardAnswer(broker, MISSING, { qa_item_id: "i-1", qa_response_id: "r-1" }),
+    ).rejects.toThrow(/not found/i);
+  });
+
+  it("404s an answer that is not on this block", async () => {
+    // Accepting it would write one block's answer into another, and the CIM
+    // would read as though somebody had answered a question they never saw.
+    const { versionId } = await newDeck();
+    const gap = await firstGap(versionId);
+    await expect(
+      service.acceptAnswer(broker, gap.block_id, {
+        qa_item_id: "i-1",
+        qa_response_id: "not-a-response",
+        mode: "skip",
+      }),
+    ).rejects.toThrow(/not on this block/i);
+  });
+});
+
+describe("a company with no CIM at all", () => {
+  it("lists nothing rather than failing", async () => {
+    expect(await service.listDecks(broker, CO)).toEqual([]);
+  });
+
+  it("still refuses a company the caller cannot reach", async () => {
+    await expect(service.listDecks(outsider, CO)).rejects.toThrow(/access to this deal/i);
+  });
+});
+
+describe("when the Q&A engine is not configured", () => {
+  it("answers an empty review queue rather than erroring", async () => {
+    // The page renders "nothing to review", which is true, rather than an
+    // error that reads as a fault in the CIM.
+    build({ qa: unavailableQa });
+    const { versionId } = await newDeck();
+    expect(await service.reviewQueue(broker, versionId)).toEqual([]);
+  });
+});

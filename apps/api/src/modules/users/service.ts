@@ -31,6 +31,19 @@ export interface UsersServiceDeps {
 
 const BCRYPT_HASH_RE = /^\$2[aby]\$/;
 
+/**
+ * An optional field the caller is clearing.
+ *
+ * The contract types these as optional strings rather than nullable ones, so
+ * `undefined` means "leave it alone" and there is no way to say "remove it"
+ * except by sending an empty one. Stored as `""` that leaves the column
+ * holding an empty string for some users and NULL for others, and every reader
+ * has to handle both — so an empty string is stored as absent.
+ */
+function cleared<T extends string>(value: T | null | undefined): T | null {
+  return value === undefined || value === null || value.trim() === "" ? null : value;
+}
+
 export class UsersService {
   private readonly repo: UsersRepository;
   private readonly emailer: EmailerPort;
@@ -157,14 +170,16 @@ export class UsersService {
     const patch: UserUpdatePatch = {};
     if (input.name !== undefined) patch.name = input.name;
     if (input.email !== undefined) patch.email = input.email;
-    if (input.phone !== undefined) patch.phone = input.phone ?? null;
+    if (input.phone !== undefined) patch.phone = cleared(input.phone);
     if (input.role !== undefined) patch.role = input.role;
     if (input.status !== undefined) patch.status = input.status;
-    if (input.sub_role !== undefined) patch.subRole = input.sub_role ?? null;
-    if (input.designation !== undefined) patch.designation = input.designation ?? null;
-    if (input.buyer_company_name !== undefined) patch.buyerCompanyName = input.buyer_company_name ?? null;
-    if (input.parent_user_id !== undefined) patch.parentUserId = input.parent_user_id ?? null;
-    if (input.company_id !== undefined) patch.companyId = input.company_id ?? null;
+    if (input.sub_role !== undefined) patch.subRole = cleared(input.sub_role);
+    if (input.designation !== undefined) patch.designation = cleared(input.designation);
+    if (input.buyer_company_name !== undefined) {
+      patch.buyerCompanyName = cleared(input.buyer_company_name);
+    }
+    if (input.parent_user_id !== undefined) patch.parentUserId = cleared(input.parent_user_id);
+    if (input.company_id !== undefined) patch.companyId = cleared(input.company_id);
 
     if (input.password !== undefined) {
       // Self-service password change verifies the current password first (D6).

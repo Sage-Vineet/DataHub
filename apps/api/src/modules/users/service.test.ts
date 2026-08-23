@@ -148,6 +148,154 @@ describe("UsersService — update", () => {
   });
 });
 
+describe("UsersService — what an update writes", () => {
+  it("writes every field the caller sent, and only those", async () => {
+    // Each field is its own branch: one left out of the patch is a change the
+    // caller made, the request accepted, and the record does not carry.
+    const { repo, service } = makeService();
+    const target = repo.seedUser({
+      id: randomUUID(),
+      email: "before@x.com",
+      role: "buyer",
+      companyId: COMPANY_A,
+    });
+    const parentId = randomUUID();
+    repo.seedUser({ id: parentId, email: "parent@x.com", role: "broker", companyId: COMPANY_A });
+    const admin = session({ role: "admin" });
+
+    const updated = await service.update(
+      admin,
+      target.id,
+      contracts.userUpdate.parse({
+        name: "After",
+        email: "after@x.com",
+        phone: "+1 555 0100",
+        role: "broker",
+        status: "inactive",
+        sub_role: "broker_team_member",
+        designation: "Senior Analyst",
+        buyer_company_name: "Beta Holdings",
+        parent_user_id: parentId,
+        company_id: COMPANY_B,
+      }),
+    );
+
+    expect(updated).toMatchObject({
+      name: "After",
+      email: "after@x.com",
+      phone: "+1 555 0100",
+      role: "broker",
+      status: "inactive",
+      sub_role: "broker_team_member",
+      designation: "Senior Analyst",
+      company_id: COMPANY_B,
+    });
+
+    // Two of the ten are stored but not part of the response shape, so they
+    // are checked where they land rather than not at all.
+    const stored = await repo.getById(target.id);
+    expect(stored).toMatchObject({
+      buyerCompanyName: "Beta Holdings",
+      parentUserId: parentId,
+    });
+  });
+
+  it("clears a field sent empty rather than storing an empty string", async () => {
+    // The contract has no way to say "remove it" except an empty string. Stored
+    // as `""` the column holds an empty string for some users and NULL for
+    // others, and every reader has to handle both.
+    const { repo, service } = makeService();
+    const target = repo.seedUser({
+      id: randomUUID(),
+      email: "clear@x.com",
+      role: "buyer",
+      companyId: COMPANY_A,
+      phone: "+1 555 0100",
+      designation: "Analyst",
+    });
+    const admin = session({ role: "admin" });
+
+    const updated = await service.update(
+      admin,
+      target.id,
+      contracts.userUpdate.parse({ phone: "", designation: "" }),
+    );
+
+    expect(updated.phone).toBeNull();
+    expect(updated.designation).toBeNull();
+  });
+
+  it("404s an update to a user that is not there", async () => {
+    const { service } = makeService();
+    await expect(
+      service.update(session({ role: "admin" }), randomUUID(), contracts.userUpdate.parse({ name: "X" })),
+    ).rejects.toThrow(/not found/i);
+  });
+
+  it("refuses a broker updating somebody outside their companies", async () => {
+    const { repo, service } = makeService();
+    const target = repo.seedUser({
+      id: randomUUID(),
+      email: "elsewhere@x.com",
+      role: "buyer",
+      companyId: COMPANY_B,
+    });
+    const broker = session({ role: "broker", company_ids: [COMPANY_A] });
+    await expect(
+      service.update(broker, target.id, contracts.userUpdate.parse({ name: "X" })),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("refuses a broker assigning somebody to a company they do not hold", async () => {
+    const { repo, service } = makeService();
+    const target = repo.seedUser({
+      id: randomUUID(),
+      email: "assign@x.com",
+      role: "buyer",
+      companyId: COMPANY_A,
+    });
+    const broker = session({ role: "broker", company_ids: [COMPANY_A] });
+    await expect(
+      service.update(
+        broker,
+        target.id,
+        contracts.userUpdate.parse({ company_ids: [COMPANY_B] }),
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("lets a broker set a role to buyer, which is the one they may set", async () => {
+    const { repo, service } = makeService();
+    const target = repo.seedUser({
+      id: randomUUID(),
+      email: "tobuyer@x.com",
+      role: "buyer",
+      companyId: COMPANY_A,
+    });
+    const broker = session({ role: "broker", company_ids: [COMPANY_A] });
+    const updated = await service.update(
+      broker,
+      target.id,
+      contracts.userUpdate.parse({ role: "buyer" }),
+    );
+    expect(updated.role).toBe("buyer");
+  });
+
+  it("refuses a buyer updating anybody but themselves, company or no company", async () => {
+    const { repo, service } = makeService();
+    const target = repo.seedUser({
+      id: randomUUID(),
+      email: "other@x.com",
+      role: "buyer",
+      companyId: COMPANY_A,
+    });
+    const buyer = session({ role: "buyer", company_id: COMPANY_A });
+    await expect(
+      service.update(buyer, target.id, contracts.userUpdate.parse({ name: "X" })),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+});
+
 describe("UsersService — delete with reassignment invariant (D4)", () => {
   it("rejects (400) when no replacement owner exists and changes nothing", async () => {
     const { repo, service } = makeService();

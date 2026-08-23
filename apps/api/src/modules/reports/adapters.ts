@@ -58,26 +58,62 @@ export class DrizzleLedgerDetailPort implements LedgerDetailPort {
 
     const out: LedgerTransaction[] = [];
     for (const row of rows) {
-      if (!row.coaId) continue;
-      const date = row.transactionDate ? new Date(row.transactionDate) : null;
-      const fiscalYear = row.fiscalYear ?? date?.getUTCFullYear() ?? null;
-      if (!fiscalYear) continue;
-      out.push({
-        id: String(row.id),
-        accountId: row.coaId,
-        fiscalYear,
-        month: date ? date.getUTCMonth() + 1 : 0,
-        date: row.transactionDate ?? null,
-        vendorName: emptyToNull(row.vendor),
-        description: emptyToNull(row.description),
-        reference: emptyToNull(row.reference),
-        journalType: emptyToNull(row.journalType),
-        amount: toNumber(row.amount),
-        ...splitOf(row.debit, row.credit, toNumber(row.amount)),
-      });
+      const transaction = toLedgerTransaction(row);
+      if (transaction) out.push(transaction);
     }
     return out;
   }
+}
+
+/** One ledger row as the report reads it, in the shape the DB hands it over. */
+export interface LedgerRow {
+  id: string | number;
+  coaId: string | null;
+  fiscalYear: number | null;
+  transactionDate: string | null;
+  amount: string | number | null;
+  vendor: string | null;
+  description: string | null;
+  reference: string | null;
+  journalType: string | null;
+  debit: string | null;
+  credit: string | null;
+}
+
+/**
+ * A stored row as a transaction, or null where it is neither.
+ *
+ * Two rejections rather than one fallback. A row with no account cannot be
+ * reported against anything, and a row with no year lands on no statement —
+ * defaulting either would put a real amount somewhere arbitrary, where it adds
+ * up and is wrong.
+ */
+export function toLedgerTransaction(row: LedgerRow): LedgerTransaction | null {
+  if (!row.coaId) return null;
+
+  // The year the row states, else the year its date falls in. Extractors fill
+  // one or the other and rarely both.
+  const date = row.transactionDate ? new Date(row.transactionDate) : null;
+  const fromDate = date !== null && !Number.isNaN(date.getTime()) ? date.getUTCFullYear() : null;
+  const fiscalYear = row.fiscalYear ?? fromDate;
+  if (!fiscalYear) return null;
+
+  const amount = toNumber(row.amount);
+  return {
+    id: String(row.id),
+    accountId: row.coaId,
+    fiscalYear,
+    // Month 0 means "dated to a year but not to a month", which the monthly
+    // views drop rather than showing under January.
+    month: fromDate === null ? 0 : date!.getUTCMonth() + 1,
+    date: row.transactionDate ?? null,
+    vendorName: emptyToNull(row.vendor),
+    description: emptyToNull(row.description),
+    reference: emptyToNull(row.reference),
+    journalType: emptyToNull(row.journalType),
+    amount,
+    ...splitOf(row.debit, row.credit, amount),
+  };
 }
 
 /**
@@ -92,7 +128,7 @@ export class DrizzleLedgerDetailPort implements LedgerDetailPort {
  * A genuinely zero-amount row keeps its zeroes: there the split really is
  * nothing on both sides, and that is a fact rather than a gap.
  */
-function splitOf(
+export function splitOf(
   debit: string | null,
   credit: string | null,
   amount: number,
@@ -104,12 +140,12 @@ function splitOf(
 }
 
 /** An unpopulated text column arrives as "" as often as null; both mean absent. */
-function emptyToNull(value: string | null | undefined): string | null {
+export function emptyToNull(value: string | null | undefined): string | null {
   const trimmed = (value ?? "").trim();
   return trimmed === "" ? null : trimmed;
 }
 
-function toNumber(value: string | number | null | undefined): number {
+export function toNumber(value: string | number | null | undefined): number {
   const n = typeof value === "number" ? value : Number.parseFloat(String(value ?? "0"));
   return Number.isFinite(n) ? n : 0;
 }
