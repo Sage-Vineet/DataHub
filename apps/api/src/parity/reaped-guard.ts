@@ -30,6 +30,7 @@ const FLAG_OF_DOMAIN: Record<string, ModuleFlag> = {
   workspace: "WORKSPACE_MODULE_ENABLED",
   chartOfAccounts: "CHART_OF_ACCOUNTS_MODULE_ENABLED",
   reports: "REPORTS_MODULE_ENABLED",
+  bankReconciliation: "BANK_RECONCILIATION_MODULE_ENABLED",
 };
 
 export interface ReapedGap {

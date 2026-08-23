@@ -8,6 +8,7 @@ import {
   index,
   integer,
   jsonb,
+  numeric,
   pgEnum,
   pgTable,
   primaryKey,
@@ -542,6 +543,61 @@ export const keyReportFileMappings = pgTable(
       t.documentId,
     ),
   }),
+);
+
+/**
+ * A hand-entered correction to one cell of the bank-reconciliation grid.
+ *
+ * `(company_id, month, row_key)` is unique, which is what makes editing a cell
+ * an upsert: the grid saves on blur, so the same cell is written repeatedly and
+ * must not accumulate rows.
+ */
+export const bankReconciliationAdjustments = pgTable(
+  "bank_reconciliation_adjustments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    /** The column, as the grid labels it — "2024-03". */
+    month: text("month").notNull(),
+    /** The row, as the grid keys it. */
+    rowKey: text("row_key").notNull(),
+    amount: numeric("amount", { precision: 18, scale: 2 }).notNull().default("0"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    cell: uniqueIndex("uq_bank_recon_adjustment").on(t.companyId, t.month, t.rowKey),
+  }),
+);
+
+/** A named add-back line on the reconciliation, with an amount per month. */
+export const bankReconciliationAddbackItems = pgTable(
+  "bank_reconciliation_addback_items",
+  {
+  id: uuid("id").primaryKey().defaultRandom(),
+  companyId: uuid("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  /** deposits | withdrawals — the two halves of the reconciliation. */
+  section: text("section").notNull(),
+  name: text("name").notNull(),
+  /** manual | derived — where the line came from. */
+  source: text("source").notNull().default("manual"),
+  /** month → amount, as the grid renders it. */
+  monthAmounts: jsonb("month_amounts").notNull().default({}),
+  reportSource: text("report_source").notNull().default("quickbooks_online"),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "bank_reconciliation_addback_items_section_check",
+      sql`${t.section} IN ('deposits', 'withdrawals')`,
+    ),
+  ],
 );
 
 /**

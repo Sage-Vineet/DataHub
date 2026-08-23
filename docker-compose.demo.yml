@@ -105,6 +105,7 @@ services:
       CHART_OF_ACCOUNTS_MODULE_ENABLED: ${CHART_OF_ACCOUNTS_MODULE_ENABLED:-true}
       REPORTS_MODULE_ENABLED: ${REPORTS_MODULE_ENABLED:-true}
       QOE_MODULE_ENABLED: ${QOE_MODULE_ENABLED:-true}
+      BANK_RECONCILIATION_MODULE_ENABLED: ${BANK_RECONCILIATION_MODULE_ENABLED:-true}
       # Greenfield capabilities. Legacy serves none of these prefixes, so there is
       # nothing to fall back to and nothing to shadow — they default on, like QoE.
       # Sub-flags so one unfinished feature can be switched off without losing the

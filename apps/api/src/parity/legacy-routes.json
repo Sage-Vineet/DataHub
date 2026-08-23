@@ -1,5 +1,4 @@
 [
-  "DELETE /bank-reconciliation-addback-items/:p",
   "GET /all-reports",
   "GET /api/auth/callback",
   "GET /api/auth/disconnect",
@@ -7,8 +6,6 @@
   "GET /api/auth/status",
   "GET /api/quickbooks/sync-status",
   "GET /balance-sheet",
-  "GET /bank-reconciliation-addback-items",
-  "GET /bank-reconciliation-adjustments",
   "GET /bank-reconciliation-line-items",
   "GET /bank-vs-books",
   "GET /customers",
@@ -52,8 +49,6 @@
   "GET /tax-data",
   "POST /api/auth/transfer-confirm",
   "POST /api/quickbooks/sync",
-  "POST /bank-reconciliation-addback-items",
-  "POST /bank-reconciliation-adjustments",
   "POST /customers",
   "POST /key-reports/versions/:p/chart-of-accounts/regenerate",
   "POST /key-reports/versions/:p/sync",
@@ -66,7 +61,6 @@
   "POST /manual-report-uploads/sync-source",
   "POST /parse-bank-statement",
   "PUT /api/invoices/:p",
-  "PUT /bank-reconciliation-addback-items/:p",
   "PUT /manual-report-uploads/tax-reconciliation-overrides",
   "PUT /report-sources/selected"
 ]

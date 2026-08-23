@@ -32,6 +32,7 @@ import { createGroupsModule } from "./modules/groups/index.js";
 import { createWorkspaceModule } from "./modules/workspace/index.js";
 import { createMessagesModule } from "./modules/messages/index.js";
 import { createReportsModule } from "./modules/reports/index.js";
+import { createBankReconciliationModule } from "./modules/bank-reconciliation/index.js";
 import { assertReapedModulesEnabled } from "./parity/reaped-guard.js";
 import { createQoeModule } from "./modules/qoe/index.js";
 import { createDataRoomModule } from "./modules/dataroom/index.js";
@@ -136,7 +137,8 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
     flags.WORKSPACE_MODULE_ENABLED ||
     flags.CHART_OF_ACCOUNTS_MODULE_ENABLED ||
     flags.REPORTS_MODULE_ENABLED ||
-    flags.QOE_MODULE_ENABLED;
+    flags.QOE_MODULE_ENABLED ||
+    flags.BANK_RECONCILIATION_MODULE_ENABLED;
   if (domainsEnabled) {
     const db = getDb();
     const auth = createBetterAuth({
@@ -211,6 +213,13 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
       modules.push({ path: "/", router: createWorkspaceModule({ db, requireAuth }).router });
       console.warn("[gateway] workspace module ENABLED at the API root (page state, questionnaire)");
     }
+    if (flags.BANK_RECONCILIATION_MODULE_ENABLED) {
+      modules.push({
+        path: "/",
+        router: createBankReconciliationModule({ db, requireAuth }).router,
+      });
+    }
+
     if (flags.REPORTS_MODULE_ENABLED) {
       modules.push({ path: "/", router: createReportsModule({ db, requireAuth }).router });
       console.warn("[gateway] reports module ENABLED at the API root (key-report version lifecycle)");

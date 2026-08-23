@@ -16,8 +16,9 @@
 --   packages/db/migrations/0003_dataroom_qa.sql
 --   packages/db/migrations/0004_cim.sql
 --   packages/db/migrations/0005_coa_recommendations.sql
+--   packages/db/migrations/0006_bank_reconciliation.sql
 --
--- source-sha256: b53a867427c53f5c265ca307a0b755418a513b4be7a82cadbacddb0a31bd8fe2
+-- source-sha256: 73e4e80fdb5a4ca87db0fa63ec36864808851f19c8c73e379c8a93e1a78aa385
 --
 -- PostgreSQL database dump
 --
@@ -264,6 +265,38 @@ CREATE SEQUENCE public.balance_sheet_entries_id_seq
 --
 
 ALTER SEQUENCE public.balance_sheet_entries_id_seq OWNED BY public.balance_sheet_entries.id;
+
+--
+-- Name: bank_reconciliation_addback_items; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.bank_reconciliation_addback_items (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    company_id uuid NOT NULL,
+    section text NOT NULL,
+    name text NOT NULL,
+    source text DEFAULT 'manual'::text NOT NULL,
+    month_amounts jsonb DEFAULT '{}'::jsonb NOT NULL,
+    report_source text DEFAULT 'quickbooks_online'::text NOT NULL,
+    sort_order integer DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT bank_reconciliation_addback_items_section_check CHECK ((section = ANY (ARRAY['deposits'::text, 'withdrawals'::text])))
+);
+
+--
+-- Name: bank_reconciliation_adjustments; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.bank_reconciliation_adjustments (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    company_id uuid NOT NULL,
+    month text NOT NULL,
+    row_key text NOT NULL,
+    amount numeric(18,2) DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 
 --
 -- Name: bank_statement_entries; Type: TABLE; Schema: public; Owner: -
@@ -1822,6 +1855,20 @@ ALTER TABLE ONLY public.balance_sheet_entries
     ADD CONSTRAINT balance_sheet_entries_pkey PRIMARY KEY (id);
 
 --
+-- Name: bank_reconciliation_addback_items bank_reconciliation_addback_items_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bank_reconciliation_addback_items
+    ADD CONSTRAINT bank_reconciliation_addback_items_pkey PRIMARY KEY (id);
+
+--
+-- Name: bank_reconciliation_adjustments bank_reconciliation_adjustments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bank_reconciliation_adjustments
+    ADD CONSTRAINT bank_reconciliation_adjustments_pkey PRIMARY KEY (id);
+
+--
 -- Name: bank_statement_entries bank_statement_entries_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2389,6 +2436,13 @@ ALTER TABLE ONLY public.uploads
     ADD CONSTRAINT uploads_pkey PRIMARY KEY (id);
 
 --
+-- Name: bank_reconciliation_adjustments uq_bank_recon_adjustment; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bank_reconciliation_adjustments
+    ADD CONSTRAINT uq_bank_recon_adjustment UNIQUE (company_id, month, row_key);
+
+--
 -- Name: chart_of_accounts uq_chart_of_accounts_version_account; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2582,6 +2636,12 @@ CREATE INDEX idx_balance_sheet_entries_source ON public.balance_sheet_entries US
 CREATE INDEX idx_balance_sheet_entries_version_year ON public.balance_sheet_entries USING btree (version_id, fiscal_year);
 
 --
+-- Name: idx_bank_recon_adj_company; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_bank_recon_adj_company ON public.bank_reconciliation_adjustments USING btree (company_id, month);
+
+--
 -- Name: idx_bank_statement_entries_account; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2618,10 +2678,28 @@ CREATE INDEX idx_bank_statement_entries_version_month ON public.bank_statement_e
 CREATE INDEX idx_bank_transactions_client_id ON public.bank_transactions USING btree (client_id);
 
 --
+-- Name: idx_brai_company_source_section; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_brai_company_source_section ON public.bank_reconciliation_addback_items USING btree (company_id, report_source, section);
+
+--
 -- Name: idx_bs_entries_coa; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_bs_entries_coa ON public.balance_sheet_entries USING btree (version_id, coa_id);
+
+--
+-- Name: idx_bti_invited; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_bti_invited ON public.broker_team_invites USING btree (invited_broker_id);
+
+--
+-- Name: idx_bti_owner; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_bti_owner ON public.broker_team_invites USING btree (team_owner_id);
 
 --
 -- Name: idx_chart_of_accounts_company; Type: INDEX; Schema: public; Owner: -
@@ -2814,6 +2892,18 @@ CREATE INDEX idx_documents_upload_id ON public.documents USING btree (upload_id)
 --
 
 CREATE INDEX idx_email_verifications_email ON public.email_verifications USING btree (email);
+
+--
+-- Name: idx_ev_email; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ev_email ON public.email_verifications USING btree (email);
+
+--
+-- Name: idx_ev_expires; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ev_expires ON public.email_verifications USING btree (expires_at);
 
 --
 -- Name: idx_file_references_company; Type: INDEX; Schema: public; Owner: -
@@ -3300,6 +3390,20 @@ ALTER TABLE ONLY public.balance_sheet_entries
 
 ALTER TABLE ONLY public.balance_sheet_entries
     ADD CONSTRAINT balance_sheet_entries_version_id_fkey FOREIGN KEY (version_id) REFERENCES public.key_report_versions(id) ON DELETE CASCADE;
+
+--
+-- Name: bank_reconciliation_addback_items bank_reconciliation_addback_items_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bank_reconciliation_addback_items
+    ADD CONSTRAINT bank_reconciliation_addback_items_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: bank_reconciliation_adjustments bank_reconciliation_adjustments_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bank_reconciliation_adjustments
+    ADD CONSTRAINT bank_reconciliation_adjustments_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
 
 --
 -- Name: bank_statement_entries bank_statement_entries_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
