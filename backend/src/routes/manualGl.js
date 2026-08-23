@@ -706,46 +706,6 @@ router.get("/manual-gl/staging/filter-options", enforceDataSource(REPORT_SOURCE_
   }
 });
 
-router.get("/reports/profit-loss", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
-    const filters = parseManualFilterQuery(req.query || {});
-    const activeBatchId = await resolveEffectiveReportBatchId(clientId, filters);
-    const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
-    logManualReportFilterDebug("reports/profit-loss", clientId, cacheFilters, activeBatchId);
-
-    const cached = reportCache.get("pl", clientId, cacheFilters);
-    if (cached) return res.json({ success: true, ...cached, source: cached.source || "MANUAL_STAGED" });
-
-    const snapshotResult = await tryLoadActiveSnapshot(
-      clientId,
-      SNAPSHOT_REPORT_TYPES.PROFIT_LOSS_SUMMARY,
-      cacheFilters,
-    );
-
-    const pl2HierarchicalRows = snapshotResult.payload?.hierarchicalRows;
-    if (snapshotResult.payload && Array.isArray(pl2HierarchicalRows) && pl2HierarchicalRows.length > 0) {
-      const payload = {
-        ...snapshotResult.payload,
-        source: "manual_gl_reporting_snapshot",
-        activeBatchId: snapshotResult.activeBatchId || activeBatchId || null,
-      };
-      reportCache.set("pl", clientId, cacheFilters, payload);
-      return res.json({ success: true, ...payload });
-    }
-
-    const payload = await getProfitLossSummaryFromStage(clientId, cacheFilters);
-    reportCache.set("pl", clientId, cacheFilters, payload);
-    return res.json({ success: true, ...payload, source: payload.source || "MANUAL_STAGED", activeBatchId: activeBatchId || null });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: error.message || "Failed to build staged Profit & Loss summary.",
-    });
-  }
-});
-
 router.get("/reports/profit-loss/detail", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     const clientId = resolveClientId(req);

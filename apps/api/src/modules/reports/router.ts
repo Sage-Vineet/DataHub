@@ -158,5 +158,33 @@ export function createReportsRouter(deps: ReportsRouterDeps): Router {
     }),
   );
 
+  /**
+   * The Profit & Loss.
+   *
+   * Company-scoped like its legacy counterpart, and resolved from the same
+   * `X-Client-Id` header the SPA sets on every request — `?clientId` and
+   * `?company_id` are accepted too, because the legacy handler took both.
+   *
+   * `fiscalYear` may repeat (`?fiscalYear=2023&fiscalYear=2024`) to put one
+   * comparative column on the table per year, which is how the multi-select on
+   * the Reports page sends it.
+   */
+  router.get("/reports/profit-loss", handle(async (req, res) => {
+    const companyId = String(
+      req.query.clientId ?? req.query.company_id ?? req.headers["x-client-id"] ?? "",
+    );
+    if (!companyId) throw new HttpError(400, "Missing clientId.");
+
+    const raw = req.query.fiscalYear ?? req.query.fiscalYears;
+    const fiscalYears = (Array.isArray(raw) ? raw : raw === undefined ? [] : [raw])
+      .flatMap((value) => String(value).split(","))
+      .map((value) => Number.parseInt(value.trim(), 10))
+      .filter((year) => Number.isInteger(year) && year > 0);
+
+    const payload = await service.profitLoss(req.user!, companyId, { fiscalYears });
+    // `success` is part of the envelope the page checks before reading the rows.
+    res.json({ success: true, ...payload });
+  }));
+
   return router;
 }

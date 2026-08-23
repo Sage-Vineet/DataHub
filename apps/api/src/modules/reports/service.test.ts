@@ -61,3 +61,86 @@ describe("ReportsService — version lifecycle", () => {
     await expect(service.sync(session(), v.id)).rejects.toMatchObject({ status: 501 });
   });
 });
+
+/**
+ * The Profit & Loss is company-scoped, so the service has to choose a version
+ * before it can load an engagement at all. Which one it picks, and what it does
+ * when there is none, is the whole of the decision.
+ */
+describe("ReportsService — profit & loss", () => {
+  const engagementFor = (companyId: string) => ({
+    companyId,
+    companyName: "Acme",
+    profitMetric: "adjusted_ebitda" as const,
+    marketRateReplacementSalary: null,
+    fiscalYears: [2024],
+    accounts: [
+      { id: "sales", name: "Sales", statementType: "profit_loss" as const, accountType: "income" as const },
+      { id: "rent", name: "Rent", statementType: "profit_loss" as const, accountType: "expense" as const },
+    ],
+    entries: [
+      { accountId: "sales", fiscalYear: 2024, month: 1, amount: 500 },
+      { accountId: "rent", fiscalYear: 2024, month: 1, amount: 200 },
+    ],
+    anchors: [],
+  });
+
+  it("serves it from the company's active version", async () => {
+    const { repo, engagement, service } = make();
+    const user = session();
+    const a = await service.create(user, contracts.reportVersionCreate.parse({ company_id: COMPANY }));
+    const b = await service.create(user, contracts.reportVersionCreate.parse({ company_id: COMPANY }));
+    await service.activate(user, b.id);
+
+    engagement.seed(b.id, engagementFor(COMPANY));
+    const payload = await service.profitLoss(user, COMPANY);
+
+    expect(engagement.lastVersionId).toBe(b.id);
+    expect(payload.netProfitByYear[2024]).toBe(300);
+    expect(a.id).not.toBe(b.id);
+    expect(repo).toBeDefined();
+  });
+
+  it("falls back to the only version there is when none is marked active", async () => {
+    // A company that has never activated anything still has a statement to
+    // show; refusing would be a worse answer than the obvious one.
+    const { engagement, service } = make();
+    const user = session();
+    const v = await service.create(user, contracts.reportVersionCreate.parse({ company_id: COMPANY }));
+    engagement.seed(v.id, engagementFor(COMPANY));
+
+    const payload = await service.profitLoss(user, COMPANY);
+    expect(engagement.lastVersionId).toBe(v.id);
+    expect(payload.years).toEqual([2024]);
+  });
+
+  it("404s a company with no version at all", async () => {
+    const { service } = make();
+    await expect(service.profitLoss(session(), COMPANY)).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("404s when the version exists but its engagement cannot be loaded", async () => {
+    const { service } = make();
+    const user = session();
+    await service.create(user, contracts.reportVersionCreate.parse({ company_id: COMPANY }));
+    await expect(service.profitLoss(user, COMPANY)).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("refuses a company the caller cannot access, before reading anything", async () => {
+    const { engagement, service } = make();
+    await expect(
+      service.profitLoss(session({ role: "buyer", company_ids: [OTHER] }), COMPANY),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+    expect(engagement.lastVersionId).toBeNull();
+  });
+
+  it("passes the year filter through to the statement", async () => {
+    const { engagement, service } = make();
+    const user = session();
+    const v = await service.create(user, contracts.reportVersionCreate.parse({ company_id: COMPANY }));
+    engagement.seed(v.id, engagementFor(COMPANY));
+
+    const payload = await service.profitLoss(user, COMPANY, { fiscalYears: [2024] });
+    expect(payload.yearCols).toEqual([{ key: "y2024", label: "2024" }]);
+  });
+});

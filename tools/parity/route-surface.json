@@ -152,7 +152,8 @@
         "PUT /key-reports/versions/:p"
       ],
       "additive": [
-        "GET /key-reports/versions/:p/reports/financial-statements"
+        "GET /key-reports/versions/:p/reports/financial-statements",
+        "GET /reports/profit-loss"
       ]
     }
   },
@@ -218,7 +219,6 @@
     "GET /reports/cashflow",
     "GET /reports/cashflow/monthly-detail",
     "GET /reports/pl",
-    "GET /reports/profit-loss",
     "GET /reports/profit-loss/detail",
     "GET /reports/profit-loss/detail-vendor",
     "GET /reports/profit-loss/monthly",

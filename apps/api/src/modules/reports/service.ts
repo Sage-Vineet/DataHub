@@ -8,6 +8,11 @@ import { canAccessCompany } from "../../shared/access.js";
 import { ForbiddenError, NotFoundError } from "../../shared/errors.js";
 import type { EngagementPort, ReportSyncPort, ReportsRepository, VersionRecord } from "./ports.js";
 import { buildStatements, type BuildStatementsOptions, type FinancialStatements } from "./statements.js";
+import {
+  buildProfitLossSummary,
+  type ProfitLossFilters,
+  type ProfitLossSummaryPayload,
+} from "./profit-loss-view.js";
 
 export interface ReportsServiceDeps {
   repo: ReportsRepository;
@@ -44,6 +49,34 @@ export class ReportsService {
     if (!engagement) throw new NotFoundError("Report version not found.");
 
     return buildStatements(engagement, options);
+  }
+
+  /**
+   * The Profit & Loss the Reports page reads, for a company rather than a
+   * version.
+   *
+   * Legacy resolved this endpoint from `X-Client-Id` and served it from
+   * `manual_gl_staged_transactions`; the version was implicit in whichever
+   * batch happened to be active. Here the company's active key-report version
+   * supplies the engagement, so the statement is tied to a version a user can
+   * see and switch — and a company with no active version gets a plain 404
+   * rather than a P&L assembled from nothing.
+   */
+  async profitLoss(
+    user: SessionUser,
+    companyId: string,
+    filters: ProfitLossFilters = {},
+  ): Promise<ProfitLossSummaryPayload> {
+    this.requireCompany(user, companyId);
+
+    const versions = await this.repo.listByCompany(companyId);
+    const active = versions.find((v) => v.isActive) ?? versions[0];
+    if (!active) throw new NotFoundError("No key-report version for this company.");
+
+    const engagement = await this.engagement.load(active.id);
+    if (!engagement) throw new NotFoundError("Report version not found.");
+
+    return buildProfitLossSummary(engagement, filters);
   }
 
   async list(user: SessionUser, companyId: string): Promise<ReportVersionResponse[]> {

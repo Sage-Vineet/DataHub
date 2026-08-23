@@ -44,6 +44,19 @@ const emptyStatements = {
   missingData: [],
 };
 
+const emptyProfitLoss = {
+  source: "general_ledger_entries",
+  reportType: "profit_loss_summary",
+  filters: {},
+  years: [],
+  displayYear: null,
+  lines: [],
+  monthlyBreakdown: [],
+  yearComparison: [],
+  netProfitByYear: {},
+  hierarchicalRows: [],
+};
+
 function stub(over: Record<string, unknown> = {}) {
   const calls: Array<{ method: string; args: unknown[] }> = [];
   const record =
@@ -62,6 +75,7 @@ function stub(over: Record<string, unknown> = {}) {
     activate: record("activate", { id: VERSION }),
     delete: record("delete", undefined),
     financialStatements: record("financialStatements", emptyStatements),
+    profitLoss: record("profitLoss", emptyProfitLoss),
     ...over,
   } as unknown as ReportsService;
 
@@ -190,5 +204,75 @@ describe("paths this router does not own", () => {
   it("leaves them for the proxy", async () => {
     const { app } = stub();
     await request(app).get(`/key-reports/versions/${VERSION}/mappings`).expect(404);
+  });
+});
+
+describe("the profit & loss route", () => {
+  it("accepts the company from any of the three places the SPA sends it", async () => {
+    const { app, calls } = stub();
+
+    await request(app).get(`/reports/profit-loss?clientId=${COMPANY}`).expect(200);
+    await request(app).get(`/reports/profit-loss?company_id=${COMPANY}`).expect(200);
+    await request(app).get("/reports/profit-loss").set("x-client-id", COMPANY).expect(200);
+
+    for (const call of calls.filter((c) => c.method === "profitLoss")) {
+      expect(call.args[1]).toBe(COMPANY);
+    }
+  });
+
+  it("400s a request that names no company, rather than serving someone else's", async () => {
+    const { app, calls } = stub();
+    const res = await request(app).get("/reports/profit-loss").expect(400);
+    expect(res.body).toEqual({ error: "Missing clientId." });
+    expect(calls).toEqual([]);
+  });
+
+  it("answers under the success envelope the page checks", async () => {
+    const { app } = stub();
+    const res = await request(app).get(`/reports/profit-loss?clientId=${COMPANY}`).expect(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.reportType).toBe("profit_loss_summary");
+  });
+
+  it("takes a repeated fiscalYear as one column each", async () => {
+    // How the multi-select on the Reports page sends it.
+    const { app, calls } = stub();
+    await request(app)
+      .get(`/reports/profit-loss?clientId=${COMPANY}&fiscalYear=2023&fiscalYear=2024`)
+      .expect(200);
+    expect(argsOf(calls, "profitLoss")[2]).toEqual({ fiscalYears: [2023, 2024] });
+  });
+
+  it("takes a comma-separated list too", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .get(`/reports/profit-loss?clientId=${COMPANY}&fiscalYears=2023,2024`)
+      .expect(200);
+    expect(argsOf(calls, "profitLoss")[2]).toEqual({ fiscalYears: [2023, 2024] });
+  });
+
+  it("drops a year that is not a year, rather than passing NaN down", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .get(`/reports/profit-loss?clientId=${COMPANY}&fiscalYear=last-year&fiscalYear=2024`)
+      .expect(200);
+    expect(argsOf(calls, "profitLoss")[2]).toEqual({ fiscalYears: [2024] });
+  });
+
+  it("maps a company the caller cannot reach to 403, and a missing version to 404", async () => {
+    for (const [err, status] of [
+      [new ForbiddenError("denied"), 403],
+      [new NotFoundError("No key-report version for this company."), 404],
+    ] as const) {
+      const { app } = stub({ profitLoss: () => Promise.reject(err) });
+      await request(app).get(`/reports/profit-loss?clientId=${COMPANY}`).expect(status);
+    }
+  });
+
+  it("passes an unexpected failure on rather than reporting an empty statement", async () => {
+    // A P&L that answers 200 with no rows because the query threw is worse
+    // than one that fails: the page draws an empty, confident table.
+    const { app } = stub({ profitLoss: () => Promise.reject(new Error("boom")) });
+    await request(app).get(`/reports/profit-loss?clientId=${COMPANY}`).expect(500);
   });
 });
