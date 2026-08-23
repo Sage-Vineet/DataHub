@@ -99,6 +99,7 @@ services:
       # cookie-session caller. See apps/api/src/legacy-bridge.ts.
       LEGACY_AUTH_BRIDGE_ENABLED: ${LEGACY_AUTH_BRIDGE_ENABLED:-true}
       MESSAGES_MODULE_ENABLED: ${MESSAGES_MODULE_ENABLED:-true}
+      GROUPS_MODULE_ENABLED: ${GROUPS_MODULE_ENABLED:-true}
       REPORTS_MODULE_ENABLED: ${REPORTS_MODULE_ENABLED:-true}
       QOE_MODULE_ENABLED: ${QOE_MODULE_ENABLED:-true}
       # Greenfield capabilities. Legacy serves none of these prefixes, so there is

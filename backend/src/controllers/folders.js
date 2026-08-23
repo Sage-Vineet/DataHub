@@ -260,12 +260,6 @@ const ensureDefaultFolders = asyncHandler(async (req, res) => {
   res.json({ success: true });
 });
 
-const cleanupFolders = asyncHandler(async (req, res) => {
-  const companyId = req.params.id;
-  const deleted = await folderService.cleanupDuplicateFolders(companyId);
-  res.json({ success: true, duplicatesRemoved: deleted });
-});
-
 module.exports = {
   listFolders,
   createFolder,
@@ -283,5 +277,4 @@ module.exports = {
   recordDocumentActivity,
   getDocumentActivity,
   ensureDefaultFolders,
-  cleanupFolders,
 };

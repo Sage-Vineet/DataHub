@@ -43,6 +43,21 @@ const BACKEND = resolve(HERE, "../../../../backend/src");
  */
 const LEGACY_ROUTES_PATH = resolve(HERE, "legacy-routes.json");
 
+/**
+ * Routes legacy used to serve and no longer does, because a module took them.
+ *
+ * The route-contract guard asks whether a module answers on a path the SPA
+ * calls, and it used the live legacy surface as the stand-in for "paths the SPA
+ * calls". That equivalence breaks the moment a legacy handler is deleted: the
+ * module is then the only thing serving it, and the guard would read its own
+ * success as drift.
+ *
+ * So a reaped route stays part of the contract. Removing an entry from here is
+ * a statement that the SPA no longer calls it at all — a separate decision from
+ * moving it off legacy, and one that deserves its own commit.
+ */
+const REAPED_ROUTES_PATH = resolve(HERE, "reaped-routes.json");
+
 /** `/companies/:companyId/folders` → `/companies/:p/folders` so param names don't matter. */
 export function normalize(path: string): string {
   const collapsed = path.replace(/:[A-Za-z0-9_]+/g, ":p").replace(/\/+$/, "");
@@ -92,6 +107,19 @@ export function legacySourceAvailable(): boolean {
 /** Every path the legacy backend serves, read from the committed fixture. */
 export function legacyRoutes(): Set<string> {
   return new Set(JSON.parse(readFileSync(LEGACY_ROUTES_PATH, "utf8")) as string[]);
+}
+
+/** Routes a module has taken over and legacy no longer defines. */
+export function reapedRoutes(): Set<string> {
+  return new Set(JSON.parse(readFileSync(REAPED_ROUTES_PATH, "utf8")) as string[]);
+}
+
+/**
+ * Every path the SPA may call: what legacy still serves, plus what a module has
+ * taken from it. This is the route-contract guard's denominator.
+ */
+export function contractRoutes(): Set<string> {
+  return new Set([...legacyRoutes(), ...reapedRoutes()]);
 }
 
 /**

@@ -269,14 +269,7 @@ const getUploadContent = asyncHandler(async (req, res) => {
   res.send(content);
 });
 
-const legacyPresignUpload = asyncHandler(async (_req, res) => {
-  res.status(410).json({
-    error: "S3 presigned uploads have been removed. Use POST /uploads for direct database-backed uploads.",
-  });
-});
-
 module.exports = {
   createUpload,
   getUploadContent,
-  legacyPresignUpload,
 };

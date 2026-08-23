@@ -12,11 +12,6 @@ const router = express.Router();
 
 router.use(requireAuth);
 
-// Test endpoint without auth
-router.get("/test", (req, res) => {
-  res.json({ message: "Test endpoint works" });
-});
-
 router.get("/", listCompanies);
 router.post("/", createCompany);
 router.get("/:id", getCompany);

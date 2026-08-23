@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { deriveLegacyRoutesFromSource, legacyRoutes, legacySourceAvailable } from "./routes.js";
+import {
+  contractRoutes,
+  deriveLegacyRoutesFromSource,
+  legacyRoutes,
+  legacySourceAvailable,
+  reapedRoutes,
+} from "./routes.js";
 
 /**
  * The frozen legacy surface must match the legacy source, for as long as there
@@ -42,5 +48,28 @@ describe("the committed legacy surface", () => {
       // Param names are collapsed, so a rename in either engine is not a diff.
       expect(key).not.toMatch(/:(?!p\b)[A-Za-z]/);
     }
+  });
+});
+
+describe("the reaped surface", () => {
+  it("is disjoint from what legacy still serves", () => {
+    // A route in both lists means a handler was recorded as deleted and is still
+    // there — the reap did not happen, and the contract guard would not notice.
+    const still = [...reapedRoutes()].filter((r) => legacyRoutes().has(r));
+    expect(still).toEqual([]);
+  });
+
+  it("keeps a reaped path inside the contract", () => {
+    // The whole point: deleting legacy's handler must not make the module that
+    // replaced it look like drift.
+    const reaped = [...reapedRoutes()];
+    expect(reaped.length).toBeGreaterThan(0);
+    for (const route of reaped) expect(contractRoutes().has(route)).toBe(true);
+  });
+
+  it("is the union of both, and larger than either", () => {
+    const contract = contractRoutes();
+    expect(contract.size).toBe(legacyRoutes().size + reapedRoutes().size);
+    expect(contract.size).toBeGreaterThan(legacyRoutes().size);
   });
 });

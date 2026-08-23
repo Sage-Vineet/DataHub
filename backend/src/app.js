@@ -8,13 +8,9 @@ const { timingMiddleware } = require("./middleware/timing");
 const authRoutes = require("./routes/auth");
 const publicRoutes = require("./routes/public");
 const { quickBooksAuth } = require("./middleware/quickbooksAuth");
-const userRoutes = require("./routes/users");
 const companyRoutes = require("./routes/companies");
-const groupRoutes = require("./routes/groups");
-const requestRoutes = require("./routes/requests");
 const folderRoutes = require("./routes/folders");
 const folderAccessRoutes = require("./routes/folderAccess");
-const reminderRoutes = require("./routes/reminders");
 const activityRoutes = require("./routes/activity");
 const uploadRoutes = require("./routes/uploads");
 const messageRoutes = require("./routes/messages");
@@ -40,7 +36,6 @@ const geminipdf = require("./routes/quickbooks/tax_reconciliation/geminiPdf");
 const bankStatementRoutes = require("./routes/quickbooks/reconciliation/bankStatement");
 const bankVsBooksRoutes = require("./routes/quickbooks/reconciliation/bankVsBooks");
 const syncRoutes = require("./routes/quickbooks/sync");
-const messageGroupRoutes = require("./routes/messageGroups");
 
 const app = express();
 
@@ -123,7 +118,6 @@ app.get("/health", (req, res) => res.json({ ok: true }));
 // Standard Routes
 app.use("/auth", authRoutes);
 app.use("/public", publicRoutes);
-app.use("/users", userRoutes);
 app.use("/companies", companyRoutes);
 app.use("/", tokenRoutes);
 app.use("/", uploadRoutes);
@@ -158,14 +152,15 @@ financialRoutes.forEach(route => {
 });
 
 // Non-QuickBooks Routes
-app.use("/", groupRoutes);
-app.use("/", requestRoutes);
+//
+// users, groups, requests, reminders and message-groups are NOT mounted here:
+// their modules in apps/api serve every route they defined, so the gateway never
+// proxies those paths. See tools/parity/route-surface.json for what is still
+// legacy-only.
 app.use("/", folderRoutes);
 app.use("/", folderAccessRoutes);
-app.use("/", reminderRoutes);
 app.use("/", activityRoutes);
 app.use("/", messageRoutes);
-app.use("/", messageGroupRoutes);
 
 app.use(errorHandler);
 

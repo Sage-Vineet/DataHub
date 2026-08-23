@@ -13,7 +13,8 @@
       "additive": []
     },
     "users": {
-      "compare": [
+      "compare": [],
+      "additive": [
         "DELETE /users/:p",
         "DELETE /users/:p/remove-companies",
         "DELETE /users/broker-team/invite/:p",
@@ -24,8 +25,7 @@
         "POST /users",
         "POST /users/:p/add-companies",
         "POST /users/broker-team/invite"
-      ],
-      "additive": []
+      ]
     },
     "folders": {
       "compare": [
@@ -60,12 +60,14 @@
       "additive": []
     },
     "requests": {
-      "compare": [
+      "compare": [],
+      "additive": [
         "DELETE /requests/:p",
         "GET /companies/:p/reminders",
         "GET /companies/:p/requests",
         "GET /requests/:p",
         "GET /requests/:p/documents",
+        "GET /requests/:p/narrative",
         "GET /requests/:p/narrative/file",
         "PATCH /requests/:p",
         "PATCH /requests/:p/narrative",
@@ -74,35 +76,33 @@
         "POST /requests/:p/approve",
         "POST /requests/:p/documents",
         "POST /requests/:p/reminders"
-      ],
-      "additive": [
-        "GET /requests/:p/narrative"
       ]
     },
     "messages": {
       "compare": [
-        "DELETE /message-groups/:p/members/:p",
         "GET /companies/:p/direct-messages/:p",
         "GET /companies/:p/direct-messages/contacts",
-        "GET /companies/:p/message-groups",
         "GET /companies/:p/messages",
+        "POST /companies/:p/direct-messages/:p",
+        "POST /companies/:p/messages"
+      ],
+      "additive": [
+        "DELETE /message-groups/:p/members/:p",
+        "GET /companies/:p/message-groups",
         "GET /message-groups/:p/members",
         "GET /message-groups/:p/messages",
         "GET /message-groups/:p/messages/unread-count",
         "GET /my-groups",
-        "POST /companies/:p/direct-messages/:p",
+        "POST /companies/:p/message-groups",
         "POST /companies/:p/message-groups/auto-create",
-        "POST /companies/:p/messages",
         "POST /message-groups/:p/members",
         "POST /message-groups/:p/messages",
         "POST /message-groups/:p/messages/mark-read"
-      ],
-      "additive": [
-        "POST /companies/:p/message-groups"
       ]
     },
     "groups": {
-      "compare": [
+      "compare": [],
+      "additive": [
         "DELETE /groups/:p",
         "DELETE /groups/:p/members/:p",
         "GET /companies/:p/groups",
@@ -110,8 +110,7 @@
         "PATCH /groups/:p",
         "POST /companies/:p/groups",
         "POST /groups/:p/members"
-      ],
-      "additive": []
+      ]
     },
     "reports": {
       "compare": [
@@ -127,11 +126,9 @@
     }
   },
   "backlog": [
-    "DELETE /:p",
     "DELETE /bank-reconciliation-addback-items/:p",
     "DELETE /ebitda-adjustments/:p",
     "DELETE /key-reports/mappings/:p",
-    "DELETE /reminders/:p",
     "DELETE /workspace-page-state/:p",
     "GET /all-reports",
     "GET /api/auth/callback",
@@ -148,7 +145,6 @@
     "GET /bank-vs-books",
     "GET /broker/activity",
     "GET /cim-questionnaire",
-    "GET /companies/test",
     "GET /customers",
     "GET /ebitda-adjustment-types",
     "GET /ebitda-adjustments",
@@ -245,9 +241,7 @@
     "GET /reports/vendor-analysis",
     "GET /tax-data",
     "GET /workspace-page-state/:p",
-    "PATCH /:p",
     "PATCH /key-reports/chart-of-accounts/:p",
-    "PATCH /reminders/:p",
     "POST /api/auth/transfer-confirm",
     "POST /api/quickbooks/sync",
     "POST /auth/broker/signup",
@@ -260,8 +254,6 @@
     "POST /bank-reconciliation-addback-items",
     "POST /bank-reconciliation-adjustments",
     "POST /bank-transactions",
-    "POST /companies/:p/folders/cleanup",
-    "POST /companies/:p/reminders",
     "POST /customers",
     "POST /customers/query",
     "POST /ebitda-adjustments/:p/comments",
@@ -292,7 +284,6 @@
     "POST /save-mapping",
     "POST /upload-bank-statement",
     "POST /upload-gl",
-    "POST /uploads/presign",
     "PUT /api/customers/:p",
     "PUT /api/invoices/:p",
     "PUT /bank-reconciliation-addback-items/:p",

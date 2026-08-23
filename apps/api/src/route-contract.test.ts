@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { legacyRoutes, moduleSurfaces, routerRoutes } from "./parity/routes.js";
+import { contractRoutes, moduleSurfaces, routerRoutes } from "./parity/routes.js";
 import { buildRouteSurface, SURFACE_PATH } from "./parity/route-surface.js";
 
 /**
@@ -17,6 +17,11 @@ import { buildRouteSurface, SURFACE_PATH } from "./parity/route-surface.js";
  *
  * The reverse is NOT asserted: legacy has many paths no module covers yet. That is
  * the migration backlog, not a defect.
+ *
+ * The denominator is `contractRoutes()`, not the live legacy surface: once a
+ * legacy handler is deleted the module is the only thing serving that path, and
+ * comparing against what legacy still has would make a completed migration look
+ * like drift.
  */
 
 /**
@@ -35,7 +40,7 @@ const INTENTIONAL_ADDITIONS: ReadonlyArray<string> = [
 ];
 
 describe("route contract — new modules answer on the legacy paths", () => {
-  const legacy = legacyRoutes();
+  const legacy = contractRoutes();
   const MODULES = moduleSurfaces();
   const allowed = new Set(INTENTIONAL_ADDITIONS);
 

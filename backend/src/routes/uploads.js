@@ -1,5 +1,5 @@
 const express = require("express");
-const { createUpload, getUploadContent, legacyPresignUpload } = require("../controllers/uploads");
+const { createUpload, getUploadContent } = require("../controllers/uploads");
 const { requireAuth } = require("../middleware/auth");
 
 const router = express.Router();
@@ -11,6 +11,5 @@ router.post(
   createUpload
 );
 router.get("/uploads/:id/content", requireAuth, getUploadContent);
-router.post("/uploads/presign", legacyPresignUpload);
 
 module.exports = router;
