@@ -1,12 +1,15 @@
 import { and, asc, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { schema, type Db } from "@datahub/db";
-import type {
-  ListFilter,
-  SaveExtractInput,
-  SourceTreeEntry,
-  StatementExtract,
-  StatementsRepository,
+import {
+  pullKeyFor,
+  type ListFilter,
+  type SaveExtractInput,
+  type SourceTreeEntry,
+  type StatementExtract,
+  type StatementsRepository,
 } from "./ports.js";
+
+export { pullKeyFor } from "./ports.js";
 
 const { documents, folders, keyReportFileMappings, statementExtracts } = schema;
 
@@ -37,29 +40,6 @@ const SELECTION = {
 type Selected = {
   [K in keyof typeof SELECTION]: K extends keyof Row ? Row[K] : string | null;
 };
-
-/**
- * The identity of a pulled statement, as one string.
- *
- * Pulling January twice is the same statement; pulling January and February is
- * two. An absent period is spelled rather than left empty, so "no period" and
- * "period starting nothing" cannot collide into the same key.
- */
-export function pullKeyFor(input: {
-  sourceKey: string;
-  statementType: string;
-  datasetVersionId: string | null;
-  periodStart: string | null;
-  periodEnd: string | null;
-}): string {
-  return [
-    input.sourceKey,
-    input.statementType,
-    input.datasetVersionId ?? "no-dataset",
-    input.periodStart ?? "no-start",
-    input.periodEnd ?? "no-end",
-  ].join("|");
-}
 
 function toExtract(row: Selected): StatementExtract {
   return {
@@ -189,6 +169,7 @@ export class DrizzleStatementsRepository implements StatementsRepository {
               datasetVersionId: input.provenance.datasetVersionId ?? null,
               periodStart: input.periodStart,
               periodEnd: input.periodEnd,
+              variant: input.provenance.variant ?? null,
             }),
           };
 

@@ -260,7 +260,17 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
       }
       modules.push({
         path: "/",
-        router: createQuickBooksModule({ db, requireAuth, secret }).router,
+        router: createQuickBooksModule({
+          db,
+          requireAuth,
+          secret,
+          // Points at production unless told otherwise. Set to the sandbox
+          // host to work against a sandbox realm, which is the only way the
+          // live report path becomes exercisable.
+          ...(process.env.QUICKBOOKS_API_BASE_URL
+            ? { quickBooksBaseUrl: process.env.QUICKBOOKS_API_BASE_URL }
+            : {}),
+        }).router,
       });
     }
 

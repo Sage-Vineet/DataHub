@@ -127,33 +127,5 @@ router.post(
  *       200:
  *         description: Sync status
  */
-router.get("/api/quickbooks/sync-status", requireAuth, async (req, res) => {
-  try {
-    let clientId = req.headers["x-client-id"] || req.query.clientId;
-
-    if (!clientId && req.user) {
-      clientId = req.user.company_id || (req.user.company_ids && req.user.company_ids[0]);
-    }
-
-    if (!clientId) {
-      return res.status(400).json({ success: false, message: "Missing Client ID" });
-    }
-
-    const status = await getSyncStatus(clientId);
-
-    return res.json({
-      success: true,
-      source: "cached_snapshot",
-      ...status,
-    });
-  } catch (error) {
-    console.error("[Sync] Status check failed:", error.message);
-    return res.status(500).json({
-      success: false,
-      error: "Failed to check sync status",
-      message: error.message,
-    });
-  }
-});
 
 module.exports = router;

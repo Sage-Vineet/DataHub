@@ -446,6 +446,96 @@ describe("statement extracts (real Postgres)", () => {
       .expect(403);
   });
 
+  it("keeps two pulls of one period on different bases as two rows", async () => {
+    // Against the real unique index, not the fake. Without the variant in the
+    // pull key both share one key and the second REPLACES the first, so the
+    // page shows whichever basis was fetched most recently and nothing on
+    // screen says which — the two reports have the same shape, the same
+    // accounts and different numbers.
+    const [run] = await db
+      .insert(schema.syncRuns)
+      .values({ companyId, sourceKey: "quickbooks", status: "running" })
+      .returning();
+
+    const pull = (variant: string) =>
+      service.save(current, companyId, {
+        provenance: {
+          from: "pull",
+          syncRunId: run!.id,
+          reportParams: { accounting_method: variant },
+          variant,
+        },
+        statementType: "balance_sheet",
+        sourceKey: "quickbooks",
+        periodStart: "2024-01-01",
+        periodEnd: "2024-12-31",
+        payload: { Header: { ReportBasis: variant } },
+      });
+
+    await pull("Accrual");
+    await pull("Cash");
+
+    const held = await db.select().from(schema.statementExtracts);
+    expect(held).toHaveLength(2);
+  });
+
+  it("still replaces when the same basis is pulled again", async () => {
+    const [run] = await db
+      .insert(schema.syncRuns)
+      .values({ companyId, sourceKey: "quickbooks", status: "running" })
+      .returning();
+
+    const pull = (rows: number) =>
+      service.save(current, companyId, {
+        provenance: { from: "pull", syncRunId: run!.id, variant: "Accrual" },
+        statementType: "balance_sheet",
+        sourceKey: "quickbooks",
+        periodStart: "2024-01-01",
+        periodEnd: "2024-12-31",
+        payload: { rows },
+      });
+
+    await pull(1);
+    await pull(2);
+
+    const held = await db.select().from(schema.statementExtracts);
+    expect(held).toHaveLength(1);
+    expect(held[0]!.payload).toEqual({ rows: 2 });
+  });
+
+  it("stores a pull that belongs to no run at all", async () => {
+    // An on-demand fetch: somebody asked for a period no sync had covered.
+    // The provenance CHECK used to demand a run, which would have meant a
+    // `sync_runs` row per page load. See migration 0015.
+    const saved = await service.save(current, companyId, {
+      provenance: { from: "pull", reportParams: { start_date: "2024-01-01" }, variant: "Cash" },
+      statementType: "profit_and_loss",
+      sourceKey: "quickbooks",
+      periodStart: "2024-01-01",
+      periodEnd: "2024-12-31",
+      payload: { Header: {} },
+    });
+    expect(saved.syncRunId).toBeNull();
+    expect(saved.documentId).toBeNull();
+  });
+
+  it("accepts the two report types that are not statements", async () => {
+    // A general ledger and an account list are what QuickBooks answers when
+    // asked, and the CHECK admitted only the five financial statements. See
+    // migration 0014 for why they live here rather than in a fourteenth table.
+    for (const statementType of ["general_ledger", "account_list"] as const) {
+      const saved = await service.save(current, companyId, {
+        provenance: { from: "pull", variant: null },
+        statementType,
+        sourceKey: "quickbooks",
+        periodStart: null,
+        periodEnd: null,
+        payload: { Rows: {} },
+      });
+      expect(saved.statementType).toBe(statementType);
+    }
+  });
+
   it("builds a tree that reaches the document and folder names", async () => {
     const documentId = await addDocument("BS 2024.pdf");
     await save(documentId);

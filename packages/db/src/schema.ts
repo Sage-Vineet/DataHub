@@ -810,9 +810,14 @@ export const statementExtracts = pgTable(
     uniqueIndex("uq_statement_extracts_from_pull")
       .on(t.companyId, t.pullKey)
       .where(sql`${t.pullKey} IS NOT NULL`),
+    // No row whose origin cannot be named. For a file that is the document;
+    // for a pull it is the pull key, together with `report_params` (the
+    // question asked) and `extracted_by` (who asked it). `sync_run_id` says
+    // WHICH RUN when there was one, which is extra rather than the identity —
+    // a report fetched on demand has no run. See migration 0015.
     check(
       "statement_extracts_provenance_check",
-      sql`${t.documentId} IS NOT NULL OR ${t.syncRunId} IS NOT NULL`,
+      sql`${t.documentId} IS NOT NULL OR ${t.pullKey} IS NOT NULL`,
     ),
     // A pulled statement has a key; a file-sourced one does not. A pull that
     // lost its key would silently start appending a row per sync.
@@ -822,7 +827,12 @@ export const statementExtracts = pgTable(
     ),
     check(
       "statement_extracts_type_check",
-      sql`${t.statementType} IN ('balance_sheet', 'profit_and_loss', 'cash_flow', 'bank_reconciliation', 'tax_return')`,
+      // The last two are not statements in the accounting sense — a general
+      // ledger is a transaction listing and an account list is a chart of
+      // accounts. They are here because a fourteenth table with identical
+      // columns would be worse than a table whose name is slightly wide. See
+      // migration 0014.
+      sql`${t.statementType} IN ('balance_sheet', 'profit_and_loss', 'cash_flow', 'bank_reconciliation', 'tax_return', 'general_ledger', 'account_list')`,
     ),
   ],
 );

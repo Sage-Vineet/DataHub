@@ -14,6 +14,13 @@ export const STATEMENT_TYPES = [
   "cash_flow",
   "bank_reconciliation",
   "tax_return",
+  // The last two are not statements in the accounting sense — a general ledger
+  // is a transaction listing and an account list is a chart of accounts. They
+  // are what QuickBooks answers when the Reports page asks, and they are held
+  // here because a second table with identical columns would be worse than a
+  // table whose name is slightly wide. See migration 0014.
+  "general_ledger",
+  "account_list",
 ] as const;
 
 export type StatementType = (typeof STATEMENT_TYPES)[number];
@@ -33,6 +40,10 @@ export const CATEGORY_OF_STATEMENT: Readonly<Record<StatementType, string | null
   cash_flow: null,
   bank_reconciliation: "bank_statement",
   tax_return: "tax_return",
+  general_ledger: "general_ledger",
+  // Pulled from QuickBooks rather than filed against a version, so no document
+  // is ever linked under it.
+  account_list: null,
 };
 
 export interface StatementExtract {
@@ -72,9 +83,23 @@ export type Provenance =
   | { from: "document"; documentId: string; uploadId?: string | null }
   | {
       from: "pull";
-      syncRunId: string;
+      /**
+       * The run that pulled it, when it was one.
+       *
+       * Optional because a report fetched on demand — somebody asked for a
+       * period no sync had covered — has no run behind it, and inventing a
+       * `sync_runs` row per page load would fill the run history with things
+       * nobody ran. The pull key is what names such a row; see migration 0015.
+       */
+      syncRunId?: string | null;
       datasetVersionId?: string | null;
       reportParams?: Record<string, unknown>;
+      /**
+       * What else makes this pull a different pull — the accounting basis, for
+       * a QuickBooks report. Without it the same period on two bases shares
+       * one key and the second replaces the first.
+       */
+      variant?: string | null;
     };
 
 export interface SaveExtractInput {
@@ -146,4 +171,43 @@ export interface StatementsRepository {
    * latest one this company happens to have".
    */
   documentsForVersion(versionId: string, category: string): Promise<string[]>;
+}
+
+/**
+ * The identity of a pulled statement, as one string.
+ *
+ * Pulling January twice is the same statement; pulling January and February is
+ * two. An absent period is spelled rather than left empty, so "no period" and
+ * "period starting nothing" cannot collide into the same key.
+ */
+export function pullKeyFor(input: {
+  sourceKey: string;
+  statementType: string;
+  datasetVersionId: string | null;
+  periodStart: string | null;
+  periodEnd: string | null;
+  /**
+   * What else makes this pull a different pull.
+   *
+   * The accounting basis, for a QuickBooks report. Without it the same period
+   * on a cash basis and on an accrual basis share one key, so the second pull
+   * REPLACES the first — and the page then shows whichever basis was fetched
+   * most recently, with nothing on screen to say which. The two reports have
+   * the same shape and the same accounts and different numbers, so there is no
+   * way to notice from the figures.
+   *
+   * Caller-supplied and explicit rather than a hash of `report_params`: a hash
+   * would make every incidental parameter part of the identity, so adding one
+   * would silently start duplicating rows instead of replacing them.
+   */
+  variant?: string | null;
+}): string {
+  return [
+    input.sourceKey,
+    input.statementType,
+    input.datasetVersionId ?? "no-dataset",
+    input.periodStart ?? "no-start",
+    input.periodEnd ?? "no-end",
+    input.variant ?? "no-variant",
+  ].join("|");
 }

@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type {
-  ListFilter,
-  SaveExtractInput,
-  SourceTreeEntry,
-  StatementExtract,
-  StatementsRepository,
+import {
+  pullKeyFor,
+  type ListFilter,
+  type SaveExtractInput,
+  type SourceTreeEntry,
+  type StatementExtract,
+  type StatementsRepository,
 } from "./ports.js";
 
 /**
@@ -43,19 +44,27 @@ export class InMemoryStatementsRepository implements StatementsRepository {
    * keyed both the same way would let a test prove a replacement the database
    * would not perform.
    */
+  /**
+   * What makes two saves the same statement.
+   *
+   * The pull half delegates to `pullKeyFor` rather than restating it. A fake
+   * that spells the identity itself is a fake that drifts: this one already
+   * had, missing the variant that keeps a cash-basis report from replacing an
+   * accrual one — so a test could pass here and the same code lose a row
+   * against the real store.
+   */
   private key(companyId: string, input: SaveExtractInput): string {
     if (input.provenance.from === "document") {
       return `${companyId}:doc:${input.provenance.documentId}:${input.statementType}`;
     }
-    return [
-      companyId,
-      "pull",
-      input.sourceKey,
-      input.statementType,
-      input.provenance.datasetVersionId ?? "no-dataset",
-      input.periodStart ?? "no-start",
-      input.periodEnd ?? "no-end",
-    ].join(":");
+    return `${companyId}:pull:${pullKeyFor({
+      sourceKey: input.sourceKey,
+      statementType: input.statementType,
+      datasetVersionId: input.provenance.datasetVersionId ?? null,
+      periodStart: input.periodStart,
+      periodEnd: input.periodEnd,
+      variant: input.provenance.variant ?? null,
+    })}`;
   }
 
   private mine(companyId: string): StatementExtract[] {
@@ -120,7 +129,7 @@ export class InMemoryStatementsRepository implements StatementsRepository {
         : {
             documentId: null,
             uploadId: null,
-            syncRunId: p.syncRunId,
+            syncRunId: p.syncRunId ?? null,
             datasetVersionId: p.datasetVersionId ?? null,
             reportParams: p.reportParams ?? {},
           };

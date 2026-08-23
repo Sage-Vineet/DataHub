@@ -24,8 +24,10 @@
 --   packages/db/migrations/0011_statement_extracts_pulled.sql
 --   packages/db/migrations/0012_gl_import_mappings.sql
 --   packages/db/migrations/0013_tax_reconciliation_overrides.sql
+--   packages/db/migrations/0014_statement_extracts_report_types.sql
+--   packages/db/migrations/0015_statement_extracts_pull_without_run.sql
 --
--- source-sha256: 6bc72b2b744e986a815149fb084adeb3d7b58956deb78aa8ef89f109470615b9
+-- source-sha256: 71412b111317c172fb48b4b87acc8b6a6cac6a7484daadad045ed823b0e82b29
 --
 -- PostgreSQL database dump
 --
@@ -1692,9 +1694,9 @@ CREATE TABLE public.statement_extracts (
     dataset_version_id uuid,
     report_params jsonb DEFAULT '{}'::jsonb NOT NULL,
     pull_key text,
-    CONSTRAINT statement_extracts_provenance_check CHECK (((document_id IS NOT NULL) OR (sync_run_id IS NOT NULL))),
+    CONSTRAINT statement_extracts_provenance_check CHECK (((document_id IS NOT NULL) OR (pull_key IS NOT NULL))),
     CONSTRAINT statement_extracts_pull_key_check CHECK (((document_id IS NULL) = (pull_key IS NOT NULL))),
-    CONSTRAINT statement_extracts_type_check CHECK ((statement_type = ANY (ARRAY['balance_sheet'::text, 'profit_and_loss'::text, 'cash_flow'::text, 'bank_reconciliation'::text, 'tax_return'::text])))
+    CONSTRAINT statement_extracts_type_check CHECK ((statement_type = ANY (ARRAY['balance_sheet'::text, 'profit_and_loss'::text, 'cash_flow'::text, 'bank_reconciliation'::text, 'tax_return'::text, 'general_ledger'::text, 'account_list'::text])))
 );
 
 --

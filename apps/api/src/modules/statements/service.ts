@@ -203,9 +203,16 @@ export class StatementsService {
     if (input.provenance.from === "document" && !input.provenance.documentId) {
       throw new BadRequestError("Missing documentId.");
     }
-    if (input.provenance.from === "pull" && !input.provenance.syncRunId) {
-      // Provenance is never nothing: a statement whose origin cannot be named
-      // is a number on a screen nobody can check.
+    if (
+      input.provenance.from === "pull" &&
+      input.provenance.syncRunId !== undefined &&
+      input.provenance.syncRunId !== null &&
+      input.provenance.syncRunId === ""
+    ) {
+      // An empty string is a caller that meant to name a run and lost the id
+      // somewhere. `undefined` is different and legitimate: a report fetched
+      // on demand has no run behind it, and its origin is named by the pull
+      // key, the report params and who asked. See migration 0015.
       throw new BadRequestError("Missing syncRunId.");
     }
 

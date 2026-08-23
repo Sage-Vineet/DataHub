@@ -4,10 +4,15 @@ import helmet from "helmet";
 import { pinoHttp } from "pino-http";
 import { HttpError } from "../../shared/errors.js";
 import { withCommonMiddleware } from "../../shared/router.js";
+import { QuickBooksAuthError, QuickBooksRequestError, type QbReportType } from "./reports/client.js";
+import type { QuickBooksReportsService } from "./reports/service.js";
+import type { QuickBooksSyncStatusService } from "./reports/status.js";
 import type { QuickBooksService } from "./service.js";
 
 export interface QuickBooksRouterDeps {
   service: QuickBooksService;
+  reports: QuickBooksReportsService;
+  syncStatus: QuickBooksSyncStatusService;
   requireAuth: RequestHandler;
 }
 
@@ -22,7 +27,7 @@ export interface QuickBooksRouterDeps {
  * `withCommonMiddleware` leaves possible.
  */
 export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
-  const { service, requireAuth } = deps;
+  const { service, reports, syncStatus, requireAuth } = deps;
   const router = express.Router();
   withCommonMiddleware(router, [helmet(), pinoHttp(), express.json(), requireAuth]);
 
@@ -30,6 +35,18 @@ export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
     (fn: (req: Request, res: Response) => Promise<void>): RequestHandler =>
     (req, res, next) =>
       fn(req, res).catch((err: unknown) => {
+        if (err instanceof QuickBooksAuthError) {
+          // 401, not 500: the fix is "reconnect QuickBooks", and a 500 sends
+          // somebody looking for a fault in the report instead.
+          res.status(401).json({ success: false, error: err.message, reconnectRequired: true });
+          return;
+        }
+        if (err instanceof QuickBooksRequestError) {
+          // 502: Intuit answered, and answered badly. Distinct from a fault
+          // here, which is what a 500 would claim.
+          res.status(502).json({ success: false, error: err.message });
+          return;
+        }
         if (err instanceof HttpError) {
           res.status(err.status).json({ success: false, error: err.message });
           return;
@@ -58,6 +75,70 @@ export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
    */
   router.get("/api/auth/disconnect", handle(async (req, res) => {
     res.json({ success: true, ...(await service.disconnect(req.user!, companyOf(req))) });
+  }));
+
+  /**
+   * The five report routes.
+   *
+   * Legacy had these as five near-identical handlers of roughly 150 lines
+   * each, and they had drifted — only two of the five checked the accounting
+   * basis before serving a cached report. One handler, five paths, because the
+   * only thing that differs between them is which report to ask for.
+   *
+   * The paths stay as legacy spelled them, including `/all-reports`, which
+   * despite its name returns exactly one report: the account list. Renaming it
+   * during a port means changing the caller too, and the name is the SPA's
+   * problem to stop using rather than this module's to fix silently.
+   */
+  const REPORT_ROUTES: ReadonlyArray<{
+    path: string;
+    type: QbReportType;
+    /**
+     * A key to nest the payload under, where the caller expects one.
+     *
+     * Only `/all-reports` has this, and it is a wart being carried rather than
+     * a design. The SPA reads that response through eight fallback paths —
+     * `report.accountList`, `payload.accountList`, `payload.data.accountList`,
+     * `payload.data.data.accountList`, each also spelled `AccountList` — which
+     * is what happens when a shape is never settled. Serving the bare payload
+     * would be a NINTH shape and match none of the eight, so the wrapper stays
+     * until the caller is fixed.
+     */
+    wrapAs?: string;
+  }> = [
+    { path: "/balance-sheet", type: "balance_sheet" },
+    { path: "/profit-and-loss-statement", type: "profit_and_loss" },
+    { path: "/qb-cashflow", type: "cash_flow" },
+    { path: "/general-ledger", type: "general_ledger" },
+    { path: "/all-reports", type: "account_list", wrapAs: "accountList" },
+  ];
+
+  for (const { path, type, wrapAs } of REPORT_ROUTES) {
+    router.get(path, handle(async (req, res) => {
+      const served = await reports.serve(
+        req.user!,
+        companyOf(req),
+        type,
+        req.query as Record<string, unknown>,
+      );
+      res.json({
+        success: true,
+        ...served,
+        ...(wrapAs ? { data: { [wrapAs]: served.data } } : {}),
+      });
+    }));
+  }
+
+  /**
+   * The state of the QuickBooks sync.
+   *
+   * Legacy read this from four tables that do not exist — `sync_metadata`,
+   * `sync_jobs`, `finalized_datasets` and `qb_synced_reports` — so it has been
+   * answering nothing. Composed here from the run, the active dataset version,
+   * and what is actually held.
+   */
+  router.get("/api/quickbooks/sync-status", handle(async (req, res) => {
+    res.json({ success: true, ...(await syncStatus.status(req.user!, companyOf(req))) });
   }));
 
   return router;
