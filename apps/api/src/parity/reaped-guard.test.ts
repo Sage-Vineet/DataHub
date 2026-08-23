@@ -36,7 +36,12 @@ describe("modules that own reaped routes", () => {
       message = (err as Error).message;
     }
     expect(message).toContain("REPORTS_MODULE_ENABLED=true");
-    expect(message).toMatch(/\/reports\//);
+
+    // Quotes real routes rather than a placeholder — checked against the
+    // reaped set rather than a hardcoded path, which goes stale as the reaping
+    // order changes.
+    const quoted = [...reapedRoutes()].filter((route) => message.includes(route));
+    expect(quoted.length).toBeGreaterThan(0);
   });
 
   it("starts cleanly with every module on", () => {

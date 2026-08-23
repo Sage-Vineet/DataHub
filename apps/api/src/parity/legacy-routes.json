@@ -1,7 +1,6 @@
 [
   "DELETE /bank-reconciliation-addback-items/:p",
   "DELETE /key-reports/mappings/:p",
-  "DELETE /key-reports/versions/:p",
   "GET /all-reports",
   "GET /api/auth/callback",
   "GET /api/auth/disconnect",
@@ -19,8 +18,6 @@
   "GET /invoices",
   "GET /invoices/doc/:p",
   "GET /key-reports/popup-preference",
-  "GET /key-reports/versions",
-  "GET /key-reports/versions/:p",
   "GET /key-reports/versions/:p/extracted-data",
   "GET /key-reports/versions/:p/mappings",
   "GET /key-reports/versions/:p/sync-logs",
@@ -62,10 +59,7 @@
   "POST /bank-reconciliation-addback-items",
   "POST /bank-reconciliation-adjustments",
   "POST /customers",
-  "POST /key-reports/versions",
-  "POST /key-reports/versions/:p/activate",
   "POST /key-reports/versions/:p/chart-of-accounts/regenerate",
-  "POST /key-reports/versions/:p/duplicate",
   "POST /key-reports/versions/:p/mappings",
   "POST /key-reports/versions/:p/sync",
   "POST /manual-gl/dataset-versions/:p/activate",
@@ -79,7 +73,6 @@
   "PUT /api/invoices/:p",
   "PUT /bank-reconciliation-addback-items/:p",
   "PUT /key-reports/popup-preference",
-  "PUT /key-reports/versions/:p",
   "PUT /manual-report-uploads/tax-reconciliation-overrides",
   "PUT /report-sources/selected"
 ]
