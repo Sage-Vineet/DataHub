@@ -45,7 +45,7 @@ const save = (
   over: Record<string, unknown> = {},
 ) =>
   service.save(user, COMPANY, {
-    documentId,
+    provenance: { from: "document", documentId },
     statementType: "balance_sheet",
     payload: { rows: [{ name: "Cash", amount: 100 }] },
     asOfDate: "2024-12-31",
@@ -154,7 +154,10 @@ describe("recording an extract", () => {
   it("refuses an extract that names no document", async () => {
     const { service } = make();
     await expect(
-      service.save(session(), COMPANY, { documentId: "", statementType: "balance_sheet" }),
+      service.save(session(), COMPANY, {
+        provenance: { from: "document", documentId: "" },
+        statementType: "balance_sheet",
+      }),
     ).rejects.toBeInstanceOf(BadRequestError);
   });
 });

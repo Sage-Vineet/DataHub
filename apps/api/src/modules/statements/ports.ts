@@ -38,8 +38,14 @@ export const CATEGORY_OF_STATEMENT: Readonly<Record<StatementType, string | null
 export interface StatementExtract {
   id: string;
   companyId: string;
-  documentId: string;
+  /** Null when the statement came from an API pull rather than a file. */
+  documentId: string | null;
   documentName: string | null;
+  /** The run that pulled it, when it was pulled. */
+  syncRunId: string | null;
+  datasetVersionId: string | null;
+  /** What the API was asked, for a pulled statement. */
+  reportParams: Record<string, unknown>;
   statementType: string;
   uploadId: string | null;
   sourceKey: string;
@@ -52,11 +58,27 @@ export interface StatementExtract {
   updatedAt: string | null;
 }
 
+/**
+ * Where a statement came from.
+ *
+ * A discriminated union rather than four optional fields, so "a document but
+ * also a dataset version" and "neither" are both unrepresentable — the CHECK
+ * in the database says the same thing, and a type that could express what the
+ * database refuses is a runtime error waiting to be written.
+ */
+export type Provenance =
+  | { from: "document"; documentId: string; uploadId?: string | null }
+  | {
+      from: "pull";
+      syncRunId: string;
+      datasetVersionId?: string | null;
+      reportParams?: Record<string, unknown>;
+    };
+
 export interface SaveExtractInput {
   companyId: string;
-  documentId: string;
+  provenance: Provenance;
   statementType: StatementType;
-  uploadId: string | null;
   sourceKey: string;
   periodStart: string | null;
   periodEnd: string | null;

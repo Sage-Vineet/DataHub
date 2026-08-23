@@ -1,4 +1,4 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, sql } from "drizzle-orm";
 import { schema, type Db } from "@datahub/db";
 import type {
   ListFilter,
@@ -18,6 +18,9 @@ const SELECTION = {
   companyId: statementExtracts.companyId,
   documentId: statementExtracts.documentId,
   documentName: documents.name,
+  syncRunId: statementExtracts.syncRunId,
+  datasetVersionId: statementExtracts.datasetVersionId,
+  reportParams: statementExtracts.reportParams,
   statementType: statementExtracts.statementType,
   uploadId: statementExtracts.uploadId,
   sourceKey: statementExtracts.sourceKey,
@@ -34,12 +37,38 @@ type Selected = {
   [K in keyof typeof SELECTION]: K extends keyof Row ? Row[K] : string | null;
 };
 
+/**
+ * The identity of a pulled statement, as one string.
+ *
+ * Pulling January twice is the same statement; pulling January and February is
+ * two. An absent period is spelled rather than left empty, so "no period" and
+ * "period starting nothing" cannot collide into the same key.
+ */
+export function pullKeyFor(input: {
+  sourceKey: string;
+  statementType: string;
+  datasetVersionId: string | null;
+  periodStart: string | null;
+  periodEnd: string | null;
+}): string {
+  return [
+    input.sourceKey,
+    input.statementType,
+    input.datasetVersionId ?? "no-dataset",
+    input.periodStart ?? "no-start",
+    input.periodEnd ?? "no-end",
+  ].join("|");
+}
+
 function toExtract(row: Selected): StatementExtract {
   return {
     id: row.id,
     companyId: row.companyId,
-    documentId: row.documentId,
+    documentId: row.documentId ?? null,
     documentName: row.documentName ?? null,
+    syncRunId: row.syncRunId ?? null,
+    datasetVersionId: row.datasetVersionId ?? null,
+    reportParams: (row.reportParams ?? {}) as Record<string, unknown>,
     statementType: row.statementType,
     uploadId: row.uploadId ?? null,
     sourceKey: row.sourceKey,
@@ -57,10 +86,12 @@ export class DrizzleStatementsRepository implements StatementsRepository {
   constructor(private readonly db: Db) {}
 
   private base() {
+    // LEFT, not INNER: a statement pulled from an API has no document, and an
+    // inner join would silently drop every one of them.
     return this.db
       .select(SELECTION)
       .from(statementExtracts)
-      .innerJoin(documents, eq(documents.id, statementExtracts.documentId));
+      .leftJoin(documents, eq(documents.id, statementExtracts.documentId));
   }
 
   async list(companyId: string, filter: ListFilter): Promise<StatementExtract[]> {
@@ -124,46 +155,87 @@ export class DrizzleStatementsRepository implements StatementsRepository {
   }
 
   async save(input: SaveExtractInput): Promise<StatementExtract> {
-    // Re-extracting the same statement from the same file replaces it. The
-    // alternative is a pile of near-identical rows where "latest" is whichever
-    // extraction ran last, which is not a fact about the company's finances.
-    const [row] = await this.db
-      .insert(statementExtracts)
-      .values({
-        companyId: input.companyId,
-        documentId: input.documentId,
-        statementType: input.statementType,
-        uploadId: input.uploadId,
-        sourceKey: input.sourceKey,
-        periodStart: input.periodStart,
-        periodEnd: input.periodEnd,
-        asOfDate: input.asOfDate,
-        fiscalYear: input.fiscalYear,
-        payload: input.payload,
-        extractedBy: input.extractedBy,
-      })
-      .onConflictDoUpdate({
-        target: [
-          statementExtracts.companyId,
-          statementExtracts.documentId,
-          statementExtracts.statementType,
-        ],
-        set: {
-          uploadId: input.uploadId,
-          sourceKey: input.sourceKey,
-          periodStart: input.periodStart,
-          periodEnd: input.periodEnd,
-          asOfDate: input.asOfDate,
-          fiscalYear: input.fiscalYear,
-          payload: input.payload,
-          extractedBy: input.extractedBy,
-          // Bumped so "latest" means the most recent EXTRACTION, not the first
-          // time this document was ever seen.
-          extractedAt: new Date(),
-          updatedAt: new Date(),
-        },
-      })
-      .returning({ id: statementExtracts.id });
+    const provenance =
+      input.provenance.from === "document"
+        ? {
+            documentId: input.provenance.documentId,
+            uploadId: input.provenance.uploadId ?? null,
+            syncRunId: null,
+            datasetVersionId: null,
+            reportParams: {},
+            pullKey: null,
+          }
+        : {
+            documentId: null,
+            uploadId: null,
+            syncRunId: input.provenance.syncRunId,
+            datasetVersionId: input.provenance.datasetVersionId ?? null,
+            reportParams: input.provenance.reportParams ?? {},
+            pullKey: pullKeyFor({
+              sourceKey: input.sourceKey,
+              statementType: input.statementType,
+              datasetVersionId: input.provenance.datasetVersionId ?? null,
+              periodStart: input.periodStart,
+              periodEnd: input.periodEnd,
+            }),
+          };
+
+    const common = {
+      sourceKey: input.sourceKey,
+      periodStart: input.periodStart,
+      periodEnd: input.periodEnd,
+      asOfDate: input.asOfDate,
+      fiscalYear: input.fiscalYear,
+      payload: input.payload,
+      extractedBy: input.extractedBy,
+      // Bumped so "latest" means the most recent EXTRACTION, not the first
+      // time this document or period was seen.
+      extractedAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    // Re-obtaining the same statement replaces it. The alternative is a pile
+    // of near-identical rows where "latest" is whichever run finished last,
+    // which is not a fact about the company's finances.
+    //
+    // The conflict target differs by provenance because the identity does: one
+    // extract per statement per FILE, and for a pull one per period per
+    // dataset version. Two partial indexes back these; naming the wrong one
+    // would insert a duplicate rather than replace.
+    const [row] =
+      input.provenance.from === "document"
+        ? await this.db
+            .insert(statementExtracts)
+            .values({
+              companyId: input.companyId,
+              statementType: input.statementType,
+              ...provenance,
+              ...common,
+            })
+            .onConflictDoUpdate({
+              target: [
+                statementExtracts.companyId,
+                statementExtracts.documentId,
+                statementExtracts.statementType,
+              ],
+              targetWhere: sql`${statementExtracts.documentId} IS NOT NULL`,
+              set: { ...provenance, ...common },
+            })
+            .returning({ id: statementExtracts.id })
+        : await this.db
+            .insert(statementExtracts)
+            .values({
+              companyId: input.companyId,
+              statementType: input.statementType,
+              ...provenance,
+              ...common,
+            })
+            .onConflictDoUpdate({
+              target: [statementExtracts.companyId, statementExtracts.pullKey],
+              targetWhere: sql`${statementExtracts.pullKey} IS NOT NULL`,
+              set: { ...provenance, ...common },
+            })
+            .returning({ id: statementExtracts.id });
 
     const saved = await this.getById(input.companyId, row!.id);
     // The row was just written inside this call; a null here would mean the
@@ -183,7 +255,13 @@ export class DrizzleStatementsRepository implements StatementsRepository {
     companyId: string,
     filter: { sourceKey?: string },
   ): Promise<SourceTreeEntry[]> {
-    const clauses = [eq(statementExtracts.companyId, companyId)];
+    // Only file-sourced statements. The tree is a picture of what somebody
+    // UPLOADED; a statement pulled from an API has no document to sit under,
+    // and putting it in one would invent a file that does not exist.
+    const clauses = [
+      eq(statementExtracts.companyId, companyId),
+      isNotNull(statementExtracts.documentId),
+    ];
     if (filter.sourceKey) clauses.push(eq(statementExtracts.sourceKey, filter.sourceKey));
 
     const rows = await this.db
@@ -208,12 +286,16 @@ export class DrizzleStatementsRepository implements StatementsRepository {
     // number of statements a company has uploaded, which is tens.
     const byDocument = new Map<string, SourceTreeEntry>();
     for (const row of rows) {
-      let entry = byDocument.get(row.documentId);
+      // The WHERE clause guarantees this, but the type does not know it.
+      const documentId = row.documentId;
+      if (documentId === null) continue;
+
+      let entry = byDocument.get(documentId);
       if (!entry) {
         byDocument.set(
-          row.documentId,
+          documentId,
           (entry = {
-            documentId: row.documentId,
+            documentId,
             documentName: row.documentName ?? null,
             folderName: row.folderName ?? null,
             uploadedAt: row.uploadedAt ? row.uploadedAt.toISOString() : null,

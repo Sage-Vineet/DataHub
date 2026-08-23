@@ -4,6 +4,7 @@ import helmet from "helmet";
 import { pinoHttp } from "pino-http";
 import { HttpError } from "../../shared/errors.js";
 import { withCommonMiddleware } from "../../shared/router.js";
+import type { StatementExtract } from "./ports.js";
 import type { StatementsService } from "./service.js";
 
 export interface StatementsRouterDeps {
@@ -49,27 +50,18 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
   const str = (value: unknown): string | undefined =>
     typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
 
-  const asView = (extract: {
-    id: string;
-    documentId: string;
-    documentName: string | null;
-    statementType: string;
-    sourceKey: string;
-    periodStart: string | null;
-    periodEnd: string | null;
-    asOfDate: string | null;
-    fiscalYear: number | null;
-    payload: Record<string, unknown>;
-    extractedAt: string | null;
-    updatedAt: string | null;
-  }) => ({
+  const asView = (extract: StatementExtract) => ({
     success: true,
     source: extract.sourceKey,
     statementType: extract.statementType,
-    // Which file this came out of. Legacy did not report it, so a reader who
-    // doubted a figure had no way back to the document.
+    // Where this came from. Legacy reported neither, so a reader who doubted a
+    // figure had no way back to the file it was read out of — or, for a pulled
+    // statement, to the run that pulled it and the question it was asked.
     documentId: extract.documentId,
     documentName: extract.documentName,
+    syncRunId: extract.syncRunId,
+    datasetVersionId: extract.datasetVersionId,
+    reportParams: extract.reportParams,
     extractId: extract.id,
     data: extract.payload,
     periodStart: extract.periodStart,

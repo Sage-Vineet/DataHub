@@ -6,6 +6,7 @@ import {
   STATEMENT_TYPES,
   type SourceTreeEntry,
   type StatementExtract,
+  type Provenance,
   type StatementType,
   type StatementsRepository,
 } from "./ports.js";
@@ -142,9 +143,9 @@ export class StatementsService {
     user: SessionUser,
     companyId: string,
     input: {
-      documentId: string;
+      /** Where it came from. One of a file, or the run that pulled it. */
+      provenance: Provenance;
       statementType: string;
-      uploadId?: string | null;
       sourceKey?: string;
       periodStart?: string | null;
       periodEnd?: string | null;
@@ -155,7 +156,14 @@ export class StatementsService {
   ): Promise<StatementExtract> {
     this.requireCompany(user, companyId);
     const type = this.requireType(input.statementType);
-    if (!input.documentId) throw new BadRequestError("Missing documentId.");
+    if (input.provenance.from === "document" && !input.provenance.documentId) {
+      throw new BadRequestError("Missing documentId.");
+    }
+    if (input.provenance.from === "pull" && !input.provenance.syncRunId) {
+      // Provenance is never nothing: a statement whose origin cannot be named
+      // is a number on a screen nobody can check.
+      throw new BadRequestError("Missing syncRunId.");
+    }
 
     const periodEnd = input.periodEnd ?? null;
     const asOfDate = input.asOfDate ?? null;
@@ -166,9 +174,8 @@ export class StatementsService {
 
     return this.deps.repo.save({
       companyId,
-      documentId: input.documentId,
+      provenance: input.provenance,
       statementType: type,
-      uploadId: input.uploadId ?? null,
       sourceKey: input.sourceKey || "manual_upload_excel_pdf",
       periodStart: input.periodStart ?? null,
       periodEnd,

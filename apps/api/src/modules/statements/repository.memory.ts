@@ -35,8 +35,27 @@ export class InMemoryStatementsRepository implements StatementsRepository {
     return `2024-01-01T00:00:${String(this.clock++).padStart(2, "0")}.000Z`;
   }
 
-  private key(companyId: string, documentId: string, statementType: string): string {
-    return `${companyId}:${documentId}:${statementType}`;
+  /**
+   * The identity of a stored extract.
+   *
+   * Mirrors the two partial unique indexes: per FILE for a document-sourced
+   * statement, per period and dataset version for a pulled one. A fake that
+   * keyed both the same way would let a test prove a replacement the database
+   * would not perform.
+   */
+  private key(companyId: string, input: SaveExtractInput): string {
+    if (input.provenance.from === "document") {
+      return `${companyId}:doc:${input.provenance.documentId}:${input.statementType}`;
+    }
+    return [
+      companyId,
+      "pull",
+      input.sourceKey,
+      input.statementType,
+      input.provenance.datasetVersionId ?? "no-dataset",
+      input.periodStart ?? "no-start",
+      input.periodEnd ?? "no-end",
+    ].join(":");
   }
 
   private mine(companyId: string): StatementExtract[] {
@@ -75,20 +94,44 @@ export class InMemoryStatementsRepository implements StatementsRepository {
     documentId: string,
     statementType: string,
   ): Promise<StatementExtract | null> {
-    return Promise.resolve(this.extracts.get(this.key(companyId, documentId, statementType)) ?? null);
+    return Promise.resolve(
+      this.extracts.get(`${companyId}:doc:${documentId}:${statementType}`) ?? null,
+    );
   }
 
   save(input: SaveExtractInput): Promise<StatementExtract> {
-    const key = this.key(input.companyId, input.documentId, input.statementType);
+    const key = this.key(input.companyId, input);
     const existing = this.extracts.get(key);
-    const document = this.documentNames.get(input.documentId);
+
+    // Destructured through the discriminant so each branch reads only the
+    // fields its own case has.
+    const p = input.provenance;
+    const provenance =
+      p.from === "document"
+        ? {
+            documentId: p.documentId,
+            uploadId: p.uploadId ?? null,
+            syncRunId: null,
+            datasetVersionId: null,
+            reportParams: {} as Record<string, unknown>,
+          }
+        : {
+            documentId: null,
+            uploadId: null,
+            syncRunId: p.syncRunId,
+            datasetVersionId: p.datasetVersionId ?? null,
+            reportParams: p.reportParams ?? {},
+          };
+    const document = provenance.documentId
+      ? this.documentNames.get(provenance.documentId)
+      : undefined;
+
     const record: StatementExtract = {
       id: existing?.id ?? randomUUID(),
       companyId: input.companyId,
-      documentId: input.documentId,
       documentName: document?.name ?? null,
+      ...provenance,
       statementType: input.statementType,
-      uploadId: input.uploadId,
       sourceKey: input.sourceKey,
       periodStart: input.periodStart,
       periodEnd: input.periodEnd,
@@ -119,14 +162,18 @@ export class InMemoryStatementsRepository implements StatementsRepository {
     const rows = await this.list(companyId, filter);
     const byDocument = new Map<string, SourceTreeEntry>();
     for (const row of rows) {
-      let entry = byDocument.get(row.documentId);
+      // The tree is a picture of uploaded FILES; a pulled statement has none.
+      if (row.documentId === null) continue;
+      const documentId = row.documentId;
+
+      let entry = byDocument.get(documentId);
       if (!entry) {
         byDocument.set(
-          row.documentId,
+          documentId,
           (entry = {
-            documentId: row.documentId,
+            documentId,
             documentName: row.documentName,
-            folderName: this.documentNames.get(row.documentId)?.folder ?? null,
+            folderName: this.documentNames.get(documentId)?.folder ?? null,
             uploadedAt: null,
             statements: [],
           }),

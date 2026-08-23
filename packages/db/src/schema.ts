@@ -724,9 +724,26 @@ export const statementExtracts = pgTable(
     companyId: uuid("company_id")
       .notNull()
       .references(() => companies.id, { onDelete: "cascade" }),
-    documentId: uuid("document_id")
-      .notNull()
-      .references(() => documents.id, { onDelete: "cascade" }),
+    /**
+     * The file it was read out of — null when it came from an API pull instead.
+     * A row must have this or `syncRunId`; provenance is never nothing.
+     */
+    documentId: uuid("document_id").references(() => documents.id, { onDelete: "cascade" }),
+    /** The run that pulled it, for a statement that came from an API. */
+    syncRunId: uuid("sync_run_id").references(() => syncRuns.id, { onDelete: "set null" }),
+    /** Which import it belongs to, so switching dataset version switches these. */
+    datasetVersionId: uuid("dataset_version_id").references(() => datasetVersions.id, {
+      onDelete: "cascade",
+    }),
+    /** What the API was asked. Kept so a surprising figure can be traced. */
+    reportParams: jsonb("report_params").notNull().default({}),
+    /**
+     * The identity of a PULLED statement, as one string: source, type, dataset
+     * version and period. Null for one read out of a file. Built by the writer
+     * so the identity is legible in one place — see migration 0011 for why not
+     * an expression index.
+     */
+    pullKey: text("pull_key"),
     /** balance_sheet | profit_and_loss | cash_flow | bank_reconciliation | tax_return */
     statementType: text("statement_type").notNull(),
     uploadId: uuid("upload_id").references(() => uploads.id, { onDelete: "set null" }),
@@ -749,16 +766,30 @@ export const statementExtracts = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    uniqueIndex("uq_statement_extracts_document_type").on(
-      t.companyId,
-      t.documentId,
-      t.statementType,
-    ),
+    // Two partial indexes, because the identity genuinely differs by
+    // provenance: one extract per statement per FILE, and for a pull one per
+    // period per dataset version. See migration 0011.
+    uniqueIndex("uq_statement_extracts_from_document")
+      .on(t.companyId, t.documentId, t.statementType)
+      .where(sql`${t.documentId} IS NOT NULL`),
     index("idx_statement_extracts_latest").on(
       t.companyId,
       t.sourceKey,
       t.statementType,
       t.extractedAt,
+    ),
+    uniqueIndex("uq_statement_extracts_from_pull")
+      .on(t.companyId, t.pullKey)
+      .where(sql`${t.pullKey} IS NOT NULL`),
+    check(
+      "statement_extracts_provenance_check",
+      sql`${t.documentId} IS NOT NULL OR ${t.syncRunId} IS NOT NULL`,
+    ),
+    // A pulled statement has a key; a file-sourced one does not. A pull that
+    // lost its key would silently start appending a row per sync.
+    check(
+      "statement_extracts_pull_key_check",
+      sql`(${t.documentId} IS NULL) = (${t.pullKey} IS NOT NULL)`,
     ),
     check(
       "statement_extracts_type_check",

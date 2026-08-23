@@ -92,7 +92,7 @@ async function addDocument(name: string): Promise<string> {
 
 const save = (documentId: string, over: Record<string, unknown> = {}) =>
   service.save(current, companyId, {
-    documentId,
+    provenance: { from: "document", documentId },
     statementType: "balance_sheet",
     payload: { rows: [{ name: "Cash", amount: 100 }] },
     asOfDate: "2024-12-31",
@@ -283,5 +283,132 @@ describe("statement extracts (real Postgres)", () => {
     const found = await repo.getById(companyId, saved.id);
     expect(found?.documentName).toBe("BS 2024.pdf");
     expect(found?.payload).toEqual({ rows: [{ name: "Cash", amount: 100 }] });
+  });
+});
+
+/**
+ * Statements that came from an API pull rather than a file.
+ *
+ * `report_snapshots` and `reporting_snapshots` were two more absent tables
+ * holding this same thing. The only real difference from a file-sourced
+ * statement is provenance, so they share a table — and these tests are about
+ * the two places that difference actually shows: the identity of a row, and
+ * what the source tree is a picture of.
+ */
+describe("pulled statements (real Postgres)", () => {
+  /**
+   * A completed pull.
+   *
+   * The run is finished before the next one starts, because `sync_runs` permits
+   * exactly one unfinished run per company and source — a real pull finishes,
+   * and a helper that left them open would be testing against a state the
+   * system does not reach.
+   */
+  const pull = async (over: Record<string, unknown> = {}) => {
+    const [run] = await db
+      .insert(schema.syncRuns)
+      .values({
+        companyId,
+        sourceKey: "quickbooks_online",
+        status: "completed",
+        finishedAt: new Date(),
+      })
+      .returning();
+    return service.save(current, companyId, {
+      provenance: { from: "pull", syncRunId: run!.id, reportParams: { accountingMethod: "Accrual" } },
+      statementType: "balance_sheet",
+      sourceKey: "quickbooks_online",
+      periodStart: "2024-01-01",
+      periodEnd: "2024-12-31",
+      payload: { rows: [{ name: "Cash", amount: 500 }] },
+      ...over,
+    });
+  };
+
+  it("stores one with no document, and names the run instead", async () => {
+    const saved = await pull();
+    expect(saved.documentId).toBeNull();
+    expect(saved.syncRunId).not.toBeNull();
+    expect(saved.reportParams).toEqual({ accountingMethod: "Accrual" });
+  });
+
+  it("replaces when the same period is pulled again", async () => {
+    // Pulling January twice is the same statement.
+    await pull({ payload: { rows: [] } });
+    await pull({ payload: { rows: [{ name: "Cash", amount: 999 }] } });
+
+    const rows = await db.select().from(schema.statementExtracts);
+    expect(rows).toHaveLength(1);
+    expect((rows[0]!.payload as { rows: unknown[] }).rows).toEqual([
+      { name: "Cash", amount: 999 },
+    ]);
+  });
+
+  it("keeps a different period as a different statement", async () => {
+    // Pulling January and February is two.
+    await pull();
+    await pull({ periodStart: "2023-01-01", periodEnd: "2023-12-31" });
+    expect(await db.select().from(schema.statementExtracts)).toHaveLength(2);
+  });
+
+  it("refuses a row with no provenance at all", async () => {
+    // A statement whose origin cannot be named is a number nobody can check.
+    await expect(
+      db.insert(schema.statementExtracts).values({
+        companyId,
+        statementType: "balance_sheet",
+        payload: {},
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("refuses a pulled row with no pull key", async () => {
+    // A pull that lost its key would silently append a row per sync.
+    const [run] = await db
+      .insert(schema.syncRuns)
+      .values({ companyId, sourceKey: "quickbooks_online", status: "running" })
+      .returning();
+    await expect(
+      db.insert(schema.statementExtracts).values({
+        companyId,
+        syncRunId: run!.id,
+        statementType: "balance_sheet",
+        payload: {},
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("serves it over HTTP alongside file-sourced ones", async () => {
+    await pull();
+    const res = await request(app)
+      .get("/manual-report-uploads/reports/balance_sheet/latest?sourceKey=quickbooks_online")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+
+    expect(res.body.data).toEqual({ rows: [{ name: "Cash", amount: 500 }] });
+    expect(res.body.documentId).toBeNull();
+    expect(res.body.syncRunId).not.toBeNull();
+  });
+
+  it("stays out of the source tree, which is a picture of uploaded files", async () => {
+    const documentId = await addDocument("BS 2024.pdf");
+    await save(documentId);
+    await pull();
+
+    const res = await request(app)
+      .get("/manual-report-uploads/source-tree")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    // One entry, for the file. The pull has no document to sit under, and
+    // inventing one would put a file on screen that does not exist.
+    expect(res.body.tree).toHaveLength(1);
+    expect(res.body.tree[0].documentName).toBe("BS 2024.pdf");
+  });
+
+  it("does not collide with a file-sourced statement of the same type", async () => {
+    const documentId = await addDocument("BS 2024.pdf");
+    await save(documentId);
+    await pull();
+    expect(await db.select().from(schema.statementExtracts)).toHaveLength(2);
   });
 });

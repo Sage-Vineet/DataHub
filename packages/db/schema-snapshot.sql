@@ -21,8 +21,9 @@
 --   packages/db/migrations/0008_quickbooks_connections.sql
 --   packages/db/migrations/0009_sync_runs.sql
 --   packages/db/migrations/0010_dataset_versions.sql
+--   packages/db/migrations/0011_statement_extracts_pulled.sql
 --
--- source-sha256: 121a355abf3255bb32a37c9c0fb72b7c654faf7ab7604d89a15153abd6d1cddc
+-- source-sha256: e6299b24ed29f37e0b067513038f4946f2d1a4f9cec158d4aa9f4c5d4f1fe918
 --
 -- PostgreSQL database dump
 --
@@ -1656,7 +1657,7 @@ CREATE TABLE public.session (
 CREATE TABLE public.statement_extracts (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     company_id uuid NOT NULL,
-    document_id uuid NOT NULL,
+    document_id uuid,
     statement_type text NOT NULL,
     upload_id uuid,
     source_key text DEFAULT 'manual_upload_excel_pdf'::text NOT NULL,
@@ -1669,6 +1670,12 @@ CREATE TABLE public.statement_extracts (
     extracted_by uuid,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    sync_run_id uuid,
+    dataset_version_id uuid,
+    report_params jsonb DEFAULT '{}'::jsonb NOT NULL,
+    pull_key text,
+    CONSTRAINT statement_extracts_provenance_check CHECK (((document_id IS NOT NULL) OR (sync_run_id IS NOT NULL))),
+    CONSTRAINT statement_extracts_pull_key_check CHECK (((document_id IS NULL) = (pull_key IS NOT NULL))),
     CONSTRAINT statement_extracts_type_check CHECK ((statement_type = ANY (ARRAY['balance_sheet'::text, 'profit_and_loss'::text, 'cash_flow'::text, 'bank_reconciliation'::text, 'tax_return'::text])))
 );
 
@@ -3524,10 +3531,16 @@ CREATE UNIQUE INDEX uq_quickbooks_connections_company ON public.quickbooks_conne
 CREATE UNIQUE INDEX uq_quickbooks_connections_realm_live ON public.quickbooks_connections USING btree (realm_id) WHERE is_connected;
 
 --
--- Name: uq_statement_extracts_document_type; Type: INDEX; Schema: public; Owner: -
+-- Name: uq_statement_extracts_from_document; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX uq_statement_extracts_document_type ON public.statement_extracts USING btree (company_id, document_id, statement_type);
+CREATE UNIQUE INDEX uq_statement_extracts_from_document ON public.statement_extracts USING btree (company_id, document_id, statement_type) WHERE (document_id IS NOT NULL);
+
+--
+-- Name: uq_statement_extracts_from_pull; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_statement_extracts_from_pull ON public.statement_extracts USING btree (company_id, pull_key) WHERE (pull_key IS NOT NULL);
 
 --
 -- Name: uq_sync_runs_one_active; Type: INDEX; Schema: public; Owner: -
@@ -4669,6 +4682,13 @@ ALTER TABLE ONLY public.statement_extracts
     ADD CONSTRAINT statement_extracts_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
 
 --
+-- Name: statement_extracts statement_extracts_dataset_version_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.statement_extracts
+    ADD CONSTRAINT statement_extracts_dataset_version_id_fkey FOREIGN KEY (dataset_version_id) REFERENCES public.dataset_versions(id) ON DELETE CASCADE;
+
+--
 -- Name: statement_extracts statement_extracts_document_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4681,6 +4701,13 @@ ALTER TABLE ONLY public.statement_extracts
 
 ALTER TABLE ONLY public.statement_extracts
     ADD CONSTRAINT statement_extracts_extracted_by_fkey FOREIGN KEY (extracted_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+--
+-- Name: statement_extracts statement_extracts_sync_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.statement_extracts
+    ADD CONSTRAINT statement_extracts_sync_run_id_fkey FOREIGN KEY (sync_run_id) REFERENCES public.sync_runs(id) ON DELETE SET NULL;
 
 --
 -- Name: statement_extracts statement_extracts_upload_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
