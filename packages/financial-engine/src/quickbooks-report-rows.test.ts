@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   cellOf,
   columnsOf,
+  dataRowsOf,
   flattenReportRows,
   toAmount,
   toLedgerTransactions,
@@ -65,7 +66,7 @@ describe("walking the tree", () => {
     // The old code walked `section.Rows.Row` once, so everything below the
     // second level was simply absent — a ledger with sub-accounts lost most of
     // itself and reported a total that looked plausible.
-    const parsed = flattenReportRows(
+    const parsed = dataRowsOf(
       report([
         section("Expenses", [
           section("Motor Expenses", [
@@ -78,8 +79,22 @@ describe("walking the tree", () => {
     expect(parsed[0]!.sectionPath).toEqual(["Expenses", "Motor Expenses"]);
   });
 
-  it("skips a section's summary, which would double count it", () => {
+  it("labels each row by kind rather than dropping any", () => {
+    // Different readers want different rows: a ledger wants transactions, a
+    // profit-and-loss wants the section TOTALS. Dropping either here would
+    // make one of the two impossible.
     const parsed = flattenReportRows(
+      report([
+        section("Expenses", [
+          dataRow(["2024-01-15", "Expense", "1", "Shell", "Fuel", "Bank", "50.00", "50.00"]),
+        ]),
+      ]),
+    );
+    expect(parsed.map((r) => r.kind)).toEqual(["header", "data", "summary"]);
+  });
+
+  it("offers the data rows on their own, because that is the common case", () => {
+    const parsed = dataRowsOf(
       report([
         section("Expenses", [
           dataRow(["2024-01-15", "Expense", "1", "Shell", "Fuel", "Bank", "50.00", "50.00"]),
@@ -89,8 +104,23 @@ describe("walking the tree", () => {
     expect(parsed).toHaveLength(1);
   });
 
-  it("reads a report with no sections at all", () => {
+  it("files a summary beside what it totals, not inside it", () => {
+    // A total emitted at its children's depth looks like one more of its own
+    // children, and anything summing by depth counts the section twice.
     const parsed = flattenReportRows(
+      report([
+        section("Expenses", [
+          dataRow(["2024-01-15", "Expense", "1", "Shell", "Fuel", "Bank", "50.00", "50.00"]),
+        ]),
+      ]),
+    );
+    const summary = parsed.find((r) => r.kind === "summary")!;
+    const data = parsed.find((r) => r.kind === "data")!;
+    expect(summary.depth).toBeLessThan(data.depth);
+  });
+
+  it("reads a report with no sections at all", () => {
+    const parsed = dataRowsOf(
       report([dataRow(["2024-01-15", "Expense", "1", "Shell", "", "", "50.00", "50.00"])]),
     );
     expect(parsed[0]!.sectionPath).toEqual([]);
@@ -99,7 +129,7 @@ describe("walking the tree", () => {
   it("treats a single row that is not in an array as one row", () => {
     // QuickBooks collapses a one-element list to the element in some
     // responses; reading that as "no rows" loses a report that has exactly one.
-    const parsed = flattenReportRows(
+    const parsed = dataRowsOf(
       report(dataRow(["2024-01-15", "Expense", "1", "Shell", "", "", "50.00", "50.00"])),
     );
     expect(parsed).toHaveLength(1);
@@ -113,7 +143,7 @@ describe("walking the tree", () => {
 });
 
 describe("addressing a cell by what it holds", () => {
-  const [row] = flattenReportRows(
+  const [row] = dataRowsOf(
     report([dataRow(["2024-01-15", "Expense", "1", "Shell", "Fuel", "Bank", "50.00", "50.00"])]),
   );
 
@@ -143,7 +173,7 @@ describe("addressing a cell by what it holds", () => {
       },
       Rows: { Row: [dataRow(["Motor Expenses", "2024-01-15", "50.00"])] },
     };
-    const [shifted] = flattenReportRows(different);
+    const [shifted] = dataRowsOf(different);
     expect(cellOf(shifted!, ["tx_date"])).toBe("2024-01-15");
     expect(cellOf(shifted!, ["subt_nat_amount"])).toBe("50.00");
   });

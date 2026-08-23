@@ -187,6 +187,23 @@ export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
    * why it is a separate path rather than a query parameter: one is a read and
    * the other replaces a table.
    */
+  /**
+   * The profit-and-loss figures a tax reconciliation compares against a return.
+   *
+   * Nine figures out of a report with hundreds of lines. It serves through the
+   * same cache-then-live path as `/profit-and-loss-statement` rather than
+   * fetching separately, so the two pages cannot show different numbers for
+   * the same period — legacy fetched its own copy and they could.
+   */
+  router.get("/quickbooks-pl", handle(async (req, res) => {
+    const result = await reports.profitAndLossForTax(
+      req.user!,
+      companyOf(req),
+      req.query as Record<string, unknown>,
+    );
+    res.json({ success: true, ...result });
+  }));
+
   router.get("/qb-general-ledger", handle(async (req, res) => {
     const served = await reports.syncGeneralLedger(
       req.user!,

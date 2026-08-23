@@ -3,7 +3,11 @@ import { canAccessCompany } from "../../../shared/access.js";
 import { BadRequestError, ForbiddenError, NotFoundError } from "../../../shared/errors.js";
 import type { StatementExtract, StatementsRepository } from "../../statements/ports.js";
 import type { QuickBooksRepository } from "../ports.js";
-import { toLedgerTransactions } from "@datahub/financial-engine";
+import {
+  readProfitAndLossSummary,
+  toLedgerTransactions,
+  toTaxReconciliationRows,
+} from "@datahub/financial-engine";
 import { QuickBooksAuthError, type QbReportType, type ReportFetcher } from "./client.js";
 import {
   reportParamsOf,
@@ -198,6 +202,35 @@ export class QuickBooksReportsService {
     );
 
     return { ...served, totalInserted };
+  }
+
+  /**
+   * The nine figures a tax reconciliation sets beside a return.
+   *
+   * A P&L carries hundreds of lines and a return carries nine. Reading them
+   * out is arithmetic over the report, so it lives in the engine — where the
+   * defect it replaces is documented: the old reader recursed into a section
+   * AND matched the section itself, so depreciation came out at twice its
+   * value and every add-back built on it was wrong.
+   */
+  async profitAndLossForTax(
+    user: SessionUser,
+    companyId: string,
+    rawQuery: Record<string, unknown>,
+  ): Promise<{
+    startDate: string | null;
+    endDate: string | null;
+    data: Array<{ label: string; pl: number }>;
+    source: ServedReport["source"];
+  }> {
+    const query = toReportQuery(rawQuery);
+    const served = await this.serve(user, companyId, "profit_and_loss", rawQuery);
+    return {
+      startDate: query.startDate,
+      endDate: query.endDate,
+      data: toTaxReconciliationRows(readProfitAndLossSummary(served.data)),
+      source: served.source,
+    };
   }
 
   private fromCache(extract: StatementExtract, disconnected: boolean): ServedReport {

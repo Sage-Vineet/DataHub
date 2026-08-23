@@ -458,3 +458,59 @@ describe("fetching a general ledger for the reconciliation", () => {
     expect(written).toEqual([]);
   });
 });
+
+describe("the profit-and-loss figures for a tax reconciliation", () => {
+  const PL = {
+    Columns: {
+      Column: [
+        { ColTitle: "", ColType: "account_name" },
+        { ColTitle: "Total", ColType: "subt_nat_amount" },
+      ],
+    },
+    Rows: {
+      Row: [
+        { type: "Data", ColData: [{ value: "Total Income" }, { value: "500,000.00" }] },
+        { type: "Data", ColData: [{ value: "Gross Profit" }, { value: "300,000.00" }] },
+        { type: "Data", ColData: [{ value: "Net Income" }, { value: "150,000.00" }] },
+      ],
+    },
+  };
+
+  it("answers the nine rows the page renders", async () => {
+    const { service } = build({ fetcher: fetcher(PL) });
+    const result = await service.profitAndLossForTax(USER, COMPANY, QUERY);
+    expect(result.data).toHaveLength(9);
+    expect(result.data.find((r) => r.label === "Total Revenue")!.pl).toBe(500000);
+  });
+
+  it("reads figures with thousands separators", async () => {
+    // `Number("500,000.00") || 0` is 0 — a company with no revenue.
+    const { service } = build({ fetcher: fetcher(PL) });
+    const result = await service.profitAndLossForTax(USER, COMPANY, QUERY);
+    expect(result.data.find((r) => r.label === "Net Income")!.pl).toBe(150000);
+  });
+
+  it("goes through the same cache as the P&L route, not its own fetch", async () => {
+    // Legacy fetched a separate copy, so the two pages could show different
+    // numbers for the same period.
+    const { service, fetcher: f } = build({ fetcher: fetcher(PL) });
+    await service.profitAndLossForTax(USER, COMPANY, QUERY);
+    const second = await service.serve(USER, COMPANY, "profit_and_loss", QUERY);
+    expect(second.source).toBe("cached_snapshot");
+    expect(f.calls).toHaveLength(1);
+  });
+
+  it("reports the period it was asked for", async () => {
+    const { service } = build({ fetcher: fetcher(PL) });
+    const result = await service.profitAndLossForTax(USER, COMPANY, QUERY);
+    expect(result.startDate).toBe("2024-01-01");
+    expect(result.endDate).toBe("2024-12-31");
+  });
+
+  it("refuses a company the caller cannot reach", async () => {
+    const { service } = build({ fetcher: fetcher(PL) });
+    await expect(
+      service.profitAndLossForTax(USER, "dddddddd-dddd-4ddd-8ddd-dddddddddddd", QUERY),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+});

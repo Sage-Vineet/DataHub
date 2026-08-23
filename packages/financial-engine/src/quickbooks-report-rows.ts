@@ -40,8 +40,22 @@ interface ReportRow {
   group?: unknown;
 }
 
-/** A data row, with its cells addressed by what they hold rather than where. */
+/**
+ * What kind of row this is.
+ *
+ * `data` — a transaction or a line of the statement.
+ * `summary` — a section's total. Its value already contains its children's, so
+ *   a reader wants one or the other and never both.
+ * `header` — a section's label row, which carries the section name and
+ *   sometimes a figure alongside it.
+ */
+export type ReportRowKind = "data" | "summary" | "header";
+
+/** A row, with its cells addressed by what they hold rather than where. */
 export interface QuickBooksReportRow {
+  kind: ReportRowKind;
+  /** How deep the row sits. 0 is the top level. */
+  depth: number;
   /** Cell values keyed by `ColType`, e.g. `tx_date`, `subt_nat_amount`. */
   byType: Record<string, string>;
   /** The same values keyed by the column's visible title, lowercased. */
@@ -95,51 +109,87 @@ function headerLabelOf(row: ReportRow): string {
 }
 
 /**
- * Every data row in a report, flattened.
+ * Every row in a report, flattened, labelled by kind.
  *
- * Summary rows are skipped: they are the section's total, and admitting one
- * alongside its own children double counts the section.
+ * Headers and summaries come back alongside the data rows rather than being
+ * dropped, because different readers want different ones: a ledger wants the
+ * transactions, and a profit-and-loss wants the section TOTALS — its figures
+ * are the summaries, and the data rows beneath them are the detail.
+ *
+ * Whoever reads this has to choose one or the other. A total and its own
+ * children in the same sum double counts the section, which is a defect this
+ * cannot prevent and can at least make visible.
  */
 export function flattenReportRows(report: unknown): QuickBooksReportRow[] {
   const columns = columnsOf(report);
   const out: QuickBooksReportRow[] = [];
 
-  const walk = (rows: unknown, sectionPath: string[]): void => {
+  const toRow = (
+    cells: string[],
+    kind: ReportRowKind,
+    depth: number,
+    sectionPath: string[],
+  ): QuickBooksReportRow => {
+    const byType: Record<string, string> = {};
+    const byTitle: Record<string, string> = {};
+    cells.forEach((value, index) => {
+      const column = columns[index];
+      if (!column) return;
+      // First wins: a report repeating a column type means the later one is a
+      // variant (a second amount column, say), and overwriting would make
+      // which is read depend on column order.
+      if (column.type && !(column.type in byType)) byType[column.type] = value;
+      if (column.title && !(column.title in byTitle)) byTitle[column.title] = value;
+    });
+    return { kind, depth, byType, byTitle, cells, sectionPath: [...sectionPath] };
+  };
+
+  const walk = (rows: unknown, sectionPath: string[], depth: number): void => {
     for (const raw of asArray(rows)) {
       const row = raw as ReportRow;
       const type = textOf(row.type);
+      const nested = (row.Rows as { Row?: unknown } | undefined)?.Row;
 
-      if (type === "Data") {
-        const cells = cellsOf(row);
-        const byType: Record<string, string> = {};
-        const byTitle: Record<string, string> = {};
-        cells.forEach((value, index) => {
-          const column = columns[index];
-          if (!column) return;
-          // First wins: a report repeating a column type means the later one
-          // is a variant (a second amount column, say), and overwriting would
-          // make which is read depend on column order.
-          if (column.type && !(column.type in byType)) byType[column.type] = value;
-          if (column.title && !(column.title in byTitle)) byTitle[column.title] = value;
-        });
-        out.push({ byType, byTitle, cells, sectionPath: [...sectionPath] });
+      if (type === "Data" && nested === undefined) {
+        out.push(toRow(cellsOf(row), "data", depth, sectionPath));
         continue;
       }
 
-      // A section, or a row that nests without saying what it is. Either way,
-      // what matters is whether it has children.
-      const nested = (row.Rows as { Row?: unknown } | undefined)?.Row;
-      if (nested !== undefined) {
-        const label = headerLabelOf(row);
-        walk(nested, label ? [...sectionPath, label] : sectionPath);
+      // A section, or a row that nests without saying what it is. Its header
+      // names it, its children are its contents, and its summary is its total.
+      const label = headerLabelOf(row);
+      const header = row.Header as { ColData?: unknown } | undefined;
+      if (header?.ColData !== undefined) {
+        const cells = asArray(header.ColData).map((cell) => textOf((cell as ColData)?.value));
+        out.push(toRow(cells, "header", depth, sectionPath));
       }
-      // `Summary` is deliberately not walked: it is the section's total, and
-      // admitting it alongside its own children double counts the section.
+
+      const childPath = label ? [...sectionPath, label] : sectionPath;
+      if (nested !== undefined) walk(nested, childPath, depth + 1);
+
+      const summary = row.Summary as { ColData?: unknown } | undefined;
+      if (summary?.ColData !== undefined) {
+        const cells = asArray(summary.ColData).map((cell) => textOf((cell as ColData)?.value));
+        // Emitted at the SECTION's depth and under the section's own path, not
+        // its children's: a total belongs beside the thing it totals, and
+        // filing it inside makes it look like one more of its own children.
+        out.push(toRow(cells, "summary", depth, childPath));
+      }
     }
   };
 
-  walk((report as { Rows?: { Row?: unknown } })?.Rows?.Row, []);
+  walk((report as { Rows?: { Row?: unknown } })?.Rows?.Row, [], 0);
   return out;
+}
+
+/**
+ * Only the data rows.
+ *
+ * The common case: a reader wants the transactions and not the section totals,
+ * because a total alongside its own children double counts the section.
+ */
+export function dataRowsOf(report: unknown): QuickBooksReportRow[] {
+  return flattenReportRows(report).filter((row) => row.kind === "data");
 }
 
 /**
@@ -214,7 +264,7 @@ const GL_COLUMNS = {
 export function toLedgerTransactions(report: unknown): LedgerTransaction[] {
   const out: LedgerTransaction[] = [];
 
-  for (const row of flattenReportRows(report)) {
+  for (const row of dataRowsOf(report)) {
     const date = cellOf(row, GL_COLUMNS.date, GL_COLUMNS.dateTitles);
     const amount = toAmount(cellOf(row, GL_COLUMNS.amount, GL_COLUMNS.amountTitles));
     if (date === "" || amount === null) continue;

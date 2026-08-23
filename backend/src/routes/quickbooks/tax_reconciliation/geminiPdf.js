@@ -373,68 +373,6 @@ function findPdfForYear(requestedYear) {
   return null;
 }
 
-router.get("/quickbooks-pl", async (req, res) => {
-  try {
-    const clientId = req.clientId || req.query.clientId || req.headers["x-client-id"];
-    const qb = req.qb;
-
-    const startDate = req.query.start_date || "2023-01-01";
-    const endDate = req.query.end_date || "2023-12-31";
-    const requestedYear = parseInt(startDate.split("-")[0], 10);
-
-    if (!qb?.accessToken) {
-      return res.status(401).json({ success: false, error: "QB not connected" });
-    }
-
-    const accountingMethod =
-      String(req.query.accounting_method || "Accrual").toLowerCase() === "cash"
-        ? "Cash"
-        : "Accrual";
-
-    const qbRes = await runQBGet(
-      clientId,
-      qb,
-      `${qb.baseUrl}/v3/company/${qb.realmId}/reports/ProfitAndLoss` +
-      `?start_date=${startDate}&end_date=${endDate}&accounting_method=${accountingMethod}`
-    );
-
-    const pl = extractPL(qbRes?.data?.Rows?.Row || []);
-
-    // Formula: All Other Expenses = Gross Profit − Officer Wages − Depreciation
-    //           − Amortization − Interest Expense − Net Income
-    const plAllOtherExpenses =
-      Number(pl.grossProfit || 0) -
-      Number(pl.officerWages || 0) -
-      Number(pl.depreciation || 0) -
-      Number(pl.amortization || 0) -
-      Number(pl.interestExpense || 0) -
-      Number(pl.netIncome || 0);
-
-    // Map to the standard label set used by the frontend
-    const labelMap = {
-      "Total Revenue": pl.totalRevenue,
-      "Total Cost of Goods Sold": pl.totalCostOfGoodsSold,
-      "Gross Profit": pl.grossProfit,
-      "Officer Wages": pl.officerWages,
-      "Depreciation Expense": pl.depreciation,
-      "Amortization Expense": pl.amortization,
-      "Total Interest Expense": pl.interestExpense,
-      // Derived via same formula as Tax Return column
-      "All Other Expenses": plAllOtherExpenses,
-      "Net Income": pl.netIncome,
-    };
-
-    const data = Object.entries(labelMap).map(([label, value]) => ({
-      label,
-      pl: Number(value || 0),
-    }));
-
-    return res.json({ success: true, startDate, endDate, data });
-  } catch (err) {
-    console.error("QB P&L Error:", err);
-    return res.status(500).json({ success: false, error: err.message });
-  }
-});
 
 /* ===========================
    ENDPOINT 2 — TAX DATA ONLY (Slow — Gemini)

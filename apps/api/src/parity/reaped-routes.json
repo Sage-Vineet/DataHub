@@ -86,6 +86,7 @@
   "GET /qb-bank-activity/saved",
   "GET /qb-cashflow",
   "GET /qb-general-ledger",
+  "GET /quickbooks-pl",
   "GET /report-sources",
   "GET /reports/balance-sheet",
   "GET /reports/balance-sheet/monthly-detail",
