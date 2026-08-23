@@ -242,6 +242,11 @@ export function createReportsRouter(deps: ReportsRouterDeps): Router {
     res.json({ success: true, ...payload });
   }));
 
+  router.get("/manual-gl/validation/balance-sheet", handle(async (req, res) => {
+    const payload = await service.validateBalanceSheet(req.user!, companyOf(req));
+    res.json({ success: true, ...payload });
+  }));
+
   router.get("/reports/profit-loss/detail-vendor", handle(async (req, res) => {
     const payload = await service.vendorDetail(req.user!, companyOf(req), {
       fiscalYears: yearsOf(req),

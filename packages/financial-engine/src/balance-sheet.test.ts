@@ -200,3 +200,92 @@ describe("guards", () => {
     ).toThrow(MissingAnchorError);
   });
 });
+
+describe("an anchor dated outside the rolled range", () => {
+  /**
+   * The rolled range is only the months the ledger posts in. A closing balance
+   * sheet is routinely dated after the last posting — the year end, when the
+   * last entry was in February — and the tie-out has to know that means "the
+   * position has not moved since", not "this is where the roll began".
+   *
+   * It did not. `keys.indexOf(key) === -1` made EVERY anchor outside the range
+   * an opening anchor, so a year-end sheet was compared against the position
+   * the roll started from and reported a difference for every account that had
+   * moved, each one exactly that account's activity.
+   */
+  const accounts: Account[] = [
+    { id: "cash", name: "Cash", statementType: "balance_sheet", accountType: "asset", group: "Bank Accounts" },
+    { id: "loan", name: "Loan", statementType: "balance_sheet", accountType: "liability", group: "Long-term Liabilities" },
+    { id: "capital", name: "Capital", statementType: "balance_sheet", accountType: "equity", group: "Equity" },
+    { id: "sales", name: "Sales", statementType: "profit_loss", accountType: "income" },
+  ];
+  const rows: GlEntry[] = [
+    { accountId: "sales", fiscalYear: 2024, month: 1, amount: 500 },
+    { accountId: "cash", fiscalYear: 2024, month: 1, amount: 500 },
+  ];
+  const line = (id: string, name: string, section: string, amount: number) => ({
+    accountId: id, accountName: name, section, group: null, amount,
+  });
+  const opening: BalanceSheetAnchor = {
+    kind: "starting", fiscalYear: 2023, month: 12,
+    rows: [
+      line("cash", "Cash", "asset", 1000),
+      line("loan", "Loan", "liability", 400),
+      line("capital", "Capital", "equity", 600),
+    ],
+  };
+
+  const roll = (closing: BalanceSheetAnchor) =>
+    rollForwardBalanceSheet({
+      accounts, entries: rows, anchors: [opening, closing], fiscalYears: [2024],
+    });
+
+  it("ties out against a year-end sheet, though the ledger stops in January", () => {
+    const yearEnd: BalanceSheetAnchor = {
+      kind: "ending", fiscalYear: 2024, month: 12,
+      rows: [
+        line("cash", "Cash", "asset", 1500),
+        line("loan", "Loan", "liability", 400),
+        line("capital", "Capital", "equity", 600),
+      ],
+    };
+    // Cash rolls to 1,500 in January and stays there. Compared against the
+    // opening it would report a 500 difference on an account that agrees.
+    expect(roll(yearEnd).tieOut!.differences["cash"]).toBeUndefined();
+  });
+
+  it("still reports a year-end sheet that genuinely disagrees", () => {
+    const wrong: BalanceSheetAnchor = {
+      kind: "ending", fiscalYear: 2024, month: 12,
+      rows: [
+        line("cash", "Cash", "asset", 1800),
+        line("loan", "Loan", "liability", 400),
+        line("capital", "Capital", "equity", 600),
+      ],
+    };
+    // Carrying the position forward must not turn the check off.
+    expect(roll(wrong).tieOut!.differences["cash"]).toBeCloseTo(-300, 2);
+    expect(roll(wrong).tieOut!.ties).toBe(false);
+  });
+
+  it("still reads a sheet dated before the range as the opening position", () => {
+    // The behaviour that was right all along, and must survive the fix.
+    const backward = rollForwardBalanceSheet({
+      accounts,
+      entries: rows,
+      anchors: [
+        opening,
+        {
+          kind: "ending", fiscalYear: 2024, month: 1,
+          rows: [
+            line("cash", "Cash", "asset", 1500),
+            line("loan", "Loan", "liability", 400),
+            line("capital", "Capital", "equity", 600),
+          ],
+        },
+      ],
+      fiscalYears: [2024],
+    });
+    expect(backward.tieOut!.differences["cash"]).toBeUndefined();
+  });
+});

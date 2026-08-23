@@ -20,6 +20,10 @@ import {
   type ProfitLossSummaryPayload,
 } from "./profit-loss-view.js";
 import {
+  validateBalanceSheet,
+  type ValidationPayload,
+} from "./balance-sheet-validation.js";
+import {
   buildVendorDetail,
   type VendorDetailFilters,
   type VendorDetailPayload,
@@ -212,6 +216,16 @@ export class ReportsService {
     filters: VendorDetailFilters = {},
   ): Promise<VendorDetailPayload> {
     return buildVendorDetail(await this.activeEngagement(user, companyId), filters);
+  }
+
+  /**
+   * Does the ledger carry the opening balance sheet to the closing one?
+   *
+   * Unlike the statements, this answers rather than refuses when a sheet is
+   * missing — "no ending sheet was uploaded" is the finding, not an error.
+   */
+  async validateBalanceSheet(user: SessionUser, companyId: string): Promise<ValidationPayload> {
+    return validateBalanceSheet(await this.activeEngagement(user, companyId));
   }
 
   /** The engagement behind a company's active key-report version. */

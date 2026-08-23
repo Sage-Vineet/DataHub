@@ -153,6 +153,7 @@
       ],
       "additive": [
         "GET /key-reports/versions/:p/reports/financial-statements",
+        "GET /manual-gl/validation/balance-sheet",
         "GET /reports/balance-sheet",
         "GET /reports/balance-sheet/monthly-detail",
         "GET /reports/cashflow",
@@ -191,7 +192,6 @@
     "GET /manual-gl/staging/filter-options",
     "GET /manual-gl/upload-jobs",
     "GET /manual-gl/upload-jobs/:p",
-    "GET /manual-gl/validation/balance-sheet",
     "GET /manual-report-uploads/bs-bank-balances",
     "GET /manual-report-uploads/folder-files",
     "GET /manual-report-uploads/manual-upload-dashboard",

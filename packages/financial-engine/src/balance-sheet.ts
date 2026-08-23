@@ -368,16 +368,31 @@ export function rollForwardBalanceSheet(input: BalanceSheetInput): BalanceSheetR
   if (opposite) {
     const key = periodKey(opposite.fiscalYear, opposite.month);
     const firstKey = keys[0];
-    // An anchor stating the position BEFORE the roll (a starting sheet checked
-    // against a backward roll) is compared to the opening position: the first
-    // period's closing balance less that period's own activity.
-    const isOpening = keys.indexOf(key) === -1 && firstKey !== undefined;
+    const lastKey = keys[keys.length - 1];
+
+    // WHERE the anchor sits relative to the rolled range, not merely whether
+    // it is inside it.
+    //
+    // This used to be `keys.indexOf(key) === -1`, which made every anchor
+    // outside the range an OPENING anchor — so a closing sheet dated after the
+    // ledger's last posting was compared against the position the roll STARTED
+    // from. It reported a difference for every account that moved, each one
+    // exactly the account's activity, and reported them as tie-out failures.
+    const outside = keys.indexOf(key) === -1;
+    const isOpening = outside && firstKey !== undefined && key < firstKey;
+    // An anchor dated after the last rolled period states the position at a
+    // moment nothing has happened since, so the last rolled close IS that
+    // position — the same carrying a balance sheet does for a quiet month.
+    const isAfter = outside && lastKey !== undefined && key > lastKey;
 
     const rolledFor = (accountId: string, series: Record<string, number>): number | undefined => {
-      if (!isOpening) return series[key];
-      const first = series[firstKey!];
-      if (first === undefined) return undefined;
-      return round2(first - (activity.get(accountId)?.get(firstKey!) ?? 0));
+      if (isOpening) {
+        const first = series[firstKey!];
+        if (first === undefined) return undefined;
+        return round2(first - (activity.get(accountId)?.get(firstKey!) ?? 0));
+      }
+      if (isAfter) return series[lastKey!];
+      return series[key];
     };
 
     const differences: Record<string, number> = {};

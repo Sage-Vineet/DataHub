@@ -537,25 +537,6 @@ router.get("/manual-gl/staging/filter-options", enforceDataSource(REPORT_SOURCE_
 });
 
 // Vendor Analysis: Account -> Vendor -> Account Total, with dynamic fiscal-year columns.
-router.get("/manual-gl/validation/balance-sheet", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
-    const batchId = String(req.query.batchId || req.query.batch_id || "").trim();
-    const datasetVersion = String(req.query.datasetVersion || req.query.dataset_version || "").trim();
-    const versionId = String(req.query.versionId || req.query.uploadSessionId || "").trim();
-    // Pass version filters so validation stays scoped to the SELECTED version and
-    // never falls back to another version's active/latest batch.
-    const payload = await validateBatchBalanceSheet(clientId, { batchId, datasetVersion, versionId });
-    return res.json({ success: true, ...payload });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: error.message || "Failed to validate balance sheet rollforward.",
-    });
-  }
-});
-
 // === Dataset Versions & Upload Jobs (Snapshot / Dataset Version API) ===
 
 router.get("/manual-gl/dataset-versions", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
