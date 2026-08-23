@@ -35,6 +35,7 @@ const FLAG_OF_DOMAIN: Record<string, ModuleFlag> = {
   statements: "STATEMENTS_MODULE_ENABLED",
   quickbooks: "QUICKBOOKS_MODULE_ENABLED",
   sync: "SYNC_MODULE_ENABLED",
+  datasets: "DATASETS_MODULE_ENABLED",
 };
 
 export interface ReapedGap {

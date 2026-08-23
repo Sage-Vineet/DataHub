@@ -20,8 +20,9 @@
 --   packages/db/migrations/0007_statement_extracts.sql
 --   packages/db/migrations/0008_quickbooks_connections.sql
 --   packages/db/migrations/0009_sync_runs.sql
+--   packages/db/migrations/0010_dataset_versions.sql
 --
--- source-sha256: e4f429ff4dfb1e8c7a71e69b9f62295154d0b1e24ff0fda92837bf7db326fadd
+-- source-sha256: 121a355abf3255bb32a37c9c0fb72b7c654faf7ab7604d89a15153abd6d1cddc
 --
 -- PostgreSQL database dump
 --
@@ -683,6 +684,31 @@ CREATE TABLE public.company_messages (
     sender_id uuid NOT NULL,
     body text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+--
+-- Name: dataset_versions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.dataset_versions (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    company_id uuid NOT NULL,
+    version_number integer NOT NULL,
+    label text,
+    source_key text DEFAULT 'manual_gl_upload'::text NOT NULL,
+    status text DEFAULT 'staging'::text NOT NULL,
+    is_active boolean DEFAULT false NOT NULL,
+    sync_run_id uuid,
+    row_count integer DEFAULT 0 NOT NULL,
+    fiscal_years integer[] DEFAULT '{}'::integer[] NOT NULL,
+    finalized_at timestamp with time zone,
+    activated_at timestamp with time zone,
+    created_by uuid,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT dataset_versions_active_is_finalized CHECK (((NOT is_active) OR (status = 'finalized'::text))),
+    CONSTRAINT dataset_versions_status_check CHECK ((status = ANY (ARRAY['staging'::text, 'validating'::text, 'finalized'::text, 'failed'::text, 'rolled_back'::text])))
 );
 
 --
@@ -2122,6 +2148,13 @@ ALTER TABLE ONLY public.company_messages
     ADD CONSTRAINT company_messages_pkey PRIMARY KEY (id);
 
 --
+-- Name: dataset_versions dataset_versions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_versions
+    ADD CONSTRAINT dataset_versions_pkey PRIMARY KEY (id);
+
+--
 -- Name: direct_messages direct_messages_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2939,6 +2972,12 @@ CREATE INDEX idx_company_messages_company_created ON public.company_messages USI
 CREATE INDEX idx_company_messages_sender ON public.company_messages USING btree (sender_id);
 
 --
+-- Name: idx_dataset_versions_company_recent; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dataset_versions_company_recent ON public.dataset_versions USING btree (company_id, version_number DESC);
+
+--
 -- Name: idx_direct_messages_company_created; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3455,6 +3494,18 @@ CREATE UNIQUE INDEX qa_responses_current_root_uq ON public.qa_responses USING bt
 CREATE INDEX session_user_id_idx ON public.session USING btree (user_id);
 
 --
+-- Name: uq_dataset_versions_company_number; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_dataset_versions_company_number ON public.dataset_versions USING btree (company_id, source_key, version_number);
+
+--
+-- Name: uq_dataset_versions_one_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_dataset_versions_one_active ON public.dataset_versions USING btree (company_id) WHERE is_active;
+
+--
 -- Name: uq_key_report_versions_company_active; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3825,6 +3876,27 @@ ALTER TABLE ONLY public.company_messages
 
 ALTER TABLE ONLY public.company_messages
     ADD CONSTRAINT company_messages_sender_id_fkey FOREIGN KEY (sender_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+--
+-- Name: dataset_versions dataset_versions_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_versions
+    ADD CONSTRAINT dataset_versions_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: dataset_versions dataset_versions_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_versions
+    ADD CONSTRAINT dataset_versions_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+--
+-- Name: dataset_versions dataset_versions_sync_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_versions
+    ADD CONSTRAINT dataset_versions_sync_run_id_fkey FOREIGN KEY (sync_run_id) REFERENCES public.sync_runs(id) ON DELETE SET NULL;
 
 --
 -- Name: direct_messages direct_messages_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -

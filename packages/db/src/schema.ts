@@ -549,6 +549,62 @@ export const keyReportFileMappings = pgTable(
 );
 
 /**
+ * A numbered, activatable snapshot of a company's imported financial data.
+ *
+ * NOT a `keyReportVersions` — that is a reporting configuration and already
+ * points at one of these through `resolvedDatasetVersion`. This is the DATA as
+ * imported at a moment. See migration 0010.
+ *
+ * Replaces `dataset_versions` (which legacy created twice, with materially
+ * different definitions) and `finalized_datasets` (the same rows again once
+ * terminal). One table with a status cannot disagree with itself.
+ */
+export const datasetVersions = pgTable(
+  "dataset_versions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    /** Per company and source, monotonic. What a person means by "v3". */
+    versionNumber: integer("version_number").notNull(),
+    label: text("label"),
+    sourceKey: text("source_key").notNull().default("manual_gl_upload"),
+    /** staging | validating | finalized | failed | rolled_back */
+    status: text("status").notNull().default("staging"),
+    isActive: boolean("is_active").notNull().default(false),
+    syncRunId: uuid("sync_run_id").references(() => syncRuns.id, { onDelete: "set null" }),
+    rowCount: integer("row_count").notNull().default(0),
+    fiscalYears: integer("fiscal_years").array().notNull().default([]),
+    finalizedAt: timestamp("finalized_at", { withTimezone: true }),
+    activatedAt: timestamp("activated_at", { withTimezone: true }),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    metadata: jsonb("metadata").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uq_dataset_versions_company_number").on(
+      t.companyId,
+      t.sourceKey,
+      t.versionNumber,
+    ),
+    uniqueIndex("uq_dataset_versions_one_active").on(t.companyId).where(sql`${t.isActive}`),
+    index("idx_dataset_versions_company_recent").on(t.companyId, t.versionNumber),
+    check(
+      "dataset_versions_status_check",
+      sql`${t.status} IN ('staging', 'validating', 'finalized', 'failed', 'rolled_back')`,
+    ),
+    // Activating something still staging would point every report at
+    // half-written data.
+    check(
+      "dataset_versions_active_is_finalized",
+      sql`NOT ${t.isActive} OR ${t.status} = 'finalized'`,
+    ),
+  ],
+);
+
+/**
  * One attempt at pulling a source's data in, and how far it got.
  *
  * Replaces `sync_jobs`, `sync_logs`, `sync_metadata` and `connection_status` —

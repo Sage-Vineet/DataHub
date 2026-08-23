@@ -209,6 +209,16 @@
         "GET /manual-report-uploads/sync-progress",
         "GET /manual-upload/sync-progress"
       ]
+    },
+    "datasets": {
+      "compare": [],
+      "additive": [
+        "GET /manual-gl/dataset-versions",
+        "GET /manual-gl/upload-jobs",
+        "GET /manual-gl/upload-jobs/:p",
+        "POST /manual-gl/dataset-versions/:p/activate",
+        "POST /manual-gl/dataset-versions/:p/rollback"
+      ]
     }
   },
   "backlog": [
@@ -226,9 +236,6 @@
     "GET /invoices/doc/:p",
     "GET /key-reports/versions/:p/extracted-data",
     "GET /manual-gl/columns/:p",
-    "GET /manual-gl/dataset-versions",
-    "GET /manual-gl/upload-jobs",
-    "GET /manual-gl/upload-jobs/:p",
     "GET /manual-report-uploads/bs-bank-balances",
     "GET /manual-report-uploads/folder-files",
     "GET /manual-report-uploads/manual-upload-dashboard",
@@ -257,8 +264,6 @@
     "POST /customers",
     "POST /key-reports/versions/:p/chart-of-accounts/regenerate",
     "POST /key-reports/versions/:p/sync",
-    "POST /manual-gl/dataset-versions/:p/activate",
-    "POST /manual-gl/dataset-versions/:p/rollback",
     "POST /manual-gl/save-mapping",
     "POST /manual-gl/staging/multi-year",
     "POST /manual-report-uploads/qms-parse-documents",
