@@ -358,3 +358,103 @@ describe("the year a report belongs to", () => {
     ).toBeNull();
   });
 });
+
+describe("fetching a general ledger for the reconciliation", () => {
+  /** A general ledger as QuickBooks shapes one. */
+  const LEDGER = {
+    Columns: {
+      Column: [
+        { ColTitle: "Date", ColType: "tx_date" },
+        { ColTitle: "Transaction Type", ColType: "txn_type" },
+        { ColTitle: "Name", ColType: "name" },
+        { ColTitle: "Amount", ColType: "subt_nat_amount" },
+        { ColTitle: "Balance", ColType: "rbal_nat_amount" },
+      ],
+    },
+    Rows: {
+      Row: [
+        {
+          type: "Section",
+          Header: { ColData: [{ value: "Motor Expenses" }] },
+          Rows: {
+            Row: [
+              {
+                type: "Data",
+                ColData: [
+                  { value: "2024-01-15" },
+                  { value: "Expense" },
+                  { value: "Shell" },
+                  { value: "-50.00" },
+                  { value: "-50.00" },
+                ],
+              },
+            ],
+          },
+          Summary: { ColData: [{ value: "Total" }, { value: "-50.00" }] },
+        },
+      ],
+    },
+  };
+
+  function withLedgerStore() {
+    const written: Array<{ companyId: string; rows: readonly unknown[] }> = [];
+    const built = build({ fetcher: fetcher(LEDGER) });
+    const service = new QuickBooksReportsService({
+      statements: built.statements,
+      connections: connections(),
+      fetcher: built.fetcher,
+      ledgerTransactions: {
+        replaceBookTransactions: (companyId, rows) => {
+          written.push({ companyId, rows });
+          return Promise.resolve(rows.length);
+        },
+      },
+    });
+    return { service, written, statements: built.statements };
+  }
+
+  it("keeps the report AND the transactions", async () => {
+    // Two destinations for one fetch, because they answer different questions:
+    // what QuickBooks said, and which transactions the books contain.
+    const { service, written, statements } = withLedgerStore();
+    const served = await service.syncGeneralLedger(USER, COMPANY, QUERY);
+
+    expect(served.totalInserted).toBe(1);
+    expect(written[0]!.rows).toEqual([
+      { date: "2024-01-15", name: "Shell", transactionType: "Expense", amount: -50 },
+    ]);
+    expect(await statements.list(COMPANY, { statementType: "general_ledger" })).toHaveLength(1);
+  });
+
+  it("reads the amount, not the running balance", async () => {
+    // Positional reading took whichever column happened to be at the index.
+    const { service, written } = withLedgerStore();
+    await service.syncGeneralLedger(USER, COMPANY, QUERY);
+    expect((written[0]!.rows[0] as { amount: number }).amount).toBe(-50);
+  });
+
+  it("replaces rather than accumulating", async () => {
+    // Merging two fetches of overlapping periods doubles every transaction in
+    // the overlap, which then reads as a duplicated payment.
+    const { service, written } = withLedgerStore();
+    await service.syncGeneralLedger(USER, COMPANY, QUERY);
+    await service.syncGeneralLedger(USER, COMPANY, { ...QUERY, accounting_method: "Cash" });
+    expect(written).toHaveLength(2);
+    expect(written[1]!.rows).toHaveLength(1);
+  });
+
+  it("says so when there is nowhere to put the transactions", async () => {
+    const { service } = build({ fetcher: fetcher(LEDGER) });
+    await expect(service.syncGeneralLedger(USER, COMPANY, QUERY)).rejects.toThrow(
+      /not available in this configuration/,
+    );
+  });
+
+  it("refuses a company the caller cannot reach, before fetching", async () => {
+    const { service, written } = withLedgerStore();
+    await expect(
+      service.syncGeneralLedger(USER, "dddddddd-dddd-4ddd-8ddd-dddddddddddd", QUERY),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+    expect(written).toEqual([]);
+  });
+});

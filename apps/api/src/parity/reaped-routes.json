@@ -85,6 +85,7 @@
   "GET /profit-and-loss-statement",
   "GET /qb-bank-activity/saved",
   "GET /qb-cashflow",
+  "GET /qb-general-ledger",
   "GET /report-sources",
   "GET /reports/balance-sheet",
   "GET /reports/balance-sheet/monthly-detail",

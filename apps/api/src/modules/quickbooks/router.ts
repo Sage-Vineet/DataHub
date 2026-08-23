@@ -179,6 +179,29 @@ export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
     res.json({ success: true, ...served });
   }));
 
+  /**
+   * The general ledger, fetched and kept for reconciliation.
+   *
+   * Distinct from `/general-ledger`, which only serves the report. This one
+   * also flattens its rows into the books side of `/bank-vs-books`, which is
+   * why it is a separate path rather than a query parameter: one is a read and
+   * the other replaces a table.
+   */
+  router.get("/qb-general-ledger", handle(async (req, res) => {
+    const served = await reports.syncGeneralLedger(
+      req.user!,
+      companyOf(req),
+      req.query as Record<string, unknown>,
+    );
+    res.json({
+      success: true,
+      message: "Data stored successfully",
+      totalInserted: served.totalInserted,
+      source: served.source,
+      lastSyncAt: served.lastSyncAt,
+    });
+  }));
+
   router.get("/api/quickbooks/sync-status", handle(async (req, res) => {
     res.json({ success: true, ...(await syncStatus.status(req.user!, companyOf(req))) });
   }));

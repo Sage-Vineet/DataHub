@@ -11,7 +11,6 @@
   "GET /manual-report-uploads/tax-data",
   "GET /manual-upload/bank-data",
   "GET /qb-bank-activity",
-  "GET /qb-general-ledger",
   "GET /qb-one-bank-activity",
   "GET /quickbooks-pl",
   "GET /refresh-token",

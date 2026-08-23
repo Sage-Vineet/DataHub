@@ -3,6 +3,7 @@ import { canAccessCompany } from "../../../shared/access.js";
 import { BadRequestError, ForbiddenError, NotFoundError } from "../../../shared/errors.js";
 import type { StatementExtract, StatementsRepository } from "../../statements/ports.js";
 import type { QuickBooksRepository } from "../ports.js";
+import { toLedgerTransactions } from "@datahub/financial-engine";
 import { QuickBooksAuthError, type QbReportType, type ReportFetcher } from "./client.js";
 import {
   reportParamsOf,
@@ -50,6 +51,24 @@ export interface QuickBooksReportsServiceDeps {
   statements: StatementsRepository;
   connections: QuickBooksRepository;
   fetcher: ReportFetcher;
+  /**
+   * Where a fetched general ledger's transactions go, for the reconciliation.
+   *
+   * Optional: every other read here only stores a report, and the module can
+   * be built without the reconciliation tables for a test that does not touch
+   * them.
+   */
+  ledgerTransactions?: {
+    replaceBookTransactions(
+      companyId: string,
+      transactions: readonly {
+        date: string;
+        name: string | null;
+        transactionType: string | null;
+        amount: number;
+      }[],
+    ): Promise<number>;
+  };
 }
 
 const toCached = (extract: StatementExtract): CachedReport => ({
@@ -134,6 +153,51 @@ export class QuickBooksReportsService {
         : `No ${reportType.replace(/_/g, " ")} is available for the requested period. ` +
           `Run a QuickBooks sync to generate one.`,
     );
+  }
+
+  /**
+   * Fetch the general ledger and keep its transactions for reconciliation.
+   *
+   * The report goes into `statement_extracts` like any other, AND its rows are
+   * flattened into `reconciliation_transactions` so `/bank-vs-books` has a
+   * "books" side to compare against. Two destinations for one fetch, because
+   * they answer different questions: one is "what did QuickBooks say", the
+   * other is "which transactions do the books contain".
+   *
+   * The flattening reads columns by their `ColType` rather than by position —
+   * see `toLedgerTransactions`. Positional reading put the running balance in
+   * the amount whenever the column set differed.
+   */
+  async syncGeneralLedger(
+    user: SessionUser,
+    companyId: string,
+    rawQuery: Record<string, unknown>,
+  ): Promise<ServedReport & { totalInserted: number }> {
+    const served = await this.serve(user, companyId, "general_ledger", rawQuery);
+
+    if (!this.deps.ledgerTransactions) {
+      throw new BadRequestError(
+        "Storing ledger transactions is not available in this configuration.",
+      );
+    }
+
+    const transactions = toLedgerTransactions(served.data).map((transaction) => ({
+      date: transaction.date,
+      name: transaction.name,
+      transactionType: transaction.transactionType,
+      amount: transaction.amount,
+    }));
+
+    // A replace, not a merge: a partial ledger reconciles against nothing
+    // useful, and merging two fetches of overlapping periods doubles every
+    // transaction in the overlap — which then reads as a duplicated payment,
+    // the exact thing the reconciliation exists to detect.
+    const totalInserted = await this.deps.ledgerTransactions.replaceBookTransactions(
+      companyId,
+      transactions,
+    );
+
+    return { ...served, totalInserted };
   }
 
   private fromCache(extract: StatementExtract, disconnected: boolean): ServedReport {

@@ -1,5 +1,6 @@
 import type { RequestHandler, Router } from "express";
 import type { Db } from "@datahub/db";
+import { DrizzleReconciliationTransactionsRepository } from "../bank-reconciliation/repository.drizzle.js";
 import { DrizzleDatasetsRepository } from "../datasets/repository.drizzle.js";
 import { DrizzleStatementsRepository } from "../statements/repository.drizzle.js";
 import { DrizzleSyncRepository } from "../sync/repository.drizzle.js";
@@ -52,7 +53,14 @@ export function createQuickBooksModule(
       baseUrl: opts.quickBooksBaseUrl ?? QUICKBOOKS_BASE_URLS.production,
     });
 
-  const reports = new QuickBooksReportsService({ statements, connections: repo, fetcher });
+  const reports = new QuickBooksReportsService({
+    statements,
+    connections: repo,
+    fetcher,
+    // A fetched general ledger lands in two places: the report goes to
+    // `statement_extracts`, its rows to the books side of the reconciliation.
+    ledgerTransactions: new DrizzleReconciliationTransactionsRepository(opts.db),
+  });
 
   // The sync's state is a read across three tables rather than a stored
   // duplicate of it. See `reports/status.ts`.

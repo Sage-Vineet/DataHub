@@ -47,8 +47,14 @@ export default defineConfig({
        */
       thresholds: {
         lines: 95,
-        functions: 92,
-        branches: 85,
+        // Raised from 92 and 85. The suite reaches 94.38 and 86.53, and a gate
+        // two points below the truth is one that cannot fail — which is the
+        // reason the original 80/80/70 were replaced. Lines and statements
+        // stay at 95 rather than moving to 95.52: a threshold set exactly at
+        // the current figure fails on a hundredth of a point, which trains
+        // people to raise it rather than to look at it.
+        functions: 94,
+        branches: 86,
         statements: 95,
       },
     },
