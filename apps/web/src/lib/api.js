@@ -139,7 +139,6 @@ const LONG_RUNNING = [
   "/manual-report-uploads/",
   "/manual-upload/",
   "/process-gl",
-  "/ebitda/generate-comments",
   "/sync",
 ];
 
@@ -699,53 +698,11 @@ function buildEbitdaAdjustmentScopeParams(options = {}) {
   return params.toString();
 }
 
-export function listEbitdaAdjustmentTypes(options = {}) {
-  const query = buildEbitdaAdjustmentScopeParams(options);
-  return request(`/ebitda-adjustment-types${query ? `?${query}` : ""}`, options).then(
-    (payload) => payload?.types || [],
-  );
-}
 
-export function listEbitdaAdjustments(options = {}) {
-  const query = buildEbitdaAdjustmentScopeParams(options);
-  return request(`/ebitda-adjustments${query ? `?${query}` : ""}`, options).then(
-    (payload) => payload?.adjustments || [],
-  );
-}
 
-export function saveEbitdaAdjustmentsBatch(payload, options = {}) {
-  const query = buildEbitdaAdjustmentScopeParams(options);
-  return request(`/ebitda-adjustments/batch${query ? `?${query}` : ""}`, {
-    method: "POST",
-    body: payload,
-    ...options,
-  });
-}
 
-export function deleteEbitdaAdjustment(adjustmentId, options = {}) {
-  const query = buildEbitdaAdjustmentScopeParams(options);
-  return request(`/ebitda-adjustments/${encodeURIComponent(adjustmentId)}${query ? `?${query}` : ""}`, {
-    method: "DELETE",
-    ...options,
-  });
-}
 
-export function addEbitdaAdjustmentComment(adjustmentId, payload, options = {}) {
-  const query = buildEbitdaAdjustmentScopeParams(options);
-  return request(`/ebitda-adjustments/${encodeURIComponent(adjustmentId)}/comments${query ? `?${query}` : ""}`, {
-    method: "POST",
-    body: payload,
-    ...options,
-  }).then((res) => res?.comment || res);
-}
 
-export function generateEbitdaComments(payload, options = {}) {
-  return request("/ebitda/generate-comments", {
-    method: "POST",
-    body: payload,
-    ...options,
-  }).then((res) => res?.comments || {});
-}
 
 export function listManualGlUploads(options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
