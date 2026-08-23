@@ -1,7 +1,6 @@
 [
   "GET /api/auth/callback",
   "GET /api/auth/quickbooks",
-  "GET /bank-reconciliation-line-items",
   "GET /extract-bank-pdf-records",
   "GET /manual-report-uploads/bs-bank-balances",
   "GET /manual-report-uploads/manual-upload-dashboard",

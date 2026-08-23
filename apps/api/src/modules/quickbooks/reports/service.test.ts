@@ -332,29 +332,30 @@ describe("the year a report belongs to", () => {
         endDate: "2024-03-31",
         asOfDate: null,
         accountingMethod: null,
+        summarizeColumnBy: null,
       }),
     ).toBe(2024);
   });
 
   it("falls back through as-of and start", () => {
     expect(
-      fiscalYearOf({ startDate: null, endDate: null, asOfDate: "2022-12-31", accountingMethod: null }),
+      fiscalYearOf({ startDate: null, endDate: null, asOfDate: "2022-12-31", accountingMethod: null, summarizeColumnBy: null }),
     ).toBe(2022);
     expect(
-      fiscalYearOf({ startDate: "2021-01-01", endDate: null, asOfDate: null, accountingMethod: null }),
+      fiscalYearOf({ startDate: "2021-01-01", endDate: null, asOfDate: null, accountingMethod: null, summarizeColumnBy: null }),
     ).toBe(2021);
   });
 
   it("is nothing when there is no date at all", () => {
     // The honest answer for an account list, which has no period.
     expect(
-      fiscalYearOf({ startDate: null, endDate: null, asOfDate: null, accountingMethod: null }),
+      fiscalYearOf({ startDate: null, endDate: null, asOfDate: null, accountingMethod: null, summarizeColumnBy: null }),
     ).toBeNull();
   });
 
   it("is nothing rather than NaN for a date it cannot read", () => {
     expect(
-      fiscalYearOf({ startDate: null, endDate: "soon", asOfDate: null, accountingMethod: null }),
+      fiscalYearOf({ startDate: null, endDate: "soon", asOfDate: null, accountingMethod: null, summarizeColumnBy: null }),
     ).toBeNull();
   });
 });
@@ -511,6 +512,74 @@ describe("the profit-and-loss figures for a tax reconciliation", () => {
     const { service } = build({ fetcher: fetcher(PL) });
     await expect(
       service.profitAndLossForTax(USER, "dddddddd-dddd-4ddd-8ddd-dddddddddddd", QUERY),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+});
+
+describe("the monthly line items behind the add-back picker", () => {
+  const MONTHLY = {
+    Columns: {
+      Column: [
+        { ColTitle: "", ColType: "account_name" },
+        { ColTitle: "Jan 2024", ColType: "subt_nat_amount" },
+        { ColTitle: "TOTAL", ColType: "subt_nat_amount" },
+      ],
+    },
+    Rows: {
+      Row: [
+        {
+          type: "Section",
+          Header: { ColData: [{ value: "Income" }] },
+          Rows: {
+            Row: [
+              { type: "Data", ColData: [{ value: "Sales" }, { value: "10,000.00" }, { value: "10,000.00" }] },
+            ],
+          },
+          Summary: { ColData: [{ value: "Total Income" }, { value: "10,000.00" }] },
+        },
+      ],
+    },
+  };
+
+  it("asks QuickBooks to break the report into months", async () => {
+    const { service, fetcher: f } = build({ fetcher: fetcher(MONTHLY) });
+    await service.monthlyLineItems(USER, COMPANY, QUERY);
+    const asked = (f.calls as Array<{ params: Record<string, string> }>)[0]!.params;
+    expect(asked.summarize_column_by).toBe("Month");
+  });
+
+  it("reads each account's months", async () => {
+    const { service } = build({ fetcher: fetcher(MONTHLY) });
+    const items = await service.monthlyLineItems(USER, COMPANY, QUERY);
+    expect(items.plIncomeItems).toEqual([
+      { name: "Sales", source: "pl_income", monthAmounts: { "2024-01": 10000 } },
+    ]);
+    expect(items.plTotalIncome).toEqual({ "2024-01": 10000 });
+  });
+
+  it("does NOT collide with the annual report in the cache", async () => {
+    // A monthly report has twelve columns where the annual one has one. Sharing
+    // a key means the second pull replaces the first and the page renders
+    // whichever it got.
+    const { service, statements } = build({ fetcher: fetcher(MONTHLY) });
+    await service.serve(USER, COMPANY, "profit_and_loss", QUERY);
+    await service.monthlyLineItems(USER, COMPANY, QUERY);
+    expect(await statements.list(COMPANY, { statementType: "profit_and_loss" })).toHaveLength(2);
+  });
+
+  it("refuses a request with no period", async () => {
+    // A monthly breakdown of nothing is a report of every month QuickBooks
+    // has, which is not what any caller means.
+    const { service } = build({ fetcher: fetcher(MONTHLY) });
+    await expect(service.monthlyLineItems(USER, COMPANY, {})).rejects.toThrow(
+      /start_date and end_date/,
+    );
+  });
+
+  it("refuses a company the caller cannot reach", async () => {
+    const { service } = build({ fetcher: fetcher(MONTHLY) });
+    await expect(
+      service.monthlyLineItems(USER, "dddddddd-dddd-4ddd-8ddd-dddddddddddd", QUERY),
     ).rejects.toBeInstanceOf(ForbiddenError);
   });
 });

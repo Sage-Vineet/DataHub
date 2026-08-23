@@ -4,9 +4,11 @@ import { BadRequestError, ForbiddenError, NotFoundError } from "../../../shared/
 import type { StatementExtract, StatementsRepository } from "../../statements/ports.js";
 import type { QuickBooksRepository } from "../ports.js";
 import {
+  readMonthlyLineItems,
   readProfitAndLossSummary,
   toLedgerTransactions,
   toTaxReconciliationRows,
+  type MonthlyLineItems,
 } from "@datahub/financial-engine";
 import { QuickBooksAuthError, type QbReportType, type ReportFetcher } from "./client.js";
 import {
@@ -233,6 +235,33 @@ export class QuickBooksReportsService {
     };
   }
 
+  /**
+   * The month-by-month P&L behind the reconciliation's add-back picker.
+   *
+   * A `summarize_column_by=Month` report is a DIFFERENT report from the annual
+   * one, not a view of it — the columns are months rather than a single total.
+   * So it is cached under its own key, with the summarisation as part of the
+   * pull variant: sharing a key with the annual P&L would make the two replace
+   * each other and the page show whichever was fetched last.
+   */
+  async monthlyLineItems(
+    user: SessionUser,
+    companyId: string,
+    rawQuery: Record<string, unknown>,
+  ): Promise<MonthlyLineItems & { source: ServedReport["source"] }> {
+    const query = toReportQuery(rawQuery);
+    if (!query.startDate || !query.endDate) {
+      throw new BadRequestError("start_date and end_date are required.");
+    }
+
+    const served = await this.serve(user, companyId, "profit_and_loss", {
+      ...rawQuery,
+      summarize_column_by: "Month",
+    });
+
+    return { ...readMonthlyLineItems(served.data), source: served.source };
+  }
+
   private fromCache(extract: StatementExtract, disconnected: boolean): ServedReport {
     return {
       source: "cached_snapshot",
@@ -294,11 +323,14 @@ export class QuickBooksReportsService {
         // period no sync had covered. See migration 0015 for why that is a
         // legitimate provenance rather than a missing one.
         reportParams: fetched.params,
-        // The basis is part of the identity. Without it the same period on a
-        // cash basis and on an accrual basis share one key, and the second
-        // pull replaces the first — leaving the page showing whichever was
-        // fetched last, with nothing to say which.
-        variant: query.accountingMethod,
+        // The basis AND the summarisation are part of the identity. Without
+        // the basis, the same period on cash and on accrual share one key and
+        // the second pull replaces the first — the page then shows whichever
+        // was fetched last with nothing to say which. Without the
+        // summarisation, the monthly report and the annual one collide the
+        // same way, and one of them has twelve columns where the other has
+        // one.
+        variant: [query.accountingMethod, query.summarizeColumnBy].filter(Boolean).join("/") || null,
       },
       statementType: reportType as never,
       sourceKey: QUICKBOOKS_SOURCE_KEY,

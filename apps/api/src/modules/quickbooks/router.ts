@@ -195,6 +195,21 @@ export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
    * fetching separately, so the two pages cannot show different numbers for
    * the same period — legacy fetched its own copy and they could.
    */
+  /**
+   * The month-by-month P&L behind the reconciliation's add-back picker.
+   *
+   * A summarised report is a different report, not a view of the annual one,
+   * so it is cached under its own key — see the pull variant in the service.
+   */
+  router.get("/bank-reconciliation-line-items", handle(async (req, res) => {
+    const items = await reports.monthlyLineItems(
+      req.user!,
+      companyOf(req),
+      req.query as Record<string, unknown>,
+    );
+    res.json({ success: true, ...items });
+  }));
+
   router.get("/quickbooks-pl", handle(async (req, res) => {
     const result = await reports.profitAndLossForTax(
       req.user!,

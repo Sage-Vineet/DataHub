@@ -24,6 +24,7 @@
   "GET /balance-sheet",
   "GET /bank-reconciliation-addback-items",
   "GET /bank-reconciliation-adjustments",
+  "GET /bank-reconciliation-line-items",
   "GET /bank-vs-books",
   "GET /broker/activity",
   "GET /cim-questionnaire",

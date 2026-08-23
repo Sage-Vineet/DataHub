@@ -24,6 +24,7 @@ const query = (over: Partial<ReportQuery> = {}): ReportQuery => ({
   endDate: "2024-12-31",
   asOfDate: "2024-12-31",
   accountingMethod: "Accrual",
+  summarizeColumnBy: null,
   ...over,
 });
 
@@ -222,6 +223,7 @@ describe("the cache key", () => {
         endDate: null,
         asOfDate: null,
         accountingMethod: null,
+        summarizeColumnBy: null,
       }),
     ).toEqual({});
   });
@@ -241,6 +243,7 @@ describe("reading the query string", () => {
       endDate: "2024-12-31",
       asOfDate: "2024-12-31",
       accountingMethod: "Cash",
+      summarizeColumnBy: null,
     });
   });
 
@@ -263,6 +266,7 @@ describe("reading the query string", () => {
       endDate: null,
       asOfDate: null,
       accountingMethod: null,
+      summarizeColumnBy: null,
     });
   });
 
@@ -272,6 +276,55 @@ describe("reading the query string", () => {
       endDate: null,
       asOfDate: null,
       accountingMethod: null,
+      summarizeColumnBy: null,
     });
+  });
+});
+
+describe("a report broken into months is a different report", () => {
+  it("refuses an unsummarised cache for a monthly request", () => {
+    // The shapes differ: one has twelve columns and the other has one, and the
+    // code that renders one reads the other as a report with a single unnamed
+    // column.
+    expect(verdictFor(query({ summarizeColumnBy: "Month" }), cached())).toEqual({
+      kind: "no",
+      because: "summarisation-mismatch",
+    });
+  });
+
+  it("refuses a monthly cache for an unsummarised request", () => {
+    expect(
+      verdictFor(
+        query(),
+        cached({ reportParams: { accounting_method: "Accrual", summarize_column_by: "Month" } }),
+      ),
+    ).toEqual({ kind: "no", because: "summarisation-mismatch" });
+  });
+
+  it("serves a monthly cache for a monthly request", () => {
+    expect(
+      verdictFor(
+        query({ summarizeColumnBy: "Month" }),
+        cached({ reportParams: { accounting_method: "Accrual", summarize_column_by: "Month" } }),
+      ),
+    ).toEqual({ kind: "exact" });
+  });
+
+  it("compares case-insensitively", () => {
+    expect(
+      verdictFor(
+        query({ summarizeColumnBy: "month" }),
+        cached({ reportParams: { accounting_method: "Accrual", summarize_column_by: "Month" } }),
+      ),
+    ).toEqual({ kind: "exact" });
+  });
+
+  it("puts the summarisation in the cache key", () => {
+    expect(reportParamsOf(query({ summarizeColumnBy: "Month" })).summarize_column_by).toBe("Month");
+    expect(reportParamsOf(query()).summarize_column_by).toBeUndefined();
+  });
+
+  it("reads it off the query string", () => {
+    expect(toReportQuery({ summarize_column_by: "Month" }).summarizeColumnBy).toBe("Month");
   });
 });

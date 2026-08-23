@@ -21,6 +21,16 @@ export interface ReportQuery {
   asOfDate: string | null;
   /** "Cash" or "Accrual". Empty means the caller did not care. */
   accountingMethod: string | null;
+  /**
+   * How the report is broken into columns — `Month`, `Quarter`, `Year`.
+   *
+   * A summarised report is a DIFFERENT report, not a view of the same one: its
+   * columns are months rather than a single total. Part of the query and part
+   * of the cache key, because sharing a key with the unsummarised report would
+   * make the two replace each other and the page show whichever was fetched
+   * last — one with twelve columns and one with one, rendered by the same code.
+   */
+  summarizeColumnBy: string | null;
 }
 
 /** A report already held, as it comes off `statement_extracts`. */
@@ -46,7 +56,14 @@ export interface CachedReport {
 export type CacheVerdict =
   | { kind: "exact" }
   | { kind: "covers"; storedStart: string | null; storedEnd: string | null }
-  | { kind: "no"; because: "method-mismatch" | "period-not-covered" | "nothing-cached" };
+  | {
+      kind: "no";
+      because:
+        | "method-mismatch"
+        | "summarisation-mismatch"
+        | "period-not-covered"
+        | "nothing-cached";
+    };
 
 /**
  * "Cash" or "Accrual", however it was written.
@@ -96,6 +113,26 @@ export function accountingMethodMatches(
   return (storedAsk === null || storedAsk === want) && (answered === null || answered === want);
 }
 
+/**
+ * Whether a cached report is broken into the same columns as the one asked for.
+ *
+ * An absent value on either side is "not summarised", which is QuickBooks'
+ * default — so a report pulled before this was recorded is comparable rather
+ * than unusable.
+ */
+export function summarisationMatches(
+  requested: string | null,
+  cached: Pick<CachedReport, "reportParams">,
+): boolean {
+  const want = String(requested ?? "").trim().toLowerCase();
+  const had = String(
+    (cached.reportParams as { summarize_column_by?: unknown }).summarize_column_by ?? "",
+  )
+    .trim()
+    .toLowerCase();
+  return want === had;
+}
+
 /** What a stored pull says its period was. */
 function storedPeriod(cached: CachedReport): {
   start: string | null;
@@ -132,6 +169,12 @@ export function verdictFor(query: ReportQuery, cached: CachedReport | null): Cac
   if (!cached) return { kind: "no", because: "nothing-cached" };
   if (!accountingMethodMatches(query.accountingMethod, cached)) {
     return { kind: "no", because: "method-mismatch" };
+  }
+  // A monthly report cannot answer a request for an annual one, or the other
+  // way round: the shapes differ, and the code that renders one would read the
+  // other as a report with a single unnamed column.
+  if (!summarisationMatches(query.summarizeColumnBy, cached)) {
+    return { kind: "no", because: "summarisation-mismatch" };
   }
 
   const stored = storedPeriod(cached);
@@ -172,6 +215,7 @@ export function reportParamsOf(query: ReportQuery): Record<string, string> {
   if (query.asOfDate) params.as_of_date = query.asOfDate;
   const method = normaliseAccountingMethod(query.accountingMethod);
   if (method) params.accounting_method = method;
+  if (query.summarizeColumnBy) params.summarize_column_by = query.summarizeColumnBy;
   return params;
 }
 
@@ -190,5 +234,6 @@ export function toReportQuery(query: Record<string, unknown>): ReportQuery {
     // a balance sheet is a moment, and the moment is the end of the period.
     asOfDate: text(query.as_of_date) ?? text(query.end_date),
     accountingMethod: text(query.accounting_method),
+    summarizeColumnBy: text(query.summarize_column_by),
   };
 }
