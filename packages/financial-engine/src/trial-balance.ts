@@ -24,7 +24,7 @@ import type { Account, Aggregation, GlEntry, Period } from "./types.js";
 export interface TrialBalanceRow {
   accountId: string;
   accountName: string;
-  /** asset | liability | equity | income | expense */
+  /** asset | liability | equity | income | cogs | expense */
   accountType: string;
   statementType: "profit_loss" | "balance_sheet";
   openingBalance: number;
@@ -94,7 +94,7 @@ function movementByPeriod(
 }
 
 /** Accounts whose natural balance is a debit. */
-const DEBIT_NATURED = new Set(["asset", "expense"]);
+const DEBIT_NATURED = new Set(["asset", "expense", "cogs"]);
 
 /**
  * Assign movement to the debit or credit column.

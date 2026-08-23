@@ -34,6 +34,8 @@ export interface EngagementData {
 }
 
 const INCOME_TYPES = new Set(["income", "revenue", "other_income"]);
+/** What the database calls cost of sales, however it was spelled on ingest. */
+const COGS_TYPES = new Set(["cogs", "cost_of_goods_sold", "cost_of_sales"]);
 
 /** `balance_sheet_entries.section` uses plurals; the engine uses the singular. */
 const SECTION_TO_TYPE: Record<string, "asset" | "liability" | "equity"> = {
@@ -89,11 +91,18 @@ export async function loadEngagement(db: Db, versionId: string): Promise<Engagem
         // made every liability and equity account fall back to "asset" in the
         // roll-forward's balance check, and put the debit/credit split in the
         // trial balance on the wrong side of the ledger.
+        // Cost of sales is preserved rather than folded into expense. Folding
+        // it kept net income right — cogs is subtracted either way — but threw
+        // away the only thing gross profit can be derived from, and silently
+        // discarded a QoE reclassification to `cogs` on the way back out: the
+        // write succeeded and every subsequent read said `expense`.
         accountType:
           statementType === "profit_loss"
             ? INCOME_TYPES.has(String(row.accountType))
               ? "income"
-              : "expense"
+              : COGS_TYPES.has(String(row.accountType ?? "").toLowerCase())
+                ? "cogs"
+                : "expense"
             : (SECTION_TO_TYPE[String(row.accountType ?? "").toLowerCase()] ?? null),
         ebitdaRole: (row.ebitdaRole as EbitdaRole | null) ?? null,
       };

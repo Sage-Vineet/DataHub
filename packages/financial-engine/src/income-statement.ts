@@ -20,7 +20,25 @@ import type { Account, Aggregation, GlEntry, Period } from "./types.js";
 export interface IncomeStatement {
   periods: Period[];
   revenue: Record<string, number>;
+  /**
+   * EVERY non-income account, cost of sales included.
+   *
+   * Kept whole so `netIncome` is `revenue - expenses` however the accounts are
+   * classified — a company with no `cogs` accounts must not report a different
+   * bottom line from one that separates them.
+   */
   expenses: Record<string, number>;
+  /** The `cogs` subset of `expenses`. Zero when nothing is classified as such. */
+  costOfSales: Record<string, number>;
+  /**
+   * `revenue - costOfSales`.
+   *
+   * Equal to `netIncome` plus operating expense, not a second bottom line.
+   * Where no account is classified `cogs` this equals revenue, which is the
+   * honest answer: gross profit is undefined without a cost of sales, and
+   * guessing one from account labels is what this engine exists to stop.
+   */
+  grossProfit: Record<string, number>;
   netIncome: Record<string, number>;
   /** Signed contribution per account: revenue positive, expenses negative. */
   byAccount: Map<string, Record<string, number>>;
@@ -47,6 +65,7 @@ export function buildIncomeStatement(
   const byId = new Map(accounts.map((a) => [a.id, a]));
   const revenue = emptyAmounts(periods);
   const expenses = emptyAmounts(periods);
+  const costOfSales = emptyAmounts(periods);
   const byAccount = new Map<string, Record<string, number>>();
   const ledgerByAccount = new Map<string, Record<string, number>>();
   const unclassified = new Set<string>();
@@ -69,6 +88,8 @@ export function buildIncomeStatement(
     if (account.accountType === "income") revenue[key] = (revenue[key] ?? 0) + entry.amount;
     else expenses[key] = (expenses[key] ?? 0) + entry.amount;
 
+    if (account.accountType === "cogs") costOfSales[key] = (costOfSales[key] ?? 0) + entry.amount;
+
     let signedTotals = byAccount.get(entry.accountId);
     if (!signedTotals) byAccount.set(entry.accountId, (signedTotals = emptyAmounts(periods)));
     signedTotals[key] = (signedTotals[key] ?? 0) + signed;
@@ -83,11 +104,16 @@ export function buildIncomeStatement(
   const netIncome = Object.fromEntries(
     Object.keys(revenue).map((key) => [key, (revenue[key] ?? 0) - (expenses[key] ?? 0)]),
   );
+  const grossProfit = Object.fromEntries(
+    Object.keys(revenue).map((key) => [key, (revenue[key] ?? 0) - (costOfSales[key] ?? 0)]),
+  );
 
   return {
     periods,
     revenue: roundAmounts(revenue),
     expenses: roundAmounts(expenses),
+    costOfSales: roundAmounts(costOfSales),
+    grossProfit: roundAmounts(grossProfit),
     netIncome: roundAmounts(netIncome),
     byAccount: new Map([...byAccount].map(([id, a]) => [id, roundAmounts(a)])),
     ledgerByAccount: new Map([...ledgerByAccount].map(([id, a]) => [id, roundAmounts(a)])),

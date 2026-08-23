@@ -455,6 +455,51 @@ describe("QoE bridge over HTTP (real Postgres, real ledger)", () => {
     expect(names).not.toContain("Meals Tax");
   });
 
+  it("keeps a reclassification to cost of sales, rather than reading it back as expense", async () => {
+    // This round-trip used to lose. The write landed `cogs` in the database and
+    // every read came back `expense`, because `loadEngagement` collapsed all
+    // non-income P&L accounts to a single type — so the reclassification looked
+    // like it had silently done nothing, and gross profit could not be derived.
+    await classify();
+    const mealsTax = accountUuid.get("meals-tax")!;
+
+    const before = (await request(app).get(`/qoe/bridge?version_id=${versionId}&years=2024`)).body;
+
+    await request(app)
+      .put(`/qoe/versions/${versionId}/accounts/${mealsTax}/classification`)
+      .send({ account_type: "cogs" })
+      .expect(204);
+
+    const after = (await request(app).get(`/qoe/bridge?version_id=${versionId}&years=2024`)).body;
+
+    // Still a cost, so the bottom line must not move an inch.
+    expect(after.netIncome.amounts["2024"]).toBeCloseTo(before.netIncome.amounts["2024"], 2);
+
+    // The read-back is the whole point: the statement must report the account
+    // as cost of sales, and gross profit must fall by exactly its amount.
+    const statement = (
+      await request(app).get(`/qoe/income-statement?version_id=${versionId}&years=2024`)
+    ).body;
+    const line = statement.lines.find(
+      (l: { account_name: string }) => l.account_name === "Meals Tax",
+    );
+    expect(line.account_type).toBe("cogs");
+    expect(statement.cost_of_sales["2024"]).toBeCloseTo(37820.18, 2);
+    expect(statement.gross_profit["2024"]).toBeCloseTo(
+      statement.revenue["2024"] - 37820.18,
+      2,
+    );
+
+    // And it is still a P&L account — reclassifying within the statement must
+    // not push it off the statement, which is what `asset` does above.
+    const report = (await request(app)
+      .post(`/qoe/versions/${versionId}/classify?dry_run=true`)).body;
+    const names = [
+      ...report.applied, ...report.suggested, ...report.unclassified,
+    ].map((c: { accountName: string }) => c.accountName);
+    expect(names).toContain("Meals Tax");
+  });
+
   it("refuses a classification that is not a real account type", async () => {
     const mealsTax = accountUuid.get("meals-tax")!;
     await request(app)

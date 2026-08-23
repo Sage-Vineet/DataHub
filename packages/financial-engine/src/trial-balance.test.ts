@@ -131,3 +131,72 @@ describe("agreement with the balance sheet", () => {
     expect(row!.closingBalance).toBeCloseTo(19265, 2);
   });
 });
+
+describe("cost of sales sits on the debit side", () => {
+  // `DEBIT_NATURED` listed only asset and expense. The omission was invisible
+  // for as long as the loader folded cogs into expense before the engine saw
+  // it; the moment the classification was preserved, every cost-of-sales
+  // account would have been posted to the credit column and thrown the trial
+  // balance out by twice its movement.
+  const cogsAccounts: Account[] = [
+    { id: "sales", name: "Sales", statementType: "profit_loss", accountType: "income" },
+    { id: "materials", name: "Materials", statementType: "profit_loss", accountType: "cogs" },
+    { id: "cash", name: "Cash", statementType: "balance_sheet", accountType: "asset" },
+  ];
+  const rows: GlEntry[] = [
+    { accountId: "sales", fiscalYear: 2024, month: 1, amount: 1000 },
+    { accountId: "materials", fiscalYear: 2024, month: 1, amount: 400 },
+    // The cash side, so the fixture is an actual double entry and the balance
+    // assertion below means something.
+    { accountId: "cash", fiscalYear: 2024, month: 1, amount: 600 },
+  ];
+  // The roll-forward underneath refuses to run without a stated position, so
+  // the smallest legitimate one stands in.
+  const opening: BalanceSheetAnchor = {
+    kind: "starting",
+    fiscalYear: 2023,
+    month: 12,
+    rows: [
+      { accountId: "cash", accountName: "Cash", section: "asset", group: "Bank Accounts", amount: 0 },
+    ],
+  };
+
+  const rowFor = (accounts: Account[], id: string) => {
+    const built = buildTrialBalance({ accounts, entries: rows, anchors: [opening], fiscalYears: [2024] });
+    return built.entries[0]!.rows.find((r) => r.accountId === id)!;
+  };
+
+  it("debits a cost-of-sales account and credits revenue", () => {
+    expect(rowFor(cogsAccounts, "materials").debits).toBeCloseTo(400, 2);
+    expect(rowFor(cogsAccounts, "materials").credits).toBeCloseTo(0, 2);
+    expect(rowFor(cogsAccounts, "sales").credits).toBeCloseTo(1000, 2);
+    expect(rowFor(cogsAccounts, "sales").debits).toBeCloseTo(0, 2);
+  });
+
+  it("puts it on the same side an expense account would take", () => {
+    const asExpense = cogsAccounts.map((a) =>
+      a.id === "materials" ? { ...a, accountType: "expense" as const } : a,
+    );
+    expect(rowFor(cogsAccounts, "materials").debits).toBeCloseTo(
+      rowFor(asExpense, "materials").debits,
+      2,
+    );
+    expect(rowFor(cogsAccounts, "materials").movement).toBeCloseTo(
+      rowFor(asExpense, "materials").movement,
+      2,
+    );
+  });
+
+  it("still balances with a cost-of-sales account in the ledger", () => {
+    // The whole point of the column: credit the 400 instead of debiting it and
+    // the trial balance is out by 800 on a 1,000 ledger.
+    const built = buildTrialBalance({
+      accounts: cogsAccounts,
+      entries: rows,
+      anchors: [opening],
+      fiscalYears: [2024],
+    });
+    expect(built.entries[0]!.outOfBalance).toBeCloseTo(0, 2);
+    expect(built.entries[0]!.balances).toBe(true);
+  });
+});

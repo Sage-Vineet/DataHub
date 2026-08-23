@@ -64,13 +64,12 @@ import {
  * let them get away with it, but two lists that must agree forever is one more
  * than there should be.
  *
- * Note `cogs`, which `AccountType` in `types.ts` does not have. That omission
- * is a live inaccuracy rather than a deliberate narrowing: both QoE
- * repositories already accept `"cogs"` from the database and cast it into
- * `Account.accountType`, so a cost-of-sales account flows through the engine
- * today carrying a value its own union does not admit. Reconciling the two is
- * left as a separate change — widening the engine's union touches the income
- * statement and every consumer of it, and does not belong in a port.
+ * `AccountType` in `types.ts` now carries `cogs` too, so this list and that
+ * union finally agree. They did not for a long while, and two real defects
+ * hid in the gap: the trial balance posted cost of sales to the credit column,
+ * and `loadEngagement` folded it into `expense` on the way out of the
+ * database — which silently discarded a QoE reclassification to `cogs` and
+ * left gross profit underivable.
  */
 export const PROFIT_LOSS_TYPES = ["income", "cogs", "expense"] as const;
 

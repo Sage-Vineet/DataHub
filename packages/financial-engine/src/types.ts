@@ -14,7 +14,26 @@ export type StatementType = "profit_loss" | "balance_sheet";
  * for balance-sheet accounts. Null only when the account has not been
  * classified, which is a hard error anywhere it matters.
  */
-export type AccountType = "income" | "expense" | "asset" | "liability" | "equity" | null;
+/**
+ * `cogs` is a distinct type rather than a flavour of `expense`.
+ *
+ * It was omitted here for a long time while `coa-constraints.ts`, the QoE
+ * contracts and the `chart_of_accounts` check constraint all admitted it — so
+ * a cost-of-sales account flowed through the engine carrying a value this
+ * union did not permit. Two things went wrong once it did: the trial balance
+ * put it in the credit column (`DEBIT_NATURED` in `trial-balance.ts` listed
+ * only asset and expense), and gross profit could not be derived at all
+ * because the income statement had nowhere to separate it from operating
+ * expense.
+ */
+export type AccountType =
+  | "income"
+  | "cogs"
+  | "expense"
+  | "asset"
+  | "liability"
+  | "equity"
+  | null;
 
 /**
  * The centralized account-level classification `QE - 0004` requires in place of

@@ -66,7 +66,12 @@ function toEngineAddback(record: AddbackRecord): Addback {
 export interface IncomeStatementResponse {
   periods: IncomeStatement["periods"];
   revenue: Record<string, number>;
+  /** All costs, cost of sales included — `revenue - expenses` is net income. */
   expenses: Record<string, number>;
+  /** The cost-of-sales subset of `expenses`; zero when nothing is so classified. */
+  cost_of_sales: Record<string, number>;
+  /** `revenue - cost_of_sales`. Equals revenue where there is no cost of sales. */
+  gross_profit: Record<string, number>;
   net_income: Record<string, number>;
   lines: Array<{
     account_id: string;
@@ -157,6 +162,8 @@ export class QoeService {
       periods: statement.periods,
       revenue: statement.revenue,
       expenses: statement.expenses,
+      cost_of_sales: statement.costOfSales,
+      gross_profit: statement.grossProfit,
       net_income: statement.netIncome,
       lines,
     };

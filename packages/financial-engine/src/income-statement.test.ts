@@ -68,3 +68,65 @@ describe("income statement", () => {
     );
   });
 });
+
+/**
+ * Cost of sales.
+ *
+ * `cogs` was absent from `AccountType` while the database, the QoE contracts
+ * and `coa-constraints.ts` all accepted it, so a cost-of-sales account reached
+ * the engine as a value its own union forbade. What follows pins the two
+ * things that could then not be got right: gross profit, and the guarantee
+ * that separating cost of sales out never moves the bottom line.
+ */
+describe("cost of sales", () => {
+  const accountsWithCogs: Account[] = [
+    { id: "sales", name: "Sales", statementType: "profit_loss", accountType: "income" },
+    { id: "materials", name: "Materials", statementType: "profit_loss", accountType: "cogs" },
+    { id: "rent", name: "Rent", statementType: "profit_loss", accountType: "expense" },
+  ];
+  const rows: GlEntry[] = [
+    { accountId: "sales", fiscalYear: 2024, month: 1, amount: 1000 },
+    { accountId: "materials", fiscalYear: 2024, month: 1, amount: 400 },
+    { accountId: "rent", fiscalYear: 2024, month: 1, amount: 250 },
+  ];
+  const build = (a: Account[], e: GlEntry[]) =>
+    buildIncomeStatement(a, e, buildPeriods(e, [2024], "annual"), "annual");
+
+  it("reports gross profit as revenue less cost of sales", () => {
+    const statement = build(accountsWithCogs, rows);
+    expect(statement.costOfSales["2024"]).toBeCloseTo(400, 2);
+    expect(statement.grossProfit["2024"]).toBeCloseTo(600, 2);
+  });
+
+  it("keeps cost of sales inside expenses, so net income is unchanged", () => {
+    // The bottom line must not depend on how finely the accounts are split.
+    // Reclassifying Materials from expense to cogs moves gross profit and
+    // nothing else.
+    const asExpense = accountsWithCogs.map((a) =>
+      a.id === "materials" ? { ...a, accountType: "expense" as const } : a,
+    );
+    const split = build(accountsWithCogs, rows);
+    const merged = build(asExpense, rows);
+
+    expect(split.netIncome["2024"]).toBeCloseTo(merged.netIncome["2024"]!, 2);
+    expect(split.expenses["2024"]).toBeCloseTo(merged.expenses["2024"]!, 2);
+    expect(merged.grossProfit["2024"]).toBeCloseTo(1000, 2);
+    expect(split.grossProfit["2024"]).toBeCloseTo(600, 2);
+  });
+
+  it("signs a cost-of-sales account negative, like any other cost", () => {
+    const statement = build(accountsWithCogs, rows);
+    expect(statement.byAccount.get("materials")!["2024"]).toBeCloseTo(-400, 2);
+    expect(statement.ledgerByAccount.get("materials")!["2024"]).toBeCloseTo(400, 2);
+  });
+
+  it("reports gross profit equal to revenue when nothing is classified cogs", () => {
+    // Undefined, not zero — and saying so beats inferring a cost of sales from
+    // account names, which is the inference this engine exists to remove.
+    const statement = annual();
+    for (const year of Object.keys(WORKBOOK)) {
+      expect(statement.costOfSales[year]).toBeCloseTo(0, 2);
+      expect(statement.grossProfit[year]).toBeCloseTo(statement.revenue[year]!, 2);
+    }
+  });
+});
