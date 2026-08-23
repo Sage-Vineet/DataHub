@@ -44,6 +44,7 @@
   "GET /my-direct-contacts",
   "GET /my-groups",
   "GET /reports/balance-sheet",
+  "GET /reports/balance-sheet/monthly-detail",
   "GET /reports/cashflow",
   "GET /reports/profit-loss",
   "GET /reports/profit-loss/monthly-detail",

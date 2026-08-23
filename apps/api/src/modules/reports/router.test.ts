@@ -78,9 +78,9 @@ const emptyCashFlow = {
   filters: {},
   years: [],
   sections: {
-    Operating: { label: "Operating Activities", items: [], totalByYear: {} },
-    Investing: { label: "Investing Activities", items: [], totalByYear: {} },
-    Financing: { label: "Financing Activities", items: [], totalByYear: {} },
+    Operating: { label: "Cash Flow from Operating Activities", items: [], totalByYear: {} },
+    Investing: { label: "Cash Flow from Investing Activities", items: [], totalByYear: {} },
+    Financing: { label: "Cash Flow from Financing Activities", items: [], totalByYear: {} },
   },
   netCashChange: {},
   hierarchicalRows: [],
@@ -96,6 +96,20 @@ const emptyMonthlyDetail = {
   months: [],
   monthNames: [],
   sections: [],
+  filters: {},
+};
+
+const emptyBsMonthlyDetail = {
+  source: "general_ledger_entries",
+  reportType: "balance_sheet_monthly_detail",
+  year: null,
+  months: [],
+  monthNames: [],
+  sections: {
+    Assets: { label: "Assets", categories: [], monthlyTotals: {}, total: 0 },
+    Liabilities: { label: "Liabilities", categories: [], monthlyTotals: {}, total: 0 },
+    Equity: { label: "Equity", categories: [], monthlyTotals: {}, total: 0 },
+  },
   filters: {},
 };
 
@@ -121,6 +135,7 @@ function stub(over: Record<string, unknown> = {}) {
     balanceSheet: record("balanceSheet", emptyBalanceSheet),
     cashFlow: record("cashFlow", emptyCashFlow),
     monthlyDetail: record("monthlyDetail", emptyMonthlyDetail),
+    balanceSheetMonthlyDetail: record("balanceSheetMonthlyDetail", emptyBsMonthlyDetail),
     ...over,
   } as unknown as ReportsService;
 
@@ -469,5 +484,49 @@ describe("the monthly-detail route", () => {
         .get(`/reports/profit-loss/monthly-detail?clientId=${COMPANY}`)
         .expect(status);
     }
+  });
+});
+
+describe("the balance-sheet monthly-detail route", () => {
+  it("takes the same month window as its P&L counterpart", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .get(`/reports/balance-sheet/monthly-detail?clientId=${COMPANY}&fiscalYear=2024&months=1,2`)
+      .expect(200);
+    expect(argsOf(calls, "balanceSheetMonthlyDetail")[2]).toEqual({
+      fiscalYear: 2024,
+      months: [1, 2],
+    });
+  });
+
+  it("400s without a company, and answers under the envelope with one", async () => {
+    const { app } = stub();
+    await request(app).get("/reports/balance-sheet/monthly-detail").expect(400);
+    const res = await request(app)
+      .get(`/reports/balance-sheet/monthly-detail?clientId=${COMPANY}`)
+      .expect(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.reportType).toBe("balance_sheet_monthly_detail");
+  });
+
+  it("surfaces the missing balance sheet as 422", async () => {
+    const { app } = stub({
+      balanceSheetMonthlyDetail: () =>
+        Promise.reject(new HttpError(422, "No balance sheet has been ingested")),
+    });
+    await request(app)
+      .get(`/reports/balance-sheet/monthly-detail?clientId=${COMPANY}`)
+      .expect(422);
+  });
+
+  it("does not answer the summary route with the monthly one", async () => {
+    // `/reports/balance-sheet` and `/reports/balance-sheet/monthly-detail` are
+    // siblings; `monthly-detail` must not be read as a path parameter.
+    const { app, calls } = stub();
+    await request(app).get(`/reports/balance-sheet?clientId=${COMPANY}`).expect(200);
+    await request(app)
+      .get(`/reports/balance-sheet/monthly-detail?clientId=${COMPANY}`)
+      .expect(200);
+    expect(calls.map((c) => c.method)).toEqual(["balanceSheet", "balanceSheetMonthlyDetail"]);
   });
 });

@@ -133,6 +133,15 @@ describe("the rows the summary renders", () => {
   const payload = buildCashFlowReport(engagement, { fiscalYears: [2023, 2024] });
   const rows = payload.hierarchicalRows;
 
+  it("names each section as the summary component renders it", () => {
+    // The page prints `label` verbatim as the section heading.
+    expect(rows.find((r) => r.id === "operating-header")!.name).toBe(
+      "Cash Flow from Operating Activities",
+    );
+    expect(payload.sections.Investing.label).toBe("Cash Flow from Investing Activities");
+    expect(payload.sections.Financing.label).toBe("Cash Flow from Financing Activities");
+  });
+
   it("leads the operating section with net income", () => {
     const operating = rows.find((r) => r.id === "operating-header")!;
     expect(operating.children![0]!.name).toBe("Net Income");

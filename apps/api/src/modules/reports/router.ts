@@ -213,18 +213,32 @@ export function createReportsRouter(deps: ReportsRouterDeps): Router {
    * `fiscalYear` is a single year here, not a set — the table's columns are the
    * months of one year, so a second year has nowhere to go.
    */
-  router.get("/reports/profit-loss/monthly-detail", handle(async (req, res) => {
+  /**
+   * One year and a set of its months — the window every monthly-detail view
+   * takes. `year` is accepted alongside `fiscalYear` because both reach these
+   * endpoints, and an unparseable year is omitted rather than sent on as NaN.
+   */
+  const monthWindowOf = (req: Request): { fiscalYear?: number; months: number[] } => {
     const year = Number.parseInt(String(req.query.fiscalYear ?? req.query.year ?? ""), 10);
-    const rawMonths = req.query.month ?? req.query.months;
-    const months = (Array.isArray(rawMonths) ? rawMonths : rawMonths === undefined ? [] : [rawMonths])
+    const raw = req.query.month ?? req.query.months;
+    const months = (Array.isArray(raw) ? raw : raw === undefined ? [] : [raw])
       .flatMap((value) => String(value).split(","))
       .map((value) => Number.parseInt(value.trim(), 10))
       .filter((month) => Number.isInteger(month) && month >= 1 && month <= 12);
+    return { ...(Number.isInteger(year) && year > 0 ? { fiscalYear: year } : {}), months };
+  };
 
-    const payload = await service.monthlyDetail(req.user!, companyOf(req), {
-      ...(Number.isInteger(year) && year > 0 ? { fiscalYear: year } : {}),
-      months,
-    });
+  router.get("/reports/profit-loss/monthly-detail", handle(async (req, res) => {
+    const payload = await service.monthlyDetail(req.user!, companyOf(req), monthWindowOf(req));
+    res.json({ success: true, ...payload });
+  }));
+
+  router.get("/reports/balance-sheet/monthly-detail", handle(async (req, res) => {
+    const payload = await service.balanceSheetMonthlyDetail(
+      req.user!,
+      companyOf(req),
+      monthWindowOf(req),
+    );
     res.json({ success: true, ...payload });
   }));
 

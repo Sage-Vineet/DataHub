@@ -731,51 +731,6 @@ router.get("/reports/vendor-analysis", enforceDataSource(REPORT_SOURCE_KEYS.MANU
   }
 });
 
-router.get("/reports/balance-sheet/monthly-detail", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
-    const filters = parseManualFilterQuery(req.query || {});
-    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
-      ...filters,
-      allowExplicitBatch: isHistoricalBatchMode(filters),
-    });
-    console.log(`[ManualGL][Report] Resolved batchId ${activeBatchId} for filters:`, JSON.stringify(filters));
-    const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
-    logManualReportFilterDebug("reports/balance-sheet/monthly-detail", clientId, cacheFilters, activeBatchId);
-    const hasMonthFilter = Array.isArray(cacheFilters.fiscalMonths) && cacheFilters.fiscalMonths.length > 0;
-
-    const cached = reportCache.get("bs_monthly", clientId, cacheFilters);
-    if (cached) return res.json({ success: true, ...cached });
-
-    if (!hasMonthFilter) {
-      const snapshotResult = await tryLoadActiveSnapshot(
-        clientId,
-        SNAPSHOT_REPORT_TYPES.BALANCE_SHEET_MONTHLY_DETAIL,
-        cacheFilters,
-      );
-      const snapshotSections = snapshotResult.payload?.sections;
-      if (snapshotResult.payload && Array.isArray(snapshotSections) && snapshotSections.length > 0) {
-        const payload = {
-          ...snapshotResult.payload,
-          source: "manual_gl_reporting_snapshot",
-          activeBatchId: snapshotResult.activeBatchId || activeBatchId || null,
-        };
-        reportCache.set("bs_monthly", clientId, cacheFilters, payload);
-        return res.json({ success: true, ...payload });
-      }
-    }
-
-    const payload = await getBalanceSheetMonthlyDetailFromStage(clientId, cacheFilters);
-    reportCache.set("bs_monthly", clientId, cacheFilters, payload);
-    return res.json({ success: true, ...payload, activeBatchId: activeBatchId || null });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: error.message || "Failed to build staged Balance Sheet monthly detail.",
-    });
-  }
-});
 router.get("/reports/profit-loss/monthly", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     const clientId = resolveClientId(req);

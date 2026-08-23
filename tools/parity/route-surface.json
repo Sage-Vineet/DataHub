@@ -154,6 +154,7 @@
       "additive": [
         "GET /key-reports/versions/:p/reports/financial-statements",
         "GET /reports/balance-sheet",
+        "GET /reports/balance-sheet/monthly-detail",
         "GET /reports/cashflow",
         "GET /reports/profit-loss",
         "GET /reports/profit-loss/monthly-detail"
@@ -217,7 +218,6 @@
     "GET /quickbooks-pl",
     "GET /refresh-token",
     "GET /report-sources",
-    "GET /reports/balance-sheet/monthly-detail",
     "GET /reports/cashflow/monthly-detail",
     "GET /reports/pl",
     "GET /reports/profit-loss/detail",

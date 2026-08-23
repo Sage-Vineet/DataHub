@@ -20,6 +20,11 @@ import {
   type ProfitLossSummaryPayload,
 } from "./profit-loss-view.js";
 import {
+  buildBalanceSheetMonthlyDetail,
+  type BalanceSheetMonthlyFilters,
+  type BalanceSheetMonthlyPayload,
+} from "./balance-sheet-monthly-view.js";
+import {
   buildMonthlyDetail,
   type MonthlyDetailFilters,
   type MonthlyDetailPayload,
@@ -151,6 +156,22 @@ export class ReportsService {
     const { engagement, versionId } = await this.activeVersion(user, companyId);
     const transactions = await this.ledger.list(versionId);
     return buildMonthlyDetail(engagement, transactions, filters);
+  }
+
+  /** The month-by-month Balance Sheet, with the movements behind each line. */
+  async balanceSheetMonthlyDetail(
+    user: SessionUser,
+    companyId: string,
+    filters: BalanceSheetMonthlyFilters = {},
+  ): Promise<BalanceSheetMonthlyPayload> {
+    const { engagement, versionId } = await this.activeVersion(user, companyId);
+    const transactions = await this.ledger.list(versionId);
+    try {
+      return buildBalanceSheetMonthlyDetail(engagement, transactions, filters);
+    } catch (err) {
+      if (err instanceof NoBalanceSheetError) throw new HttpError(422, err.message);
+      throw err;
+    }
   }
 
   /** The engagement behind a company's active key-report version. */

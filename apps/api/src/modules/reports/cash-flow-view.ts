@@ -57,10 +57,11 @@ export interface CashFlowFilters {
   fiscalYears?: number[];
 }
 
+/** Exactly the labels the summary component renders as section headings. */
 const SECTION_LABELS = {
-  Operating: "Operating Activities",
-  Investing: "Investing Activities",
-  Financing: "Financing Activities",
+  Operating: "Cash Flow from Operating Activities",
+  Investing: "Cash Flow from Investing Activities",
+  Financing: "Cash Flow from Financing Activities",
 } as const;
 
 const SECTION_TOTAL_LABELS = {
