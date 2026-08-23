@@ -414,46 +414,6 @@ router.get("/reports/pl", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async
   }
 });
 
-router.get("/reports/cashflow/monthly-detail", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
-
-    const filters = parseManualFilterQuery(req.query || {});
-    const activeBatchId = await resolveEffectiveReportBatchId(clientId, filters);
-    const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
-    logManualReportFilterDebug("reports/cashflow/monthly-detail", clientId, cacheFilters, activeBatchId);
-    const hasMonthFilter = Array.isArray(cacheFilters.fiscalMonths) && cacheFilters.fiscalMonths.length > 0;
-
-    const cached = reportCache.get("cf_monthly", clientId, cacheFilters);
-    if (cached) return res.json({ success: true, ...cached });
-
-    if (!hasMonthFilter) {
-      const snapshotResult = await tryLoadActiveSnapshot(
-        clientId,
-        SNAPSHOT_REPORT_TYPES.CASHFLOW_MONTHLY_DETAIL,
-        cacheFilters,
-      );
-
-      const snapshotSections = snapshotResult.payload?.sections;
-      if (snapshotResult.payload && Array.isArray(snapshotSections) && snapshotSections.length > 0) {
-        const payload = {
-          ...snapshotResult.payload,
-          source: "manual_gl_reporting_snapshot",
-          activeBatchId: snapshotResult.activeBatchId || activeBatchId || null,
-        };
-        reportCache.set("cf_monthly", clientId, cacheFilters, payload);
-        return res.json({ success: true, ...payload });
-      }
-    }
-
-    const payload = await getCashflowMonthlyDetailFromStage(clientId, cacheFilters);
-    reportCache.set("cf_monthly", clientId, cacheFilters, payload);
-    return res.json({ success: true, ...payload });
-  } catch (error) {
-    return res.status(500).json({ success: false, error: error.message || "Failed to fetch Cash Flow monthly detail." });
-  }
-});
 router.get("/manual-gl/columns/:uploadId", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     const { uploadId } = req.params;

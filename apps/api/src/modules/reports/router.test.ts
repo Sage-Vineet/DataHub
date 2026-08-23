@@ -136,6 +136,15 @@ function stub(over: Record<string, unknown> = {}) {
     cashFlow: record("cashFlow", emptyCashFlow),
     monthlyDetail: record("monthlyDetail", emptyMonthlyDetail),
     balanceSheetMonthlyDetail: record("balanceSheetMonthlyDetail", emptyBsMonthlyDetail),
+    cashFlowMonthlyDetail: record("cashFlowMonthlyDetail", {
+      source: "general_ledger_entries",
+      reportType: "cash_flow_monthly_detail",
+      year: null,
+      months: [],
+      monthNames: [],
+      sections: [],
+      filters: {},
+    }),
     ...over,
   } as unknown as ReportsService;
 
@@ -528,5 +537,38 @@ describe("the balance-sheet monthly-detail route", () => {
       .get(`/reports/balance-sheet/monthly-detail?clientId=${COMPANY}`)
       .expect(200);
     expect(calls.map((c) => c.method)).toEqual(["balanceSheet", "balanceSheetMonthlyDetail"]);
+  });
+});
+
+describe("the cash-flow monthly-detail route", () => {
+  it("takes the same month window, and does not shadow the summary route", async () => {
+    const { app, calls } = stub();
+    await request(app).get(`/reports/cashflow?clientId=${COMPANY}`).expect(200);
+    await request(app)
+      .get(`/reports/cashflow/monthly-detail?clientId=${COMPANY}&fiscalYear=2024&month=3`)
+      .expect(200);
+
+    expect(calls.map((c) => c.method)).toEqual(["cashFlow", "cashFlowMonthlyDetail"]);
+    expect(argsOf(calls, "cashFlowMonthlyDetail")[2]).toEqual({
+      fiscalYear: 2024,
+      months: [3],
+    });
+  });
+
+  it("400s without a company, and answers under the envelope with one", async () => {
+    const { app } = stub();
+    await request(app).get("/reports/cashflow/monthly-detail").expect(400);
+    const res = await request(app)
+      .get(`/reports/cashflow/monthly-detail?clientId=${COMPANY}`)
+      .expect(200);
+    expect(res.body.reportType).toBe("cash_flow_monthly_detail");
+  });
+
+  it("surfaces the missing balance sheet as 422", async () => {
+    const { app } = stub({
+      cashFlowMonthlyDetail: () =>
+        Promise.reject(new HttpError(422, "No balance sheet has been ingested")),
+    });
+    await request(app).get(`/reports/cashflow/monthly-detail?clientId=${COMPANY}`).expect(422);
   });
 });

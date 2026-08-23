@@ -242,6 +242,15 @@ export function createReportsRouter(deps: ReportsRouterDeps): Router {
     res.json({ success: true, ...payload });
   }));
 
+  router.get("/reports/cashflow/monthly-detail", handle(async (req, res) => {
+    const payload = await service.cashFlowMonthlyDetail(
+      req.user!,
+      companyOf(req),
+      monthWindowOf(req),
+    );
+    res.json({ success: true, ...payload });
+  }));
+
   router.get("/reports/cashflow", handle(async (req, res) => {
     const payload = await service.cashFlow(req.user!, companyOf(req), {
       fiscalYears: yearsOf(req),

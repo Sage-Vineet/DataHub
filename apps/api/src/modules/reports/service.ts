@@ -20,6 +20,11 @@ import {
   type ProfitLossSummaryPayload,
 } from "./profit-loss-view.js";
 import {
+  buildCashFlowMonthlyDetail,
+  type CashFlowMonthlyFilters,
+  type CashFlowMonthlyPayload,
+} from "./cash-flow-monthly-view.js";
+import {
   buildBalanceSheetMonthlyDetail,
   type BalanceSheetMonthlyFilters,
   type BalanceSheetMonthlyPayload,
@@ -168,6 +173,27 @@ export class ReportsService {
     const transactions = await this.ledger.list(versionId);
     try {
       return buildBalanceSheetMonthlyDetail(engagement, transactions, filters);
+    } catch (err) {
+      if (err instanceof NoBalanceSheetError) throw new HttpError(422, err.message);
+      throw err;
+    }
+  }
+
+  /**
+   * The month-by-month Cash Flow.
+   *
+   * No ledger read: every line is a movement between two rolled positions, so
+   * there is nothing to drill into that the balance sheet does not already
+   * show.
+   */
+  async cashFlowMonthlyDetail(
+    user: SessionUser,
+    companyId: string,
+    filters: CashFlowMonthlyFilters = {},
+  ): Promise<CashFlowMonthlyPayload> {
+    const engagement = await this.activeEngagement(user, companyId);
+    try {
+      return buildCashFlowMonthlyDetail(engagement, filters);
     } catch (err) {
       if (err instanceof NoBalanceSheetError) throw new HttpError(422, err.message);
       throw err;
