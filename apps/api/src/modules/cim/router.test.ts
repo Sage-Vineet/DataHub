@@ -49,10 +49,10 @@ function stub(over: Record<string, unknown> = {}) {
     listVersions: record("listVersions", []),
     createVersion: record("createVersion", { id: VERSION }),
     getVersion: record("getVersion", { id: VERSION, blocks: [] }),
-    upsertBlocks: record("upsertBlocks", { updated: 1 }),
-    setApproval: record("setApproval", { approved: true }),
+    saveBlocks: record("saveBlocks", { id: VERSION, blocks: [] }),
+    recordApproval: record("recordApproval", { id: VERSION, approved_at: "2026-01-01T00:00:00.000Z" }),
     gaps: record("gaps", []),
-    generateQuestions: record("generateQuestions", { created: 2 }),
+    generate: record("generate", { created: 2 }),
     reviewQueue: record("reviewQueue", []),
     acceptAnswer: record("acceptAnswer", { block_id: BLOCK }),
     discardAnswer: record("discardAnswer", { block_id: BLOCK }),
@@ -67,6 +67,9 @@ function stub(over: Record<string, unknown> = {}) {
 }
 
 const methods = (calls: Array<{ method: string }>) => calls.map((c) => c.method);
+
+const argsOf = (calls: Array<{ method: string; args: unknown[] }>, method: string) =>
+  calls.filter((c) => c.method === method).at(-1)!.args;
 
 describe("decks and versions", () => {
   it("lists and reads without confusing the two levels", async () => {
@@ -126,9 +129,94 @@ describe("editing and publishing", () => {
   it("records approval and publishes", async () => {
     const { app, calls } = stub();
     await request(app).post(`/cim/versions/${VERSION}/approval`).send({ approved: true });
-    await request(app).post(`/cim/versions/${VERSION}/publish`).send({});
+    await request(app)
+      .post(`/cim/versions/${VERSION}/publish`)
+      .set("content-type", "application/pdf")
+      .send(Buffer.from("%PDF-1.7"));
 
+    expect(methods(calls)).toContain("recordApproval");
     expect(methods(calls)).toContain("publish");
+  });
+
+  it("reads the publish body raw, whatever content type it arrives as", async () => {
+    // A JSON parser that swallowed a PDF would corrupt the artifact the whole
+    // freeze is built around, so the publish route alone takes a raw body —
+    // and takes it for EVERY content type, because a client posting a PDF as
+    // `application/octet-stream` is posting a PDF.
+    const { app, calls } = stub();
+    await request(app)
+      .post(`/cim/versions/${VERSION}/publish`)
+      .set("content-type", "application/json")
+      .send(Buffer.from("%PDF-1.7 not really json"))
+      .expect(201);
+    expect(Buffer.isBuffer(argsOf(calls, "publish")[2])).toBe(true);
+  });
+
+  it("takes the page count from the header, and none when it is not a number", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .post(`/cim/versions/${VERSION}/publish`)
+      .set("content-type", "application/pdf")
+      .set("x-page-count", "14")
+      .send(Buffer.from("%PDF"));
+    expect((argsOf(calls, "publish")[3] as { pageCount: number }).pageCount).toBe(14);
+
+    const { app: odd, calls: oddCalls } = stub();
+    await request(odd)
+      .post(`/cim/versions/${VERSION}/publish`)
+      .set("content-type", "application/pdf")
+      .set("x-page-count", "lots")
+      .send(Buffer.from("%PDF"));
+    expect((argsOf(oddCalls, "publish")[3] as { pageCount: number | null }).pageCount).toBeNull();
+  });
+
+  it("defaults the content type when the client sends none", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .post(`/cim/versions/${VERSION}/publish`)
+      .set("content-type", "application/octet-stream")
+      .send(Buffer.from("%PDF"));
+    expect((argsOf(calls, "publish")[3] as { contentType: string }).contentType).toBeTruthy();
+  });
+
+  it("400s a question generation the contract rejects", async () => {
+    const { app, calls } = stub();
+    await request(app).post(`/cim/versions/${VERSION}/questions`).send({}).expect(400);
+    expect(calls).toEqual([]);
+  });
+
+  it("400s an answer decision the contract rejects", async () => {
+    // Accepting or discarding an answer edits the CIM. A body that named no
+    // answer would reach the service as an undefined id and 404 there, which
+    // reads as "that answer is gone" rather than "you sent nothing".
+    const { app, calls } = stub();
+    await request(app).post(`/cim/blocks/${BLOCK}/accept-answer`).send({}).expect(400);
+    await request(app).post(`/cim/blocks/${BLOCK}/discard-answer`).send({}).expect(400);
+    expect(calls).toEqual([]);
+  });
+
+  it("saves blocks the contract accepts", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .put(`/cim/versions/${VERSION}/blocks`)
+      .send({ blocks: [{ block_key: "exec.summary", content: "Text." }] })
+      .expect(200);
+    expect(methods(calls)).toContain("saveBlocks");
+  });
+
+  it("generates questions the contract accepts", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .post(`/cim/versions/${VERSION}/questions`)
+      .send({ questions: [{ block_id: BLOCK, text: "What drove the swing?" }] })
+      .expect(201);
+    expect(methods(calls)).toContain("generate");
+  });
+
+  it("reports a version's health", async () => {
+    const { app, calls } = stub();
+    await request(app).get(`/cim/versions/${VERSION}/health`).expect(200);
+    expect(methods(calls)).toContain("health");
   });
 });
 

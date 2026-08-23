@@ -61,7 +61,13 @@ function stub(over: Record<string, unknown> = {}) {
   } as unknown as QaService;
 
   const app = express();
-  app.use(createQaRouter({ service, requireAuth: authAs("caller-1") }));
+  app.use(
+    createQaRouter({
+      service,
+      requireAuth: authAs("caller-1"),
+      ...(over.features ? { features: over.features as never } : {}),
+    }),
+  );
   return { app, calls };
 }
 
@@ -93,6 +99,28 @@ describe("bodies the router refuses before reaching the service", () => {
     expect(calls).toEqual([]);
   });
 
+  it("refuses a malformed listing query", async () => {
+    // The query decides which questions somebody is shown. An unvalidated one
+    // reaching the service is the wrong place to find out it was nonsense.
+    const { app, calls } = stub();
+    await request(app).get(`/qa/companies/${COMPANY}/items?mine=whoever`).expect(400);
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses a malformed attachment", async () => {
+    const { app, calls } = stub();
+    await request(app).post(`/qa/items/${ITEM}/attachments`).send({}).expect(400);
+    expect(calls).toEqual([]);
+  });
+
+  it("names the field a message does not name", async () => {
+    // Zod answers "Required" for a missing field, which is identical whichever
+    // field it was.
+    const { app } = stub();
+    const res = await request(app).post(`/qa/items/${ITEM}/attachments`).send({}).expect(400);
+    expect(String(res.body.error)).toMatch(/:/);
+  });
+
   it("refuses a malformed nominee replacement", async () => {
     const { app, calls } = stub();
     await request(app)
@@ -107,6 +135,35 @@ describe("bodies the router refuses before reaching the service", () => {
     const res = await request(app).post(`/qa/companies/${COMPANY}/items`).send({}).expect(400);
     expect(typeof res.body.error).toBe("string");
     expect(res.body.error.length).toBeGreaterThan(0);
+  });
+});
+
+describe("a sub-feature that is switched off", () => {
+  it("404s rather than falling through to legacy", async () => {
+    // Falling through would proxy the request to a backend that answers it
+    // differently, so a flag meant to hide a feature would instead swap which
+    // implementation serves it.
+    const { app, calls } = stub({ features: { presentation: false, nominations: false } });
+
+    const nominees = await request(app)
+      .put(`/qa/companies/${COMPANY}/categories/cat-1/nominees`)
+      .send({ user_ids: [USER] })
+      .expect(404);
+    expect(String(nominees.body.error)).toMatch(/nomination/i);
+
+    await request(app)
+      .post(`/qa/items/${ITEM}/presentation`)
+      .send({ source_response_id: USER, body: "x" })
+      .expect(404);
+    expect(calls).toEqual([]);
+  });
+
+  it("is on unless the deployment says otherwise", async () => {
+    const { app } = stub();
+    await request(app)
+      .put(`/qa/companies/${COMPANY}/categories/cat-1/nominees`)
+      .send({ user_ids: [USER] })
+      .expect(200);
   });
 });
 
