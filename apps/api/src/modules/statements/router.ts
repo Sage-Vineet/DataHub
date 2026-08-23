@@ -9,6 +9,7 @@ import type { StatementExtract } from "./ports.js";
 import { MissingCashFlowInputsError, type CashFlowService } from "./cash-flow.js";
 import type { DashboardService, TaxComparisonService } from "./dashboard.js";
 import type { BankStatementsService } from "./bank-statements.js";
+import type { StatementTransactionsService } from "./statement-transactions.js";
 import { toTaxReturnRows, type TaxReturnService } from "./tax-return.js";
 import type { StatementsService } from "./service.js";
 
@@ -20,6 +21,7 @@ export interface StatementsRouterDeps {
   /** Absent where no model is configured; the routes say so rather than failing. */
   taxReturn?: TaxReturnService;
   bankStatements?: BankStatementsService;
+  statementTransactions?: StatementTransactionsService;
   requireAuth: RequestHandler;
 }
 
@@ -42,6 +44,7 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
     taxComparison,
     taxReturn,
     bankStatements,
+    statementTransactions,
     requireAuth,
   } = deps;
   const router = express.Router();
@@ -382,6 +385,35 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
       ...(str(req.query.force) ? { force: true } : {}),
     });
     res.json({ success: true, ...balances });
+  }));
+
+  /**
+   * The transactions in a chunk of statement text.
+   *
+   * The caller sends TEXT. The instructions live on the server — the version
+   * this replaces took `systemPrompt` from the request body and passed it to
+   * the model, which made this an open proxy to a paid API for any
+   * authenticated user. A caller that still sends `systemPrompt` is not
+   * refused, because the page does; it is ignored, which is the point.
+   */
+  router.post("/parse-bank-statement", handle(async (req, res) => {
+    if (!statementTransactions) {
+      res.status(503).json({
+        success: false,
+        error: "Statement parsing is not configured on this server.",
+      });
+      return;
+    }
+    const body = (req.body ?? {}) as { userMessage?: unknown; text?: unknown };
+    const result = await statementTransactions.parse(
+      req.user!,
+      companyOf(req),
+      String(body.text ?? body.userMessage ?? ""),
+    );
+    // `transactions` is what the page reads. `skipped` is new: a list shorter
+    // than the statement looks exactly like a statement with fewer
+    // transactions, and this says which it was.
+    res.json({ transactions: result.transactions, skipped: result.skipped });
   }));
 
   router.get("/manual-upload/bank-data", bankData(MANUAL));

@@ -4,6 +4,7 @@ import type { DocumentReader } from "../../shared/gemini.js";
 import { CashFlowService } from "./cash-flow.js";
 import { DashboardService, TaxComparisonService } from "./dashboard.js";
 import { BankStatementsService } from "./bank-statements.js";
+import { StatementTransactionsService } from "./statement-transactions.js";
 import { TaxReturnService } from "./tax-return.js";
 import {
   DrizzleBankStatementDocumentPort,
@@ -23,6 +24,7 @@ export interface StatementsModule {
   taxComparison: TaxComparisonService;
   taxReturn: TaxReturnService | undefined;
   bankStatements: BankStatementsService | undefined;
+  statementTransactions: StatementTransactionsService | undefined;
 }
 
 export interface CreateStatementsModuleOptions {
@@ -75,6 +77,10 @@ export function createStatementsModule(
       })
     : undefined;
 
+  const statementTransactions = opts.reader
+    ? new StatementTransactionsService({ reader: opts.reader })
+    : undefined;
+
   return {
     router: createStatementsRouter({
       service,
@@ -83,6 +89,7 @@ export function createStatementsModule(
       taxComparison,
       ...(taxReturn ? { taxReturn } : {}),
       ...(bankStatements ? { bankStatements } : {}),
+      ...(statementTransactions ? { statementTransactions } : {}),
       requireAuth: opts.requireAuth,
     }),
     service,
@@ -91,6 +98,7 @@ export function createStatementsModule(
     taxComparison,
     taxReturn,
     bankStatements,
+    statementTransactions,
   };
 }
 
@@ -102,6 +110,7 @@ export { CashFlowService, MissingCashFlowInputsError } from "./cash-flow.js";
 export { DashboardService, TaxComparisonService } from "./dashboard.js";
 export { TaxReturnService, toTaxReturnFigures, toTaxReturnRows } from "./tax-return.js";
 export { BankStatementsService } from "./bank-statements.js";
+export { StatementTransactionsService } from "./statement-transactions.js";
 export type { TaxReturnFigures } from "./tax-return.js";
 export type { SourceDashboard, DashboardYear } from "./dashboard.js";
 export type { CashFlowPeriod } from "./cash-flow.js";

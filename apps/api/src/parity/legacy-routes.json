@@ -11,6 +11,5 @@
   "POST /manual-report-uploads/qms-parse-documents",
   "POST /manual-report-uploads/sync-qms-source",
   "POST /manual-report-uploads/sync-source",
-  "POST /parse-bank-statement",
   "PUT /api/invoices/:p"
 ]

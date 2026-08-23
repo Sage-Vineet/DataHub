@@ -167,6 +167,7 @@
   "POST /message-groups/:p/members",
   "POST /message-groups/:p/messages",
   "POST /message-groups/:p/messages/mark-read",
+  "POST /parse-bank-statement",
   "POST /requests/:p/approve",
   "POST /requests/:p/documents",
   "POST /requests/:p/reminders",
