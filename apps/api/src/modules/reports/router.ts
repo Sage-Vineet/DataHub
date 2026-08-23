@@ -91,13 +91,53 @@ export function createReportsRouter(deps: ReportsRouterDeps): Router {
     });
   }));
 
+  /**
+   * The SPA speaks camelCase on this surface, in both directions.
+   *
+   * `toLegacyVersion` already handles the response half. This is the request
+   * half, and it was missing: `createKeyReportVersion(clientId, {})` sends
+   * `{ companyId }` and legacy's handler read `req.body.versionName`, while the
+   * contract wants `company_id` and `version_name`. So "New version" answered
+   * 400 for every caller the moment the module served the route — and it does,
+   * since the demo sets `REPORTS_MODULE_ENABLED=true`.
+   *
+   * The company also arrives as `X-Client-Id` on some screens, the same way it
+   * does on the list route above.
+   *
+   * Normalized here rather than widened in the contract: the internal shape
+   * stays snake_case, and the translation lives at the boundary where the rest
+   * of it already does.
+   */
+  const toCreateBody = (req: Request): unknown => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const companyId =
+      body.company_id ?? body.companyId ?? req.query.clientId ?? req.headers["x-client-id"];
+    const versionName = body.version_name ?? body.versionName;
+    return {
+      ...body,
+      ...(companyId === undefined ? {} : { company_id: companyId }),
+      ...(versionName === undefined ? {} : { version_name: versionName }),
+    };
+  };
+
+  /** The same translation for a partial update. */
+  const toUpdateBody = (req: Request): unknown => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const versionName = body.version_name ?? body.versionName;
+    return { ...body, ...(versionName === undefined ? {} : { version_name: versionName }) };
+  };
+
   router.post("/key-reports/versions", handle(async (req, res) => {
-    const parsed = contracts.reportVersionCreate.safeParse(req.body);
+    const parsed = contracts.reportVersionCreate.safeParse(toCreateBody(req));
     if (!parsed.success) {
       res.status(400).json({ error: firstError(parsed.error) });
       return;
     }
-    res.status(201).json(toLegacyVersion(await service.create(req.user!, parsed.data)));
+    // Legacy answers `{ success, version }`; the SPA store reads `.version`.
+    res.status(201).json({
+      success: true,
+      version: toLegacyVersion(await service.create(req.user!, parsed.data)),
+    });
   }));
 
   /**
@@ -123,20 +163,37 @@ export function createReportsRouter(deps: ReportsRouterDeps): Router {
   }));
 
   router.put("/key-reports/versions/:versionId", handle(async (req, res) => {
-    const parsed = contracts.reportVersionUpdate.safeParse(req.body);
+    const parsed = contracts.reportVersionUpdate.safeParse(toUpdateBody(req));
     if (!parsed.success) {
       res.status(400).json({ error: firstError(parsed.error) });
       return;
     }
-    res.json(toLegacyVersion(await service.update(req.user!, req.params.versionId!, parsed.data)));
+    res.json({
+      success: true,
+      version: toLegacyVersion(await service.update(req.user!, req.params.versionId!, parsed.data)),
+    });
   }));
 
+  /**
+   * `{ success, version }`, not a bare version.
+   *
+   * The Key Reports page does `const res = await duplicateKeyReportVersion(...)`
+   * and then `if (res?.version?.id) setSelectedVersionId(res.version.id)`. A
+   * bare version leaves `res.version` undefined, so the copy is created and
+   * never selected — the screen looks like nothing happened.
+   */
   router.post("/key-reports/versions/:versionId/duplicate", handle(async (req, res) => {
-    res.status(201).json(toLegacyVersion(await service.duplicate(req.user!, req.params.versionId!)));
+    res.status(201).json({
+      success: true,
+      version: toLegacyVersion(await service.duplicate(req.user!, req.params.versionId!)),
+    });
   }));
 
   router.post("/key-reports/versions/:versionId/activate", handle(async (req, res) => {
-    res.json(toLegacyVersion(await service.activate(req.user!, req.params.versionId!)));
+    res.json({
+      success: true,
+      version: toLegacyVersion(await service.activate(req.user!, req.params.versionId!)),
+    });
   }));
 
   router.delete("/key-reports/versions/:versionId", handle(async (req, res) => {

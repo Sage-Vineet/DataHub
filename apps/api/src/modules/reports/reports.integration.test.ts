@@ -38,8 +38,9 @@ afterEach(async () => { await client.close(); });
 
 describe("reports router — version lifecycle (real Postgres)", () => {
   it("creates (auto-numbered), lists, updates, duplicates, and enforces one active version", async () => {
-    const v1 = (await request(app).post("/key-reports/versions").send({ company_id: companyId, version_name: "First" })).body;
-    const v2 = (await request(app).post("/key-reports/versions").send({ company_id: companyId })).body;
+    // Legacy answers `{ success, version }` and the SPA store reads `.version`.
+    const v1 = (await request(app).post("/key-reports/versions").send({ company_id: companyId, version_name: "First" })).body.version;
+    const v2 = (await request(app).post("/key-reports/versions").send({ company_id: companyId })).body.version;
     // Legacy wire shape is camelCase — the SPA reads these names directly.
     expect([v1.versionNumber, v2.versionNumber]).toEqual([1, 2]);
 
@@ -64,16 +65,53 @@ describe("reports router — version lifecycle (real Postgres)", () => {
     expect(detail.version.id).toBe(v1.id);
     expect(detail.version.versionName).toBe("First");
 
+    // Same envelope, and for a concrete reason: the Key Reports page reads
+    // `res.version.id` to select the copy it just made.
     const dup = (await request(app).post(`/key-reports/versions/${v1.id}/duplicate`)).body;
-    expect(dup.versionNumber).toBe(3);
-    expect(dup.isActive).toBe(false);
-    expect(dup.versionName).toBe("First");
+    expect(dup.success).toBe(true);
+    expect(dup.version.id).toBeTruthy();
+    expect(dup.version.versionNumber).toBe(3);
+    expect(dup.version.isActive).toBe(false);
+    expect(dup.version.versionName).toBe("First");
 
     // Activate v1, then v2 — the partial-unique index means only one stays active.
     await request(app).post(`/key-reports/versions/${v1.id}/activate`).expect(200);
     await request(app).post(`/key-reports/versions/${v2.id}/activate`).expect(200);
     const active = (await db.select().from(schema.keyReportVersions)).filter((r) => r.isActive);
     expect(active.map((r) => r.id)).toEqual([v2.id]);
+  });
+
+  it("accepts the camelCase body the SPA actually sends", async () => {
+    // `createKeyReportVersion(clientId, {})` sends `{ companyId }`, and legacy
+    // read `req.body.versionName`. The contract wants `company_id` and
+    // `version_name`, so "New version" answered 400 for every caller the moment
+    // the module served this route — and the demo sets the flag that makes it.
+    const created = await request(app)
+      .post("/key-reports/versions")
+      .send({ companyId, versionName: "From the SPA" })
+      .expect(201);
+    expect(created.body.version.versionName).toBe("From the SPA");
+    expect(created.body.version.companyId).toBe(companyId);
+  });
+
+  it("takes the company from X-Client-Id on create, as it does on list", async () => {
+    const created = await request(app)
+      .post("/key-reports/versions")
+      .set("X-Client-Id", companyId)
+      .send({})
+      .expect(201);
+    expect(created.body.version.companyId).toBe(companyId);
+  });
+
+  it("accepts a camelCase rename", async () => {
+    const id = (
+      await request(app).post("/key-reports/versions").send({ company_id: companyId })
+    ).body.version.id;
+    const updated = await request(app)
+      .put(`/key-reports/versions/${id}`)
+      .send({ versionName: "Renamed" })
+      .expect(200);
+    expect(updated.body.version.versionName).toBe("Renamed");
   });
 
   it("400s malformed create, 403s cross-tenant, and 501s the deferred sync via fall-through", async () => {
@@ -107,7 +145,7 @@ describe("reports over a real ledger (real Postgres)", () => {
   beforeEach(async () => {
     versionId = (
       await request(app).post("/key-reports/versions").send({ company_id: companyId })
-    ).body.id;
+    ).body.version.id;
     await request(app).post(`/key-reports/versions/${versionId}/activate`).send({});
 
     await db.insert(schema.chartOfAccounts).values([
