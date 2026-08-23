@@ -28,7 +28,6 @@
   "GET /manual-upload/cashflow/periods",
   "GET /profit-and-loss-statement",
   "GET /qb-bank-activity",
-  "GET /qb-bank-activity/saved",
   "GET /qb-cashflow",
   "GET /qb-general-ledger",
   "GET /qb-one-bank-activity",

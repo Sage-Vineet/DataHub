@@ -192,7 +192,8 @@
       "additive": [
         "GET /manual-report-uploads/reports/:p/all",
         "GET /manual-report-uploads/reports/:p/latest",
-        "GET /manual-report-uploads/source-tree"
+        "GET /manual-report-uploads/source-tree",
+        "GET /qb-bank-activity/saved"
       ]
     },
     "quickbooks": {
@@ -260,7 +261,6 @@
     "GET /manual-upload/cashflow/periods",
     "GET /profit-and-loss-statement",
     "GET /qb-bank-activity",
-    "GET /qb-bank-activity/saved",
     "GET /qb-cashflow",
     "GET /qb-general-ledger",
     "GET /qb-one-bank-activity",

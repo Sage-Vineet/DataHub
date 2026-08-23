@@ -122,6 +122,23 @@ export class StatementsService {
     return latest;
   }
 
+  /**
+   * The most recent statement of a type, or null.
+   *
+   * Separate from `resolve` because the callers differ in what an absence
+   * means. `resolve` is asked for a statement somebody expects to exist and
+   * 404s; this is asked "is there one?" and null is a perfectly good answer.
+   */
+  async latestOrNull(
+    user: SessionUser,
+    companyId: string,
+    statementType: string,
+    filter: { sourceKey?: string } = {},
+  ): Promise<StatementExtract | null> {
+    this.requireCompany(user, companyId);
+    return this.deps.repo.latest(companyId, this.requireType(statementType), filter);
+  }
+
   async sourceTree(
     user: SessionUser,
     companyId: string,

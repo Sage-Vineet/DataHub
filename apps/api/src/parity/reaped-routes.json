@@ -66,6 +66,7 @@
   "GET /messages/threads",
   "GET /my-direct-contacts",
   "GET /my-groups",
+  "GET /qb-bank-activity/saved",
   "GET /report-sources",
   "GET /reports/balance-sheet",
   "GET /reports/balance-sheet/monthly-detail",

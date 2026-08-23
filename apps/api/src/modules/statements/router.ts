@@ -112,5 +112,43 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
     res.json({ success: true, tree });
   }));
 
+  /**
+   * The saved bank reconciliation.
+   *
+   * Legacy kept this in `qb_bank_reconciliation_snapshots` — one row per
+   * company holding a payload, a date range and an accounting method. That is
+   * a statement with a period and a provenance, which is what
+   * `statement_extracts` already is, so it is one of those with
+   * `statement_type = "bank_reconciliation"` rather than a table of its own.
+   *
+   * Answers `{ found: false }` rather than 404 when there is none: the page
+   * calls this on load to restore what it can WITHOUT a live QuickBooks
+   * connection, and a 404 there reads as an error rather than as "nothing
+   * saved yet".
+   */
+  router.get("/qb-bank-activity/saved", handle(async (req, res) => {
+    const companyId = companyOf(req);
+    const saved = await service.latestOrNull(req.user!, companyId, "bank_reconciliation", {
+      ...(str(req.query.sourceKey) ? { sourceKey: str(req.query.sourceKey)! } : {}),
+    });
+
+    if (!saved) {
+      res.json({ found: false });
+      return;
+    }
+
+    const params = saved.reportParams as { accountingMethod?: unknown };
+    res.json({
+      found: true,
+      updatedAt: saved.updatedAt,
+      startDate: saved.periodStart,
+      endDate: saved.periodEnd,
+      accountingMethod:
+        typeof params.accountingMethod === "string" ? params.accountingMethod : "Accrual",
+      data: saved.payload,
+      extractId: saved.id,
+    });
+  }));
+
   return router;
 }

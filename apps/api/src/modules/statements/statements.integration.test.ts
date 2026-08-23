@@ -412,3 +412,106 @@ describe("pulled statements (real Postgres)", () => {
     expect(await db.select().from(schema.statementExtracts)).toHaveLength(2);
   });
 });
+
+/**
+ * The saved bank reconciliation.
+ *
+ * Legacy's twelfth absent table, `qb_bank_reconciliation_snapshots`: one row
+ * per company holding a payload, a date range and an accounting method. That
+ * is a statement with a period and a provenance, so it is one of these.
+ */
+describe("the saved bank reconciliation (real Postgres)", () => {
+  const saved = () =>
+    request(app).get("/qb-bank-activity/saved").set("X-Client-Id", companyId);
+
+  const record = async (over: Record<string, unknown> = {}) => {
+    const [run] = await db
+      .insert(schema.syncRuns)
+      .values({
+        companyId,
+        sourceKey: "quickbooks_online",
+        status: "completed",
+        finishedAt: new Date(),
+      })
+      .returning();
+    return service.save(current, companyId, {
+      provenance: {
+        from: "pull",
+        syncRunId: run!.id,
+        reportParams: { accountingMethod: "Cash" },
+      },
+      statementType: "bank_reconciliation",
+      sourceKey: "quickbooks_online",
+      periodStart: "2024-01-01",
+      periodEnd: "2024-03-31",
+      payload: { accounts: [{ name: "Operating", cleared: 5000 }] },
+      ...over,
+    });
+  };
+
+  it("says so plainly when nothing has been saved", async () => {
+    // The page calls this on load to restore what it can WITHOUT a live
+    // QuickBooks connection. A 404 there reads as an error rather than as
+    // "nothing saved yet".
+    const res = await saved().expect(200);
+    expect(res.body).toEqual({ found: false });
+  });
+
+  it("serves the payload with its range and method", async () => {
+    await record();
+    const res = await saved().expect(200);
+
+    expect(res.body.found).toBe(true);
+    expect(res.body.startDate).toBe("2024-01-01");
+    expect(res.body.endDate).toBe("2024-03-31");
+    expect(res.body.accountingMethod).toBe("Cash");
+    expect(res.body.data).toEqual({ accounts: [{ name: "Operating", cleared: 5000 }] });
+  });
+
+  it("defaults the accounting method rather than answering undefined", async () => {
+    // The page renders it as a label beside the figures. `undefined` shows as
+    // blank, and a reconciliation whose basis cannot be known is worse than
+    // one labelled with the commoner of the two.
+    const [run] = await db
+      .insert(schema.syncRuns)
+      .values({
+        companyId,
+        sourceKey: "quickbooks_online",
+        status: "completed",
+        finishedAt: new Date(),
+      })
+      .returning();
+    await service.save(current, companyId, {
+      // No `reportParams`, which is what a pull that never recorded one looks
+      // like.
+      provenance: { from: "pull", syncRunId: run!.id },
+      statementType: "bank_reconciliation",
+      sourceKey: "quickbooks_online",
+      periodStart: "2024-01-01",
+      periodEnd: "2024-03-31",
+      payload: {},
+    });
+
+    const res = await saved().expect(200);
+    expect(res.body.accountingMethod).toBe("Accrual");
+  });
+
+  it("replaces rather than accumulating when the same range is fetched again", async () => {
+    await record({ payload: { accounts: [] } });
+    await record({ payload: { accounts: [{ name: "Operating", cleared: 9999 }] } });
+
+    const rows = await db
+      .select()
+      .from(schema.statementExtracts);
+    expect(rows.filter((r) => r.statementType === "bank_reconciliation")).toHaveLength(1);
+
+    const res = await saved().expect(200);
+    expect(res.body.data).toEqual({ accounts: [{ name: "Operating", cleared: 9999 }] });
+  });
+
+  it("403s a company the caller cannot reach", async () => {
+    await record();
+    current = { ...BROKER, company_ids: [] };
+    await saved().expect(403);
+  });
+});
