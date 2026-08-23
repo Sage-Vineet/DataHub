@@ -71,6 +71,11 @@ function fetcher(
       if (answer instanceof Error) return Promise.reject(answer);
       return Promise.resolve({ payload: answer, params: { ...input.params } });
     },
+    queryEntity: (input) => {
+      calls.push(input);
+      if (answer instanceof Error) return Promise.reject(answer);
+      return Promise.resolve({ payload: answer, params: {} });
+    },
   };
 }
 

@@ -4,6 +4,7 @@ import { DrizzleDatasetsRepository } from "../datasets/repository.drizzle.js";
 import { DrizzleStatementsRepository } from "../statements/repository.drizzle.js";
 import { DrizzleSyncRepository } from "../sync/repository.drizzle.js";
 import { QuickBooksReportClient, QUICKBOOKS_BASE_URLS, type ReportFetcher } from "./reports/client.js";
+import { QuickBooksEntitiesService } from "./reports/entities.js";
 import { QuickBooksReportsService } from "./reports/service.js";
 import { QuickBooksSyncStatusService } from "./reports/status.js";
 import { DrizzleQuickBooksRepository } from "./repository.drizzle.js";
@@ -15,6 +16,7 @@ export interface QuickBooksModule {
   service: QuickBooksService;
   reports: QuickBooksReportsService;
   syncStatus: QuickBooksSyncStatusService;
+  entities: QuickBooksEntitiesService;
 }
 
 export interface CreateQuickBooksModuleOptions {
@@ -43,35 +45,37 @@ export function createQuickBooksModule(
 
   // Pulled reports live in `statement_extracts` alongside the ones read out of
   // uploaded files — same columns, different provenance. See migration 0011.
-  const reports = new QuickBooksReportsService({
-    statements: new DrizzleStatementsRepository(opts.db),
-    connections: repo,
-    fetcher:
-      opts.fetcher ??
-      new QuickBooksReportClient({
-        baseUrl: opts.quickBooksBaseUrl ?? QUICKBOOKS_BASE_URLS.production,
-      }),
-  });
+  const statements = new DrizzleStatementsRepository(opts.db);
+  const fetcher =
+    opts.fetcher ??
+    new QuickBooksReportClient({
+      baseUrl: opts.quickBooksBaseUrl ?? QUICKBOOKS_BASE_URLS.production,
+    });
+
+  const reports = new QuickBooksReportsService({ statements, connections: repo, fetcher });
 
   // The sync's state is a read across three tables rather than a stored
   // duplicate of it. See `reports/status.ts`.
-  const statements = new DrizzleStatementsRepository(opts.db);
   const syncStatus = new QuickBooksSyncStatusService({
     runs: new DrizzleSyncRepository(opts.db),
     datasets: new DrizzleDatasetsRepository(opts.db),
     statements,
   });
 
+  const entities = new QuickBooksEntitiesService({ statements, connections: repo, fetcher });
+
   return {
     router: createQuickBooksRouter({
       service,
       reports,
       syncStatus,
+      entities,
       requireAuth: opts.requireAuth,
     }),
     service,
     reports,
     syncStatus,
+    entities,
   };
 }
 
@@ -88,6 +92,7 @@ export {
 export type { QbReportType, ReportFetcher } from "./reports/client.js";
 export { QuickBooksReportsService, QUICKBOOKS_SOURCE_KEY } from "./reports/service.js";
 export { QuickBooksSyncStatusService } from "./reports/status.js";
+export { QuickBooksEntitiesService } from "./reports/entities.js";
 export type { QuickBooksSyncStatus } from "./reports/status.js";
 export type { ConnectionRecord, QuickBooksRepository } from "./ports.js";
 export type { ConnectionStatus } from "./service.js";

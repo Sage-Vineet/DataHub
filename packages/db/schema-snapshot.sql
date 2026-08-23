@@ -27,8 +27,9 @@
 --   packages/db/migrations/0014_statement_extracts_report_types.sql
 --   packages/db/migrations/0015_statement_extracts_pull_without_run.sql
 --   packages/db/migrations/0016_reconciliation_transaction_integrity.sql
+--   packages/db/migrations/0017_statement_extracts_entity_lists.sql
 --
--- source-sha256: bc46a6eeceb40ee229dba601ac0da2e7011b1b06938c53394470ff713549a8eb
+-- source-sha256: 54ebe2477da818663f8eea1d181133ecd7cfb46c783efa0cda312b0a3a5bcfe9
 --
 -- PostgreSQL database dump
 --
@@ -1697,7 +1698,7 @@ CREATE TABLE public.statement_extracts (
     pull_key text,
     CONSTRAINT statement_extracts_provenance_check CHECK (((document_id IS NOT NULL) OR (pull_key IS NOT NULL))),
     CONSTRAINT statement_extracts_pull_key_check CHECK (((document_id IS NULL) = (pull_key IS NOT NULL))),
-    CONSTRAINT statement_extracts_type_check CHECK ((statement_type = ANY (ARRAY['balance_sheet'::text, 'profit_and_loss'::text, 'cash_flow'::text, 'bank_reconciliation'::text, 'tax_return'::text, 'general_ledger'::text, 'account_list'::text])))
+    CONSTRAINT statement_extracts_type_check CHECK ((statement_type = ANY (ARRAY['balance_sheet'::text, 'profit_and_loss'::text, 'cash_flow'::text, 'bank_reconciliation'::text, 'tax_return'::text, 'general_ledger'::text, 'account_list'::text, 'customers'::text, 'invoices'::text])))
 );
 
 --

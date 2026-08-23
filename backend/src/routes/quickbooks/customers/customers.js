@@ -122,48 +122,6 @@ router.post("/customers", async (req, res) => {
  *       500:
  *         description: Server error
  */
-router.get("/customers", async (req, res) => {
-  const { serveCachedReport, REPORT_TYPES } = require("../../../services/quickbooksReportService");
-
-  try {
-    const cached = await serveCachedReport(
-      req.clientId,
-      REPORT_TYPES.CUSTOMERS,
-      {
-        startposition: req.query.startposition,
-        maxresults: req.query.maxresults,
-      },
-      { disconnected: Boolean(req.qbDisconnected) },
-    );
-
-    if (!cached?.data) {
-      return res.status(404).json({
-        success: false,
-        source: "cached_snapshot",
-        disconnected: Boolean(req.qbDisconnected),
-        message: "No finalized customer snapshot is available. Run QuickBooks sync to refresh cached data.",
-      });
-    }
-
-    return res.json({
-      success: true,
-      source: "cached_snapshot",
-      disconnected: Boolean(req.qbDisconnected),
-      lastSyncAt: cached.lastSyncedAt,
-      datasetVersion: cached.datasetVersion || null,
-      data: cached.data,
-    });
-  } catch (error) {
-    console.error("[Customers] Snapshot read failed:", error.message);
-    return res.status(500).json({
-      success: false,
-      source: "cached_snapshot",
-      disconnected: Boolean(req.qbDisconnected),
-      message: "Failed to load customer snapshot.",
-      error: error.message,
-    });
-  }
-});
 /**
  * @swagger
  * /customers/query:

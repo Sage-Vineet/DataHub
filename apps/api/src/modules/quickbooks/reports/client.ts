@@ -41,6 +41,21 @@ export const QB_REPORT_NAMES = {
   account_list: "AccountList",
 } as const;
 
+/**
+ * The entities that can be queried rather than reported.
+ *
+ * A different Intuit endpoint — `/query`, taking a SQL-like string — and a
+ * different kind of answer: a list of records rather than a statement with
+ * rows and columns. Same cache, because "what a source told us when asked" is
+ * one idea however it was asked.
+ */
+export const QB_ENTITY_NAMES = {
+  customers: "Customer",
+  invoices: "Invoice",
+} as const;
+
+export type QbEntityType = keyof typeof QB_ENTITY_NAMES;
+
 export type QbReportType = keyof typeof QB_REPORT_NAMES;
 
 /** The token was rejected. The connection needs refreshing or remaking. */
@@ -167,6 +182,111 @@ export class QuickBooksReportClient {
 
     return { payload: payload as Record<string, unknown>, params: { ...input.params } };
   }
+
+  /**
+   * Ask for a list of entities.
+   *
+   * A POST with a `text/plain` body, which is how Intuit's query endpoint
+   * takes its query — not a typo for JSON.
+   *
+   * `MAXRESULTS` is always sent. Intuit pages at 100 by default and silently
+   * truncates, so a company with 400 invoices gets 100 and no indication that
+   * 300 are missing — figures that are simply short, with nothing to notice.
+   */
+  async queryEntity(input: QueryEntityInput): Promise<FetchedReport> {
+    const entity = QB_ENTITY_NAMES[input.entityType];
+    const start = Math.max(1, Math.trunc(input.startPosition ?? 1));
+    const max = Math.min(Math.max(1, Math.trunc(input.maxResults ?? 1000)), 1000);
+    const where = input.where ? ` WHERE ${input.where}` : "";
+    const query = `SELECT * FROM ${entity}${where} STARTPOSITION ${start} MAXRESULTS ${max}`;
+
+    const url = new URL(`/v3/company/${encodeURIComponent(input.realmId)}/query`, this.baseUrl);
+    url.searchParams.set("minorversion", String(this.minorVersion));
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, this.timeoutMs);
+
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url.toString(), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${input.accessToken}`,
+          Accept: "application/json",
+          "Content-Type": "application/text",
+        },
+        body: query,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (response.status === 401 || response.status === 403) {
+      throw new QuickBooksAuthError(
+        `QuickBooks rejected the access token (${response.status}). The connection needs reconnecting.`,
+      );
+    }
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new QuickBooksRequestError(
+        response.status,
+        `QuickBooks answered ${response.status} for ${entity}: ${body.slice(0, 500) || "(no body)"}`,
+      );
+    }
+
+    const payload = (await response.json()) as unknown;
+    if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+      throw new QuickBooksRequestError(
+        response.status,
+        `QuickBooks answered a ${entity} query with something that is not a result.`,
+      );
+    }
+
+    return {
+      payload: payload as Record<string, unknown>,
+      // The query itself, so a surprising list can be traced to the question.
+      params: { query, startposition: String(start), maxresults: String(max) },
+    };
+  }
+}
+
+/**
+ * A value inside a QuickBooks query string.
+ *
+ * The query language takes single-quoted literals and has no parameters, so
+ * the value goes into the string itself. Legacy pasted it in raw:
+ *
+ *   SELECT * FROM Invoice WHERE DocNumber = '${docNumber}'
+ *
+ * A document number containing a quote closes the literal and the rest is
+ * read as query. That is an injection into a third party's API, against a
+ * client's live accounting data, reachable from a URL path segment.
+ *
+ * Intuit's escape is a doubled quote, the SQL convention. Backslashes are
+ * removed rather than escaped — they have no meaning in a document number and
+ * no documented escape here, so accepting one means guessing.
+ */
+export function escapeQueryLiteral(value: string): string {
+  return String(value).replace(/\\/g, "").replace(/'/g, "''");
+}
+
+export interface QueryEntityInput {
+  realmId: string;
+  accessToken: string;
+  entityType: QbEntityType;
+  /**
+   * An optional WHERE clause, already escaped by the caller through
+   * `escapeQueryLiteral`. Kept as a string rather than built here because the
+   * shapes differ per caller and a half-built query language is worse than
+   * none.
+   */
+  where?: string;
+  startPosition?: number;
+  maxResults?: number;
 }
 
 /**
@@ -178,4 +298,5 @@ export class QuickBooksReportClient {
  */
 export interface ReportFetcher {
   fetchReport(input: FetchReportInput): Promise<FetchedReport>;
+  queryEntity(input: QueryEntityInput): Promise<FetchedReport>;
 }

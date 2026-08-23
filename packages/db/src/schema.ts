@@ -833,7 +833,7 @@ export const statementExtracts = pgTable(
       // accounts. They are here because a fourteenth table with identical
       // columns would be worse than a table whose name is slightly wide. See
       // migration 0014.
-      sql`${t.statementType} IN ('balance_sheet', 'profit_and_loss', 'cash_flow', 'bank_reconciliation', 'tax_return', 'general_ledger', 'account_list')`,
+      sql`${t.statementType} IN ('balance_sheet', 'profit_and_loss', 'cash_flow', 'bank_reconciliation', 'tax_return', 'general_ledger', 'account_list', 'customers', 'invoices')`,
     ),
   ],
 );

@@ -5,6 +5,7 @@ import { pinoHttp } from "pino-http";
 import { HttpError } from "../../shared/errors.js";
 import { withCommonMiddleware } from "../../shared/router.js";
 import { QuickBooksAuthError, QuickBooksRequestError, type QbReportType } from "./reports/client.js";
+import type { QuickBooksEntitiesService } from "./reports/entities.js";
 import type { QuickBooksReportsService } from "./reports/service.js";
 import type { QuickBooksSyncStatusService } from "./reports/status.js";
 import type { QuickBooksService } from "./service.js";
@@ -13,6 +14,7 @@ export interface QuickBooksRouterDeps {
   service: QuickBooksService;
   reports: QuickBooksReportsService;
   syncStatus: QuickBooksSyncStatusService;
+  entities: QuickBooksEntitiesService;
   requireAuth: RequestHandler;
 }
 
@@ -27,7 +29,7 @@ export interface QuickBooksRouterDeps {
  * `withCommonMiddleware` leaves possible.
  */
 export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
-  const { service, reports, syncStatus, requireAuth } = deps;
+  const { service, reports, syncStatus, entities, requireAuth } = deps;
   const router = express.Router();
   withCommonMiddleware(router, [helmet(), pinoHttp(), express.json(), requireAuth]);
 
@@ -137,6 +139,46 @@ export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
    * answering nothing. Composed here from the run, the active dataset version,
    * and what is actually held.
    */
+  /**
+   * Customers and invoices.
+   *
+   * Lists rather than reports, so there is no period to match and no coverage
+   * fallback — the customer list is just the customer list. Freshness is a
+   * clock: legacy went live only when the cache came back EMPTY, so a company
+   * with genuinely no invoices called Intuit on every page load and one whose
+   * list was stale never refetched at all.
+   */
+  router.get("/customers", handle(async (req, res) => {
+    const served = await entities.list(req.user!, companyOf(req), "customers");
+    res.json({ success: true, ...served });
+  }));
+
+  router.get("/invoices", handle(async (req, res) => {
+    const served = await entities.list(req.user!, companyOf(req), "invoices");
+    res.json({ success: true, ...served });
+  }));
+
+  /**
+   * One invoice, by the number printed on it.
+   *
+   * Always live — an invoice is looked up by document number when somebody is
+   * about to act on it, and a cached one is the wrong thing to show then.
+   *
+   * It is also the only read here that puts a URL segment into a query string.
+   * Legacy pasted it in raw, so a document number containing a quote closed
+   * the literal and the rest was read as query: an injection into a third
+   * party's API against a client's live accounting data, reachable from a
+   * path.
+   */
+  router.get("/invoices/doc/:docNumber", handle(async (req, res) => {
+    const served = await entities.invoiceByDocNumber(
+      req.user!,
+      companyOf(req),
+      String(req.params.docNumber ?? ""),
+    );
+    res.json({ success: true, ...served });
+  }));
+
   router.get("/api/quickbooks/sync-status", handle(async (req, res) => {
     res.json({ success: true, ...(await syncStatus.status(req.user!, companyOf(req))) });
   }));

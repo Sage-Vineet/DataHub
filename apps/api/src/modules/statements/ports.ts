@@ -21,6 +21,10 @@ export const STATEMENT_TYPES = [
   // table whose name is slightly wide. See migration 0014.
   "general_ledger",
   "account_list",
+  // Entity lists rather than reports — see migration 0017, which also records
+  // that this is the last type the name `statement_extracts` will stretch to.
+  "customers",
+  "invoices",
 ] as const;
 
 export type StatementType = (typeof STATEMENT_TYPES)[number];
@@ -41,6 +45,8 @@ export const CATEGORY_OF_STATEMENT: Readonly<Record<StatementType, string | null
   bank_reconciliation: "bank_statement",
   tax_return: "tax_return",
   general_ledger: "general_ledger",
+  customers: null,
+  invoices: null,
   // Pulled from QuickBooks rather than filed against a version, so no document
   // is ever linked under it.
   account_list: null,
