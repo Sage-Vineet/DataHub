@@ -1,3 +1,4 @@
+import { firstError } from "../../shared/first-error.js";
 import express from "express";
 import type { Request, RequestHandler, Response, Router } from "express";
 import rateLimit from "express-rate-limit";
@@ -14,11 +15,6 @@ import type { AuthRepository } from "./ports.js";
 import { type BetterAuthUser, requireBetterAuth, resolveSessionUser, toSessionUser } from "./better-session.js";
 
 const GENERIC_RESET = "If an account exists for that email, a reset code has been sent.";
-
-/** Structural, zod-version-agnostic — reads the first validation message. */
-export function firstError(err: { issues: ReadonlyArray<{ message?: string }> }): string {
-  return err.issues[0]?.message ?? "Invalid request.";
-}
 
 /**
  * Better Auth throws APIError with a numeric status + message; normalise it.

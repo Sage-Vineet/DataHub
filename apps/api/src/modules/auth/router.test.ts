@@ -128,3 +128,44 @@ describe("auth router", () => {
     expect((await request(app).get("/auth/me")).status).toBe(401);
   });
 });
+
+describe("auth router — what it refuses before touching the service", () => {
+  // Every one of these is a 400 with the field's own message. Reaching the
+  // service with a half-formed request means the refusal comes back as
+  // "invalid credentials" or a 500, neither of which names what to fix.
+  const cases: Array<[string, string, Record<string, unknown>, RegExp]> = [
+    ["login", "/auth/login", {}, /email/i],
+    ["login", "/auth/login", { email: "not-an-email", password: "x" }, /email/i],
+    ["login", "/auth/login", { email: "user@example.com" }, /password/i],
+    ["forgot-password", "/auth/forgot-password", {}, /email/i],
+    ["forgot-password", "/auth/forgot-password", { email: "nope" }, /email/i],
+    ["reset-password", "/auth/reset-password", { email: "user@example.com" }, /./],
+    ["send-otp", "/auth/send-otp", {}, /email/i],
+    ["verify-otp", "/auth/verify-otp", { email: "user@example.com" }, /./],
+  ];
+
+  it.each(cases)("400s a malformed %s and names the field", async (_name, path, body, message) => {
+    const { app } = await makeApp();
+    const res = await request(app).post(path).send(body).expect(400);
+    expect(String(res.body.error)).toMatch(message);
+  });
+
+  it("400s a request with no body at all", async () => {
+    const { app } = await makeApp();
+    await request(app).post("/auth/login").expect(400);
+  });
+
+  it("says something rather than nothing, whatever was wrong", async () => {
+    // A blank error renders as an empty red box, which reads as a bug in the
+    // page rather than as a rejected request.
+    const { app } = await makeApp();
+    const res = await request(app).post("/auth/login").send({ email: 42 }).expect(400);
+    expect(String(res.body.error).trim()).not.toBe("");
+  });
+
+  it("does not send an OTP for an address that is not one", async () => {
+    const { app, emailer } = await makeApp();
+    await request(app).post("/auth/send-otp").send({ email: "nope" }).expect(400);
+    expect(emailer.last).toBeNull();
+  });
+});

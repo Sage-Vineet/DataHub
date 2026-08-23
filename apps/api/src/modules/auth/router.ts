@@ -1,3 +1,4 @@
+import { firstError } from "../../shared/first-error.js";
 import express from "express";
 import type { Request, RequestHandler, Response, Router } from "express";
 import rateLimit from "express-rate-limit";
@@ -11,11 +12,6 @@ import { requireAuth } from "./middleware.js";
 import type { AuthService } from "./service.js";
 
 const GENERIC_RESET = "If an account exists for that email, a reset code has been sent.";
-
-/** Structural, zod-version-agnostic — reads the first validation message. */
-function firstError(err: { issues: ReadonlyArray<{ message?: string }> }): string {
-  return err.issues[0]?.message ?? "Invalid request.";
-}
 
 /** Wrap an async handler so thrown AuthErrors become their HTTP status. */
 function handle(fn: (req: Request, res: Response) => Promise<void> | void): RequestHandler {

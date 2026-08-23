@@ -1,29 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Response } from "express";
-import { errorStatus, firstError, forwardSetCookie } from "./router.better.js";
+import { errorStatus, forwardSetCookie } from "./router.better.js";
 
 /**
- * The three normalisers between Better Auth and Express.
+ * The two normalisers between Better Auth and Express.
  *
- * Small, and each one decides something a caller acts on: which message a
- * failed validation shows, which STATUS a library error becomes, and whether
- * a session cookie reaches the browser at all.
+ * Small, and each decides something a caller acts on: which STATUS a library
+ * error becomes, and whether a session cookie reaches the browser at all.
+ * (Validation messages are `shared/first-error.ts`, which every router shares.)
  */
-
-describe("reading a validation message", () => {
-  it("shows the first one, which is the field the user is looking at", () => {
-    expect(
-      firstError({ issues: [{ message: "Email is required." }, { message: "Password too short." }] }),
-    ).toBe("Email is required.");
-  });
-
-  it("says something rather than nothing when the issue carries no message", () => {
-    // A blank error message renders as an empty red box, which reads as a bug
-    // in the page rather than as a rejected request.
-    expect(firstError({ issues: [{}] })).toBe("Invalid request.");
-    expect(firstError({ issues: [] })).toBe("Invalid request.");
-  });
-});
 
 describe("normalising a library error into a status", () => {
   it("takes statusCode, which is what Better Auth's APIError carries", () => {

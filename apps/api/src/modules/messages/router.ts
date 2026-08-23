@@ -1,3 +1,4 @@
+import { firstError } from "../../shared/first-error.js";
 import express from "express";
 import type { Request, RequestHandler, Response, Router } from "express";
 import helmet from "helmet";
@@ -6,10 +7,6 @@ import { messages as contracts } from "@datahub/contracts";
 import { HttpError } from "../../shared/errors.js";
 import { withCommonMiddleware } from "../../shared/router.js";
 import type { MessagesService } from "./service.js";
-
-function firstError(err: { issues: ReadonlyArray<{ message?: string }> }): string {
-  return err.issues[0]?.message ?? "Invalid request.";
-}
 
 export interface MessagesRouterDeps {
   service: MessagesService;
