@@ -4,10 +4,12 @@ import helmet from "helmet";
 import { pinoHttp } from "pino-http";
 import { HttpError } from "../../shared/errors.js";
 import { withCommonMiddleware } from "../../shared/router.js";
+import type { ReconcileService } from "./reconcile.js";
 import type { BankReconciliationService } from "./service.js";
 
 export interface BankReconciliationRouterDeps {
   service: BankReconciliationService;
+  reconcile: ReconcileService;
   requireAuth: RequestHandler;
 }
 
@@ -22,7 +24,7 @@ export interface BankReconciliationRouterDeps {
  * on the writes.
  */
 export function createBankReconciliationRouter(deps: BankReconciliationRouterDeps): Router {
-  const { service, requireAuth } = deps;
+  const { service, reconcile, requireAuth } = deps;
   const router = express.Router();
   withCommonMiddleware(router, [helmet(), pinoHttp(), express.json(), requireAuth]);
 
@@ -107,6 +109,30 @@ export function createBankReconciliationRouter(deps: BankReconciliationRouterDep
   router.delete("/bank-reconciliation-addback-items/:id", handle(async (req, res) => {
     await service.deleteAddbackItem(req.user!, companyOf(req), req.params.id!);
     res.json({ success: true });
+  }));
+
+  /**
+   * The bank against the books.
+   *
+   * Answers both sides — legacy mapped over the bank rows only, so a
+   * transaction in the books the bank had never seen did not appear. `counts`
+   * sits beside `variance` because a zero variance with exceptions on both
+   * sides is two mistakes that cancel, not a reconciliation that passed.
+   *
+   * `totalRecords` and `data` keep legacy's names, because that is what the
+   * page reads.
+   */
+  router.get("/bank-vs-books", handle(async (req, res) => {
+    const summary = await reconcile.reconcile(req.user!, companyOf(req));
+    res.json({
+      success: true,
+      totalRecords: summary.rows.length,
+      data: summary.rows,
+      counts: summary.counts,
+      bankTotal: summary.bankTotal,
+      booksTotal: summary.booksTotal,
+      variance: summary.variance,
+    });
   }));
 
   return router;

@@ -3,6 +3,7 @@ import type { RequestHandler } from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { BadRequestError, ForbiddenError, NotFoundError } from "../../shared/errors.js";
+import type { ReconcileService } from "./reconcile.js";
 import { createBankReconciliationRouter } from "./router.js";
 import type { BankReconciliationService } from "./service.js";
 
@@ -50,8 +51,21 @@ function stub(over: Record<string, unknown> = {}) {
     ...over,
   } as unknown as BankReconciliationService;
 
+  const reconcile = {
+    reconcile: record("reconcile", {
+      rows: [],
+      counts: { matched: 0, sign_mismatch: 0, bank_only: 0, books_only: 0 },
+      bankTotal: 0,
+      booksTotal: 0,
+      variance: 0,
+    }),
+    ...(over.reconcile as object | undefined),
+  } as unknown as ReconcileService;
+
   const app = express();
-  app.use(createBankReconciliationRouter({ service, requireAuth: authAs("caller-1") }));
+  app.use(
+    createBankReconciliationRouter({ service, reconcile, requireAuth: authAs("caller-1") }),
+  );
   return { app, calls };
 }
 

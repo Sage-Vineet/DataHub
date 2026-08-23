@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   bigint,
+  bigserial,
   boolean,
   check,
   customType,
@@ -1114,4 +1115,53 @@ export const taxReconciliationOverrides = pgTable(
     ),
     index("idx_tax_reconciliation_overrides_company").on(t.companyId, t.fiscalYear),
   ],
+);
+
+/**
+ * A line off a bank statement.
+ *
+ * One half of the reconciliation; `reconciliationTransactions` is the other.
+ * Both tables predate this schema and both carried a NULLABLE `client_id` with
+ * no foreign key — so a row could belong to nobody, be written successfully,
+ * and never appear on any page. A reconciliation missing it just reports a
+ * difference that is not there. See migration 0016.
+ */
+export const bankTransactions = pgTable(
+  "bank_transactions",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    txnDate: date("txn_date").notNull(),
+    companyId: uuid("client_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    /** The bank's own description, whatever it chose to print. */
+    narration: text("narration"),
+    amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
+  },
+  (t) => [index("idx_bank_transactions_client_date").on(t.companyId, t.txnDate)],
+);
+
+/**
+ * A transaction off the books, against the bank account.
+ *
+ * Flattened out of a QuickBooks general ledger so it can be compared line by
+ * line against what the bank says. Replaced wholesale per company on each
+ * fetch rather than accumulated — a partial ledger reconciles against nothing
+ * useful, and merging two fetches of overlapping periods would double every
+ * transaction in the overlap.
+ */
+export const reconciliationTransactions = pgTable(
+  "reconciliation_transactions",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    txnDate: date("txn_date").notNull(),
+    companyId: uuid("client_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    /** Who the transaction was with, as the ledger names them. */
+    name: text("name"),
+    transactionType: text("transaction_type"),
+    amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
+  },
+  (t) => [index("idx_reconciliation_transactions_client_date").on(t.companyId, t.txnDate)],
 );

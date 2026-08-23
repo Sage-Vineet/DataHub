@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
@@ -242,5 +243,133 @@ describe("add-back items (real Postgres)", () => {
       "Second",
       "Third",
     ]);
+  });
+});
+
+/**
+ * The bank against the books, against a real database.
+ *
+ * The comparison itself is tested exhaustively in the engine. These prove the
+ * two things only a real store can: that the rows come back in an order two
+ * reads agree on, and that a company's transactions stay that company's.
+ */
+describe("bank versus books (real Postgres)", () => {
+  const bankLine = (txnDate: string, amount: string, narration: string) =>
+    db.insert(schema.bankTransactions).values({ companyId, txnDate, amount, narration });
+
+  const bookLine = (txnDate: string, amount: string, name: string) =>
+    db
+      .insert(schema.reconciliationTransactions)
+      .values({ companyId, txnDate, amount, name, transactionType: "Expense" });
+
+  it("pairs the two sides and reports the totals", async () => {
+    await bankLine("2024-01-15", "-500.00", "DD SUPPLIER");
+    await bookLine("2024-01-15", "-500.00", "Supplier Ltd");
+
+    const res = await request(app)
+      .get("/bank-vs-books")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(res.body.totalRecords).toBe(1);
+    expect(res.body.counts.matched).toBe(1);
+    expect(res.body.variance).toBe(0);
+    expect(res.body.data[0]).toMatchObject({
+      outcome: "matched",
+      bankNarration: "DD SUPPLIER",
+      bookName: "Supplier Ltd",
+    });
+  });
+
+  it("reports a book entry the bank has never seen", async () => {
+    // Legacy mapped over the bank rows only, so this did not appear at all —
+    // money the company thinks it moved that the bank has no record of.
+    await bookLine("2024-01-15", "-500.00", "Rent");
+
+    const res = await request(app)
+      .get("/bank-vs-books")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(res.body.counts.books_only).toBe(1);
+    expect(res.body.data[0].bookName).toBe("Rent");
+  });
+
+  it("catches a duplicated payment rather than matching it twice", async () => {
+    await bankLine("2024-01-15", "-500.00", "DD ONE");
+    await bankLine("2024-01-15", "-500.00", "DD TWO");
+    await bookLine("2024-01-15", "-500.00", "Supplier Ltd");
+
+    const res = await request(app)
+      .get("/bank-vs-books")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(res.body.counts.matched).toBe(1);
+    expect(res.body.counts.bank_only).toBe(1);
+  });
+
+  it("orders both sides the same way on every read", async () => {
+    // Two transactions on one date have no natural order. Without a tiebreak
+    // two reads of the same data can pair differently against the books, and a
+    // reconciliation that changes when nothing changed is one nobody trusts.
+    await bankLine("2024-01-15", "-100.00", "FIRST");
+    await bankLine("2024-01-15", "-200.00", "SECOND");
+    await bankLine("2024-01-14", "-300.00", "EARLIER");
+
+    const first = await request(app).get("/bank-vs-books").set("X-Client-Id", companyId);
+    const second = await request(app).get("/bank-vs-books").set("X-Client-Id", companyId);
+    expect(first.body.data).toEqual(second.body.data);
+    expect(first.body.data.map((r: { bankNarration: string }) => r.bankNarration)).toEqual([
+      "EARLIER",
+      "FIRST",
+      "SECOND",
+    ]);
+  });
+
+  it("keeps one company's transactions off another's reconciliation", async () => {
+    const other = randomUUID();
+    await db.insert(schema.companies).values({ id: other, name: "Beta", industry: "" });
+    await bankLine("2024-01-15", "-500.00", "OURS");
+    await db
+      .insert(schema.bankTransactions)
+      .values({ companyId: other, txnDate: "2024-01-15", amount: "-999.00", narration: "THEIRS" });
+
+    const res = await request(app)
+      .get("/bank-vs-books")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(res.body.data.map((r: { bankNarration: string }) => r.bankNarration)).toEqual(["OURS"]);
+  });
+
+  it("takes a company's transactions with the company", async () => {
+    // The rows had no foreign key and no cascade, so deleting a company left
+    // its bank statement lines and ledger transactions behind forever. See
+    // migration 0016.
+    await bankLine("2024-01-15", "-500.00", "DD");
+    await bookLine("2024-01-15", "-500.00", "Supplier");
+    await db.delete(schema.companies).where(eq(schema.companies.id, companyId));
+
+    expect(await db.select().from(schema.bankTransactions)).toEqual([]);
+    expect(await db.select().from(schema.reconciliationTransactions)).toEqual([]);
+  });
+
+  it("refuses a transaction that belongs to no company", async () => {
+    // A row with a null company is written successfully, read by no page, and
+    // silently absent from the reconciliation that should have caught it.
+    await expect(
+      db
+        .insert(schema.bankTransactions)
+        .values({ companyId: null as never, txnDate: "2024-01-15", amount: "-1.00", narration: "X" }),
+    ).rejects.toThrow();
+  });
+
+  it("answers an empty reconciliation rather than failing", async () => {
+    const res = await request(app)
+      .get("/bank-vs-books")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(res.body).toMatchObject({ totalRecords: 0, variance: 0 });
+  });
+
+  it("403s a company the caller cannot reach", async () => {
+    await request(app).get("/bank-vs-books").set("X-Client-Id", randomUUID()).expect(403);
   });
 });

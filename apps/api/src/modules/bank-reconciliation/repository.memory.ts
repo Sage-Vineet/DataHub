@@ -3,7 +3,11 @@ import type {
   AddbackItemRecord,
   AdjustmentRecord,
   BankReconciliationRepository,
+  BankTransaction,
+  BookTransaction,
+  BookTransactionInput,
   CreateAddbackItemInput,
+  ReconciliationTransactionsRepository,
 } from "./ports.js";
 
 /**
@@ -89,5 +93,40 @@ export class InMemoryBankReconciliationRepository implements BankReconciliationR
     if (!item || item.companyId !== companyId) return Promise.resolve(false);
     this.items.delete(id);
     return Promise.resolve(true);
+  }
+}
+
+/** The same contract in memory, for tests that do not need Postgres. */
+export class InMemoryReconciliationTransactionsRepository
+  implements ReconciliationTransactionsRepository
+{
+  private readonly bank = new Map<string, BankTransaction[]>();
+  private readonly books = new Map<string, BookTransaction[]>();
+  private nextId = 1;
+
+  /** Seed bank lines, which arrive from statement parsing rather than an API. */
+  addBankTransactions(companyId: string, lines: readonly Omit<BankTransaction, "id">[]): void {
+    const existing = this.bank.get(companyId) ?? [];
+    for (const line of lines) existing.push({ ...line, id: this.nextId++ });
+    this.bank.set(companyId, existing);
+  }
+
+  listBankTransactions(companyId: string): Promise<BankTransaction[]> {
+    return Promise.resolve([...(this.bank.get(companyId) ?? [])]);
+  }
+
+  listBookTransactions(companyId: string): Promise<BookTransaction[]> {
+    return Promise.resolve([...(this.books.get(companyId) ?? [])]);
+  }
+
+  replaceBookTransactions(
+    companyId: string,
+    transactions: readonly BookTransactionInput[],
+  ): Promise<number> {
+    this.books.set(
+      companyId,
+      transactions.map((transaction) => ({ ...transaction, id: this.nextId++ })),
+    );
+    return Promise.resolve(transactions.length);
   }
 }

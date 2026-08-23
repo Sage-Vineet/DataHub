@@ -4,10 +4,19 @@ import type {
   AddbackItemRecord,
   AdjustmentRecord,
   BankReconciliationRepository,
+  BankTransaction,
+  BookTransaction,
+  BookTransactionInput,
   CreateAddbackItemInput,
+  ReconciliationTransactionsRepository,
 } from "./ports.js";
 
-const { bankReconciliationAddbackItems, bankReconciliationAdjustments } = schema;
+const {
+  bankReconciliationAddbackItems,
+  bankReconciliationAdjustments,
+  bankTransactions,
+  reconciliationTransactions,
+} = schema;
 
 /** `numeric` comes back as a string; an unparseable one is zero, not NaN. */
 function toNumber(value: string | number | null | undefined): number {
@@ -157,5 +166,81 @@ export class DrizzleBankReconciliationRepository implements BankReconciliationRe
       )
       .returning({ id: bankReconciliationAddbackItems.id });
     return rows.length > 0;
+  }
+}
+
+
+/** A number as `numeric(14,2)` wants it. */
+const toNumeric = (value: number): string =>
+  (Number.isFinite(value) ? value : 0).toFixed(2);
+
+/**
+ * The two transaction tables `/bank-vs-books` compares.
+ *
+ * A repository of its own rather than more methods on the one above, because
+ * the two answer different questions: that one serves the grid's editable
+ * cells, this one serves the raw sides of the comparison. Nothing needs both
+ * at once, and a caller holding this cannot reach the grid by accident.
+ */
+export class DrizzleReconciliationTransactionsRepository
+  implements ReconciliationTransactionsRepository
+{
+  constructor(private readonly db: Db) {}
+
+  async listBankTransactions(companyId: string): Promise<BankTransaction[]> {
+    const rows = await this.db
+      .select()
+      .from(bankTransactions)
+      .where(eq(bankTransactions.companyId, companyId))
+      // Date order, then id: two transactions on one date have no natural
+      // order, and without the tiebreak two reads of the same data can pair
+      // differently against the books — a reconciliation that changes when
+      // nothing changed is one nobody trusts.
+      .orderBy(asc(bankTransactions.txnDate), asc(bankTransactions.id));
+    return rows.map((row) => ({
+      id: row.id,
+      date: row.txnDate,
+      narration: row.narration,
+      amount: toNumber(row.amount),
+    }));
+  }
+
+  async listBookTransactions(companyId: string): Promise<BookTransaction[]> {
+    const rows = await this.db
+      .select()
+      .from(reconciliationTransactions)
+      .where(eq(reconciliationTransactions.companyId, companyId))
+      .orderBy(asc(reconciliationTransactions.txnDate), asc(reconciliationTransactions.id));
+    return rows.map((row) => ({
+      id: row.id,
+      date: row.txnDate,
+      name: row.name,
+      transactionType: row.transactionType,
+      amount: toNumber(row.amount),
+    }));
+  }
+
+  async replaceBookTransactions(
+    companyId: string,
+    transactions: readonly BookTransactionInput[],
+  ): Promise<number> {
+    return this.db.transaction(async (tx) => {
+      await tx
+        .delete(reconciliationTransactions)
+        .where(eq(reconciliationTransactions.companyId, companyId));
+
+      if (transactions.length === 0) return 0;
+
+      await tx.insert(reconciliationTransactions).values(
+        transactions.map((transaction) => ({
+          companyId,
+          txnDate: transaction.date,
+          name: transaction.name,
+          transactionType: transaction.transactionType,
+          amount: toNumeric(transaction.amount),
+        })),
+      );
+      return transactions.length;
+    });
   }
 }

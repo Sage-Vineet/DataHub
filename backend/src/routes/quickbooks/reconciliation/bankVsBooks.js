@@ -401,42 +401,6 @@ async function getBankReconciliationDocuments(companyId, folderRootName = "Manua
  *     tags: [Reconciliation]
  *     summary: Bank vs Books transaction matching
  */
-router.get("/bank-vs-books", extractClientId, async (req, res) => {
-  try {
-    if (!req.clientId) return res.status(400).json({ error: "Missing Client ID" });
-
-    const [bankRes, bookRes] = await Promise.all([
-      supabase.from("bank_transactions").select("txn_date, narration, amount")
-        .eq("client_id", req.clientId).order("txn_date", { ascending: true }),
-      supabase.from("reconciliation_transactions").select("txn_date, name, amount")
-        .eq("client_id", req.clientId).order("txn_date", { ascending: true }),
-    ]);
-
-    if (bankRes.error) throw bankRes.error;
-    if (bookRes.error) throw bookRes.error;
-
-    const bankRows = bankRes.data || [];
-    const bookRows = bookRes.data || [];
-
-    const reconciled = bankRows.map((b) => {
-      const match = bookRows.find(
-        (r) => Math.abs(b.amount) === Math.abs(r.amount) && b.txn_date === r.txn_date,
-      );
-      let remark = "Unmatched (Bank)";
-      if (match) remark = b.amount === match.amount ? "Matched" : "Amount Mismatch";
-      return {
-        bank_date: b.txn_date, bank_narration: b.narration, bank_amount: b.amount,
-        book_date: match ? match.txn_date : null, book_name: match ? match.name : null,
-        book_amount: match ? match.amount : null, remark,
-      };
-    });
-
-    res.json({ totalRecords: reconciled.length, data: reconciled });
-  } catch (error) {
-    console.error("Reconciliation Error:", error);
-    res.status(500).json({ error: "Failed to reconcile transactions" });
-  }
-});
 
 /**
  * @swagger

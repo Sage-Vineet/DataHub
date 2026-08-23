@@ -66,3 +66,51 @@ export interface BankReconciliationRepository {
   ): Promise<boolean>;
   deleteAddbackItem(companyId: string, id: string): Promise<boolean>;
 }
+
+/**
+ * A line off a bank statement, as stored.
+ *
+ * One half of the comparison `/bank-vs-books` makes; `BookTransaction` is the
+ * other. Amounts come back as numbers rather than the driver's numeric
+ * strings, converted at the repository so nothing above it has to remember to.
+ */
+export interface BankTransaction {
+  id: number;
+  date: string;
+  narration: string | null;
+  amount: number;
+}
+
+/** A transaction off the books, flattened out of a general ledger. */
+export interface BookTransaction {
+  id: number;
+  date: string;
+  name: string | null;
+  transactionType: string | null;
+  amount: number;
+}
+
+/** What a caller writes when a ledger fetch produces transactions. */
+export interface BookTransactionInput {
+  date: string;
+  name: string | null;
+  transactionType: string | null;
+  amount: number;
+}
+
+export interface ReconciliationTransactionsRepository {
+  listBankTransactions(companyId: string): Promise<BankTransaction[]>;
+  listBookTransactions(companyId: string): Promise<BookTransaction[]>;
+  /**
+   * Make the company's book transactions exactly these.
+   *
+   * A replace, in one transaction, because a partial ledger reconciles against
+   * nothing useful and merging two fetches of overlapping periods doubles
+   * every transaction in the overlap — which then reads as a duplicated
+   * payment, the exact thing a reconciliation is meant to detect.
+   */
+  replaceBookTransactions(
+    companyId: string,
+    transactions: readonly BookTransactionInput[],
+  ): Promise<number>;
+}

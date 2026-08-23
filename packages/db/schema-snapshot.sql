@@ -26,8 +26,9 @@
 --   packages/db/migrations/0013_tax_reconciliation_overrides.sql
 --   packages/db/migrations/0014_statement_extracts_report_types.sql
 --   packages/db/migrations/0015_statement_extracts_pull_without_run.sql
+--   packages/db/migrations/0016_reconciliation_transaction_integrity.sql
 --
--- source-sha256: 71412b111317c172fb48b4b87acc8b6a6cac6a7484daadad045ed823b0e82b29
+-- source-sha256: bc46a6eeceb40ee229dba601ac0da2e7011b1b06938c53394470ff713549a8eb
 --
 -- PostgreSQL database dump
 --
@@ -356,7 +357,7 @@ ALTER SEQUENCE public.bank_statement_entries_id_seq OWNED BY public.bank_stateme
 CREATE TABLE public.bank_transactions (
     id bigint NOT NULL,
     txn_date date NOT NULL,
-    client_id uuid,
+    client_id uuid NOT NULL,
     narration text,
     amount numeric(14,2) NOT NULL
 );
@@ -1521,7 +1522,7 @@ CREATE TABLE public.quickbooks_connections (
 CREATE TABLE public.reconciliation_transactions (
     id bigint NOT NULL,
     txn_date date NOT NULL,
-    client_id uuid,
+    client_id uuid NOT NULL,
     amount numeric(14,2) NOT NULL,
     name text,
     transaction_type text
@@ -2864,6 +2865,12 @@ CREATE INDEX idx_bank_statement_entries_source ON public.bank_statement_entries 
 CREATE INDEX idx_bank_statement_entries_version_month ON public.bank_statement_entries USING btree (version_id, statement_month);
 
 --
+-- Name: idx_bank_transactions_client_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_bank_transactions_client_date ON public.bank_transactions USING btree (client_id, txn_date);
+
+--
 -- Name: idx_bank_transactions_client_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3428,6 +3435,12 @@ CREATE INDEX idx_qa_responses_item ON public.qa_responses USING btree (item_id, 
 CREATE INDEX idx_qoe_addbacks_scope ON public.qoe_addbacks USING btree (company_id, version_id, deleted_at);
 
 --
+-- Name: idx_reconciliation_transactions_client_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_reconciliation_transactions_client_date ON public.reconciliation_transactions USING btree (client_id, txn_date);
+
+--
 -- Name: idx_reconciliation_transactions_client_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3701,6 +3714,13 @@ ALTER TABLE ONLY public.bank_statement_entries
 
 ALTER TABLE ONLY public.bank_statement_entries
     ADD CONSTRAINT bank_statement_entries_version_id_fkey FOREIGN KEY (version_id) REFERENCES public.key_report_versions(id) ON DELETE CASCADE;
+
+--
+-- Name: bank_transactions bank_transactions_client_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bank_transactions
+    ADD CONSTRAINT bank_transactions_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.companies(id) ON DELETE CASCADE;
 
 --
 -- Name: broker_team_invites broker_team_invites_invited_broker_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -4660,6 +4680,13 @@ ALTER TABLE ONLY public.quickbooks_connections
 
 ALTER TABLE ONLY public.quickbooks_connections
     ADD CONSTRAINT quickbooks_connections_connected_by_fkey FOREIGN KEY (connected_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+--
+-- Name: reconciliation_transactions reconciliation_transactions_client_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.reconciliation_transactions
+    ADD CONSTRAINT reconciliation_transactions_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.companies(id) ON DELETE CASCADE;
 
 --
 -- Name: reminders reminders_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
