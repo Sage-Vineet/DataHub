@@ -119,6 +119,17 @@ export interface BalanceSheetResult {
   openingBalances: Record<string, number>;
   /** Retained earnings, carried separately from net income per the model. */
   retainedEarnings: Record<string, number>;
+  /**
+   * Retained earnings immediately BEFORE the first rolled period, with no
+   * current-year income yet.
+   *
+   * Exposed for the same reason as `openingBalances`: the first period has no
+   * predecessor inside the statement, and a period-over-period reading of
+   * equity would otherwise measure it from zero. The cash flow statement needs
+   * it to tell this year's profit apart from money posted straight to the
+   * account.
+   */
+  openingRetainedEarnings: number;
   /** Current-year net income to date, reset at each fiscal year start. */
   netIncome: Record<string, number>;
   checks: PeriodCheck[];
@@ -406,6 +417,7 @@ export function rollForwardBalanceSheet(input: BalanceSheetInput): BalanceSheetR
     lines,
     openingBalances,
     retainedEarnings,
+    openingRetainedEarnings: round2(openingRe),
     netIncome,
     checks,
     tieOut,
