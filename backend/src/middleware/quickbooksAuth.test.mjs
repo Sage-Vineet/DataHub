@@ -1,5 +1,8 @@
+import { readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createServer } from "node:http";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const require = createRequire(import.meta.url);
@@ -35,31 +38,42 @@ const require = createRequire(import.meta.url);
  * written.
  */
 
-/** The financial routers, in the same order `app.js` mounts them. */
-const ROUTERS = [
-  "balancesheet/balanceSheet",
-  "balancesheet/balanceSheetFullDetail",
-  "account_detail/generalLedger",
-  "profit_and_loss/profitAndLoss",
-  "profit_and_loss/profitAndLossStatement",
-  "customers/customers",
-  "invoices/invoices",
-  "cash_flow/cash_flow",
-  "reconciliation/Reconciliation",
-  "tax_reconciliation/Tax_Reconciliation",
-  "tax_reconciliation/geminiPdf",
-  "reconciliation/bankStatement",
-  "reconciliation/bankVsBooks",
-  "sync",
-];
+/**
+ * Every QuickBooks router, discovered rather than listed.
+ *
+ * A hand-maintained list is the same failure this middleware had: it goes stale
+ * silently. This one went stale within a day — three routers were deleted and
+ * the list still named them, so the suite failed to load rather than reporting
+ * a gap. Reading the directory means a new router joins this test by existing.
+ */
+function quickbooksRouters() {
+  const root = fileURLToPath(new URL("../routes/quickbooks", import.meta.url));
+  const out = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".js")) out.push(full);
+    }
+  };
+  walk(root);
+  // `token.js` is mounted on its own in `app.js`, ahead of the financial
+  // routers and WITHOUT this gate, because the OAuth handshake cannot require
+  // a session: Intuit redirects a browser to `/api/auth/callback` with no
+  // credentials, and the handler authenticates from the signed `state`. Its
+  // routes are asserted separately below rather than swept in here.
+  return out.filter((f) => !f.endsWith("/token.js")).sort();
+}
 
 const SOME_UUID = "11111111-2222-3333-4444-555555555555";
 
 /** Every (method, path) the financial routers define, params filled in. */
 function definedRoutes() {
   const out = [];
-  for (const name of ROUTERS) {
-    const router = require(`../routes/quickbooks/${name}.js`);
+  for (const file of quickbooksRouters()) {
+    const router = require(file);
+    if (!router || !Array.isArray(router.stack)) continue;
+    const name = file.split("/routes/quickbooks/")[1];
     for (const layer of router.stack || []) {
       if (!layer.route) continue;
       const path = layer.route.path.replace(/:[^/]+/g, SOME_UUID);
@@ -90,8 +104,9 @@ describe("the gate claims every route its router defines", () => {
   // rather than in aggregate so a failure names the file to look at.
   const { routerHandles } = require("./quickbooksAuth.js");
 
-  it.each(ROUTERS)("%s", (name) => {
-    const router = require(`../routes/quickbooks/${name}.js`);
+  it.each(quickbooksRouters())("%s", (file) => {
+    const router = require(file);
+    if (!router || !Array.isArray(router.stack)) return;
     const unclaimed = [];
     for (const layer of router.stack || []) {
       if (!layer.route) continue;
@@ -110,7 +125,7 @@ describe("every QuickBooks route requires authentication", () => {
   it("finds routes to check", () => {
     // Guards the guard: if the enumeration silently returned nothing, every
     // case below would vacuously pass and this file would prove nothing.
-    expect(routes.length).toBeGreaterThan(30);
+    expect(routes.length).toBeGreaterThan(20);
   });
 
   it.each(routes)("$method $path ($router)", async ({ method, path }) => {
@@ -149,8 +164,13 @@ describe("requests that are not this router's business pass through", () => {
     expect(routerHandles(customers, "GET", "/messages")).toBe(false);
   });
 
-  it("claims the route the list had forgotten", () => {
-    expect(routerHandles(customers, "PUT", `/api/customers/${SOME_UUID}`)).toBe(true);
+  it("claims a route the old prefix list had forgotten", () => {
+    // `bankVsBooks` serves `/manual-report-uploads/*`, a prefix `qbPaths` never
+    // listed — so these reached their handlers with no company check at all.
+    // (`PUT /api/customers/:id`, the original example, has since been deleted
+    // as dead.)
+    const bankVsBooks = require("../routes/quickbooks/reconciliation/bankVsBooks.js");
+    expect(routerHandles(bankVsBooks, "GET", "/manual-report-uploads/bs-bank-balances")).toBe(true);
   });
 
   it("treats HEAD as GET, because Express does", () => {
@@ -161,5 +181,21 @@ describe("requests that are not this router's business pass through", () => {
 
   it("ignores a method the route does not define", () => {
     expect(routerHandles(customers, "DELETE", "/customers")).toBe(false);
+  });
+});
+
+describe("the OAuth handshake, which this gate does not cover", () => {
+  it("leaves the Intuit redirect reachable without a session", async () => {
+    // Mounted before the financial routers and outside the gate. A 401 here
+    // means QuickBooks cannot be connected at all.
+    const res = await fetch(`${base}/api/auth/callback`, { method: "GET" });
+    expect(res.status).not.toBe(401);
+  });
+
+  it("still requires a credential to START the handshake", async () => {
+    // `requireAuthAllowQueryToken`: a token may travel in the query string so a
+    // browser redirect can carry it, but one is required.
+    const res = await fetch(`${base}/api/auth/quickbooks`, { method: "GET" });
+    expect(res.status).toBe(401);
   });
 });

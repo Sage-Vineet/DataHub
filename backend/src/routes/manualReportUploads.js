@@ -696,26 +696,6 @@ router.get("/manual-report-uploads/qms-dashboard", async (req, res) => {
    Only reads manual_report_upload source data; never touches QMS cache or files.
    Strict source validation: requires source=manual_upload, returns 400 otherwise.
 =========================== */
-router.get("/manual-upload/dashboard", async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
-
-    const requestedSource = String(req.query.source || "").trim();
-    if (requestedSource !== "manual_upload") {
-      return res.status(400).json({ success: false, message: "Invalid dashboard source" });
-    }
-
-    console.log(`[DASHBOARD] activeSource=manual_upload endpoint=/manual-upload/dashboard dataSource=ManualUpload clientId=${clientId}`);
-
-    const dashboard = await buildManualUploadDashboardData(clientId);
-    return res.json({ success: true, source: "manual_upload", ...dashboard });
-  } catch (error) {
-    console.error("[ManualUploadDashboard] Route error:", error.message);
-    return res.status(500).json({ success: false, error: error.message || "Failed to build Manual Upload dashboard data." });
-  }
-});
-
 router.get("/manual-report-uploads/manual-upload-dashboard", async (req, res) => {
   try {
     const clientId = resolveClientId(req);

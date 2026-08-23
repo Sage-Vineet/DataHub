@@ -111,6 +111,7 @@ async function checkQBAuth(req, res, next) {
 
 const COMPANY_PREFIX = /^\/companies\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
+
 /**
  * Does `router` itself define a handler for this method and path?
  *

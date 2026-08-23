@@ -818,20 +818,6 @@ router.get("/manual-gl/staging/filter-options", enforceDataSource(REPORT_SOURCE_
   }
 });
 
-router.get("/manual-gl/staging/fiscal-years", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
-    const batchId = String(req.query.batchId || "").trim();
-    if (!batchId) return res.status(400).json({ success: false, error: "Missing batchId." });
-    const fiscalCalendarExplicit = req.query.fiscalCalendarExplicit === "true";
-    const fiscalYears = await getActualFiscalYearsFromDB(clientId, batchId, fiscalCalendarExplicit);
-    return res.json({ success: true, fiscalYears });
-  } catch (error) {
-    return res.status(500).json({ success: false, error: error.message || "Failed to fetch fiscal years." });
-  }
-});
-
 router.get("/manual-gl/staging/batches", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     const clientId = resolveClientId(req);
@@ -1145,36 +1131,6 @@ router.get("/reports/profit-loss/monthly", enforceDataSource(REPORT_SOURCE_KEYS.
     return res.status(500).json({
       success: false,
       error: error.message || "Failed to build monthly Profit & Loss breakdown.",
-    });
-  }
-});
-
-router.get("/reports/profit-loss/year-comparison", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
-    const filters = parseManualFilterQuery(req.query || {});
-    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
-      ...filters,
-      allowExplicitBatch: isHistoricalBatchMode(filters),
-    });
-    console.log(`[ManualGL][Report] Resolved batchId ${activeBatchId} for filters:`, JSON.stringify(filters));
-    const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
-    logManualReportFilterDebug("reports/profit-loss/year-comparison", clientId, cacheFilters, activeBatchId);
-    const cached = reportCache.get("pl", clientId, cacheFilters);
-    const payload = cached || await getProfitLossSummaryFromStage(clientId, cacheFilters);
-    if (!cached) reportCache.set("pl", clientId, cacheFilters, payload);
-    return res.json({
-      success: true,
-      source: payload.source,
-      reportType: "profit_loss_year_comparison",
-      filters: payload.filters,
-      yearComparison: payload.yearComparison || [],
-    });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: error.message || "Failed to build yearly Profit & Loss comparison.",
     });
   }
 });
