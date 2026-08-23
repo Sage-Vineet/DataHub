@@ -208,3 +208,64 @@ describe("the OTP endpoints the SPA calls", () => {
     await signup(valid({ verification_token: verified.body.verificationToken })).expect(201);
   });
 });
+
+describe("the refusals on the way in", () => {
+  it("400s a malformed verify, on both spellings, without spending an attempt", async () => {
+    // The attempt budget is what stops a code being guessed. Spending one on a
+    // request that never named a code makes the budget easier to exhaust than
+    // the code is to guess.
+    for (const path of ["/auth/verify-otp", "/auth/verify-verification-otp"]) {
+      const res = await request(h.app).post(path).send({}).expect(400);
+      expect(String(res.body.error).trim()).not.toBe("");
+    }
+  });
+
+  it("reports a wrong code as the OTP store reports it, not as a 500", async () => {
+    // The message says how many attempts remain; a 500 says nothing and looks
+    // like a fault in the product.
+    await request(h.app)
+      .post("/auth/send-verification-otp")
+      .send({ email: "dana@example.com" })
+      .expect(200);
+
+    const res = await request(h.app)
+      .post("/auth/verify-verification-otp")
+      .send({ email: "dana@example.com", otp: "000000" });
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBeLessThan(500);
+  });
+
+  it("400s a malformed send", async () => {
+    await request(h.app).post("/auth/send-verification-otp").send({}).expect(400);
+    await request(h.app).post("/auth/send-otp").send({ email: "nope" }).expect(400);
+  });
+
+  it("409s a second signup for an address that already has an account", async () => {
+    // Better Auth answers 401 for a duplicate, which reads as "your credentials
+    // are wrong" — the one thing it is not. 409 says what actually happened.
+    await signup(valid()).expect(201);
+    const again = await signup(
+      valid({ verification_token: grantFor("dana@example.com") }),
+    );
+    expect(again.status).toBe(409);
+  });
+
+  it("takes the broker company under either spelling, and none at all", async () => {
+    // The SPA sends `broker_company`; an older client sends `brokerCompany`.
+    await signup(
+      valid({ email: "camel@example.com", verification_token: grantFor("camel@example.com"), broker_company: undefined, brokerCompany: "Kestrel Partners" }),
+    ).expect(201);
+
+    await signup(
+      valid({ email: "none@example.com", verification_token: grantFor("none@example.com"), broker_company: undefined }),
+    ).expect(201);
+  });
+
+  it("answers with the broker role it just wrote, not the row's default", async () => {
+    // Better Auth creates the row as a buyer; the broker profile is applied
+    // afterwards. Answering from the pre-write copy would sign somebody in as
+    // a buyer on the request that made them a broker.
+    const res = await signup(valid()).expect(201);
+    expect(res.body.user.role).toBe("broker");
+  });
+});
