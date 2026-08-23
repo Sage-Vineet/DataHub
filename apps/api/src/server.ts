@@ -1,3 +1,4 @@
+import type { Server } from "node:http";
 // `Request` from express, not the global fetch `Request` — the two share a
 // name, and picking the wrong one here typechecked as `any` in a test file for
 // months.
@@ -375,21 +376,85 @@ function buildLegacyBridge(enabled: boolean): RequestHandler | undefined {
   });
 }
 
-function buildActivityCapture(enabled: boolean): RequestHandler | undefined {
+interface ActivityCapture {
+  handler: RequestHandler;
+  /** Flush what is buffered on the way down instead of dropping it. */
+  drain: () => Promise<void>;
+}
+
+function buildActivityCapture(enabled: boolean): ActivityCapture | undefined {
   if (!enabled) return undefined;
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
     throw new Error("ACTIVITY_LOG_ENABLED=true requires DATABASE_URL.");
   }
   const writer = new ActivityWriter(new DrizzleActivityRepository(createDb(databaseUrl)));
-  // Flush what is buffered on the way down instead of dropping it.
-  const drain = (): void => {
-    void writer.close();
-  };
-  process.once("SIGTERM", drain);
-  process.once("SIGINT", drain);
   console.warn("[gateway] activity capture ENABLED (tier 1: every request, both engines)");
-  return createActivityCapture({ writer, jwtSecret: process.env.JWT_SECRET });
+  return {
+    handler: createActivityCapture({ writer, jwtSecret: process.env.JWT_SECRET }),
+    drain: () => writer.close(),
+  };
+}
+
+/** How long to let in-flight requests finish before closing the socket anyway. */
+const SHUTDOWN_GRACE_MS = 8_000;
+
+/**
+ * Stop cleanly on a signal.
+ *
+ * Node runs as PID 1 in the container, and PID 1 does not get default signal
+ * dispositions: with no handler explicitly registered, SIGTERM is IGNORED
+ * rather than terminating the process. Docker therefore sent SIGTERM, waited
+ * its ten seconds, and SIGKILLed — so every stop of the gateway ended in exit
+ * 137, which reads in `docker ps` exactly like an out-of-memory kill. It was
+ * mistaken for one.
+ *
+ * The only SIGTERM listener that existed lived inside `buildActivityCapture`,
+ * so it was registered only when `ACTIVITY_LOG_ENABLED=true` — and the demo
+ * does not set it. Even when it did run it flushed the buffer and returned:
+ * no `server.close()`, no `process.exit()`, and `app.listen` keeps the event
+ * loop alive on its own.
+ *
+ * Two consequences beyond the confusing exit code. In-flight requests were
+ * severed rather than drained, and the buffer flush was fired and not awaited —
+ * so whether the last few activity events survived was a race against the kill.
+ *
+ * Registering the handler here rather than there means it exists whatever the
+ * activity flag says. The grace period is deliberately shorter than Docker's
+ * ten seconds, so a connection that will not close hits our timeout rather
+ * than its SIGKILL.
+ */
+function installShutdown(server: Server, capture: ActivityCapture | undefined): void {
+  let shuttingDown = false;
+
+  const stop = (signal: string): void => {
+    // A second Ctrl-C should not start a second shutdown.
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.warn(`[gateway] ${signal} received, draining`);
+
+    // Whatever happens, do not hang: a keep-alive connection that never closes
+    // must not hold the process open past the grace period.
+    const hard = setTimeout(() => {
+      console.warn("[gateway] grace period elapsed, exiting with connections open");
+      process.exit(0);
+    }, SHUTDOWN_GRACE_MS);
+    hard.unref();
+
+    server.close(() => {
+      void (async () => {
+        try {
+          await capture?.drain();
+        } catch (err) {
+          console.warn(`[gateway] activity flush failed on shutdown: ${String(err)}`);
+        }
+        process.exit(0);
+      })();
+    });
+  };
+
+  process.once("SIGTERM", () => stop("SIGTERM"));
+  process.once("SIGINT", () => stop("SIGINT"));
 }
 
 function main(): void {
@@ -405,16 +470,17 @@ function main(): void {
   // `origins` is what loses that, so it is restated rather than asserted away.
   const legacyOrigin = table.origins.legacy;
   if (!legacyOrigin) throw new Error("LEGACY_ORIGIN is required.");
+  const capture = buildActivityCapture(env.flags.ACTIVITY_LOG_ENABLED);
   const app = createGateway(table, {
     modules: buildModules(env.flags, legacyOrigin),
     corsOrigins: env.corsOrigins,
-    activityCapture: buildActivityCapture(env.flags.ACTIVITY_LOG_ENABLED),
+    activityCapture: capture?.handler,
     beforeProxy: buildLegacyBridge(env.flags.LEGACY_AUTH_BRIDGE_ENABLED),
     features: clientFeatures(env.flags),
   });
   const port = env.port;
 
-  app.listen(port, () => {
+  const server = app.listen(port, () => {
     const routes =
       table.routes.length > 0
         ? table.routes.map((r) => `${r.prefix} -> ${r.origin}`).join(", ")
@@ -423,6 +489,8 @@ function main(): void {
       `[gateway] listening on :${port} | default -> legacy (${table.origins.legacy}) | routes: ${routes}`,
     );
   });
+
+  installShutdown(server, capture);
 }
 
 main();
