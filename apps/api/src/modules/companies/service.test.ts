@@ -147,6 +147,71 @@ describe("CompaniesService — update", () => {
     expect(users.calls).toEqual([{ email: "new@example.com", previous: "old@example.com" }]);
   });
 
+  it("writes every field the caller sent, and only those", async () => {
+    // Each is its own branch. One left out of the patch is a change the caller
+    // made, the request accepted, and the record does not carry.
+    const { repo, service } = makeService();
+    const c = repo.seed(record());
+    const updated = await service.update(
+      user({ role: "admin" }),
+      c.id,
+      contracts.companyUpdate.parse({
+        name: "Renamed Co",
+        project_name: "Project Atlas",
+        industry: "Manufacturing",
+        status: "inactive",
+        since: "2019",
+        logo: "https://example.test/logo.png",
+        contact_name: "Dana Rep",
+        contact_email: "dana@example.com",
+        contact_phone: "+1 555 0100",
+        profit_metric: "sde",
+      }),
+    );
+
+    expect(updated).toMatchObject({
+      name: "Renamed Co",
+      project_name: "Project Atlas",
+      industry: "Manufacturing",
+      status: "inactive",
+      since: "2019",
+      logo: "https://example.test/logo.png",
+      contact_name: "Dana Rep",
+      contact_email: "dana@example.com",
+      contact_phone: "+1 555 0100",
+      profit_metric: "sde",
+    });
+  });
+
+  it("clears a field sent empty rather than storing an empty string", async () => {
+    // Before this the column held `""` for some companies and NULL for others,
+    // and a field could be set but never unset.
+    const { repo, service } = makeService();
+    const c = repo.seed(
+      record({ projectName: "Atlas", industry: "Retail", contactPhone: "+1 555 0100" }),
+    );
+
+    await service.update(
+      user({ role: "admin" }),
+      c.id,
+      contracts.companyUpdate.parse({ project_name: "", industry: "", contact_phone: "" }),
+    );
+
+    const after = await repo.getById(c.id);
+    expect(after).toMatchObject({ projectName: null, industry: null, contactPhone: null });
+  });
+
+  it("does not re-sync the representative when the email is unchanged", async () => {
+    const { repo, users, service } = makeService();
+    const c = repo.seed(record({ contactEmail: "same@example.com", contactName: "Rep" }));
+    await service.update(
+      user({ role: "admin" }),
+      c.id,
+      contracts.companyUpdate.parse({ contact_email: "same@example.com" }),
+    );
+    expect(users.calls).toEqual([]);
+  });
+
   it("never writes integration-managed fields (they are not in the contract)", async () => {
     const { repo, service } = makeService();
     const c = repo.seed(record({ quickbooksConnected: true, dataSourceType: "quickbooks" }));

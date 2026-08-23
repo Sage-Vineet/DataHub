@@ -15,6 +15,13 @@ export class InMemoryAuthRepository implements AuthRepository {
     this.users.set(user.id, { ...user });
   }
 
+  /** Remove one, for the case where an account goes mid-flow. */
+  removeUser(email: string): void {
+    for (const [id, user] of this.users) {
+      if (user.email.toLowerCase() === email.toLowerCase()) this.users.delete(id);
+    }
+  }
+
   setCompanyContact(email: string, companyId: string): void {
     this.companyByContactEmail.set(email.toLowerCase(), companyId);
   }

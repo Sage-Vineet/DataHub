@@ -152,3 +152,108 @@ describe("RequestsService — the narrative as the detail pane reads it", () => 
     ).rejects.toBeInstanceOf(ForbiddenError);
   });
 });
+
+describe("RequestsService — what an update writes", () => {
+  it("writes every field the caller sent, and only those", async () => {
+    // Each is its own branch. One left out of the patch is a change the caller
+    // made, the request accepted, and the record does not carry — and the page
+    // shows the old value with no error to explain it.
+    const { service } = make();
+    const user = session();
+    const assignee = randomUUID();
+    const created = await service.create(user, COMPANY, contracts.requestCreate.parse(base));
+
+    const updated = await service.update(
+      user,
+      created.id,
+      contracts.requestUpdate.parse({
+        title: "Send Q2",
+        sub_label: "Statements",
+        description: "revised",
+        category: "Legal",
+        response_type: "Narrative",
+        priority: "low",
+        status: "in-review",
+        due_date: "2099-11-30",
+        assigned_to: assignee,
+        visible: false,
+      }),
+    );
+
+    expect(updated).toMatchObject({
+      title: "Send Q2",
+      sub_label: "Statements",
+      description: "revised",
+      category: "Legal",
+      response_type: "Narrative",
+      priority: "low",
+      status: "in-review",
+      due_date: "2099-11-30",
+      assigned_to: assignee,
+      visible: false,
+    });
+  });
+
+  it("re-derives the reminder cadence when the priority changes", async () => {
+    // The cadence follows the priority unless the caller states one. Left
+    // alone, a request downgraded to low would keep chasing daily.
+    const { service } = make();
+    const user = session();
+    const created = await service.create(user, COMPANY, contracts.requestCreate.parse(base));
+    expect(created.reminder_frequency_days).toBe(1);
+
+    const lowered = await service.update(
+      user,
+      created.id,
+      contracts.requestUpdate.parse({ priority: "low" }),
+    );
+    expect(lowered.reminder_frequency_days).not.toBe(1);
+  });
+
+  it("takes a cadence the caller states over the one the priority implies", async () => {
+    const { service } = make();
+    const user = session();
+    const created = await service.create(user, COMPANY, contracts.requestCreate.parse(base));
+    const updated = await service.update(
+      user,
+      created.id,
+      contracts.requestUpdate.parse({ reminder_frequency_days: 9 }),
+    );
+    expect(updated.reminder_frequency_days).toBe(9);
+  });
+
+  it("leaves the cadence alone when neither is touched", async () => {
+    const { service } = make();
+    const user = session();
+    const created = await service.create(user, COMPANY, contracts.requestCreate.parse(base));
+    const updated = await service.update(
+      user,
+      created.id,
+      contracts.requestUpdate.parse({ title: "Renamed" }),
+    );
+    expect(updated.reminder_frequency_days).toBe(created.reminder_frequency_days);
+  });
+
+  it("clears an assignee and a sub-label the caller emptied", async () => {
+    const { service } = make();
+    const user = session();
+    const created = await service.create(
+      user,
+      COMPANY,
+      contracts.requestCreate.parse({ ...base, sub_label: "Statements", assigned_to: randomUUID() }),
+    );
+    const updated = await service.update(
+      user,
+      created.id,
+      contracts.requestUpdate.parse({ sub_label: "" }),
+    );
+    expect(updated.sub_label).toBeNull();
+  });
+
+  it("404s an update to a request that is not there", async () => {
+    const { service } = make();
+    await expect(
+      service.update(session(), randomUUID(), contracts.requestUpdate.parse({ title: "X" })),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+});

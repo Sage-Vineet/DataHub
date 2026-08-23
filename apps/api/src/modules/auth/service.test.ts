@@ -160,6 +160,119 @@ describe("AuthService OTP + reset", () => {
   });
 });
 
+describe("AuthService — a password that is not a bcrypt hash", () => {
+  it("refuses to log in against one", async () => {
+    // A row whose hash column holds a plaintext password, or a legacy digest,
+    // or a placeholder. `bcrypt.compare` answers false for those anyway — but
+    // only by accident of the format, and a comparison that could ever answer
+    // true against something that is not a bcrypt hash is a shared-password
+    // path by another name (audit C1).
+    const { repo, service } = makeService();
+    repo.addUser({
+      id: "22222222-2222-2222-2222-222222222222",
+      name: "Legacy",
+      email: "legacy@example.com",
+      role: "broker",
+      companyId: null,
+      status: "active",
+      passwordHash: "letmein",
+    });
+
+    await expect(service.authenticate("legacy@example.com", "letmein")).rejects.toBeInstanceOf(
+      InvalidCredentialsError,
+    );
+  });
+
+  it("refuses an inactive account whose password is right", async () => {
+    const { repo, service } = makeService();
+    await seedUser(repo, { email: "gone@example.com", password: "passw0rd1", status: "inactive" });
+    await expect(service.authenticate("gone@example.com", "passw0rd1")).rejects.toBeInstanceOf(
+      InvalidCredentialsError,
+    );
+  });
+
+  it("refuses an account nobody has", async () => {
+    const { service } = makeService();
+    await expect(service.authenticate("nobody@example.com", "x")).rejects.toBeInstanceOf(
+      InvalidCredentialsError,
+    );
+  });
+});
+
+describe("AuthService — how a wrong code is counted", () => {
+  it("says how many attempts are left, and gets the plural right", async () => {
+    // The count is on the page. "1 attempts remaining" reads as a bug in the
+    // product at exactly the moment somebody is already frustrated.
+    const clock = mutableClock();
+    const { emailer, service, config } = makeService(clock);
+    expect(config.otp.maxAttempts).toBeGreaterThan(2);
+
+    await service.sendOtp("counter@example.com");
+    const correct = emailer.last!.otp;
+    const wrong = correct === "000000" ? "111111" : "000000";
+
+    const messages: string[] = [];
+    for (let i = 0; i < config.otp.maxAttempts - 1; i += 1) {
+      await service.verifyOtp("counter@example.com", wrong).catch((e: Error) => {
+        messages.push(e.message);
+      });
+    }
+
+    expect(messages.at(-1)).toMatch(/1 attempt remaining/);
+    expect(messages.at(-2)).toMatch(/2 attempts remaining/);
+  });
+
+  it("stops counting and asks for a new code once they are used up", async () => {
+    const clock = mutableClock();
+    const { emailer, service, config } = makeService(clock);
+    await service.sendOtp("spent@example.com");
+    const correct = emailer.last!.otp;
+    const wrong = correct === "000000" ? "111111" : "000000";
+
+    for (let i = 0; i < config.otp.maxAttempts; i += 1) {
+      await service.verifyOtp("spent@example.com", wrong).catch(() => undefined);
+    }
+
+    // Even the RIGHT code is refused now: the attempt budget is spent, and
+    // letting a correct guess through after N wrong ones is the whole thing
+    // the budget exists to prevent.
+    await expect(service.verifyOtp("spent@example.com", correct)).rejects.toMatchObject({
+      status: 429,
+    });
+  });
+
+  it("refuses a code for an address that never asked for one", async () => {
+    const { service } = makeService();
+    await expect(service.verifyOtp("stranger@example.com", "123456")).rejects.toMatchObject({
+      status: 400,
+    });
+  });
+});
+
+describe("AuthService — resetting a password", () => {
+  it("refuses when the code verified but the account has gone", async () => {
+    // Deleted between requesting the code and using it. Better than resetting
+    // a password on nothing and reporting success.
+    const clock = mutableClock();
+    const { repo, emailer, service } = makeService(clock);
+    await seedUser(repo, { email: "vanishing@example.com", password: "passw0rd1" });
+    await service.sendOtp("vanishing@example.com");
+    const otp = emailer.last!.otp;
+    repo.removeUser("vanishing@example.com");
+
+    await expect(
+      service.resetPassword("vanishing@example.com", otp, "newpassw0rd"),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+});
+
+describe("AuthService — reading the current session", () => {
+  it("is null for a user that is no longer there", async () => {
+    const { service } = makeService();
+    expect(await service.getSessionUser("33333333-3333-3333-3333-333333333333")).toBeNull();
+  });
+});
+
 describe("canAccessCompany", () => {
   const base = { id: "u", name: "n", email: "e@x.com", status: "active" as const };
 

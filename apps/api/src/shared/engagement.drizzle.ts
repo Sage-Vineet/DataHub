@@ -3,6 +3,7 @@ import { schema, type Db } from "@datahub/db";
 import { isStatementCaption } from "@datahub/financial-engine";
 import type { Account, BalanceSheetAnchor, GlEntry } from "@datahub/financial-engine";
 import type { EbitdaRole } from "@datahub/contracts";
+import { emptyToNull, postedAt } from "./ledger-row.js";
 
 const { keyReportVersions, companies, chartOfAccounts, generalLedgerEntries, balanceSheetEntries } =
   schema;
@@ -129,17 +130,16 @@ export async function loadEngagement(db: Db, versionId: string): Promise<Engagem
     const entries: GlEntry[] = [];
     const years = new Set<number>();
     for (const row of glRows) {
-      if (!row.coaId) continue;
-      const date = row.transactionDate ? new Date(row.transactionDate) : null;
-      const fiscalYear = row.fiscalYear ?? date?.getUTCFullYear() ?? null;
-      if (!fiscalYear) continue;
-      years.add(fiscalYear);
+      // Same placement the monthly drill-down uses. Two copies of "which year
+      // is this row in?" is one that can drift, and the drift shows as two
+      // reports disagreeing about the company's own ledger.
+      const posted = postedAt(row);
+      if (!posted) continue;
+      years.add(posted.fiscalYear);
       entries.push({
-        accountId: row.coaId,
-        fiscalYear,
-        month: date ? date.getUTCMonth() + 1 : 0,
+        ...posted,
         amount: toNumber(row.amount),
-        vendor: row.vendor ?? null,
+        vendor: emptyToNull(row.vendor),
       });
     }
 

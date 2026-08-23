@@ -1,3 +1,4 @@
+import { cleared } from "../../shared/optional-field.js";
 import bcrypt from "bcryptjs";
 import type {
   AssignedCompany,
@@ -30,19 +31,6 @@ export interface UsersServiceDeps {
 }
 
 const BCRYPT_HASH_RE = /^\$2[aby]\$/;
-
-/**
- * An optional field the caller is clearing.
- *
- * The contract types these as optional strings rather than nullable ones, so
- * `undefined` means "leave it alone" and there is no way to say "remove it"
- * except by sending an empty one. Stored as `""` that leaves the column
- * holding an empty string for some users and NULL for others, and every reader
- * has to handle both — so an empty string is stored as absent.
- */
-function cleared<T extends string>(value: T | null | undefined): T | null {
-  return value === undefined || value === null || value.trim() === "" ? null : value;
-}
 
 export class UsersService {
   private readonly repo: UsersRepository;

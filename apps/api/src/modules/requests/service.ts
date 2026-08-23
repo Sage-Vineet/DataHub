@@ -1,3 +1,4 @@
+import { cleared } from "../../shared/optional-field.js";
 import type {
   NarrativeUpdate,
   ReminderResponse,
@@ -79,14 +80,14 @@ export class RequestsService {
     const existing = await this.requireAccessible(user, id);
     const patch: UpdateRequestPatch = {};
     if (input.title !== undefined) patch.title = input.title;
-    if (input.sub_label !== undefined) patch.subLabel = input.sub_label ?? null;
+    if (input.sub_label !== undefined) patch.subLabel = cleared(input.sub_label);
     if (input.description !== undefined) patch.description = input.description;
     if (input.category !== undefined) patch.category = input.category;
     if (input.response_type !== undefined) patch.responseType = input.response_type;
     if (input.priority !== undefined) patch.priority = input.priority;
     if (input.status !== undefined) patch.status = input.status;
     if (input.due_date !== undefined) patch.dueDate = input.due_date;
-    if (input.assigned_to !== undefined) patch.assignedTo = input.assigned_to ?? null;
+    if (input.assigned_to !== undefined) patch.assignedTo = cleared(input.assigned_to);
     if (input.visible !== undefined) patch.visible = input.visible;
     if (input.priority !== undefined || input.reminder_frequency_days !== undefined) {
       patch.reminderFrequencyDays = resolveReminderFrequencyDays(

@@ -1,6 +1,12 @@
 import { and, eq } from "drizzle-orm";
 import { schema, type Db } from "@datahub/db";
 import { loadEngagement, type EngagementData } from "../../shared/engagement.drizzle.js";
+import {
+  emptyToNull,
+  postedAt,
+  toLedgerNumber as toNumber,
+  type LedgerRowPlacement,
+} from "../../shared/ledger-row.js";
 import type { EngagementPort, LedgerDetailPort, LedgerTransaction } from "./ports.js";
 import { HttpError } from "../../shared/errors.js";
 import type { ReportSyncPort } from "./ports.js";
@@ -66,11 +72,8 @@ export class DrizzleLedgerDetailPort implements LedgerDetailPort {
 }
 
 /** One ledger row as the report reads it, in the shape the DB hands it over. */
-export interface LedgerRow {
+export interface LedgerRow extends LedgerRowPlacement {
   id: string | number;
-  coaId: string | null;
-  fiscalYear: number | null;
-  transactionDate: string | null;
   amount: string | number | null;
   vendor: string | null;
   description: string | null;
@@ -83,29 +86,18 @@ export interface LedgerRow {
 /**
  * A stored row as a transaction, or null where it is neither.
  *
- * Two rejections rather than one fallback. A row with no account cannot be
- * reported against anything, and a row with no year lands on no statement —
- * defaulting either would put a real amount somewhere arbitrary, where it adds
- * up and is wrong.
+ * Where it posts is `postedAt`'s decision, shared with the engagement loader
+ * so the drill-down and the statements above it cannot disagree about which
+ * year a transaction falls in.
  */
 export function toLedgerTransaction(row: LedgerRow): LedgerTransaction | null {
-  if (!row.coaId) return null;
-
-  // The year the row states, else the year its date falls in. Extractors fill
-  // one or the other and rarely both.
-  const date = row.transactionDate ? new Date(row.transactionDate) : null;
-  const fromDate = date !== null && !Number.isNaN(date.getTime()) ? date.getUTCFullYear() : null;
-  const fiscalYear = row.fiscalYear ?? fromDate;
-  if (!fiscalYear) return null;
+  const posted = postedAt(row);
+  if (!posted) return null;
 
   const amount = toNumber(row.amount);
   return {
     id: String(row.id),
-    accountId: row.coaId,
-    fiscalYear,
-    // Month 0 means "dated to a year but not to a month", which the monthly
-    // views drop rather than showing under January.
-    month: fromDate === null ? 0 : date!.getUTCMonth() + 1,
+    ...posted,
     date: row.transactionDate ?? null,
     vendorName: emptyToNull(row.vendor),
     description: emptyToNull(row.description),
@@ -139,13 +131,4 @@ export function splitOf(
   return { debit: dr, credit: cr };
 }
 
-/** An unpopulated text column arrives as "" as often as null; both mean absent. */
-export function emptyToNull(value: string | null | undefined): string | null {
-  const trimmed = (value ?? "").trim();
-  return trimmed === "" ? null : trimmed;
-}
-
-export function toNumber(value: string | number | null | undefined): number {
-  const n = typeof value === "number" ? value : Number.parseFloat(String(value ?? "0"));
-  return Number.isFinite(n) ? n : 0;
-}
+export { toLedgerNumber as toNumber } from "../../shared/ledger-row.js";

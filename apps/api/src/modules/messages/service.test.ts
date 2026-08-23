@@ -77,3 +77,101 @@ describe("MessagesService — groups", () => {
     expect((await service.unreadCount(b, group.id)).unread).toBe(1);
   });
 });
+
+describe("MessagesService — the thread rail's order", () => {
+  const co = (id: string, name: string, createdAt: string) => ({
+    id,
+    name,
+    industry: null,
+    logo: null,
+    contactName: null,
+    contactEmail: null,
+    status: null,
+    createdAt,
+  });
+
+  it("puts the most recently active deal first", async () => {
+    const { repo, service } = make();
+    repo.seedThreadCompany(co(COMPANY, "Acme", "2024-01-01T00:00:00.000Z"));
+    repo.seedThreadCompany(co(OTHER, "Beta", "2024-01-01T00:00:00.000Z"));
+
+    const user = session({ role: "admin" });
+    await service.companySend(user, COMPANY, "older");
+    await service.companySend(user, OTHER, "newer");
+
+    expect((await service.threads(user)).map((t) => t.company.id)).toEqual([OTHER, COMPANY]);
+  });
+
+  it("falls back to when the deal was created, so an unmessaged one has a place", async () => {
+    // Without the fallback a deal nobody has messaged drifts to the bottom in
+    // whatever order the query happened to return, and the rail reshuffles
+    // between page loads for no reason a reader can see.
+    const { repo, service } = make();
+    repo.seedThreadCompany(co(COMPANY, "Acme", "2024-01-01T00:00:00.000Z"));
+    repo.seedThreadCompany(co(OTHER, "Beta", "2024-06-01T00:00:00.000Z"));
+
+    const user = session({ role: "admin" });
+    expect((await service.threads(user)).map((t) => t.company.id)).toEqual([OTHER, COMPANY]);
+  });
+
+  it("breaks a tie by name rather than arbitrarily", async () => {
+    const { repo, service } = make();
+    const same = "2024-01-01T00:00:00.000Z";
+    repo.seedThreadCompany(co(OTHER, "Zulu", same));
+    repo.seedThreadCompany(co(COMPANY, "Alpha", same));
+
+    const names = (await service.threads(session({ role: "admin" }))).map((t) => t.company.name);
+    expect(names).toEqual(["Alpha", "Zulu"]);
+  });
+
+  it("answers nothing for a user who can see no deals", async () => {
+    const { service } = make();
+    expect(await service.threads(session({ role: "buyer", company_ids: [] }))).toEqual([]);
+  });
+});
+
+describe("MessagesService — who the caller may message", () => {
+  const member = (id: string, name: string) => ({ id, name, email: `${name}@x.com`, role: "buyer" });
+
+  it("orders by last activity, then by name, and leaves the caller out", async () => {
+    const { repo, service } = make();
+    const me = session();
+    const spoke = randomUUID();
+    const zed = randomUUID();
+    const abe = randomUUID();
+    repo.seedCompany({ id: COMPANY, name: "Acme" }, [
+      member(me.id, "Me"),
+      member(zed, "Zed"),
+      member(abe, "Abe"),
+      member(spoke, "Spoke"),
+    ]);
+    await service.directSend(me, COMPANY, spoke, "hello");
+
+    const contacts = await service.directContacts(me, COMPANY);
+    expect(contacts.contacts.map((c) => c.name)).toEqual(["Spoke", "Abe", "Zed"]);
+  });
+
+  it("still lists a contact nobody has spoken to", async () => {
+    const { repo, service } = make();
+    const me = session();
+    const other = randomUUID();
+    repo.seedCompany({ id: COMPANY, name: "Acme" }, [member(me.id, "Me"), member(other, "Other")]);
+
+    expect((await service.directContacts(me, COMPANY)).contacts.map((c) => c.id)).toEqual([other]);
+  });
+
+  it("skips a company it cannot resolve rather than emptying the whole list", async () => {
+    // One bad membership row should not take the contact list away.
+    const { repo, service } = make();
+    const me = session({ company_ids: [COMPANY, OTHER] });
+    repo.seedCompany({ id: COMPANY, name: "Acme" }, [member(me.id, "Me"), member(randomUUID(), "A")]);
+
+    const lists = await service.myDirectContacts(me);
+    expect(lists.map((l) => l.company.id)).toEqual([COMPANY]);
+  });
+
+  it("answers nothing for a user in no companies at all", async () => {
+    const { service } = make();
+    expect(await service.myDirectContacts(session({ company_ids: [] }))).toEqual([]);
+  });
+});

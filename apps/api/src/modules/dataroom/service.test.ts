@@ -481,3 +481,90 @@ describe("comments", () => {
     await expect(service.deleteComment(broker, created.id)).resolves.toBeUndefined();
   });
 });
+
+describe("asking about something that is not there", () => {
+  const MISSING = "ffffffff-0000-4000-8000-00000000ffff";
+
+  it("404s a folder nobody has", async () => {
+    // Rather than opening a session against a folder that does not exist and
+    // discovering it at completion, with the bytes already stored.
+    await expect(
+      service.openSession(broker, {
+        folder_id: MISSING,
+        file_name: "x.txt",
+        content_type: "text/plain",
+        total_bytes: 1,
+        chunk_size: 1,
+      }),
+    ).rejects.toThrow(/not found/i);
+  });
+
+  it("404s a version nobody has", async () => {
+    await expect(service.versionUploadId(broker, MISSING)).rejects.toThrow(/not found/i);
+  });
+
+  it("404s a comment nobody has", async () => {
+    await expect(service.deleteComment(broker, MISSING)).rejects.toThrow(/not found/i);
+  });
+
+  it("404s an upload session nobody has", async () => {
+    await expect(service.getSession(broker, MISSING)).rejects.toThrow(/not found/i);
+    await expect(service.describeSession(MISSING)).rejects.toThrow(/not found/i);
+    await expect(service.abortSession(broker, MISSING)).rejects.toThrow(/not found/i);
+    await expect(
+      service.putChunk(broker, MISSING, 0, Buffer.from("x")),
+    ).rejects.toThrow(/not found/i);
+  });
+});
+
+describe("someone else's upload session", () => {
+  it("is not readable, resumable or abortable", async () => {
+    // The session id is the only thing standing between two tenants here, and
+    // it travels in a URL.
+    const session = await service.openSession(broker, {
+      folder_id: FOLDER,
+      file_name: "private.txt",
+      content_type: "text/plain",
+      total_bytes: 5,
+      chunk_size: 5,
+    });
+
+    await expect(service.getSession(outsider, session.id)).rejects.toThrow(/access/i);
+    await expect(
+      service.putChunk(outsider, session.id, 0, Buffer.from("hello")),
+    ).rejects.toThrow(/access/i);
+    await expect(service.abortSession(outsider, session.id)).rejects.toThrow(/access/i);
+  });
+
+  it("refuses more chunks once it is finished", async () => {
+    const session = await service.openSession(broker, {
+      folder_id: FOLDER,
+      file_name: "done.txt",
+      content_type: "text/plain",
+      total_bytes: 5,
+      chunk_size: 5,
+    });
+    await service.putChunk(broker, session.id, 0, Buffer.from("hello"));
+    await service.completeSession(broker, session.id);
+
+    await expect(
+      service.putChunk(broker, session.id, 0, Buffer.from("again")),
+    ).rejects.toThrow(/already/i);
+  });
+});
+
+describe("a file with no extension", () => {
+  it("stores an empty extension rather than the whole name", async () => {
+    // `"README".split(".").pop()` is `"README"`, so a file with no dot would
+    // otherwise get its own name as its extension and sort into a type of one.
+    await upload(broker, { fileName: "README", parts: ["notes"] });
+    const stored = [...store.documents.values()].find((d) => d.name === "README");
+    expect(stored?.ext).toBe("");
+  });
+
+  it("stores the extension of one that has a dot", async () => {
+    await upload(broker, { fileName: "accounts.xlsx", parts: ["x"] });
+    const stored = [...store.documents.values()].find((d) => d.name === "accounts.xlsx");
+    expect(stored?.ext).toBe("xlsx");
+  });
+});

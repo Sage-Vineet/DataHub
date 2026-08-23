@@ -1,3 +1,4 @@
+import { cleared } from "../../shared/optional-field.js";
 import type {
   CompanyCreate,
   CompanyResponse,
@@ -92,14 +93,14 @@ export class CompaniesService {
     }
     const toInsert: CompanyCreateInput = {
       name: input.name,
-      projectName: input.project_name ?? null,
-      industry: input.industry ?? null,
+      projectName: cleared(input.project_name),
+      industry: cleared(input.industry),
       status: input.status ?? "active",
-      since: input.since ?? null,
-      logo: input.logo ?? null,
-      contactName: input.contact_name ?? null,
-      contactEmail: input.contact_email ?? null,
-      contactPhone: input.contact_phone ?? null,
+      since: cleared(input.since),
+      logo: cleared(input.logo),
+      contactName: cleared(input.contact_name),
+      contactEmail: cleared(input.contact_email),
+      contactPhone: cleared(input.contact_phone),
       profitMetric: input.profit_metric ?? "adjusted_ebitda",
     };
     const company = await this.repo.create(toInsert);
@@ -120,14 +121,14 @@ export class CompaniesService {
 
     const patch: CompanyUpdatePatch = {};
     if (input.name !== undefined) patch.name = input.name;
-    if (input.project_name !== undefined) patch.projectName = input.project_name ?? null;
-    if (input.industry !== undefined) patch.industry = input.industry ?? null;
+    if (input.project_name !== undefined) patch.projectName = cleared(input.project_name);
+    if (input.industry !== undefined) patch.industry = cleared(input.industry);
     if (input.status !== undefined) patch.status = input.status;
-    if (input.since !== undefined) patch.since = input.since ?? null;
-    if (input.logo !== undefined) patch.logo = input.logo ?? null;
-    if (input.contact_name !== undefined) patch.contactName = input.contact_name ?? null;
-    if (input.contact_email !== undefined) patch.contactEmail = input.contact_email ?? null;
-    if (input.contact_phone !== undefined) patch.contactPhone = input.contact_phone ?? null;
+    if (input.since !== undefined) patch.since = cleared(input.since);
+    if (input.logo !== undefined) patch.logo = cleared(input.logo);
+    if (input.contact_name !== undefined) patch.contactName = cleared(input.contact_name);
+    if (input.contact_email !== undefined) patch.contactEmail = cleared(input.contact_email);
+    if (input.contact_phone !== undefined) patch.contactPhone = cleared(input.contact_phone);
     if (input.profit_metric !== undefined) {
       patch.profitMetric = normalizeProfitMetric(input.profit_metric) as ProfitMetric;
     }
@@ -135,7 +136,7 @@ export class CompaniesService {
     const updated = (await this.repo.updateSafeFields(id, patch)) ?? existing;
 
     const emailChanged =
-      input.contact_email !== undefined && (input.contact_email ?? null) !== existing.contactEmail;
+      input.contact_email !== undefined && cleared(input.contact_email) !== existing.contactEmail;
     if (emailChanged && updated.contactEmail && updated.contactName) {
       await this.users.syncClientRepresentative(updated, { contactEmail: existing.contactEmail });
     }

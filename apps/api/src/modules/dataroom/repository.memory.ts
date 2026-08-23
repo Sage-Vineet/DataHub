@@ -36,6 +36,16 @@ export interface MemDocument {
   uploadId: string | null;
   currentVersionId: string | null;
   versionCount: number;
+  /**
+   * What the real table stores against the row.
+   *
+   * Held here because the fake dropping a column the port writes is how a
+   * fake comes to disagree with the store it stands in for: a test can then
+   * prove nothing about what was written, and the write can stop happening
+   * without a single failure.
+   */
+  sizeBytes: number;
+  ext: string;
 }
 
 export class DataRoomStore {
@@ -71,6 +81,8 @@ export class DataRoomStore {
     folderId: string;
     name: string;
     uploadId?: string | null;
+    sizeBytes?: number;
+    ext?: string;
   }): MemDocument {
     const record: MemDocument = {
       id: doc.id,
@@ -80,6 +92,8 @@ export class DataRoomStore {
       uploadId: doc.uploadId ?? null,
       currentVersionId: null,
       versionCount: 0,
+      sizeBytes: doc.sizeBytes ?? 0,
+      ext: doc.ext ?? "",
     };
     this.documents.set(doc.id, record);
     this.folders.set(doc.folderId, doc.companyId);
@@ -310,6 +324,8 @@ export class MemoryDocumentRef implements DocumentRefPort {
       folderId: input.folderId,
       name: input.name,
       uploadId: input.uploadId,
+      sizeBytes: input.sizeBytes,
+      ext: input.ext,
     });
     return { id };
   }
