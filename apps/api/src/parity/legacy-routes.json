@@ -3,7 +3,6 @@
   "GET /api/auth/quickbooks",
   "GET /extract-bank-pdf-records",
   "GET /manual-report-uploads/bs-bank-balances",
-  "GET /manual-report-uploads/pl-for-tax",
   "GET /manual-report-uploads/qms-bank-data",
   "GET /manual-upload/bank-data",
   "GET /qb-bank-activity",

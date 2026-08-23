@@ -1,10 +1,13 @@
 import type { SessionUser } from "@datahub/contracts";
 import {
   readStatementKpis,
+  readTaxComparisonFigures,
+  statementYear,
   toKpiTrend,
   type KpiTrendPoint,
   type StatementKpis,
   type StatementNode,
+  type TaxComparisonFigures,
 } from "@datahub/financial-engine";
 import { canAccessCompany } from "../../shared/access.js";
 import { BadRequestError, ForbiddenError } from "../../shared/errors.js";
@@ -159,5 +162,68 @@ export class DashboardService {
       },
       trends: toKpiTrend(years.map((year) => ({ year, kpis: reports[String(year)]!.kpis }))),
     };
+  }
+}
+
+/**
+ * The tax-comparison figures, per year, from a company's uploaded P&Ls.
+ *
+ * The other half of the Tax Reconciliation page: `/tax-data` reads the return,
+ * this reads the books. Same nine figures, so the page can set them side by
+ * side.
+ *
+ * Derived from what extraction already stored rather than re-read. Legacy had
+ * three paths here — a stored `pl_for_tax` blob, the parsed rows, and a live
+ * Gemini extraction — and they could disagree, because the first was written
+ * by a sync that might have run against a different file from the one the
+ * second reads. One path now: the parsed rows, which is the thing every other
+ * page in the product already believes.
+ */
+export interface TaxComparisonYears {
+  years: Record<string, TaxComparisonFigures & { fileName: string | null; extractId: string }>;
+  source: "parsed_rows";
+}
+
+export class TaxComparisonService {
+  constructor(private readonly deps: DashboardServiceDeps) {}
+
+  async build(
+    user: SessionUser,
+    companyId: string,
+    sourceKey: string,
+    now = new Date(),
+  ): Promise<TaxComparisonYears> {
+    if (!companyId) throw new BadRequestError("Missing clientId.");
+    if (!canAccessCompany(user, companyId)) throw new ForbiddenError("Access denied");
+
+    const extracts = await this.deps.repo.list(companyId, {
+      sourceKey,
+      statementType: "profit_and_loss",
+    });
+
+    const years: TaxComparisonYears["years"] = {};
+    for (const extract of extracts) {
+      const rows = rowsOf(extract);
+      // A statement with no rows carries no figures, and filing it under a
+      // year would hide whichever statement for that year does have them.
+      if (rows.length === 0) continue;
+
+      const year = extract.fiscalYear ?? statementYear(extract, extract.documentName, now.getFullYear());
+      const existing = years[String(year)];
+      // Newest extraction wins, so a corrected re-upload beats the file it
+      // corrects — the same rule the dashboard uses.
+      if (existing && existing.extractId !== extract.id) {
+        const priorAt = extracts.find((e) => e.id === existing.extractId)?.extractedAt ?? "";
+        if ((extract.extractedAt ?? "") <= priorAt) continue;
+      }
+
+      years[String(year)] = {
+        ...readTaxComparisonFigures(rows, year),
+        fileName: extract.documentName,
+        extractId: extract.id,
+      };
+    }
+
+    return { years, source: "parsed_rows" };
   }
 }

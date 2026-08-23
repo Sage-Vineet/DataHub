@@ -2,7 +2,7 @@ import type { RequestHandler, Router } from "express";
 import type { Db } from "@datahub/db";
 import type { DocumentReader } from "../../shared/gemini.js";
 import { CashFlowService } from "./cash-flow.js";
-import { DashboardService } from "./dashboard.js";
+import { DashboardService, TaxComparisonService } from "./dashboard.js";
 import { TaxReturnService } from "./tax-return.js";
 import {
   DrizzleDocumentBytesPort,
@@ -17,6 +17,7 @@ export interface StatementsModule {
   service: StatementsService;
   cashFlow: CashFlowService;
   dashboard: DashboardService;
+  taxComparison: TaxComparisonService;
   taxReturn: TaxReturnService | undefined;
 }
 
@@ -45,6 +46,7 @@ export function createStatementsModule(
   // Derived on the request, for the same reason: the inputs are a handful of
   // rows and the derivation is arithmetic.
   const dashboard = new DashboardService({ repo });
+  const taxComparison = new TaxComparisonService({ repo });
 
   // Reads the company's own linked tax return. Every query behind this filters
   // on the company — see `tax-return.drizzle.ts`.
@@ -62,12 +64,14 @@ export function createStatementsModule(
       service,
       cashFlow,
       dashboard,
+      taxComparison,
       ...(taxReturn ? { taxReturn } : {}),
       requireAuth: opts.requireAuth,
     }),
     service,
     cashFlow,
     dashboard,
+    taxComparison,
     taxReturn,
   };
 }
@@ -77,7 +81,7 @@ export { DrizzleStatementsRepository } from "./repository.drizzle.js";
 export { InMemoryStatementsRepository } from "./repository.memory.js";
 export { createStatementsRouter } from "./router.js";
 export { CashFlowService, MissingCashFlowInputsError } from "./cash-flow.js";
-export { DashboardService } from "./dashboard.js";
+export { DashboardService, TaxComparisonService } from "./dashboard.js";
 export { TaxReturnService, toTaxReturnFigures, toTaxReturnRows } from "./tax-return.js";
 export type { TaxReturnFigures } from "./tax-return.js";
 export type { SourceDashboard, DashboardYear } from "./dashboard.js";

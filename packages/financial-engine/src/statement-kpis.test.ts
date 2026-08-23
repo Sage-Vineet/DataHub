@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { StatementNode } from "./statement-cash-flow.js";
-import { allNodes, findAmount, readStatementKpis, toKpiTrend } from "./statement-kpis.js";
+import {
+  allNodes,
+  findAmount,
+  readStatementKpis,
+  readTaxComparisonFigures,
+  statementYear,
+  toKpiTrend,
+} from "./statement-kpis.js";
 
 /**
  * The headline figures a dashboard shows for a year.
@@ -217,5 +224,103 @@ describe("the trend line", () => {
 
   it("makes nothing of nothing", () => {
     expect(toKpiTrend([])).toEqual([]);
+  });
+});
+
+describe("the tax-comparison figures from an uploaded statement", () => {
+  const PL = [
+    node("Total Income", 1000000),
+    node("Total Cost of Goods Sold", 400000),
+    node("Gross Profit", 600000),
+    node("Expenses", 0, [
+      node("Officer Compensation", 150000),
+      node("Depreciation Expense", 50000),
+      node("Amortization Expense", 10000),
+      node("Interest Expense", 20000),
+      node("Rent", 70000),
+    ]),
+    node("Total Expenses", 300000),
+    node("Net Income", 300000),
+  ];
+
+  it("reads each named figure", () => {
+    const figures = readTaxComparisonFigures(PL, 2024);
+    expect(figures).toMatchObject({
+      year: 2024,
+      totalRevenue: 1000000,
+      totalCostOfGoodsSold: 400000,
+      grossProfit: 600000,
+      officerWages: 150000,
+      depreciation: 50000,
+      amortization: 10000,
+      interestExpense: 20000,
+      netIncome: 300000,
+    });
+  });
+
+  it("derives what is left after the named costs", () => {
+    // 300000 − (150000 + 50000 + 10000 + 20000)
+    expect(readTaxComparisonFigures(PL, 2024).allOtherExpenses).toBe(70000);
+  });
+
+  it("does NOT clamp a negative remainder to zero", () => {
+    // `Math.max(0, total - named)` hid the inconsistency. A negative here means
+    // the named costs exceed the total — usually because one was matched twice
+    // — and that belongs on screen rather than rounded away.
+    const inconsistent = [
+      node("Total Expenses", 100000),
+      node("Officer Compensation", 150000),
+    ];
+    expect(readTaxComparisonFigures(inconsistent, 2024).allOtherExpenses).toBe(-50000);
+  });
+
+  it("does not let a short label match a long pattern", () => {
+    // The matcher this replaces tested `pattern.includes(label)` as well, so a
+    // row called "Interest" was read as "total interest expense" and a row
+    // called "Income" as "total income".
+    const loose = [node("Interest", 999), node("Total Interest Expense", 20000)];
+    expect(readTaxComparisonFigures(loose, 2024).interestExpense).toBe(20000);
+  });
+
+  it("prefers a total to a section header of the same idea", () => {
+    const both = [node("Expenses", 1), node("Total Expenses", 300000)];
+    expect(readTaxComparisonFigures(both, 2024).allOtherExpenses).toBe(300000);
+  });
+
+  it("computes net income when the statement does not state it", () => {
+    const noNet = [node("Total Income", 500000), node("Total Expenses", 200000)];
+    expect(readTaxComparisonFigures(noNet, 2024).netIncome).toBe(300000);
+  });
+
+  it("answers zeroes for a statement it cannot read", () => {
+    expect(readTaxComparisonFigures([], 2024).totalRevenue).toBe(0);
+    expect(readTaxComparisonFigures(null, 2024).year).toBe(2024);
+  });
+});
+
+describe("which year a statement covers", () => {
+  it("believes the statement's own dates", () => {
+    expect(statementYear({ asOfDate: "2023-12-31" }, "Accounts 2024.pdf", 2026)).toBe(2023);
+    expect(statementYear({ periodEnd: "2022-12-31" }, null, 2026)).toBe(2022);
+    expect(statementYear({ periodStart: "2021-01-01" }, null, 2026)).toBe(2021);
+  });
+
+  it("falls back to the filename only when the statement says nothing", () => {
+    // A filename year is a guess about how somebody named a file. Preferring
+    // it is how "2023 Accounts.pdf" holding 2024 figures ends up filed under
+    // 2023.
+    expect(statementYear({}, "Accounts 2024.pdf", 2026)).toBe(2024);
+  });
+
+  it("refuses a year that could not be a statement's", () => {
+    expect(statementYear({ asOfDate: "1899-12-31" }, null, 2026)).toBe(2026);
+    expect(statementYear({}, "Invoice 1999.pdf", 2026)).toBe(2026);
+    // Next year is allowed: a statement can be filed early.
+    expect(statementYear({ asOfDate: "2027-12-31" }, null, 2026)).toBe(2027);
+    expect(statementYear({ asOfDate: "2028-12-31" }, null, 2026)).toBe(2026);
+  });
+
+  it("falls back to the year it was given when nothing else says", () => {
+    expect(statementYear({}, null, 2026)).toBe(2026);
   });
 });

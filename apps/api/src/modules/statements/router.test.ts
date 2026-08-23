@@ -4,7 +4,7 @@ import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { BadRequestError, ForbiddenError, NotFoundError } from "../../shared/errors.js";
 import type { CashFlowService } from "./cash-flow.js";
-import type { DashboardService } from "./dashboard.js";
+import type { DashboardService, TaxComparisonService } from "./dashboard.js";
 import type { TaxReturnService } from "./tax-return.js";
 import { createStatementsRouter } from "./router.js";
 import type { StatementsService } from "./service.js";
@@ -114,12 +114,21 @@ function stub(over: Record<string, unknown> = {}) {
           ...(over.taxReturn as object | undefined),
         } as unknown as TaxReturnService);
 
+  const taxComparison = {
+    build: record("buildTaxComparison", {
+      years: { "2024": { year: 2024, totalRevenue: 1000000, fileName: "PL 2024.pdf" } },
+      source: "parsed_rows",
+    }),
+    ...(over.taxComparison as object | undefined),
+  } as unknown as TaxComparisonService;
+
   const app = express();
   app.use(
     createStatementsRouter({
       service,
       cashFlow,
       dashboard,
+      taxComparison,
       ...(taxReturn ? { taxReturn } : {}),
       requireAuth: authAs("caller-1"),
     }),
@@ -328,7 +337,34 @@ describe("paths this router does not own", () => {
     // this router serves them now, and leaving the assertions would have
     // pinned the routes as absent rather than noticing they had arrived.
     const { app } = stub();
-    await request(app).get("/manual-report-uploads/pl-for-tax").expect(404);
+    await request(app).get("/manual-report-uploads/qms-bank-data").expect(404);
+  });
+});
+
+describe("the books' side of the tax reconciliation", () => {
+  it("answers a year per uploaded P&L", async () => {
+    const { app } = stub();
+    const res = await request(app)
+      .get("/manual-report-uploads/pl-for-tax")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(res.body.years["2024"].totalRevenue).toBe(1000000);
+    expect(res.body.source).toBe("parsed_rows");
+  });
+
+  it("reads the manual-upload source unless told otherwise", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .get("/manual-report-uploads/pl-for-tax")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "buildTaxComparison")[2]).toBe("manual_upload_excel_pdf");
+
+    await request(app)
+      .get("/manual-report-uploads/pl-for-tax?sourceKey=quickbooks_manual")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "buildTaxComparison")[2]).toBe("quickbooks_manual");
   });
 });
 

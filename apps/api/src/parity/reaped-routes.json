@@ -67,6 +67,7 @@
   "GET /manual-gl/validation/balance-sheet",
   "GET /manual-report-uploads/folder-files",
   "GET /manual-report-uploads/manual-upload-dashboard",
+  "GET /manual-report-uploads/pl-for-tax",
   "GET /manual-report-uploads/qms-dashboard",
   "GET /manual-report-uploads/qms-reports/:p/all",
   "GET /manual-report-uploads/qms-reports/:p/latest",

@@ -7,7 +7,7 @@ import { REPORT_SOURCE_KEYS } from "../report-sources/ports.js";
 import { withCommonMiddleware } from "../../shared/router.js";
 import type { StatementExtract } from "./ports.js";
 import { MissingCashFlowInputsError, type CashFlowService } from "./cash-flow.js";
-import type { DashboardService } from "./dashboard.js";
+import type { DashboardService, TaxComparisonService } from "./dashboard.js";
 import { toTaxReturnRows, type TaxReturnService } from "./tax-return.js";
 import type { StatementsService } from "./service.js";
 
@@ -15,6 +15,7 @@ export interface StatementsRouterDeps {
   service: StatementsService;
   cashFlow: CashFlowService;
   dashboard: DashboardService;
+  taxComparison: TaxComparisonService;
   /** Absent where no model is configured; the route says so rather than failing. */
   taxReturn?: TaxReturnService;
   requireAuth: RequestHandler;
@@ -32,7 +33,7 @@ export interface StatementsRouterDeps {
  * it was read out of.
  */
 export function createStatementsRouter(deps: StatementsRouterDeps): Router {
-  const { service, cashFlow, dashboard, taxReturn, requireAuth } = deps;
+  const { service, cashFlow, dashboard, taxComparison, taxReturn, requireAuth } = deps;
   const router = express.Router();
   withCommonMiddleware(router, [helmet(), pinoHttp(), express.json(), requireAuth]);
 
@@ -289,6 +290,24 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
   // figures for the same company.
   router.get("/tax-data", taxData);
   router.get("/manual-report-uploads/tax-data", taxData);
+
+  /**
+   * The books' side of the tax reconciliation, per year.
+   *
+   * Legacy had three paths — a stored `pl_for_tax` blob, the parsed rows, and
+   * a live Gemini extraction — and they could disagree, because the blob was
+   * written by a sync that might have run against a different file from the
+   * one the rows came from. One path now: the parsed rows, which is what every
+   * other page in the product already believes.
+   */
+  router.get("/manual-report-uploads/pl-for-tax", handle(async (req, res) => {
+    const built = await taxComparison.build(
+      req.user!,
+      companyOf(req),
+      str(req.query.sourceKey) ?? REPORT_SOURCE_KEYS.MANUAL_UPLOAD,
+    );
+    res.json({ success: true, ...built });
+  }));
 
   const QMS = REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
 

@@ -670,6 +670,97 @@ describe("statement extracts (real Postgres)", () => {
       .expect(403);
   });
 
+  it("builds the books' side of the tax reconciliation, per year", async () => {
+    const pl2023 = await addDocument("PL 2023.pdf");
+    const pl2024 = await addDocument("PL 2024.pdf");
+    const rows = (revenue: number) => ({
+      rows: [
+        { name: "Total Income", amount: revenue },
+        { name: "Total Expenses", amount: 300000 },
+        { name: "Officer Compensation", amount: 150000 },
+        { name: "Net Income", amount: revenue - 300000 },
+      ],
+    });
+
+    for (const [doc, year, revenue] of [
+      [pl2023, "2023", 800000],
+      [pl2024, "2024", 1000000],
+    ] as const) {
+      await service.save(current, companyId, {
+        provenance: { from: "document", documentId: doc },
+        statementType: "profit_and_loss",
+        periodEnd: `${year}-12-31`,
+        payload: rows(revenue),
+      });
+    }
+
+    const res = await request(app)
+      .get("/manual-report-uploads/pl-for-tax")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+
+    expect(Object.keys(res.body.years).sort()).toEqual(["2023", "2024"]);
+    expect(res.body.years["2024"].totalRevenue).toBe(1000000);
+    expect(res.body.years["2024"].officerWages).toBe(150000);
+    // 300000 − (150000 + 0 + 0 + 0)
+    expect(res.body.years["2024"].allOtherExpenses).toBe(150000);
+    expect(res.body.years["2024"].fileName).toBe("PL 2024.pdf");
+  });
+
+  it("skips a statement with no rows rather than filing an empty year", async () => {
+    // Filing it would hide whichever statement for that year does have rows.
+    const empty = await addDocument("PL 2024 empty.pdf");
+    const real = await addDocument("PL 2024.pdf");
+    await service.save(current, companyId, {
+      provenance: { from: "document", documentId: empty },
+      statementType: "profit_and_loss",
+      periodEnd: "2024-12-31",
+      payload: { rows: [] },
+    });
+    await service.save(current, companyId, {
+      provenance: { from: "document", documentId: real },
+      statementType: "profit_and_loss",
+      periodEnd: "2024-12-31",
+      payload: { rows: [{ name: "Total Income", amount: 5 }] },
+    });
+
+    const res = await request(app)
+      .get("/manual-report-uploads/pl-for-tax")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(res.body.years["2024"].totalRevenue).toBe(5);
+  });
+
+  it("keeps one source's figures off another's", async () => {
+    const manual = await addDocument("Manual PL.pdf");
+    const qms = await addDocument("QMS PL.pdf");
+    for (const [doc, sourceKey, revenue] of [
+      [manual, "manual_upload_excel_pdf", 111],
+      [qms, "quickbooks_manual", 999],
+    ] as const) {
+      await service.save(current, companyId, {
+        provenance: { from: "document", documentId: doc },
+        statementType: "profit_and_loss",
+        sourceKey,
+        periodEnd: "2024-12-31",
+        payload: { rows: [{ name: "Total Income", amount: revenue }] },
+      });
+    }
+
+    const res = await request(app)
+      .get("/manual-report-uploads/pl-for-tax")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(res.body.years["2024"].totalRevenue).toBe(111);
+  });
+
+  it("403s a company the caller cannot reach", async () => {
+    await request(app)
+      .get("/manual-report-uploads/pl-for-tax")
+      .set("X-Client-Id", "11111111-1111-4111-8111-111111111111")
+      .expect(403);
+  });
+
   it("builds a tree that reaches the document and folder names", async () => {
     const documentId = await addDocument("BS 2024.pdf");
     await save(documentId);

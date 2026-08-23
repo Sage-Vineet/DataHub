@@ -237,3 +237,128 @@ export function toKpiTrend(
       netProfit: kpis.netProfit,
     }));
 }
+
+/**
+ * The nine figures a tax reconciliation compares, from an UPLOADED statement.
+ *
+ * The same nine `quickbooks-pl-summary.ts` reads out of a QuickBooks report,
+ * read instead out of an extracted statement tree — so a company whose P&L
+ * arrives as a PDF gets the same comparison as one connected to QuickBooks.
+ *
+ * WHY NOT THE MATCHER IT REPLACES
+ * -------------------------------
+ * That one matched in BOTH directions:
+ *
+ *   patterns.some((p) => label.includes(p) || p.includes(label))
+ *
+ * The second half means a SHORT label matches a LONG pattern. A row called
+ * "Interest" matched the pattern "total interest expense"; a row called
+ * "Income" matched "total income". Combined with last-match-wins, a statement
+ * with a section header and a total both matching took whichever came last in
+ * the tree, which is an ordering nobody chose.
+ *
+ * `findAmount` matches whole names, most specific first — so "Total Interest
+ * Expense" is found as itself, and a bare "Interest" only where the list says
+ * so.
+ */
+export interface TaxComparisonFigures {
+  year: number;
+  totalRevenue: number;
+  totalCostOfGoodsSold: number;
+  grossProfit: number;
+  officerWages: number;
+  depreciation: number;
+  amortization: number;
+  interestExpense: number;
+  allOtherIncome: number;
+  netIncome: number;
+  /**
+   * Total expenses less the named costs.
+   *
+   * NOT clamped to zero. The version this replaces did
+   * `Math.max(0, total - named)`, so a statement whose named costs exceeded
+   * its total expenses — which happens when one cost is matched twice —
+   * reported 0 and hid the inconsistency. A negative here is a real signal
+   * that the statement or the matching is wrong, and it belongs on screen.
+   */
+  allOtherExpenses: number;
+}
+
+const OFFICER_WAGES = [
+  "officer compensation",
+  "officer wages",
+  "officer salary",
+  "officers compensation",
+  "compensation of officers",
+];
+const DEPRECIATION = ["depreciation expense", "total depreciation", "depreciation"];
+const AMORTIZATION = ["amortization expense", "total amortization", "amortization"];
+const INTEREST_EXPENSE = ["total interest expense", "interest expense", "loan interest"];
+const OTHER_INCOME = ["total other income", "other income", "other revenue"];
+const COGS = [
+  "total cost of goods sold",
+  "cost of goods sold",
+  "total cost of sales",
+  "cost of sales",
+];
+const GROSS_PROFIT = ["gross profit", "gross margin"];
+
+/** Read the tax-comparison figures off an uploaded profit-and-loss. */
+export function readTaxComparisonFigures(
+  profitLossRows: readonly StatementNode[] | null | undefined,
+  year: number,
+): TaxComparisonFigures {
+  const nodes = allNodes(profitLossRows);
+
+  const totalRevenue = findAmount(nodes, REVENUE).amount;
+  const totalExpenses = Math.abs(findAmount(nodes, EXPENSES).amount);
+  const officerWages = findAmount(nodes, OFFICER_WAGES).amount;
+  const depreciation = findAmount(nodes, DEPRECIATION).amount;
+  const amortization = findAmount(nodes, AMORTIZATION).amount;
+  const interestExpense = findAmount(nodes, INTEREST_EXPENSE).amount;
+
+  const netIncomeLine = findAmount(nodes, NET_PROFIT);
+
+  return {
+    year,
+    totalRevenue,
+    totalCostOfGoodsSold: findAmount(nodes, COGS).amount,
+    grossProfit: findAmount(nodes, GROSS_PROFIT).amount,
+    officerWages,
+    depreciation,
+    amortization,
+    interestExpense,
+    allOtherIncome: findAmount(nodes, OTHER_INCOME).amount,
+    netIncome: netIncomeLine.found
+      ? netIncomeLine.amount
+      : round2(totalRevenue - totalExpenses),
+    allOtherExpenses: round2(
+      totalExpenses - (officerWages + depreciation + amortization + interestExpense),
+    ),
+  };
+}
+
+/**
+ * The year a statement covers.
+ *
+ * Its own dates first, because they are what the statement says; the filename
+ * only when it says nothing. A filename year is a guess about how somebody
+ * named a file, and preferring it over the statement's own period is how a
+ * file called "2023 Accounts" holding 2024 figures ends up filed under 2023.
+ */
+export function statementYear(
+  statement: { asOfDate?: string | null; periodEnd?: string | null; periodStart?: string | null },
+  fileName: string | null | undefined,
+  fallbackYear: number,
+): number {
+  for (const value of [statement.asOfDate, statement.periodEnd, statement.periodStart]) {
+    const year = Number.parseInt(String(value ?? "").slice(0, 4), 10);
+    if (Number.isInteger(year) && year >= 2000 && year <= fallbackYear + 1) return year;
+  }
+  const fromName = String(fileName ?? "").match(/\b(20\d{2})\b/);
+  if (fromName) {
+    const year = Number.parseInt(fromName[1]!, 10);
+    if (year >= 2000 && year <= fallbackYear + 1) return year;
+  }
+  return fallbackYear;
+}
