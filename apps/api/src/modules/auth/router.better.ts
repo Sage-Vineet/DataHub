@@ -16,19 +16,27 @@ import { type BetterAuthUser, requireBetterAuth, resolveSessionUser, toSessionUs
 const GENERIC_RESET = "If an account exists for that email, a reset code has been sent.";
 
 /** Structural, zod-version-agnostic — reads the first validation message. */
-function firstError(err: { issues: ReadonlyArray<{ message?: string }> }): string {
+export function firstError(err: { issues: ReadonlyArray<{ message?: string }> }): string {
   return err.issues[0]?.message ?? "Invalid request.";
 }
 
-/** Better Auth throws APIError with a numeric status + message; normalise it. */
-function errorStatus(err: unknown): { status: number; message: string } {
+/**
+ * Better Auth throws APIError with a numeric status + message; normalise it.
+ *
+ * The status lives under `statusCode` on some throws and `status` on others,
+ * and neither is guaranteed — an error from the transport rather than the
+ * library has neither. 400 is the fallback because a caller seeing 500 goes
+ * looking for a fault in the server, and the common case here is a request
+ * the library refused.
+ */
+export function errorStatus(err: unknown): { status: number; message: string } {
   const e = err as { statusCode?: number; status?: number; body?: { message?: string }; message?: string };
   const status = typeof e.statusCode === "number" ? e.statusCode : typeof e.status === "number" ? e.status : 400;
   return { status, message: e.body?.message ?? e.message ?? "Request failed." };
 }
 
 /** Copy Better Auth's Set-Cookie (session cookie set/clear) onto the Express response. */
-function forwardSetCookie(headers: Headers, res: Response): void {
+export function forwardSetCookie(headers: Headers, res: Response): void {
   const cookies = headers.getSetCookie?.() ?? [];
   if (cookies.length > 0) res.setHeader("set-cookie", cookies);
 }

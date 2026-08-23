@@ -287,6 +287,61 @@ describe("resetting an account", () => {
   });
 });
 
+describe("rebuilding the chart", () => {
+  it("says so when this deployment has no generator wired up", async () => {
+    // A 400 naming the configuration rather than a TypeError, which reads as a
+    // fault in the chart itself.
+    const { service } = make();
+    await expect(service.regenerate(session(), VERSION)).rejects.toThrow(/not available/i);
+  });
+
+  it("rebuilds and answers the chart as it now stands", async () => {
+    const repo = new InMemoryChartOfAccountsRepository();
+    repo.seed({ id: "a1", versionId: VERSION, companyId: COMPANY, accountName: "4000 Sales" });
+    const service = new ChartOfAccountsService({
+      repo,
+      versions: versionsPort(),
+      generator: {
+        regenerate: () => Promise.resolve({ accountCount: 1, removedCount: 0, keptCount: 1 }),
+      },
+    });
+
+    const result = await service.regenerate(session(), VERSION);
+    // The rebuild's summary AND the chart it produced, in one answer — the
+    // page renders both and a second round trip could show a different one.
+    expect(result).toMatchObject({ removedCount: 0, keptCount: 1 });
+    expect(result.flat).toHaveLength(1);
+    expect(result.versionId).toBe(VERSION);
+  });
+
+  it("refuses a version the caller cannot reach", async () => {
+    const { service } = make();
+    await expect(
+      service.regenerate(session({ company_ids: [OTHER] }), VERSION),
+    ).rejects.toThrow(ForbiddenError);
+  });
+
+  it("404s a version nobody has", async () => {
+    const { service } = make();
+    await expect(service.regenerate(session(), randomUUID())).rejects.toThrow(NotFoundError);
+  });
+});
+
+describe("an account belonging to nobody", () => {
+  it("is refused rather than edited", async () => {
+    // A row with no company cannot be checked against the caller's companies,
+    // so it is treated as one they cannot reach — the safe reading of a row
+    // that should not exist.
+    const { repo, service } = make();
+    repo.seed({ id: "orphan", versionId: VERSION, companyId: null, accountName: "4000 Sales" });
+
+    await expect(
+      service.updateAccount(session(), "orphan", { adjustedName: "X" }),
+    ).rejects.toThrow(ForbiddenError);
+    await expect(service.resetAccount(session(), "orphan")).rejects.toThrow(ForbiddenError);
+  });
+});
+
 describe("the audit trail and the vocabulary", () => {
   it("returns both trails for a version", async () => {
     const { repo, service } = make();

@@ -143,6 +143,57 @@ describe("reading a date", () => {
       expect(toIsoDate(value)).toBeNull();
     }
   });
+
+  it("returns null for a Date the reader could not make sense of", () => {
+    // `xlsx` hands back an Invalid Date for a cell formatted as a date but
+    // holding something else. `toISOString` throws on one, which would take
+    // the whole import down for a single bad cell.
+    expect(toIsoDate(new Date("nonsense"))).toBeNull();
+  });
+});
+
+describe("a workbook that is not a ledger", () => {
+  it("names the file and the reason rather than throwing something opaque", () => {
+    // The message goes on screen. "Unable to read gl.png" tells somebody to
+    // upload a different file; a stack trace does not.
+    let caught: unknown;
+    try {
+      parseSheet({ data: Buffer.from([0x89, 0x50, 0x4e, 0x47]), fileName: "photo.png" });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(SheetParseError);
+    expect(String((caught as Error).message)).toMatch(/Unable to read "photo.png"/);
+  });
+
+  it("takes a named sheet, and falls back to the first when the name is not there", () => {
+    // A caller naming a sheet the file does not have has made a mistake, but
+    // the first sheet is what every export puts the ledger on — so it reads
+    // that rather than refusing.
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["A"], ["1"]]), "Ledger");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["B"], ["2"]]), "Notes");
+    const bytes = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
+
+    expect(parseSheet({ data: bytes, fileName: "two.xlsx", sheetName: "Notes" }).columns).toEqual([
+      "B",
+    ]);
+    expect(parseSheet({ data: bytes, fileName: "two.xlsx", sheetName: "Nope" }).columns).toEqual([
+      "A",
+    ]);
+    expect(parseSheet({ data: bytes, fileName: "two.xlsx" }).sheetNames).toEqual([
+      "Ledger",
+      "Notes",
+    ]);
+  });
+
+  it("strips control characters out of a header rather than trimming them", () => {
+    // `String.trim` treats NUL and friends as ordinary characters, so a binary
+    // file's bytes survive it intact and read as a column name.
+    const rows = [["Date\u0000", "Acc\u0007ount"], ["2024-01-15", "Sales"]];
+    const parsed = parseSheet({ data: workbook(rows), fileName: "odd.xlsx" });
+    expect(parsed.columns).toEqual(["Date", "Account"]);
+  });
 });
 
 describe("the sign convention", () => {
