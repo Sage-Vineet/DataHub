@@ -545,6 +545,51 @@ export const keyReportFileMappings = pgTable(
 );
 
 /**
+ * One attempt at syncing a version's linked documents into the report tables.
+ *
+ * Append-only, and read newest-first: the page shows the last few attempts so
+ * a failed sync leaves a trail rather than just an unchanged report.
+ */
+export const keyReportSyncLogs = pgTable("key_report_sync_logs", {
+  id: bigint("id", { mode: "number" }).primaryKey(),
+  versionId: uuid("version_id")
+    .notNull()
+    .references(() => keyReportVersions.id, { onDelete: "cascade" }),
+  companyId: uuid("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  /** started | completed | failed */
+  syncStatus: text("sync_status").notNull().default("started"),
+  syncStartedAt: timestamp("sync_started_at", { withTimezone: true }).notNull().defaultNow(),
+  syncCompletedAt: timestamp("sync_completed_at", { withTimezone: true }),
+  errorMessage: text("error_message"),
+  metadata: jsonb("metadata").notNull().default({}),
+  createdBy: uuid("created_by"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * A per-user setting, keyed by name.
+ *
+ * The unique index on `(user_id, pref_key)` is what makes writing one an upsert
+ * rather than a read-then-write race.
+ */
+export const userPreferences = pgTable(
+  "user_preferences",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    prefKey: text("pref_key").notNull(),
+    prefValue: jsonb("pref_value").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ userKey: uniqueIndex("uq_user_preferences_user_key").on(t.userId, t.prefKey) }),
+);
+
+/**
  * What is holding a document in place.
  *
  * A row here is the reason a Data Room file cannot be deleted: some module has

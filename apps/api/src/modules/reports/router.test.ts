@@ -142,6 +142,9 @@ function stub(over: Record<string, unknown> = {}) {
     monthlyDetail: record("monthlyDetail", emptyMonthlyDetail),
     balanceSheetMonthlyDetail: record("balanceSheetMonthlyDetail", emptyBsMonthlyDetail),
     listMappings: record("listMappings", { profit_loss: [], balance_sheet: [] }),
+    listSyncLogs: record("listSyncLogs", [{ id: 1, syncStatus: "completed" }]),
+    getPopupDismissed: record("getPopupDismissed", false),
+    setPopupDismissed: record("setPopupDismissed", true),
     linkMappings: record("linkMappings", [{ id: "m1" }]),
     deleteMapping: record("deleteMapping", undefined),
     filterOptions: record("filterOptions", {
@@ -765,5 +768,68 @@ describe("the mappings routes", () => {
     const { app, calls } = stub();
     await request(app).delete(`/key-reports/mappings/${MAPPING}`).expect(204);
     expect(calls.map((c) => c.method)).toEqual(["deleteMapping"]);
+  });
+});
+
+describe("sync logs and the popup preference", () => {
+  it("serves the log under the envelope, with no limit by default", async () => {
+    const { app, calls } = stub();
+    const res = await request(app)
+      .get(`/key-reports/versions/${VERSION}/sync-logs`)
+      .expect(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.syncLogs).toHaveLength(1);
+    expect(argsOf(calls, "listSyncLogs")[2]).toBeUndefined();
+  });
+
+  it("passes a limit through, and ignores one that is not a number", async () => {
+    const { app, calls } = stub();
+    await request(app).get(`/key-reports/versions/${VERSION}/sync-logs?limit=5`).expect(200);
+    expect(argsOf(calls, "listSyncLogs")[2]).toBe(5);
+
+    await request(app).get(`/key-reports/versions/${VERSION}/sync-logs?limit=all`).expect(200);
+    expect(argsOf(calls, "listSyncLogs")[2]).toBeUndefined();
+  });
+
+  it("reads and writes the preference for the caller in the session", async () => {
+    const { app, calls } = stub();
+    const read = await request(app).get("/key-reports/popup-preference").expect(200);
+    expect(read.body).toEqual({ success: true, dismissed: false });
+
+    const written = await request(app)
+      .put("/key-reports/popup-preference")
+      .send({ dismissed: true })
+      .expect(200);
+    expect(written.body).toEqual({ success: true, dismissed: true });
+    // The caller comes from the session, never from the body or the query.
+    expect(argsOf(calls, "setPopupDismissed")[0]).toMatchObject({ id: "caller-1" });
+  });
+
+  it('accepts the string "true", because some callers send a form value', async () => {
+    const { app, calls } = stub();
+    await request(app).put("/key-reports/popup-preference").send({ dismissed: "true" }).expect(200);
+    expect(argsOf(calls, "setPopupDismissed")[1]).toBe(true);
+  });
+
+  it("treats anything else as not dismissed rather than erroring", async () => {
+    // The worst outcome of a bad body here is the popup shown once more.
+    const { app, calls } = stub();
+    for (const body of [{}, { dismissed: "yes" }, { dismissed: 1 }, { dismissed: null }]) {
+      await request(app).put("/key-reports/popup-preference").send(body).expect(200);
+      expect(argsOf(calls, "setPopupDismissed")[1]).toBe(false);
+    }
+  });
+
+  it("does not read `popup-preference` as a version id", async () => {
+    // `/key-reports/popup-preference` and `/key-reports/versions/:id` are
+    // siblings under the same prefix.
+    const { app, calls } = stub();
+    await request(app).get("/key-reports/popup-preference").expect(200);
+    expect(calls.map((c) => c.method)).toEqual(["getPopupDismissed"]);
+  });
+
+  it("maps a version the caller cannot reach to 403", async () => {
+    const { app } = stub({ listSyncLogs: () => Promise.reject(new ForbiddenError("denied")) });
+    await request(app).get(`/key-reports/versions/${VERSION}/sync-logs`).expect(403);
   });
 });

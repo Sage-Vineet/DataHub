@@ -7,12 +7,22 @@ import type {
   LinkedDocument,
   MappingRecord,
   MappingsRepository,
+  PreferencesRepository,
   ReportsRepository,
+  SyncLogRecord,
+  SyncLogsRepository,
   UpdateVersionPatch,
   VersionRecord,
 } from "./ports.js";
 
-const { documents, fileReferences, keyReportFileMappings, keyReportVersions } = schema;
+const {
+  documents,
+  fileReferences,
+  keyReportFileMappings,
+  keyReportSyncLogs,
+  keyReportVersions,
+  userPreferences,
+} = schema;
 
 /** What `file_references.linked_module` says for a key-report link. */
 const KEY_REPORTS_MODULE = "key_reports";
@@ -258,5 +268,58 @@ export class DrizzleMappingsRepository implements MappingsRepository {
           eq(fileReferences.linkedModule, KEY_REPORTS_MODULE),
         ),
       );
+  }
+}
+
+/** Sync attempts, newest first. */
+export class DrizzleSyncLogsRepository implements SyncLogsRepository {
+  constructor(private readonly db: Db) {}
+
+  async listByVersion(versionId: string, limit: number): Promise<SyncLogRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(keyReportSyncLogs)
+      .where(eq(keyReportSyncLogs.versionId, versionId))
+      .orderBy(desc(keyReportSyncLogs.createdAt))
+      .limit(limit);
+    return rows.map((row) => ({
+      id: row.id,
+      versionId: row.versionId,
+      companyId: row.companyId,
+      syncStatus: row.syncStatus,
+      syncStartedAt: row.syncStartedAt ? row.syncStartedAt.toISOString() : null,
+      syncCompletedAt: row.syncCompletedAt ? row.syncCompletedAt.toISOString() : null,
+      errorMessage: row.errorMessage ?? null,
+      metadata: (row.metadata ?? {}) as Record<string, unknown>,
+      createdBy: row.createdBy ?? null,
+      createdAt: row.createdAt ? row.createdAt.toISOString() : null,
+    }));
+  }
+}
+
+/** Per-user settings. */
+export class DrizzlePreferencesRepository implements PreferencesRepository {
+  constructor(private readonly db: Db) {}
+
+  async get(userId: string, key: string): Promise<Record<string, unknown> | null> {
+    const [row] = await this.db
+      .select({ value: userPreferences.prefValue })
+      .from(userPreferences)
+      .where(and(eq(userPreferences.userId, userId), eq(userPreferences.prefKey, key)))
+      .limit(1);
+    return row ? ((row.value ?? {}) as Record<string, unknown>) : null;
+  }
+
+  async set(userId: string, key: string, value: Record<string, unknown>): Promise<void> {
+    // An upsert rather than a read-then-write: two tabs toggling the same
+    // setting must not race into two rows, and the unique index on
+    // `(user_id, pref_key)` is what makes this one statement.
+    await this.db
+      .insert(userPreferences)
+      .values({ userId, prefKey: key, prefValue: value })
+      .onConflictDoUpdate({
+        target: [userPreferences.userId, userPreferences.prefKey],
+        set: { prefValue: value, updatedAt: new Date() },
+      });
   }
 }

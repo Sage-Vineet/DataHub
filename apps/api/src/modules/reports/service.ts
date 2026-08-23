@@ -11,7 +11,10 @@ import {
   REPORT_CATEGORIES,
   type MappingRecord,
   type MappingsRepository,
+  type PreferencesRepository,
   type ReportCategory,
+  type SyncLogRecord,
+  type SyncLogsRepository,
 } from "./ports.js";
 import type {
   EngagementPort,
@@ -66,12 +69,17 @@ import {
   type BalanceSheetPayload,
 } from "./balance-sheet-view.js";
 
+/** The preference key legacy wrote, kept so an existing dismissal still counts. */
+const POPUP_PREF_KEY = "key_reports_popup_dismissed";
+
 export interface ReportsServiceDeps {
   repo: ReportsRepository;
   sync: ReportSyncPort;
   engagement: EngagementPort;
   ledger: LedgerDetailPort;
   mappings: MappingsRepository;
+  syncLogs: SyncLogsRepository;
+  preferences: PreferencesRepository;
 }
 
 export class ReportsService {
@@ -80,12 +88,16 @@ export class ReportsService {
   private readonly engagement: EngagementPort;
   private readonly ledger: LedgerDetailPort;
   private readonly mappings: MappingsRepository;
+  private readonly syncLogs: SyncLogsRepository;
+  private readonly preferences: PreferencesRepository;
   constructor(deps: ReportsServiceDeps) {
     this.repo = deps.repo;
     this.syncPort = deps.sync;
     this.engagement = deps.engagement;
     this.ledger = deps.ledger;
     this.mappings = deps.mappings;
+    this.syncLogs = deps.syncLogs;
+    this.preferences = deps.preferences;
   }
 
   /**
@@ -343,6 +355,35 @@ export class ReportsService {
     if (remaining === 0) {
       await this.mappings.removeFileReference(mapping.documentId, mapping.versionId);
     }
+  }
+
+  /**
+   * The last few sync attempts on a version.
+   *
+   * Capped rather than unbounded: the panel shows a short history, and a
+   * version synced nightly for a year would otherwise ship thousands of rows to
+   * render five.
+   */
+  async listSyncLogs(user: SessionUser, versionId: string, limit = 20): Promise<SyncLogRecord[]> {
+    await this.requireAccessible(user, versionId);
+    const capped = Number.isFinite(limit) ? Math.min(Math.max(Math.trunc(limit), 1), 100) : 20;
+    return this.syncLogs.listByVersion(versionId, capped);
+  }
+
+  /**
+   * Whether this user has dismissed the Key Reports introduction.
+   *
+   * Keyed on the caller's own id and never on anything from the request, so one
+   * user cannot read or set another's settings.
+   */
+  async getPopupDismissed(user: SessionUser): Promise<boolean> {
+    const value = await this.preferences.get(user.id, POPUP_PREF_KEY);
+    return value?.dismissed === true;
+  }
+
+  async setPopupDismissed(user: SessionUser, dismissed: boolean): Promise<boolean> {
+    await this.preferences.set(user.id, POPUP_PREF_KEY, { dismissed });
+    return dismissed;
   }
 
   /** The engagement behind a company's active key-report version. */

@@ -165,3 +165,28 @@ export interface MappingsRepository {
   }): Promise<void>;
   removeFileReference(documentId: string, linkedEntityId: string): Promise<void>;
 }
+
+/** One recorded attempt at syncing a version's documents into the report tables. */
+export interface SyncLogRecord {
+  id: number;
+  versionId: string;
+  companyId: string;
+  syncStatus: string;
+  syncStartedAt: string | null;
+  syncCompletedAt: string | null;
+  errorMessage: string | null;
+  metadata: Record<string, unknown>;
+  createdBy: string | null;
+  createdAt: string | null;
+}
+
+export interface SyncLogsRepository {
+  /** Newest first, capped — the page shows the last few attempts. */
+  listByVersion(versionId: string, limit: number): Promise<SyncLogRecord[]>;
+}
+
+/** A per-user setting, keyed by name. */
+export interface PreferencesRepository {
+  get(userId: string, key: string): Promise<Record<string, unknown> | null>;
+  set(userId: string, key: string, value: Record<string, unknown>): Promise<void>;
+}

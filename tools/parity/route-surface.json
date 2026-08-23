@@ -146,10 +146,12 @@
       "additive": [
         "DELETE /key-reports/mappings/:p",
         "DELETE /key-reports/versions/:p",
+        "GET /key-reports/popup-preference",
         "GET /key-reports/versions",
         "GET /key-reports/versions/:p",
         "GET /key-reports/versions/:p/mappings",
         "GET /key-reports/versions/:p/reports/financial-statements",
+        "GET /key-reports/versions/:p/sync-logs",
         "GET /manual-gl/staging/filter-options",
         "GET /manual-gl/validation/balance-sheet",
         "GET /reports/balance-sheet",
@@ -163,6 +165,7 @@
         "POST /key-reports/versions/:p/activate",
         "POST /key-reports/versions/:p/duplicate",
         "POST /key-reports/versions/:p/mappings",
+        "PUT /key-reports/popup-preference",
         "PUT /key-reports/versions/:p"
       ]
     }
@@ -185,9 +188,7 @@
     "GET /general-ledger",
     "GET /invoices",
     "GET /invoices/doc/:p",
-    "GET /key-reports/popup-preference",
     "GET /key-reports/versions/:p/extracted-data",
-    "GET /key-reports/versions/:p/sync-logs",
     "GET /manual-gl/columns/:p",
     "GET /manual-gl/dataset-versions",
     "GET /manual-gl/upload-jobs",
@@ -238,7 +239,6 @@
     "POST /parse-bank-statement",
     "PUT /api/invoices/:p",
     "PUT /bank-reconciliation-addback-items/:p",
-    "PUT /key-reports/popup-preference",
     "PUT /manual-report-uploads/tax-reconciliation-overrides",
     "PUT /report-sources/selected"
   ]

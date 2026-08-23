@@ -36,12 +36,14 @@
   "GET /folders/:p/documents",
   "GET /groups/:p/members",
   "GET /key-reports/hierarchy-levels",
+  "GET /key-reports/popup-preference",
   "GET /key-reports/versions",
   "GET /key-reports/versions/:p",
   "GET /key-reports/versions/:p/chart-of-accounts",
   "GET /key-reports/versions/:p/chart-of-accounts/history",
   "GET /key-reports/versions/:p/mappings",
   "GET /key-reports/versions/:p/reports/financial-statements",
+  "GET /key-reports/versions/:p/sync-logs",
   "GET /manual-gl/staging/filter-options",
   "GET /manual-gl/validation/balance-sheet",
   "GET /message-groups/:p/members",
@@ -121,6 +123,7 @@
   "POST /users/:p/add-companies",
   "POST /users/broker-team/invite",
   "PUT /cim-questionnaire",
+  "PUT /key-reports/popup-preference",
   "PUT /key-reports/versions/:p",
   "PUT /workspace-page-state/:p"
 ]

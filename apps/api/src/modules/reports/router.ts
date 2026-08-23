@@ -340,6 +340,35 @@ export function createReportsRouter(deps: ReportsRouterDeps): Router {
     res.status(204).send();
   }));
 
+  router.get("/key-reports/versions/:versionId/sync-logs", handle(async (req, res) => {
+    const limit = Number.parseInt(String(req.query.limit ?? ""), 10);
+    const syncLogs = await service.listSyncLogs(
+      req.user!,
+      req.params.versionId!,
+      Number.isFinite(limit) ? limit : undefined,
+    );
+    res.json({ success: true, syncLogs });
+  }));
+
+  /**
+   * The Key Reports introduction popup, per user.
+   *
+   * The caller is taken from the session and never from the request, so one
+   * user cannot read or set another's.
+   */
+  router.get("/key-reports/popup-preference", handle(async (req, res) => {
+    res.json({ success: true, dismissed: await service.getPopupDismissed(req.user!) });
+  }));
+
+  router.put("/key-reports/popup-preference", handle(async (req, res) => {
+    const raw = (req.body ?? {}) as { dismissed?: unknown };
+    // Legacy accepted the string "true" as well as the boolean, because some
+    // callers send a form value. Anything else is false rather than an error —
+    // the worst outcome of a bad body here is a popup shown once more.
+    const dismissed = raw.dismissed === true || raw.dismissed === "true";
+    res.json({ success: true, dismissed: await service.setPopupDismissed(req.user!, dismissed) });
+  }));
+
   router.get("/manual-gl/staging/filter-options", handle(async (req, res) => {
     const payload = await service.filterOptions(req.user!, companyOf(req));
     res.json({ success: true, ...payload });

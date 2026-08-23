@@ -7,7 +7,9 @@ import {
 } from "./adapters.js";
 import {
   DrizzleMappingsRepository,
+  DrizzlePreferencesRepository,
   DrizzleReportsRepository,
+  DrizzleSyncLogsRepository,
 } from "./repository.drizzle.js";
 import { createReportsRouter } from "./router.js";
 import { ReportsService } from "./service.js";
@@ -30,6 +32,8 @@ export function createReportsModule(opts: CreateReportsModuleOptions): ReportsMo
     engagement: new DrizzleEngagementPort(opts.db),
     ledger: new DrizzleLedgerDetailPort(opts.db),
     mappings: new DrizzleMappingsRepository(opts.db),
+    syncLogs: new DrizzleSyncLogsRepository(opts.db),
+    preferences: new DrizzlePreferencesRepository(opts.db),
   });
   return { router: createReportsRouter({ service, requireAuth: opts.requireAuth }), service };
 }
@@ -37,12 +41,16 @@ export function createReportsModule(opts: CreateReportsModuleOptions): ReportsMo
 export { ReportsService } from "./service.js";
 export {
   DrizzleMappingsRepository,
+  DrizzlePreferencesRepository,
   DrizzleReportsRepository,
+  DrizzleSyncLogsRepository,
 } from "./repository.drizzle.js";
 export {
   InMemoryLedgerDetailPort,
   InMemoryMappingsRepository,
+  InMemoryPreferencesRepository,
   InMemoryReportsRepository,
+  InMemorySyncLogsRepository,
 } from "./repository.memory.js";
 export {
   LegacyReportSyncPort,

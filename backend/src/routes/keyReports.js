@@ -107,17 +107,6 @@ router.get("/key-reports/versions/:versionId/extracted-data", async (req, res) =
   }
 });
 
-router.get("/key-reports/versions/:versionId/sync-logs", async (req, res) => {
-  try {
-    const version = await loadVersionWithAccess(req, res);
-    if (!version) return;
-    const logs = await keyReportService.listSyncLogs(version.id);
-    return res.json({ success: true, syncLogs: logs });
-  } catch (error) {
-    return handleError(res, error, "GET sync-logs");
-  }
-});
-
 // ---- Chart of Accounts -----------------------------------------------------
 
 // Helper: verify the caller can access the company that owns a COA account.
@@ -177,25 +166,6 @@ router.post("/key-reports/versions/:versionId/chart-of-accounts/regenerate", asy
 // ---- File references (deletion guard / "linked" badges) --------------------
 
 // ---- Educational popup preference (per user) -------------------------------
-
-router.get("/key-reports/popup-preference", async (req, res) => {
-  try {
-    const value = await userPreferenceService.getPreference(req.user?.id, POPUP_PREF_KEY);
-    return res.json({ success: true, dismissed: Boolean(value?.dismissed) });
-  } catch (error) {
-    return handleError(res, error, "GET popup-preference");
-  }
-});
-
-router.put("/key-reports/popup-preference", async (req, res) => {
-  try {
-    const dismissed = req.body?.dismissed === true || req.body?.dismissed === "true";
-    await userPreferenceService.setPreference(req.user?.id, POPUP_PREF_KEY, { dismissed });
-    return res.json({ success: true, dismissed });
-  } catch (error) {
-    return handleError(res, error, "PUT popup-preference");
-  }
-});
 
 // ---- Reports (read ONLY from Key Reports entry tables) ---------------------
 // These endpoints are the single authoritative report source for Key Reports.

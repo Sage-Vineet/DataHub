@@ -6,6 +6,7 @@ import type {
   LinkedDocument,
   MappingRecord,
   ReportsRepository,
+  SyncLogRecord,
   UpdateVersionPatch,
   VersionRecord,
 } from "./ports.js";
@@ -187,6 +188,40 @@ export class InMemoryMappingsRepository {
 
   removeFileReference(documentId: string, linkedEntityId: string): Promise<void> {
     this.fileReferences.delete(`${linkedEntityId}:${documentId}`);
+    return Promise.resolve();
+  }
+}
+
+/** Sync attempts in memory. */
+export class InMemorySyncLogsRepository {
+  private readonly logs: SyncLogRecord[] = [];
+
+  seed(log: SyncLogRecord): void {
+    this.logs.push(log);
+  }
+
+  listByVersion(versionId: string, limit: number): Promise<SyncLogRecord[]> {
+    return Promise.resolve(
+      this.logs
+        .filter((l) => l.versionId === versionId)
+        .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""))
+        .slice(0, limit),
+    );
+  }
+}
+
+/** Per-user settings in memory. */
+export class InMemoryPreferencesRepository {
+  private readonly values = new Map<string, Record<string, unknown>>();
+
+  get(userId: string, key: string): Promise<Record<string, unknown> | null> {
+    return Promise.resolve(this.values.get(`${userId}:${key}`) ?? null);
+  }
+
+  set(userId: string, key: string, value: Record<string, unknown>): Promise<void> {
+    // Keyed on the pair, so a second write replaces rather than accumulates —
+    // the same thing the unique index does in the database.
+    this.values.set(`${userId}:${key}`, value);
     return Promise.resolve();
   }
 }

@@ -7,7 +7,9 @@ import {
   InMemoryEngagementPort,
   InMemoryLedgerDetailPort,
   InMemoryMappingsRepository,
+  InMemoryPreferencesRepository,
   InMemoryReportsRepository,
+  InMemorySyncLogsRepository,
 } from "./repository.memory.js";
 import { ReportsService } from "./service.js";
 
@@ -19,17 +21,23 @@ function make() {
   const engagement = new InMemoryEngagementPort();
   const ledger = new InMemoryLedgerDetailPort();
   const mappings = new InMemoryMappingsRepository();
+  const syncLogs = new InMemorySyncLogsRepository();
+  const preferences = new InMemoryPreferencesRepository();
   return {
     repo,
     engagement,
     ledger,
     mappings,
+    syncLogs,
+    preferences,
     service: new ReportsService({
       repo,
       sync: new LegacyReportSyncPort(),
       engagement,
       ledger,
       mappings,
+      syncLogs,
+      preferences,
     }),
   };
 }
@@ -395,5 +403,101 @@ describe("ReportsService — mappings", () => {
     await expect(
       service.listMappings(session({ role: "buyer", company_ids: [OTHER] }), versionId),
     ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+});
+
+describe("ReportsService — sync logs and preferences", () => {
+  const log = (id: number, versionId: string, over: Record<string, unknown> = {}) => ({
+    id,
+    versionId,
+    companyId: COMPANY,
+    syncStatus: "completed",
+    syncStartedAt: null,
+    syncCompletedAt: null,
+    errorMessage: null,
+    metadata: {},
+    createdBy: null,
+    createdAt: `2024-01-${String(id).padStart(2, "0")}T00:00:00.000Z`,
+    ...over,
+  });
+
+  it("serves the last attempts newest first", async () => {
+    const { service, syncLogs, repo } = make();
+    const user = session();
+    const v = await service.create(user, contracts.reportVersionCreate.parse({ company_id: COMPANY }));
+    syncLogs.seed(log(1, v.id));
+    syncLogs.seed(log(3, v.id, { syncStatus: "failed", errorMessage: "boom" }));
+    syncLogs.seed(log(2, v.id));
+
+    const logs = await service.listSyncLogs(user, v.id);
+    expect(logs.map((l) => l.id)).toEqual([3, 2, 1]);
+    expect(logs[0]!.errorMessage).toBe("boom");
+    expect(repo).toBeDefined();
+  });
+
+  it("caps the history rather than shipping a year of it", async () => {
+    // A version synced nightly would otherwise send thousands of rows to
+    // render five.
+    const { service, syncLogs } = make();
+    const user = session();
+    const v = await service.create(user, contracts.reportVersionCreate.parse({ company_id: COMPANY }));
+    for (let i = 1; i <= 30; i++) syncLogs.seed(log(i, v.id));
+
+    expect(await service.listSyncLogs(user, v.id, 5)).toHaveLength(5);
+    expect(await service.listSyncLogs(user, v.id, 1000)).toHaveLength(30);
+    // The default, when the caller names no limit.
+    expect(await service.listSyncLogs(user, v.id)).toHaveLength(20);
+  });
+
+  it("treats a nonsense limit as the default rather than as zero", async () => {
+    const { service, syncLogs } = make();
+    const user = session();
+    const v = await service.create(user, contracts.reportVersionCreate.parse({ company_id: COMPANY }));
+    for (let i = 1; i <= 25; i++) syncLogs.seed(log(i, v.id));
+
+    expect(await service.listSyncLogs(user, v.id, Number.NaN)).toHaveLength(20);
+    expect(await service.listSyncLogs(user, v.id, 0)).toHaveLength(1);
+    expect(await service.listSyncLogs(user, v.id, -5)).toHaveLength(1);
+  });
+
+  it("refuses logs for a version the caller cannot reach", async () => {
+    const { service } = make();
+    const v = await service.create(session(), contracts.reportVersionCreate.parse({ company_id: COMPANY }));
+    await expect(
+      service.listSyncLogs(session({ role: "buyer", company_ids: [OTHER] }), v.id),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("remembers a dismissal, and defaults to not dismissed", async () => {
+    const { service } = make();
+    const user = session();
+    expect(await service.getPopupDismissed(user)).toBe(false);
+
+    await service.setPopupDismissed(user, true);
+    expect(await service.getPopupDismissed(user)).toBe(true);
+
+    await service.setPopupDismissed(user, false);
+    expect(await service.getPopupDismissed(user)).toBe(false);
+  });
+
+  it("keeps one user's setting out of another's", async () => {
+    // Keyed on the caller's own id, never on anything from the request.
+    const { service } = make();
+    const dana = session();
+    const sam = session();
+    await service.setPopupDismissed(dana, true);
+
+    expect(await service.getPopupDismissed(dana)).toBe(true);
+    expect(await service.getPopupDismissed(sam)).toBe(false);
+  });
+
+  it("does not accumulate rows when the same setting is written twice", async () => {
+    const { service, preferences } = make();
+    const user = session();
+    await service.setPopupDismissed(user, true);
+    await service.setPopupDismissed(user, true);
+    expect(await preferences.get(user.id, "key_reports_popup_dismissed")).toEqual({
+      dismissed: true,
+    });
   });
 });
