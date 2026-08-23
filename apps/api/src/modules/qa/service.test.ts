@@ -766,3 +766,126 @@ describe("listing what is mine", () => {
     expect(await service.listItems(outsider, OTHER_CO, {})).toEqual([]);
   });
 });
+
+describe("a presentable version that names the wrong thing", () => {
+  const MISSING = "99999999-0000-4000-8000-000000000999";
+
+  it("refuses an answer that is not on this question", async () => {
+    // The presentable version cites the answer it was written from. Citing one
+    // from a different question puts a seller's words on a page they never
+    // answered.
+    const item = await ask({ requestee_ids: [seller.id] });
+    const other = await ask({ requestee_ids: [seller.id] });
+    const elsewhere = await service.postResponse(seller, other.id, {
+      body: "About something else.",
+      kind: "answer",
+    });
+
+    await expect(
+      service.writePresentation(broker, item.id, {
+        source_response_id: elsewhere.id,
+        body: "Tidied.",
+      }),
+    ).rejects.toThrow(/not on this question/i);
+  });
+
+  it("refuses an answer nobody has", async () => {
+    const item = await ask({ requestee_ids: [seller.id] });
+    await expect(
+      service.writePresentation(broker, item.id, { source_response_id: MISSING, body: "x" }),
+    ).rejects.toThrow(/not on this question/i);
+  });
+
+  it("refuses to publish one that is not on this question", async () => {
+    const item = await ask({ requestee_ids: [seller.id] });
+    await expect(service.publishPresentation(broker, item.id, MISSING)).rejects.toThrow(
+      /not found/i,
+    );
+  });
+
+  it("refuses to publish from the seller's side", async () => {
+    // Publishing is what a buyer sees. Only the deal team decides that.
+    const item = await ask({ requestee_ids: [seller.id] });
+    const answer = await service.postResponse(seller, item.id, { body: "raw", kind: "answer" });
+    const draft = await service.writePresentation(broker, item.id, {
+      source_response_id: answer.id,
+      body: "Tidied.",
+    });
+
+    await expect(service.publishPresentation(seller, item.id, draft.id)).rejects.toThrow(
+      /deal team/i,
+    );
+  });
+});
+
+describe("the audit trail", () => {
+  it("tells a correction apart from a first answer and from a comment", async () => {
+    // Three different things happened, and a reader scanning the history has
+    // only the label to tell them apart.
+    const item = await ask({ requestee_ids: [seller.id] });
+    const first = await service.postResponse(seller, item.id, { body: "One", kind: "answer" });
+    await service.postResponse(seller, item.id, {
+      body: "Two",
+      kind: "answer",
+      supersedes_id: first.id,
+    });
+    await service.postResponse(broker, item.id, { body: "Noted.", kind: "comment" });
+
+    const kinds = (await service.audit(broker, item.id)).entries.map((e) => e.kind);
+    expect(kinds).toContain("asked");
+    expect(kinds).toContain("answered");
+    expect(kinds).toContain("corrected");
+    expect(kinds).toContain("commented");
+  });
+});
+
+describe("attaching a file", () => {
+  it("404s a document nobody has", async () => {
+    const item = await ask();
+    await expect(
+      service.attach(broker, item.id, {
+        document_id: "11111111-0000-4000-8000-000000000000",
+        folder_id: "22222222-0000-4000-8000-000000000000",
+      }),
+    ).rejects.toThrow(/not found/i);
+  });
+});
+
+describe("a category from somewhere else", () => {
+  const MISSING = "88888888-0000-4000-8000-000000000888";
+
+  it("cannot be used when asking a question", async () => {
+    // Categories are per deal. A question filed under another deal's category
+    // sits under a heading its own deal cannot see.
+    await expect(
+      service.createItem(broker, CO, {
+        title: "Explain the swing",
+        body: "Why?",
+        priority: "medium",
+        category_id: MISSING,
+      }),
+    ).rejects.toThrow(/does not belong to this deal/i);
+  });
+
+  it("cannot have its nominees replaced", async () => {
+    await expect(
+      service.replaceNominees(seller, CO, MISSING, { user_ids: [cfo.id] }),
+    ).rejects.toThrow(/not found on this deal/i);
+  });
+});
+
+describe("asking with a category that has no nominee", () => {
+  it("assigns nobody rather than failing", async () => {
+    // A category nobody has been nominated for is a normal state — the deal
+    // team fills those in as they go — and a question raised against one must
+    // still be raised.
+    const finance = await categoryId("finance");
+    const item = await service.createItem(broker, CO, {
+      title: "Explain the swing",
+      body: "Why?",
+      priority: "medium",
+      category_id: finance,
+    });
+    expect(item.assignees).toEqual([]);
+  });
+});
