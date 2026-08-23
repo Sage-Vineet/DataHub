@@ -22,8 +22,9 @@
 --   packages/db/migrations/0009_sync_runs.sql
 --   packages/db/migrations/0010_dataset_versions.sql
 --   packages/db/migrations/0011_statement_extracts_pulled.sql
+--   packages/db/migrations/0012_gl_import_mappings.sql
 --
--- source-sha256: e6299b24ed29f37e0b067513038f4946f2d1a4f9cec158d4aa9f4c5d4f1fe918
+-- source-sha256: 14e4e4304553b80ccd29632aef58804fe592249c7f27a32fe1ff5ba85828d18f
 --
 -- PostgreSQL database dump
 --
@@ -936,6 +937,22 @@ CREATE SEQUENCE public.general_ledger_entries_id_seq
 --
 
 ALTER SEQUENCE public.general_ledger_entries_id_seq OWNED BY public.general_ledger_entries.id;
+
+--
+-- Name: gl_import_mappings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.gl_import_mappings (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    company_id uuid NOT NULL,
+    upload_id uuid NOT NULL,
+    mapping jsonb DEFAULT '{}'::jsonb NOT NULL,
+    detected jsonb DEFAULT '{}'::jsonb NOT NULL,
+    confirmed_by uuid,
+    confirmed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 
 --
 -- Name: group_message_reads; Type: TABLE; Schema: public; Owner: -
@@ -2253,6 +2270,13 @@ ALTER TABLE ONLY public.general_ledger_entries
     ADD CONSTRAINT general_ledger_entries_pkey PRIMARY KEY (id);
 
 --
+-- Name: gl_import_mappings gl_import_mappings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.gl_import_mappings
+    ADD CONSTRAINT gl_import_mappings_pkey PRIMARY KEY (id);
+
+--
 -- Name: group_message_reads group_message_reads_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3513,6 +3537,12 @@ CREATE UNIQUE INDEX uq_dataset_versions_company_number ON public.dataset_version
 CREATE UNIQUE INDEX uq_dataset_versions_one_active ON public.dataset_versions USING btree (company_id) WHERE is_active;
 
 --
+-- Name: uq_gl_import_mappings_upload; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_gl_import_mappings_upload ON public.gl_import_mappings USING btree (company_id, upload_id);
+
+--
 -- Name: uq_key_report_versions_company_active; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4120,6 +4150,27 @@ ALTER TABLE ONLY public.general_ledger_entries
 
 ALTER TABLE ONLY public.general_ledger_entries
     ADD CONSTRAINT general_ledger_entries_version_id_fkey FOREIGN KEY (version_id) REFERENCES public.key_report_versions(id) ON DELETE CASCADE;
+
+--
+-- Name: gl_import_mappings gl_import_mappings_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.gl_import_mappings
+    ADD CONSTRAINT gl_import_mappings_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: gl_import_mappings gl_import_mappings_confirmed_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.gl_import_mappings
+    ADD CONSTRAINT gl_import_mappings_confirmed_by_fkey FOREIGN KEY (confirmed_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+--
+-- Name: gl_import_mappings gl_import_mappings_upload_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.gl_import_mappings
+    ADD CONSTRAINT gl_import_mappings_upload_id_fkey FOREIGN KEY (upload_id) REFERENCES public.uploads(id) ON DELETE CASCADE;
 
 --
 -- Name: group_message_reads group_message_reads_group_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -

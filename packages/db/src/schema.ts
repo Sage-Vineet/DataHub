@@ -549,6 +549,35 @@ export const keyReportFileMappings = pgTable(
 );
 
 /**
+ * The column mapping somebody confirmed for an uploaded ledger.
+ *
+ * Detection is a default; a person can correct it, and that correction has to
+ * survive. A ledger imported twice under two different mappings is two
+ * different sets of figures from one file. See migration 0012.
+ */
+export const glImportMappings = pgTable(
+  "gl_import_mappings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    uploadId: uuid("upload_id")
+      .notNull()
+      .references(() => uploads.id, { onDelete: "cascade" }),
+    /** field → column name, "" for unmapped. */
+    mapping: jsonb("mapping").notNull().default({}),
+    /** What detection thought, kept beside what the person chose. */
+    detected: jsonb("detected").notNull().default({}),
+    confirmedBy: uuid("confirmed_by").references(() => users.id, { onDelete: "set null" }),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("uq_gl_import_mappings_upload").on(t.companyId, t.uploadId)],
+);
+
+/**
  * A numbered, activatable snapshot of a company's imported financial data.
  *
  * NOT a `keyReportVersions` — that is a reporting configuration and already
