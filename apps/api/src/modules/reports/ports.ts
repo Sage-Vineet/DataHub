@@ -56,3 +56,40 @@ export interface EngagementPort {
 export interface ReportSyncPort {
   sync(versionId: string): Promise<never>;
 }
+
+/**
+ * One posted general-ledger row, for the drill-down under a monthly-detail
+ * account line.
+ *
+ * Separate from the engine's `GlEntry`, which is deliberately narrow — the
+ * engine needs an account, a period and an amount and nothing else. These are
+ * presentation fields, and putting them on `GlEntry` would widen the engine's
+ * input for the sake of a table.
+ *
+ * `debit`, `credit`, `description`, `reference` and `journalType` are nullable
+ * because the columns exist but the current extractor does not populate them:
+ * in the demo ledger, 3,723 posted rows carry a date, 2,295 carry a vendor, and
+ * none carries any of the rest. Emitting zero for an unpopulated debit would
+ * state a fact the ledger does not contain.
+ */
+export interface LedgerTransaction {
+  id: string;
+  accountId: string;
+  fiscalYear: number;
+  /** 1–12; `0` where the row carries no usable date. */
+  month: number;
+  date: string | null;
+  vendorName: string | null;
+  description: string | null;
+  reference: string | null;
+  journalType: string | null;
+  /** Unsigned, as exported: revenue and cost both arrive positive. */
+  amount: number;
+  debit: number | null;
+  credit: number | null;
+}
+
+/** The posted ledger behind a version, at transaction grain. */
+export interface LedgerDetailPort {
+  list(versionId: string): Promise<LedgerTransaction[]>;
+}

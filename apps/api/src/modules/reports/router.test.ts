@@ -89,6 +89,16 @@ const emptyCashFlow = {
   endingCash: {},
 };
 
+const emptyMonthlyDetail = {
+  source: "general_ledger_entries",
+  reportType: "profit_loss_monthly_detail",
+  year: null,
+  months: [],
+  monthNames: [],
+  sections: [],
+  filters: {},
+};
+
 function stub(over: Record<string, unknown> = {}) {
   const calls: Array<{ method: string; args: unknown[] }> = [];
   const record =
@@ -110,6 +120,7 @@ function stub(over: Record<string, unknown> = {}) {
     profitLoss: record("profitLoss", emptyProfitLoss),
     balanceSheet: record("balanceSheet", emptyBalanceSheet),
     cashFlow: record("cashFlow", emptyCashFlow),
+    monthlyDetail: record("monthlyDetail", emptyMonthlyDetail),
     ...over,
   } as unknown as ReportsService;
 
@@ -389,5 +400,74 @@ describe("the cash flow route", () => {
   it("passes an unexpected failure on rather than reporting no movement", async () => {
     const { app } = stub({ cashFlow: () => Promise.reject(new Error("boom")) });
     await request(app).get(`/reports/cashflow?clientId=${COMPANY}`).expect(500);
+  });
+});
+
+describe("the monthly-detail route", () => {
+  it("takes a single year, because the columns are that year's months", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .get(`/reports/profit-loss/monthly-detail?clientId=${COMPANY}&fiscalYear=2024`)
+      .expect(200);
+    expect(argsOf(calls, "monthlyDetail")[2]).toEqual({ fiscalYear: 2024, months: [] });
+  });
+
+  it("accepts `year` as well, which is what some callers send", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .get(`/reports/profit-loss/monthly-detail?clientId=${COMPANY}&year=2023`)
+      .expect(200);
+    expect(argsOf(calls, "monthlyDetail")[2]).toEqual({ fiscalYear: 2023, months: [] });
+  });
+
+  it("narrows to the months asked for, repeated or comma-separated", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .get(`/reports/profit-loss/monthly-detail?clientId=${COMPANY}&month=1&month=2`)
+      .expect(200);
+    expect(argsOf(calls, "monthlyDetail")[2]).toEqual({ months: [1, 2] });
+
+    await request(app)
+      .get(`/reports/profit-loss/monthly-detail?clientId=${COMPANY}&months=6,7`)
+      .expect(200);
+    expect(argsOf(calls, "monthlyDetail")[2]).toEqual({ months: [6, 7] });
+  });
+
+  it("drops a month outside 1–12 rather than passing it down", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .get(`/reports/profit-loss/monthly-detail?clientId=${COMPANY}&month=0&month=13&month=5`)
+      .expect(200);
+    expect(argsOf(calls, "monthlyDetail")[2]).toEqual({ months: [5] });
+  });
+
+  it("omits the year entirely when none is given, rather than sending NaN", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .get(`/reports/profit-loss/monthly-detail?clientId=${COMPANY}&fiscalYear=whenever`)
+      .expect(200);
+    expect(argsOf(calls, "monthlyDetail")[2]).toEqual({ months: [] });
+  });
+
+  it("400s without a company, and answers under the envelope with one", async () => {
+    const { app } = stub();
+    await request(app).get("/reports/profit-loss/monthly-detail").expect(400);
+    const res = await request(app)
+      .get(`/reports/profit-loss/monthly-detail?clientId=${COMPANY}`)
+      .expect(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.reportType).toBe("profit_loss_monthly_detail");
+  });
+
+  it("maps access and missing-version failures to their statuses", async () => {
+    for (const [err, status] of [
+      [new ForbiddenError("denied"), 403],
+      [new NotFoundError("No key-report version for this company."), 404],
+    ] as const) {
+      const { app } = stub({ monthlyDetail: () => Promise.reject(err) });
+      await request(app)
+        .get(`/reports/profit-loss/monthly-detail?clientId=${COMPANY}`)
+        .expect(status);
+    }
   });
 });

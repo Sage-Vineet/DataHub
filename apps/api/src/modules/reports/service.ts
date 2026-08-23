@@ -6,13 +6,24 @@ import type {
 } from "@datahub/contracts";
 import { canAccessCompany } from "../../shared/access.js";
 import { ForbiddenError, HttpError, NotFoundError } from "../../shared/errors.js";
-import type { EngagementPort, ReportSyncPort, ReportsRepository, VersionRecord } from "./ports.js";
+import type {
+  EngagementPort,
+  LedgerDetailPort,
+  ReportSyncPort,
+  ReportsRepository,
+  VersionRecord,
+} from "./ports.js";
 import { buildStatements, type BuildStatementsOptions, type FinancialStatements } from "./statements.js";
 import {
   buildProfitLossSummary,
   type ProfitLossFilters,
   type ProfitLossSummaryPayload,
 } from "./profit-loss-view.js";
+import {
+  buildMonthlyDetail,
+  type MonthlyDetailFilters,
+  type MonthlyDetailPayload,
+} from "./monthly-detail-view.js";
 import {
   buildCashFlowReport,
   type CashFlowFilters,
@@ -29,16 +40,19 @@ export interface ReportsServiceDeps {
   repo: ReportsRepository;
   sync: ReportSyncPort;
   engagement: EngagementPort;
+  ledger: LedgerDetailPort;
 }
 
 export class ReportsService {
   private readonly repo: ReportsRepository;
   private readonly syncPort: ReportSyncPort;
   private readonly engagement: EngagementPort;
+  private readonly ledger: LedgerDetailPort;
   constructor(deps: ReportsServiceDeps) {
     this.repo = deps.repo;
     this.syncPort = deps.sync;
     this.engagement = deps.engagement;
+    this.ledger = deps.ledger;
   }
 
   /**
@@ -121,8 +135,31 @@ export class ReportsService {
     }
   }
 
+  /**
+   * The month-by-month P&L, with the posted rows behind each line.
+   *
+   * The ledger detail is a second read rather than part of the engagement: the
+   * engine needs an account, a period and an amount, and widening its input
+   * with vendor and reference columns for the sake of one table would put
+   * presentation concerns inside the calculator.
+   */
+  async monthlyDetail(
+    user: SessionUser,
+    companyId: string,
+    filters: MonthlyDetailFilters = {},
+  ): Promise<MonthlyDetailPayload> {
+    const { engagement, versionId } = await this.activeVersion(user, companyId);
+    const transactions = await this.ledger.list(versionId);
+    return buildMonthlyDetail(engagement, transactions, filters);
+  }
+
   /** The engagement behind a company's active key-report version. */
   private async activeEngagement(user: SessionUser, companyId: string) {
+    return (await this.activeVersion(user, companyId)).engagement;
+  }
+
+  /** The same, when the caller also needs the version it came from. */
+  private async activeVersion(user: SessionUser, companyId: string) {
     this.requireCompany(user, companyId);
 
     const versions = await this.repo.listByCompany(companyId);
@@ -131,7 +168,7 @@ export class ReportsService {
 
     const engagement = await this.engagement.load(active.id);
     if (!engagement) throw new NotFoundError("Report version not found.");
-    return engagement;
+    return { engagement, versionId: active.id };
   }
 
   async list(user: SessionUser, companyId: string): Promise<ReportVersionResponse[]> {

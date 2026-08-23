@@ -180,6 +180,17 @@ export const generalLedgerEntries = pgTable(
     // authority, so that drift is reconciled rather than mirrored.
     vendor: text("vendor_name"),
     memoDescription: text("memo_description"),
+    // Presentation columns, for the drill-down under a monthly-detail line.
+    // They exist in every deployment and the current extractor populates none
+    // of them: of 3,723 posted rows in the demo ledger, all carry a date, 2,295
+    // carry a vendor, and none carries a description, reference, journal type
+    // or a debit/credit split. Modelled so a report can show what is there and
+    // omit what is not, rather than printing a confident zero.
+    description: text("description"),
+    reference: text("reference"),
+    journalType: text("journal_type"),
+    debit: numeric("debit", { precision: 18, scale: 2 }),
+    credit: numeric("credit", { precision: 18, scale: 2 }),
   },
   (t) => [index("idx_gl_version_year").on(t.versionId, t.fiscalYear)],
 );

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   CreateVersionInput,
+  LedgerTransaction,
   ReportsRepository,
   UpdateVersionPatch,
   VersionRecord,
@@ -85,5 +86,24 @@ export class InMemoryEngagementPort {
   load(versionId: string): Promise<never> {
     this.lastVersionId = versionId;
     return Promise.resolve((this.engagements.get(versionId) ?? null) as never);
+  }
+}
+
+/** The posted ledger, held in memory, for tests that need the drill-down. */
+export class InMemoryLedgerDetailPort {
+  lastVersionId: string | null = null;
+
+  constructor(private readonly ledgers = new Map<string, LedgerTransaction[]>()) {}
+
+  seed(versionId: string, transactions: LedgerTransaction[]): void {
+    // Copied on the way in, so a test mutating its fixture afterwards cannot
+    // change what the port already holds.
+    this.ledgers.set(versionId, [...transactions]);
+  }
+
+  list(versionId: string): Promise<LedgerTransaction[]> {
+    this.lastVersionId = versionId;
+    // Copied on the way out too, for the same reason in reverse.
+    return Promise.resolve([...(this.ledgers.get(versionId) ?? [])]);
   }
 }

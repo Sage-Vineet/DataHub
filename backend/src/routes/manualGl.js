@@ -731,54 +731,6 @@ router.get("/reports/vendor-analysis", enforceDataSource(REPORT_SOURCE_KEYS.MANU
   }
 });
 
-router.get("/reports/profit-loss/monthly-detail", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
-    const filters = parseManualFilterQuery(req.query || {});
-    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
-      ...filters,
-      allowExplicitBatch: isHistoricalBatchMode(filters),
-    });
-    console.log(`[ManualGL][Report] Resolved batchId ${activeBatchId} for filters:`, JSON.stringify(filters));
-    const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
-    logManualReportFilterDebug("reports/profit-loss/monthly-detail", clientId, cacheFilters, activeBatchId);
-    const hasMonthFilter = Array.isArray(cacheFilters.fiscalMonths) && cacheFilters.fiscalMonths.length > 0;
-
-    const cached = reportCache.get("pl_monthly_detail", clientId, cacheFilters);
-    if (cached) return res.json({ success: true, ...cached });
-
-    if (!hasMonthFilter) {
-      const snapshotResult = await tryLoadActiveSnapshot(
-        clientId,
-        SNAPSHOT_REPORT_TYPES.PROFIT_LOSS_MONTHLY_DETAIL,
-        cacheFilters,
-      );
-      const snapshotSections = snapshotResult.payload?.sections;
-      const snapshotHasAccounts = Array.isArray(snapshotSections) &&
-        snapshotSections.some((s) => !s.isCalculated && Array.isArray(s.accounts) && s.accounts.length > 0);
-      if (snapshotResult.payload && snapshotHasAccounts) {
-        const payload = {
-          ...snapshotResult.payload,
-          source: "manual_gl_reporting_snapshot",
-          activeBatchId: snapshotResult.activeBatchId || activeBatchId || null,
-        };
-        reportCache.set("pl_monthly_detail", clientId, cacheFilters, payload);
-        return res.json({ success: true, ...payload });
-      }
-    }
-
-    const payload = await getProfitLossMonthlyDetailFromStage(clientId, cacheFilters);
-    reportCache.set("pl_monthly_detail", clientId, cacheFilters, payload);
-    return res.json({ success: true, ...payload, activeBatchId: activeBatchId || null });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: error.message || "Failed to build staged Profit & Loss monthly detail.",
-    });
-  }
-});
-
 router.get("/reports/balance-sheet/monthly-detail", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     const clientId = resolveClientId(req);

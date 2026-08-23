@@ -207,6 +207,27 @@ export function createReportsRouter(deps: ReportsRouterDeps): Router {
     res.json({ success: true, ...payload });
   }));
 
+  /**
+   * The month-by-month P&L.
+   *
+   * `fiscalYear` is a single year here, not a set — the table's columns are the
+   * months of one year, so a second year has nowhere to go.
+   */
+  router.get("/reports/profit-loss/monthly-detail", handle(async (req, res) => {
+    const year = Number.parseInt(String(req.query.fiscalYear ?? req.query.year ?? ""), 10);
+    const rawMonths = req.query.month ?? req.query.months;
+    const months = (Array.isArray(rawMonths) ? rawMonths : rawMonths === undefined ? [] : [rawMonths])
+      .flatMap((value) => String(value).split(","))
+      .map((value) => Number.parseInt(value.trim(), 10))
+      .filter((month) => Number.isInteger(month) && month >= 1 && month <= 12);
+
+    const payload = await service.monthlyDetail(req.user!, companyOf(req), {
+      ...(Number.isInteger(year) && year > 0 ? { fiscalYear: year } : {}),
+      months,
+    });
+    res.json({ success: true, ...payload });
+  }));
+
   router.get("/reports/cashflow", handle(async (req, res) => {
     const payload = await service.cashFlow(req.user!, companyOf(req), {
       fiscalYears: yearsOf(req),

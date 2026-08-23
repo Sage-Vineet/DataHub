@@ -64,7 +64,6 @@
   "GET /reports/profit-loss/detail",
   "GET /reports/profit-loss/detail-vendor",
   "GET /reports/profit-loss/monthly",
-  "GET /reports/profit-loss/monthly-detail",
   "GET /reports/vendor-analysis",
   "GET /tax-data",
   "POST /api/auth/transfer-confirm",
