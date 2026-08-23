@@ -31,6 +31,7 @@ import { createGroupsModule } from "./modules/groups/index.js";
 import { createWorkspaceModule } from "./modules/workspace/index.js";
 import { createMessagesModule } from "./modules/messages/index.js";
 import { createReportsModule } from "./modules/reports/index.js";
+import { assertReapedModulesEnabled } from "./parity/reaped-guard.js";
 import { createQoeModule } from "./modules/qoe/index.js";
 import { createDataRoomModule } from "./modules/dataroom/index.js";
 import { createQaModule } from "./modules/qa/index.js";
@@ -395,6 +396,10 @@ function main(): void {
   // Validate our own env before anything else, so a mistyped cutover flag is a
   // startup error rather than a route-group that silently stayed on legacy.
   const env = loadGatewayEnv(process.env);
+  // A flag that is off used to mean "fall through to legacy". For a route-group
+  // legacy has already been reaped of, off means 404 — so that combination is a
+  // startup error too, for the same reason a malformed flag value is.
+  assertReapedModulesEnabled(env.flags);
   const table = parseRoutingTable(process.env);
   // `parseRoutingTable` refuses to return without it; the index signature on
   // `origins` is what loses that, so it is restated rather than asserted away.
