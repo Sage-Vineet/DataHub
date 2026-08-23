@@ -17,6 +17,7 @@ import { createStatementsModule } from "../modules/statements/index.js";
 import { createQuickBooksModule } from "../modules/quickbooks/index.js";
 import { createSyncModule } from "../modules/sync/index.js";
 import { createDatasetsModule } from "../modules/datasets/index.js";
+import { createGlImportModule } from "../modules/gl-import/index.js";
 import { createRequestsModule } from "../modules/requests/index.js";
 import { createUploadsModule } from "../modules/uploads/index.js";
 import { createUsersModule } from "../modules/users/index.js";
@@ -214,6 +215,7 @@ export function moduleSurfaces(): ModuleSurface[] {
     },
     { name: "sync", mount: "/", router: createSyncModule({ db, requireAuth }).router },
     { name: "datasets", mount: "/", router: createDatasetsModule({ db, requireAuth }).router },
+    { name: "glImport", mount: "/", router: createGlImportModule({ db, requireAuth }).router },
   ];
 }
 

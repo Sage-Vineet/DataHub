@@ -42,6 +42,9 @@ const INTENTIONAL_ADDITIONS: ReadonlyArray<string> = [
   // into a table makes "did last night's run finish?" answerable, which is the
   // question the Maps could never answer.
   "GET /manual-report-uploads/sync-history",
+  // gl-import: legacy went straight from mapping to writing rows, so the first
+  // sight of what a mapping actually does was the ledger it had produced.
+  "GET /manual-gl/preview/:p",
 ];
 
 describe("route contract — new modules answer on the legacy paths", () => {

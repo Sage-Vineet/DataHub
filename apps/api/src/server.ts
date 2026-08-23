@@ -38,6 +38,7 @@ import { createStatementsModule } from "./modules/statements/index.js";
 import { createQuickBooksModule } from "./modules/quickbooks/index.js";
 import { createSyncModule } from "./modules/sync/index.js";
 import { createDatasetsModule } from "./modules/datasets/index.js";
+import { createGlImportModule } from "./modules/gl-import/index.js";
 import { assertReapedModulesEnabled } from "./parity/reaped-guard.js";
 import { createQoeModule } from "./modules/qoe/index.js";
 import { createDataRoomModule } from "./modules/dataroom/index.js";
@@ -148,7 +149,8 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
     flags.STATEMENTS_MODULE_ENABLED ||
     flags.QUICKBOOKS_MODULE_ENABLED ||
     flags.SYNC_MODULE_ENABLED ||
-    flags.DATASETS_MODULE_ENABLED;
+    flags.DATASETS_MODULE_ENABLED ||
+    flags.GL_IMPORT_MODULE_ENABLED;
   if (domainsEnabled) {
     const db = getDb();
     const auth = createBetterAuth({
@@ -228,6 +230,10 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
         path: "/",
         router: createBankReconciliationModule({ db, requireAuth }).router,
       });
+    }
+
+    if (flags.GL_IMPORT_MODULE_ENABLED) {
+      modules.push({ path: "/", router: createGlImportModule({ db, requireAuth }).router });
     }
 
     if (flags.DATASETS_MODULE_ENABLED) {

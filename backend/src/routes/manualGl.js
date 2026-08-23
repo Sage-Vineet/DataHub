@@ -371,26 +371,6 @@ async function handleGetLatestReport(req, res, statementType) {
   });
 }
 
-router.get("/manual-gl/columns/:uploadId", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    const { uploadId } = req.params;
-    if (!uploadId) return res.status(400).json({ error: "uploadId is required." });
-
-    const result = await getManualGlColumns(uploadId);
-    return res.json({ success: true, ...result });
-  } catch (error) {
-    return res.status(500).json({ success: false, error: error.message || "Failed to get columns." });
-  }
-});
-
-router.post("/manual-gl/save-mapping", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    return await handleSaveMapping(req, res);
-  } catch (error) {
-    return res.status(500).json({ success: false, error: error.message || "Failed to save mapping." });
-  }
-});
-
 router.post("/manual-gl/staging/multi-year", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     const clientId = resolveClientId(req);

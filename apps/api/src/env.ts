@@ -44,6 +44,7 @@ export const MODULE_FLAGS = [
   "QUICKBOOKS_MODULE_ENABLED",
   "SYNC_MODULE_ENABLED",
   "DATASETS_MODULE_ENABLED",
+  "GL_IMPORT_MODULE_ENABLED",
   // Not a cutover flag: activity capture has no legacy predecessor to fall back
   // to. It is parsed here so it gets the same strict validation — a mistyped
   // value silently meaning "off" would be an audit log nobody notices is absent.
