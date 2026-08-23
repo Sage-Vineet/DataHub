@@ -81,6 +81,9 @@ CREATE TABLE folders (
   name text NOT NULL,
   color text,
   created_by uuid NOT NULL,
+  -- Present in the Drizzle model, so an insert names it. Without it here the
+  -- default-folder provisioning fails against this harness and nowhere else.
+  archived_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 `;

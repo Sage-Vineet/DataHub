@@ -128,7 +128,21 @@ export function createBetterAuthRouter(deps: BetterAuthRouterDeps): Router {
         forwardSetCookie(headers, res);
         const user = (response as { user: BetterAuthUser }).user;
         if ((user.role ?? "buyer") === "buyer") {
-          await provisionClient(repo, user, config.defaultFolders);
+          // Deliberately not allowed to fail the login. The credential was
+          // valid; provisioning is what happens next. Inside the catch below it
+          // reported a correct password as "Invalid credentials", which sends
+          // the client to reset a password that was never wrong.
+          //
+          // A client with no companies is already a valid outcome — an account
+          // waiting to be associated — so a provisioning failure lands them in
+          // the same place, signed in with nothing yet attached.
+          try {
+            await provisionClient(repo, user, config.defaultFolders);
+          } catch (err) {
+            console.error(
+              `[auth] client provisioning failed for ${user.id}; signing in anyway: ${String(err)}`,
+            );
+          }
         }
         const companyIds = await repo.listCompanyIdsForUser(user.id);
         // A bearer token (bearer plugin) is returned for non-cookie API clients.
