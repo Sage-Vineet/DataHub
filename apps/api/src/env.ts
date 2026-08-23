@@ -41,6 +41,7 @@ export const MODULE_FLAGS = [
   "BANK_RECONCILIATION_MODULE_ENABLED",
   "REPORT_SOURCES_MODULE_ENABLED",
   "STATEMENTS_MODULE_ENABLED",
+  "QUICKBOOKS_MODULE_ENABLED",
   // Not a cutover flag: activity capture has no legacy predecessor to fall back
   // to. It is parsed here so it gets the same strict validation — a mistyped
   // value silently meaning "off" would be an audit log nobody notices is absent.

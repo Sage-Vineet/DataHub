@@ -16,6 +16,8 @@
   "DELETE /users/:p/remove-companies",
   "DELETE /users/broker-team/invite/:p",
   "DELETE /workspace-page-state/:p",
+  "GET /api/auth/disconnect",
+  "GET /api/auth/status",
   "GET /auth/me",
   "GET /bank-reconciliation-addback-items",
   "GET /bank-reconciliation-adjustments",

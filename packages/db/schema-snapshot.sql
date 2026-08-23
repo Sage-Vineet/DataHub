@@ -18,8 +18,9 @@
 --   packages/db/migrations/0005_coa_recommendations.sql
 --   packages/db/migrations/0006_bank_reconciliation.sql
 --   packages/db/migrations/0007_statement_extracts.sql
+--   packages/db/migrations/0008_quickbooks_connections.sql
 --
--- source-sha256: 90e4f4f41845e048867326503c52108bcea13c32f1ea2f7ceb867657125290a0
+-- source-sha256: fa9dacd097ca72e76a7fec772c45cf786f7a406da2cd24886c315bdebb6d8d7b
 --
 -- PostgreSQL database dump
 --
@@ -1440,6 +1441,32 @@ CREATE TABLE public.qoe_addbacks (
 );
 
 --
+-- Name: quickbooks_connections; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.quickbooks_connections (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    company_id uuid NOT NULL,
+    realm_id text NOT NULL,
+    realm_company_name text,
+    access_token_sealed text,
+    refresh_token_sealed text,
+    token_expires_at timestamp with time zone,
+    environment text DEFAULT 'production'::text NOT NULL,
+    oauth_client_id text,
+    redirect_uri text,
+    is_connected boolean DEFAULT true NOT NULL,
+    connected_at timestamp with time zone,
+    disconnected_at timestamp with time zone,
+    last_synced_at timestamp with time zone,
+    connected_by uuid,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT quickbooks_connections_environment_check CHECK ((environment = ANY (ARRAY['sandbox'::text, 'production'::text])))
+);
+
+--
 -- Name: reconciliation_transactions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2353,6 +2380,13 @@ ALTER TABLE ONLY public.qa_responses
 
 ALTER TABLE ONLY public.qoe_addbacks
     ADD CONSTRAINT qoe_addbacks_pkey PRIMARY KEY (id);
+
+--
+-- Name: quickbooks_connections quickbooks_connections_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.quickbooks_connections
+    ADD CONSTRAINT quickbooks_connections_pkey PRIMARY KEY (id);
 
 --
 -- Name: reconciliation_transactions reconciliation_transactions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -3387,6 +3421,18 @@ CREATE INDEX session_user_id_idx ON public.session USING btree (user_id);
 CREATE UNIQUE INDEX uq_key_report_versions_company_active ON public.key_report_versions USING btree (company_id) WHERE (is_active = true);
 
 --
+-- Name: uq_quickbooks_connections_company; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_quickbooks_connections_company ON public.quickbooks_connections USING btree (company_id);
+
+--
+-- Name: uq_quickbooks_connections_realm_live; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_quickbooks_connections_realm_live ON public.quickbooks_connections USING btree (realm_id) WHERE is_connected;
+
+--
 -- Name: uq_statement_extracts_document_type; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4377,6 +4423,20 @@ ALTER TABLE ONLY public.qoe_addbacks
 
 ALTER TABLE ONLY public.qoe_addbacks
     ADD CONSTRAINT qoe_addbacks_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+--
+-- Name: quickbooks_connections quickbooks_connections_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.quickbooks_connections
+    ADD CONSTRAINT quickbooks_connections_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: quickbooks_connections quickbooks_connections_connected_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.quickbooks_connections
+    ADD CONSTRAINT quickbooks_connections_connected_by_fkey FOREIGN KEY (connected_by) REFERENCES public.users(id) ON DELETE SET NULL;
 
 --
 -- Name: reminders reminders_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -

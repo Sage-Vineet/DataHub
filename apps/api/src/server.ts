@@ -35,6 +35,7 @@ import { createReportsModule } from "./modules/reports/index.js";
 import { createBankReconciliationModule } from "./modules/bank-reconciliation/index.js";
 import { createReportSourcesModule } from "./modules/report-sources/index.js";
 import { createStatementsModule } from "./modules/statements/index.js";
+import { createQuickBooksModule } from "./modules/quickbooks/index.js";
 import { assertReapedModulesEnabled } from "./parity/reaped-guard.js";
 import { createQoeModule } from "./modules/qoe/index.js";
 import { createDataRoomModule } from "./modules/dataroom/index.js";
@@ -48,7 +49,7 @@ import { requireSession } from "./shared/session.js";
 import { legacyAuthBridge } from "./legacy-bridge.js";
 import { resolveSessionUser } from "./modules/auth/better-session.js";
 import { parseRoutingTable } from "./routing.js";
-import { loadGatewayEnv, type GatewayEnv } from "./env.js";
+import { EnvConfigError, loadGatewayEnv, type GatewayEnv } from "./env.js";
 
 /** Lazily create a single shared Drizzle client for all in-process modules. */
 function dbFactory(): () => Db {
@@ -142,7 +143,8 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
     flags.QOE_MODULE_ENABLED ||
     flags.BANK_RECONCILIATION_MODULE_ENABLED ||
     flags.REPORT_SOURCES_MODULE_ENABLED ||
-    flags.STATEMENTS_MODULE_ENABLED;
+    flags.STATEMENTS_MODULE_ENABLED ||
+    flags.QUICKBOOKS_MODULE_ENABLED;
   if (domainsEnabled) {
     const db = getDb();
     const auth = createBetterAuth({
@@ -221,6 +223,24 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
       modules.push({
         path: "/",
         router: createBankReconciliationModule({ db, requireAuth }).router,
+      });
+    }
+
+    if (flags.QUICKBOOKS_MODULE_ENABLED) {
+      // The token-sealing keys are derived from the application secret, so a
+      // deployment without one would store tokens under an empty key — which
+      // `secret-box` refuses outright rather than doing badly.
+      const secret = process.env.JWT_SECRET;
+      if (!secret) {
+        throw new EnvConfigError(
+          "QUICKBOOKS_MODULE_ENABLED=true requires JWT_SECRET — the QuickBooks " +
+            "tokens are encrypted with a key derived from it, and there is no " +
+            "safe default.",
+        );
+      }
+      modules.push({
+        path: "/",
+        router: createQuickBooksModule({ db, requireAuth, secret }).router,
       });
     }
 

@@ -194,14 +194,19 @@
         "GET /manual-report-uploads/reports/:p/latest",
         "GET /manual-report-uploads/source-tree"
       ]
+    },
+    "quickbooks": {
+      "compare": [],
+      "additive": [
+        "GET /api/auth/disconnect",
+        "GET /api/auth/status"
+      ]
     }
   },
   "backlog": [
     "GET /all-reports",
     "GET /api/auth/callback",
-    "GET /api/auth/disconnect",
     "GET /api/auth/quickbooks",
-    "GET /api/auth/status",
     "GET /api/quickbooks/sync-status",
     "GET /balance-sheet",
     "GET /bank-reconciliation-line-items",

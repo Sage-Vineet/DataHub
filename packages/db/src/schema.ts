@@ -549,6 +549,54 @@ export const keyReportFileMappings = pgTable(
 );
 
 /**
+ * A company's link to its QuickBooks Online account.
+ *
+ * The token columns are named `*Sealed` because they hold ciphertext, not
+ * tokens — AES-256-GCM under a key derived from the application secret. See
+ * `apps/api/src/shared/secret-box.ts` and migration 0008. Naming them
+ * `accessToken` would invite writing a plaintext one in and having it look
+ * right.
+ */
+export const quickbooksConnections = pgTable(
+  "quickbooks_connections",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    /** Intuit's identifier for the connected QuickBooks company. */
+    realmId: text("realm_id").notNull(),
+    realmCompanyName: text("realm_company_name"),
+    accessTokenSealed: text("access_token_sealed"),
+    refreshTokenSealed: text("refresh_token_sealed"),
+    tokenExpiresAt: timestamp("token_expires_at", { withTimezone: true }),
+    /** sandbox | production, per connection rather than per deployment. */
+    environment: text("environment").notNull().default("production"),
+    oauthClientId: text("oauth_client_id"),
+    redirectUri: text("redirect_uri"),
+    /** False after a disconnect; the row stays as history. */
+    isConnected: boolean("is_connected").notNull().default(true),
+    connectedAt: timestamp("connected_at", { withTimezone: true }),
+    disconnectedAt: timestamp("disconnected_at", { withTimezone: true }),
+    lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
+    connectedBy: uuid("connected_by").references(() => users.id, { onDelete: "set null" }),
+    metadata: jsonb("metadata").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uq_quickbooks_connections_company").on(t.companyId),
+    uniqueIndex("uq_quickbooks_connections_realm_live")
+      .on(t.realmId)
+      .where(sql`${t.isConnected}`),
+    check(
+      "quickbooks_connections_environment_check",
+      sql`${t.environment} IN ('sandbox', 'production')`,
+    ),
+  ],
+);
+
+/**
  * What we read out of an uploaded financial statement.
  *
  * One row per document per statement type — a single PDF can carry both a

@@ -75,11 +75,34 @@ describe("route contract — new modules answer on the legacy paths", () => {
     }
   });
 
-  it("no module claims a QuickBooks OAuth path", () => {
-    const qbo = [...legacy].filter((r) => r.includes(" /api/auth/"));
-    expect(qbo.length).toBeGreaterThan(0);
+  it("no module claims the QuickBooks OAuth dance", () => {
+    /**
+     * The dance itself, not everything under `/api/auth/`.
+     *
+     * This used to forbid the whole prefix, which was right while nothing
+     * there had moved. `/api/auth/status` and `/api/auth/disconnect` have since
+     * been ported deliberately: they are connection STATE, answerable and
+     * testable without Intuit.
+     *
+     * These four are not. They redirect to Intuit, receive its callback,
+     * exchange and refresh tokens, and hand a realm from one company to
+     * another. Exercising any of them needs real credentials and a browser
+     * round trip, and porting an auth flow that cannot be tested against the
+     * thing it talks to is how a migration ships a subtly broken one. They
+     * stay on legacy until they can be run against a sandbox realm.
+     */
+    const DANCE = [
+      "GET /refresh-token",
+      "GET /api/auth/quickbooks",
+      "GET /api/auth/callback",
+      "POST /api/auth/transfer-confirm",
+    ];
+    // If one of these leaves legacy without being ported, this list is stale.
+    for (const route of DANCE) {
+      expect(legacy, `${route} is no longer in legacy — revisit this list`).toContain(route);
+    }
     const claimed = new Set(MODULES.flatMap((m) => routerRoutes(m.router, m.mount)));
-    expect(qbo.filter((r) => claimed.has(r))).toEqual([]);
+    expect(DANCE.filter((r) => claimed.has(r))).toEqual([]);
   });
 });
 

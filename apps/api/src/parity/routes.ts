@@ -14,6 +14,7 @@ import { createReportsModule } from "../modules/reports/index.js";
 import { createBankReconciliationModule } from "../modules/bank-reconciliation/index.js";
 import { createReportSourcesModule } from "../modules/report-sources/index.js";
 import { createStatementsModule } from "../modules/statements/index.js";
+import { createQuickBooksModule } from "../modules/quickbooks/index.js";
 import { createRequestsModule } from "../modules/requests/index.js";
 import { createUploadsModule } from "../modules/uploads/index.js";
 import { createUsersModule } from "../modules/users/index.js";
@@ -203,6 +204,11 @@ export function moduleSurfaces(): ModuleSurface[] {
       name: "statements",
       mount: "/",
       router: createStatementsModule({ db, requireAuth }).router,
+    },
+    {
+      name: "quickbooks",
+      mount: "/",
+      router: createQuickBooksModule({ db, requireAuth, secret: "surface-only" }).router,
     },
   ];
 }
