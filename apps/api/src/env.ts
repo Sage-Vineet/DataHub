@@ -35,6 +35,7 @@ export const MODULE_FLAGS = [
   "GROUPS_MODULE_ENABLED",
   "ACTIVITY_MODULE_ENABLED",
   "WORKSPACE_MODULE_ENABLED",
+  "CHART_OF_ACCOUNTS_MODULE_ENABLED",
   "REPORTS_MODULE_ENABLED",
   "QOE_MODULE_ENABLED",
   // Not a cutover flag: activity capture has no legacy predecessor to fall back

@@ -129,6 +129,16 @@
         "PUT /workspace-page-state/:p"
       ]
     },
+    "chartOfAccounts": {
+      "compare": [],
+      "additive": [
+        "GET /key-reports/hierarchy-levels",
+        "GET /key-reports/versions/:p/chart-of-accounts",
+        "GET /key-reports/versions/:p/chart-of-accounts/history",
+        "PATCH /key-reports/chart-of-accounts/:p",
+        "POST /key-reports/chart-of-accounts/:p/reset"
+      ]
+    },
     "reports": {
       "compare": [
         "DELETE /key-reports/versions/:p",
@@ -164,10 +174,7 @@
     "GET /invoices",
     "GET /invoices/doc/:p",
     "GET /key-reports/file-references",
-    "GET /key-reports/hierarchy-levels",
     "GET /key-reports/popup-preference",
-    "GET /key-reports/versions/:p/chart-of-accounts",
-    "GET /key-reports/versions/:p/chart-of-accounts/history",
     "GET /key-reports/versions/:p/extracted-data",
     "GET /key-reports/versions/:p/mappings",
     "GET /key-reports/versions/:p/sync-logs",
@@ -222,13 +229,11 @@
     "GET /reports/profit-loss/monthly-detail",
     "GET /reports/vendor-analysis",
     "GET /tax-data",
-    "PATCH /key-reports/chart-of-accounts/:p",
     "POST /api/auth/transfer-confirm",
     "POST /api/quickbooks/sync",
     "POST /bank-reconciliation-addback-items",
     "POST /bank-reconciliation-adjustments",
     "POST /customers",
-    "POST /key-reports/chart-of-accounts/:p/reset",
     "POST /key-reports/versions/:p/chart-of-accounts/regenerate",
     "POST /key-reports/versions/:p/chart-of-accounts/reset",
     "POST /key-reports/versions/:p/chart-of-accounts/save",

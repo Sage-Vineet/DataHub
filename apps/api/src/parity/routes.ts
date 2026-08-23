@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { RequestHandler, Router } from "express";
 import type { Db } from "@datahub/db";
 import { createActivityModule } from "../modules/activity/index.js";
+import { createChartOfAccountsModule } from "../modules/chart-of-accounts/index.js";
 import { createCompaniesModule } from "../modules/companies/index.js";
 import { createFoldersModule } from "../modules/folders/index.js";
 import { createGroupsModule } from "../modules/groups/index.js";
@@ -183,6 +184,7 @@ export function moduleSurfaces(): ModuleSurface[] {
     { name: "groups", mount: "/", router: createGroupsModule({ db, requireAuth }).router },
     { name: "activity", mount: "/", router: createActivityModule({ db, requireAuth }).router },
     { name: "workspace", mount: "/", router: createWorkspaceModule({ db, requireAuth }).router },
+    { name: "chartOfAccounts", mount: "/", router: createChartOfAccountsModule({ db, requireAuth }).router },
     { name: "reports", mount: "/", router: createReportsModule({ db, requireAuth }).router },
   ];
 }

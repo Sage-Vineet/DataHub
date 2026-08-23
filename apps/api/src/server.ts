@@ -1,4 +1,7 @@
-import type { RequestHandler } from "express";
+// `Request` from express, not the global fetch `Request` — the two share a
+// name, and picking the wrong one here typechecked as `any` in a test file for
+// months.
+import type { Request as ExpressRequest, RequestHandler } from "express";
 import { eq } from "drizzle-orm";
 import { createDb, schema, type Db } from "@datahub/db";
 import {
@@ -23,6 +26,7 @@ import { createFoldersModule, createFolderProvisioningPort } from "./modules/fol
 import { createUploadsModule } from "./modules/uploads/index.js";
 import { createRequestsModule } from "./modules/requests/index.js";
 import { createActivityModule } from "./modules/activity/index.js";
+import { createChartOfAccountsModule } from "./modules/chart-of-accounts/index.js";
 import { createGroupsModule } from "./modules/groups/index.js";
 import { createWorkspaceModule } from "./modules/workspace/index.js";
 import { createMessagesModule } from "./modules/messages/index.js";
@@ -32,6 +36,7 @@ import { createDataRoomModule } from "./modules/dataroom/index.js";
 import { createQaModule } from "./modules/qa/index.js";
 import { createCimModule } from "./modules/cim/index.js";
 import { createCoaReviewModule } from "./modules/coa-review/module.js";
+import { createInProcessHierarchyWriter } from "./modules/coa-review/hierarchy.in-process.js";
 import { DrizzleCimDataRoomPort, QaServiceAdapter } from "./modules/cim/adapters.js";
 import { unavailableDataRoom } from "./modules/qa/repository.memory.js";
 import { requireSession } from "./shared/session.js";
@@ -127,6 +132,7 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
     flags.GROUPS_MODULE_ENABLED ||
     flags.ACTIVITY_MODULE_ENABLED ||
     flags.WORKSPACE_MODULE_ENABLED ||
+    flags.CHART_OF_ACCOUNTS_MODULE_ENABLED ||
     flags.REPORTS_MODULE_ENABLED ||
     flags.QOE_MODULE_ENABLED;
   if (domainsEnabled) {
@@ -187,6 +193,17 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
       modules.push({ path: "/", router: createActivityModule({ db, requireAuth }).router });
       console.warn("[gateway] activity module ENABLED at the API root (broker activity feed)");
     }
+    // The chart of accounts: the grid, its audit trail and the hierarchy
+    // vocabulary. Built here so the review module below can write through it
+    // rather than over HTTP to legacy.
+    const chartOfAccounts = flags.CHART_OF_ACCOUNTS_MODULE_ENABLED
+      ? createChartOfAccountsModule({ db, requireAuth })
+      : null;
+    if (chartOfAccounts) {
+      modules.push({ path: "/", router: chartOfAccounts.router });
+      console.warn("[gateway] chart-of-accounts module ENABLED at /key-reports/...");
+    }
+
     // Persisted workspace UI state, and the shared CIM questionnaire.
     if (flags.WORKSPACE_MODULE_ENABLED) {
       modules.push({ path: "/", router: createWorkspaceModule({ db, requireAuth }).router });
@@ -291,7 +308,24 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
     if (flags.COA_REVIEW_MODULE_ENABLED) {
       modules.push({
         path: "/",
-        router: createCoaReviewModule({ db, requireAuth, legacyOrigin }).router,
+        router: createCoaReviewModule({
+          db,
+          requireAuth,
+          legacyOrigin,
+          // In-process when the chart of accounts is served here, which removes
+          // the HTTP hop to legacy without adding a second hierarchy writer:
+          // this delegates to the one that owns the table. Still per request,
+          // so a reviewer who cannot edit an account cannot apply a
+          // recommendation to it either.
+          ...(chartOfAccounts
+            ? {
+                hierarchyFor: (req: ExpressRequest) =>
+                  createInProcessHierarchyWriter((accountId, patch) =>
+                    chartOfAccounts.service.updateAccount(req.user!, accountId, patch),
+                  ),
+              }
+            : {}),
+        }).router,
       });
       const generation = process.env.GEMINI_API_KEY
         ? "generation enabled"

@@ -53,6 +53,8 @@ export type { CoaReviewModule, CreateCoaReviewModuleOptions } from "./module.js"
 export { createCoaReviewRouter } from "./router.js";
 export { createGeminiClassifier, DEFAULT_MODELS } from "./classifier.gemini.js";
 export { createLegacyHierarchyWriter } from "./hierarchy.legacy.js";
+export { createInProcessHierarchyWriter } from "./hierarchy.in-process.js";
+export type { ApplyHierarchy } from "./hierarchy.in-process.js";
 export { DrizzleCoaReviewRepository } from "./repository.drizzle.js";
 export {
   createMemoryCoaReviewRepository,

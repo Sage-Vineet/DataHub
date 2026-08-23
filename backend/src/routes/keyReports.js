@@ -283,39 +283,8 @@ async function loadAccountWithAccess(req, res) {
 }
 
 // The standardized hierarchy taxonomy (reference data for UI level filters).
-router.get("/key-reports/hierarchy-levels", async (req, res) => {
-  try {
-    const levels = await chartOfAccountsService.getHierarchyLevels();
-    return res.json({ success: true, levels });
-  } catch (error) {
-    return handleError(res, error, "GET hierarchy-levels");
-  }
-});
-
 // Fetch a version's COA as a deep tree + flat list (15-level hierarchy).
-router.get("/key-reports/versions/:versionId/chart-of-accounts", async (req, res) => {
-  try {
-    const version = await loadVersionWithAccess(req, res);
-    if (!version) return;
-    const coa = await chartOfAccountsService.getChartOfAccounts(version.id);
-    return res.json({ success: true, ...coa });
-  } catch (error) {
-    return handleError(res, error, "GET chart-of-accounts");
-  }
-});
-
 // Classification + adjustment audit history for a version.
-router.get("/key-reports/versions/:versionId/chart-of-accounts/history", async (req, res) => {
-  try {
-    const version = await loadVersionWithAccess(req, res);
-    if (!version) return;
-    const history = await chartOfAccountsService.getHistory(version.id);
-    return res.json({ success: true, ...history });
-  } catch (error) {
-    return handleError(res, error, "GET chart-of-accounts/history");
-  }
-});
-
 // Rebuild a version's COA from its entry tables (general_ledger_entries +
 // balance_sheet_entries). batchId=null → reads from Key Reports entry tables,
 // which is correct for all new-style syncs (resolvedBatchId is always null).
@@ -348,31 +317,7 @@ router.post("/key-reports/versions/:versionId/chart-of-accounts/regenerate", asy
 // Update a single COA account: rename (adjustedName), move/reclassify (levels +
 // accountType/statementType), activate/deactivate. Writes adjustment + history
 // audit; never touches the original AI classification.
-router.patch("/key-reports/chart-of-accounts/:accountId", async (req, res) => {
-  try {
-    const row = await loadAccountWithAccess(req, res);
-    if (!row) return;
-    const account = await chartOfAccountsService.updateAccountHierarchy(
-      req.params.accountId, req.body || {}, req.user?.id || null,
-    );
-    return res.json({ success: true, account });
-  } catch (error) {
-    return handleError(res, error, "PATCH chart-of-accounts");
-  }
-});
-
 // Restore a single account to its original AI classification.
-router.post("/key-reports/chart-of-accounts/:accountId/reset", async (req, res) => {
-  try {
-    const row = await loadAccountWithAccess(req, res);
-    if (!row) return;
-    const account = await chartOfAccountsService.resetAccount(req.params.accountId, req.user?.id || null);
-    return res.json({ success: true, account });
-  } catch (error) {
-    return handleError(res, error, "POST chart-of-accounts/reset");
-  }
-});
-
 // Bulk-save an edited hierarchy for a version.
 router.post("/key-reports/versions/:versionId/chart-of-accounts/save", async (req, res) => {
   try {

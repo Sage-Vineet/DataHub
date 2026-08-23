@@ -62,8 +62,20 @@ export const chartOfAccounts = pgTable(
      */
     metadata: jsonb("metadata").$type<{ is_group?: boolean; user_modified?: boolean }>(),
     baseAccount: text("base_account"),
-    adjustedName: text("adjusted_name"),
     hierarchyPath: text("hierarchy_path"),
+    /** `"<number> <name>"`, denormalized for search. */
+    accountIdName: text("account_id_name"),
+    /** How the current classification was arrived at: "ai", "manual", … */
+    classificationMethod: text("classification_method"),
+    /**
+     * What the classifier first produced, kept untouched so an edit can be
+     * undone. The `adjusted_*` pair is what a person changed it to; nothing may
+     * write to `original_*` after generation.
+     */
+    originalName: text("original_name"),
+    originalHierarchy: jsonb("original_hierarchy"),
+    adjustedName: text("adjusted_name"),
+    adjustedHierarchy: jsonb("adjusted_hierarchy"),
     /**
      * `level_1`..`level_15`, flattened. The generator pads every column past a
      * leaf's real depth by repeating its deepest value, so a consumer has to
@@ -96,6 +108,55 @@ export const chartOfAccounts = pgTable(
   },
   (t) => [index("idx_coa_version").on(t.versionId, t.companyId)],
 );
+
+/**
+ * Every hand edit to an account, one row per field changed.
+ *
+ * Separate from `coa_classification_history` on purpose: this records WHAT
+ * changed (old and new value of one field), while the history records the whole
+ * hierarchy as it stood and HOW it was arrived at. A reviewer asking "who
+ * renamed this?" and one asking "what did the classifier think?" are asking
+ * different questions.
+ */
+export const coaAccountAdjustments = pgTable("coa_account_adjustments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  accountId: uuid("account_id").notNull(),
+  versionId: uuid("version_id").notNull(),
+  companyId: uuid("company_id"),
+  fieldChanged: text("field_changed").notNull(),
+  oldValue: jsonb("old_value"),
+  newValue: jsonb("new_value"),
+  changedBy: uuid("changed_by"),
+  changedAt: timestamp("changed_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** A snapshot of an account's classification each time it was set. */
+export const coaClassificationHistory = pgTable("coa_classification_history", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  accountId: uuid("account_id").notNull(),
+  versionId: uuid("version_id").notNull(),
+  companyId: uuid("company_id"),
+  classificationMethod: text("classification_method"),
+  hierarchySnapshot: jsonb("hierarchy_snapshot"),
+  source: text("source"),
+  createdBy: uuid("created_by"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * The standard hierarchy vocabulary — the labels an account may be filed under
+ * at each level. Reference data, not per-company.
+ */
+export const coaHierarchyLevels = pgTable("coa_hierarchy_levels", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  levelNumber: integer("level_number").notNull(),
+  statementType: text("statement_type"),
+  parentLabel: text("parent_label"),
+  label: text("label").notNull(),
+  sortOrder: integer("sort_order").notNull().default(0),
+  isStandard: boolean("is_standard").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 export const generalLedgerEntries = pgTable(
   "general_ledger_entries",
