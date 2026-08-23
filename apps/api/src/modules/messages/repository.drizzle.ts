@@ -9,6 +9,7 @@ import type {
   GroupRecord,
   MessageRecord,
   MessagesRepository,
+  ThreadCompanyRecord,
 } from "./ports.js";
 import type { GroupingMember } from "./auto-groups.js";
 
@@ -99,6 +100,50 @@ export class DrizzleMessagesRepository implements MessagesRepository {
    * row seen per counterparty. Cheaper than a query per contact, and the caller
    * only needs the latest.
    */
+  async listAccessibleCompanies(user: {
+    role: string;
+    companyIds: readonly string[];
+  }): Promise<ThreadCompanyRecord[]> {
+    const cols = {
+      id: companies.id,
+      name: companies.name,
+      industry: companies.industry,
+      logo: companies.logo,
+      contactName: companies.contactName,
+      contactEmail: companies.contactEmail,
+      status: companies.status,
+      createdAt: companies.createdAt,
+    };
+    const rows =
+      user.role === "admin"
+        ? await this.db.select(cols).from(companies).orderBy(asc(companies.name))
+        : user.companyIds.length === 0
+          ? []
+          : await this.db
+              .select(cols)
+              .from(companies)
+              .where(inArray(companies.id, [...user.companyIds]))
+              .orderBy(asc(companies.name));
+    return rows.map((r) => ({ ...r, createdAt: r.createdAt.toISOString() }));
+  }
+
+  async latestCompanyMessages(companyIds: readonly string[]): Promise<Map<string, MessageRecord>> {
+    const out = new Map<string, MessageRecord>();
+    if (companyIds.length === 0) return out;
+
+    // Newest first, then keep the first sighting per company — one query rather
+    // than one per company, which is what the thread rail costs on first paint.
+    const rows = await this.db
+      .select()
+      .from(companyMessages)
+      .where(inArray(companyMessages.companyId, [...companyIds]))
+      .orderBy(desc(companyMessages.createdAt));
+    for (const r of rows) {
+      if (!out.has(r.companyId)) out.set(r.companyId, toCompanyMsg(r));
+    }
+    return out;
+  }
+
   async latestDirectByContact(
     companyId: string,
     userId: string,

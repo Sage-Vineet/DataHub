@@ -2,13 +2,12 @@
   "generatedFrom": "apps/api/src/parity/route-surface.ts",
   "domains": {
     "companies": {
-      "compare": [
-        "GET /companies/:p/activity"
-      ],
+      "compare": [],
       "additive": [
         "DELETE /companies/:p",
         "GET /companies",
         "GET /companies/:p",
+        "GET /companies/:p/activity",
         "PATCH /companies/:p",
         "POST /companies"
       ]
@@ -80,22 +79,23 @@
       ]
     },
     "messages": {
-      "compare": [
-        "GET /companies/:p/direct-messages/:p",
-        "GET /companies/:p/direct-messages/contacts",
-        "GET /companies/:p/messages",
-        "POST /companies/:p/direct-messages/:p",
-        "POST /companies/:p/messages"
-      ],
+      "compare": [],
       "additive": [
         "DELETE /message-groups/:p/members/:p",
+        "GET /companies/:p/direct-messages/:p",
+        "GET /companies/:p/direct-messages/contacts",
         "GET /companies/:p/message-groups",
+        "GET /companies/:p/messages",
         "GET /message-groups/:p/members",
         "GET /message-groups/:p/messages",
         "GET /message-groups/:p/messages/unread-count",
+        "GET /messages/threads",
+        "GET /my-direct-contacts",
         "GET /my-groups",
+        "POST /companies/:p/direct-messages/:p",
         "POST /companies/:p/message-groups",
         "POST /companies/:p/message-groups/auto-create",
+        "POST /companies/:p/messages",
         "POST /message-groups/:p/members",
         "POST /message-groups/:p/messages",
         "POST /message-groups/:p/messages/mark-read"
@@ -111,6 +111,12 @@
         "PATCH /groups/:p",
         "POST /companies/:p/groups",
         "POST /groups/:p/members"
+      ]
+    },
+    "activity": {
+      "compare": [],
+      "additive": [
+        "GET /broker/activity"
       ]
     },
     "reports": {
@@ -144,7 +150,6 @@
     "GET /bank-reconciliation-adjustments",
     "GET /bank-reconciliation-line-items",
     "GET /bank-vs-books",
-    "GET /broker/activity",
     "GET /cim-questionnaire",
     "GET /customers",
     "GET /ebitda-adjustment-types",
@@ -200,8 +205,6 @@
     "GET /manual-upload/cashflow/periods",
     "GET /manual-upload/dashboard",
     "GET /manual-upload/sync-progress",
-    "GET /messages/threads",
-    "GET /my-direct-contacts",
     "GET /profit-and-loss",
     "GET /profit-and-loss-detail",
     "GET /profit-and-loss-statement",

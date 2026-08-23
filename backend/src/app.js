@@ -8,8 +8,6 @@ const { timingMiddleware } = require("./middleware/timing");
 const authRoutes = require("./routes/auth");
 const publicRoutes = require("./routes/public");
 const { quickBooksAuth } = require("./middleware/quickbooksAuth");
-const activityRoutes = require("./routes/activity");
-const messageRoutes = require("./routes/messages");
 const workspacePageStateRoutes = require("./routes/workspacePageState");
 const manualGlRoutes = require("./routes/manualGl");
 const manualReportUploadRoutes = require("./routes/manualReportUploads");
@@ -147,13 +145,11 @@ financialRoutes.forEach(route => {
 
 // Non-QuickBooks Routes
 //
-// companies, folders, folder-access, uploads, users, groups, requests, reminders
-// and message-groups are NOT mounted here:
+// activity, companies, folders, folder-access, uploads, users, groups, requests,
+// reminders, messages and message-groups are NOT mounted here:
 // their modules in apps/api serve every route they defined, so the gateway never
 // proxies those paths. See tools/parity/route-surface.json for what is still
 // legacy-only.
-app.use("/", activityRoutes);
-app.use("/", messageRoutes);
 
 app.use(errorHandler);
 

@@ -43,6 +43,14 @@ export function createMessagesRouter(deps: MessagesRouterDeps): Router {
   };
 
   // Company conversation.
+  router.get("/messages/threads", handle(async (req, res) => {
+    res.json(await service.threads(req.user!));
+  }));
+
+  router.get("/my-direct-contacts", handle(async (req, res) => {
+    res.json(await service.myDirectContacts(req.user!));
+  }));
+
   router.get("/companies/:companyId/messages", handle(async (req, res) => {
     res.json(await service.companyList(req.user!, req.params.companyId!));
   }));

@@ -49,6 +49,22 @@ export interface CompanyRecord {
   name: string | null;
 }
 
+/**
+ * A company as the cross-company thread list renders it. Wider than
+ * `CompanyRecord` because the thread rail shows the industry, and `createdAt` is
+ * the tiebreak for a company nobody has messaged yet.
+ */
+export interface ThreadCompanyRecord {
+  id: string;
+  name: string | null;
+  industry: string | null;
+  logo: string | null;
+  contactName: string | null;
+  contactEmail: string | null;
+  status: string | null;
+  createdAt: string;
+}
+
 export interface MessagesRepository {
   // Company conversation.
   listCompany(companyId: string): Promise<MessageRecord[]>;
@@ -62,6 +78,20 @@ export interface MessagesRepository {
    * this deal" cannot drift apart.
    */
   getCompany(companyId: string): Promise<CompanyRecord | null>;
+  /**
+   * Companies whose conversations the user may see, by name.
+   *
+   * An admin sees every company; everyone else sees the ones they are
+   * associated with. That asymmetry is legacy's and is deliberate here — the
+   * sibling `/my-direct-contacts` scopes an admin to their own companies, so the
+   * two endpoints genuinely answer different questions.
+   */
+  listAccessibleCompanies(user: {
+    role: string;
+    companyIds: readonly string[];
+  }): Promise<ThreadCompanyRecord[]>;
+  /** The most recent message in each company, keyed by company id. */
+  latestCompanyMessages(companyIds: readonly string[]): Promise<Map<string, MessageRecord>>;
   listCompanyMembers(companyId: string): Promise<DirectContactRecord[]>;
 
   /** The most recent message either way between `userId` and each of `contactIds`. */

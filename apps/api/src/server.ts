@@ -22,6 +22,7 @@ import { createUsersModule } from "./modules/users/index.js";
 import { createFoldersModule, createFolderProvisioningPort } from "./modules/folders/index.js";
 import { createUploadsModule } from "./modules/uploads/index.js";
 import { createRequestsModule } from "./modules/requests/index.js";
+import { createActivityModule } from "./modules/activity/index.js";
 import { createGroupsModule } from "./modules/groups/index.js";
 import { createMessagesModule } from "./modules/messages/index.js";
 import { createReportsModule } from "./modules/reports/index.js";
@@ -123,6 +124,7 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
     flags.REQUESTS_MODULE_ENABLED ||
     flags.MESSAGES_MODULE_ENABLED ||
     flags.GROUPS_MODULE_ENABLED ||
+    flags.ACTIVITY_MODULE_ENABLED ||
     flags.REPORTS_MODULE_ENABLED ||
     flags.QOE_MODULE_ENABLED;
   if (domainsEnabled) {
@@ -176,6 +178,12 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
     if (flags.GROUPS_MODULE_ENABLED) {
       modules.push({ path: "/", router: createGroupsModule({ db, requireAuth }).router });
       console.warn("[gateway] groups module ENABLED at the API root (buyer group routes)");
+    }
+    // The broker dashboard's cross-company feed. `/companies/:id/activity` is
+    // the companies module's; this is the aggregate one.
+    if (flags.ACTIVITY_MODULE_ENABLED) {
+      modules.push({ path: "/", router: createActivityModule({ db, requireAuth }).router });
+      console.warn("[gateway] activity module ENABLED at the API root (broker activity feed)");
     }
     if (flags.REPORTS_MODULE_ENABLED) {
       modules.push({ path: "/", router: createReportsModule({ db, requireAuth }).router });

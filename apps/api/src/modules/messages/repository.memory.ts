@@ -7,6 +7,7 @@ import type {
   GroupRecord,
   MessageRecord,
   MessagesRepository,
+  ThreadCompanyRecord,
 } from "./ports.js";
 import type { GroupingMember } from "./auto-groups.js";
 
@@ -19,7 +20,15 @@ export class InMemoryMessagesRepository implements MessagesRepository {
   private readonly reads = new Map<string, number>(); // `${groupId}:${userId}` → epoch ms
   private readonly companies = new Map<string, CompanyRecord>();
   private readonly companyMembers = new Map<string, DirectContactRecord[]>();
-  private clock = 1;
+  /**
+   * A monotonic clock, based in the present rather than at the epoch.
+   *
+   * The base matters: timestamps here are compared against ones seeded by
+   * tests, and a message dated 1970 sorts below any realistic `created_at`.
+   * That made ordering assertions fail for a reason that has nothing to do with
+   * the ordering logic.
+   */
+  private clock = Date.UTC(2024, 0, 1);
 
   private now(): string {
     return new Date(this.clock++).toISOString();
@@ -98,6 +107,44 @@ export class InMemoryMessagesRepository implements MessagesRepository {
   /** Replace the company's roster wholesale — lets a test model someone leaving. */
   setGroupingMembers(companyId: string, members: readonly GroupingMember[]): void {
     this.grouping.set(companyId, members.map((m) => ({ ...m })));
+  }
+
+  /** Extra company detail for the thread list; falls back to the seeded record. */
+  private readonly companyDetail = new Map<string, ThreadCompanyRecord>();
+
+  seedThreadCompany(company: ThreadCompanyRecord): void {
+    this.companyDetail.set(company.id, company);
+    this.companies.set(company.id, { id: company.id, name: company.name });
+  }
+
+  async listAccessibleCompanies(user: {
+    role: string;
+    companyIds: readonly string[];
+  }): Promise<ThreadCompanyRecord[]> {
+    const all = [...this.companies.values()].map(
+      (c) =>
+        this.companyDetail.get(c.id) ?? {
+          id: c.id,
+          name: c.name,
+          industry: null,
+          logo: null,
+          contactName: null,
+          contactEmail: null,
+          status: null,
+          createdAt: new Date(0).toISOString(),
+        },
+    );
+    const visible = user.role === "admin" ? all : all.filter((c) => user.companyIds.includes(c.id));
+    return visible.sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
+  }
+
+  async latestCompanyMessages(companyIds: readonly string[]): Promise<Map<string, MessageRecord>> {
+    const wanted = new Set(companyIds);
+    const out = new Map<string, MessageRecord>();
+    for (const m of [...this.company].sort((a, b) => b.createdAt.localeCompare(a.createdAt))) {
+      if (wanted.has(m.companyId) && !out.has(m.companyId)) out.set(m.companyId, m);
+    }
+    return out;
   }
 
   async listMembersForGrouping(companyId: string): Promise<GroupingMember[]> {

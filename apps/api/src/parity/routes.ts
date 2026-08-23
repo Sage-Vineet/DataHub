@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RequestHandler, Router } from "express";
 import type { Db } from "@datahub/db";
+import { createActivityModule } from "../modules/activity/index.js";
 import { createCompaniesModule } from "../modules/companies/index.js";
 import { createFoldersModule } from "../modules/folders/index.js";
 import { createGroupsModule } from "../modules/groups/index.js";
@@ -179,6 +180,7 @@ export function moduleSurfaces(): ModuleSurface[] {
     { name: "requests", mount: "/", router: createRequestsModule({ db, requireAuth }).router },
     { name: "messages", mount: "/", router: createMessagesModule({ db, requireAuth }).router },
     { name: "groups", mount: "/", router: createGroupsModule({ db, requireAuth }).router },
+    { name: "activity", mount: "/", router: createActivityModule({ db, requireAuth }).router },
     { name: "reports", mount: "/", router: createReportsModule({ db, requireAuth }).router },
   ];
 }
