@@ -222,3 +222,125 @@ describe("where it points", () => {
     );
   });
 });
+
+describe("querying for entities", () => {
+  it("posts the query as text, which is what Intuit's endpoint takes", async () => {
+    // `application/text`, not a typo for JSON: the query endpoint reads the
+    // body as the query string itself.
+    const { impl, calls } = stubFetch({});
+    await client(impl).queryEntity({
+      realmId: "realm-1",
+      accessToken: "token-1",
+      entityType: "customers",
+    });
+    const init = calls[0]!.init!;
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>)["Content-Type"]).toBe("application/text");
+    expect(String(init.body)).toContain("SELECT * FROM Customer");
+  });
+
+  it("hits the query endpoint, not the reports one", async () => {
+    const { impl, calls } = stubFetch({});
+    await client(impl).queryEntity({
+      realmId: "realm-1",
+      accessToken: "token-1",
+      entityType: "invoices",
+    });
+    expect(calls[0]!.url).toContain("/v3/company/realm-1/query");
+    expect(String(calls[0]!.init!.body)).toContain("FROM Invoice");
+  });
+
+  it("always sends MAXRESULTS", async () => {
+    // Intuit pages at 100 by default and silently truncates, so a company with
+    // 400 invoices gets 100 and nothing says the other 300 exist — figures
+    // that are simply short, with no way to notice.
+    const { impl, calls } = stubFetch({});
+    await client(impl).queryEntity({
+      realmId: "realm-1",
+      accessToken: "token-1",
+      entityType: "invoices",
+    });
+    expect(String(calls[0]!.init!.body)).toMatch(/MAXRESULTS 1000$/);
+  });
+
+  it("caps and floors what the caller asks for", async () => {
+    const { impl, calls } = stubFetch({});
+    const qb = client(impl);
+    await qb.queryEntity({
+      realmId: "r",
+      accessToken: "t",
+      entityType: "invoices",
+      startPosition: 0,
+      maxResults: 99_999,
+    });
+    expect(String(calls[0]!.init!.body)).toContain("STARTPOSITION 1 MAXRESULTS 1000");
+  });
+
+  it("adds a WHERE clause when given one", async () => {
+    const { impl, calls } = stubFetch({});
+    await client(impl).queryEntity({
+      realmId: "r",
+      accessToken: "t",
+      entityType: "invoices",
+      where: "DocNumber = 'INV-1'",
+    });
+    expect(String(calls[0]!.init!.body)).toContain("WHERE DocNumber = 'INV-1'");
+  });
+
+  it("reports the query it sent, so a surprising list can be traced", async () => {
+    const { impl } = stubFetch({});
+    const result = await client(impl).queryEntity({
+      realmId: "r",
+      accessToken: "t",
+      entityType: "customers",
+    });
+    expect(result.params.query).toContain("SELECT * FROM Customer");
+    expect(result.params.maxresults).toBe("1000");
+  });
+
+  it("classifies a rejected token the same way the report path does", async () => {
+    for (const status of [401, 403]) {
+      const { impl } = stubFetch({ status, ok: false });
+      await expect(
+        client(impl).queryEntity({ realmId: "r", accessToken: "t", entityType: "customers" }),
+      ).rejects.toBeInstanceOf(QuickBooksAuthError);
+    }
+  });
+
+  it("reports any other status with what Intuit said", async () => {
+    const { impl } = stubFetch({
+      status: 400,
+      ok: false,
+      text: () => Promise.resolve("Bad query"),
+    });
+    await expect(
+      client(impl).queryEntity({ realmId: "r", accessToken: "t", entityType: "customers" }),
+    ).rejects.toThrow(/Bad query/);
+  });
+
+  it("says so when the body is not a result at all", async () => {
+    const { impl } = stubFetch({ json: () => Promise.resolve([1, 2, 3]) });
+    await expect(
+      client(impl).queryEntity({ realmId: "r", accessToken: "t", entityType: "customers" }),
+    ).rejects.toBeInstanceOf(QuickBooksRequestError);
+  });
+
+  it("gives up rather than holding the request open", async () => {
+    const impl = vi.fn(
+      (_url: string | URL | Request, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("aborted", "AbortError"));
+          });
+        }),
+    ) as unknown as typeof fetch;
+    const impatient = new QuickBooksReportClient({
+      baseUrl: "https://qb.test",
+      fetchImpl: impl,
+      timeoutMs: 10,
+    });
+    await expect(
+      impatient.queryEntity({ realmId: "r", accessToken: "t", entityType: "customers" }),
+    ).rejects.toThrow(/abort/i);
+  });
+});

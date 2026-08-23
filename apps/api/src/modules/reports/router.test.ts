@@ -134,6 +134,14 @@ function stub(over: Record<string, unknown> = {}) {
     update: record("update", { id: VERSION }),
     duplicate: record("duplicate", { id: "copy" }),
     activate: record("activate", { id: VERSION }),
+    extractedData: record("extractedData", {
+      dataType: "profit_loss",
+      rows: [],
+      page: 1,
+      pageSize: 50,
+      total: 0,
+      totalPages: 1,
+    }),
     delete: record("delete", undefined),
     financialStatements: record("financialStatements", emptyStatements),
     profitLoss: record("profitLoss", emptyProfitLoss),
@@ -298,12 +306,41 @@ describe("what a domain error becomes on the wire", () => {
 
 describe("paths this router does not own", () => {
   it("leaves them for the proxy", async () => {
-    // The GL sync and the extracted-data read still belong to legacy
-    // (reports-domain D2). An unmatched path has to reach the proxy untouched,
-    // which is what 404-from-this-router means in isolation.
+    // The GL sync still belongs to legacy. An unmatched path has to reach the
+    // proxy untouched, which is what 404-from-this-router means in isolation.
+    //
+    // `/extracted-data` used to be listed here and no longer is: this router
+    // serves it now, and leaving the assertion would have pinned the route as
+    // absent rather than noticing it had arrived.
     const { app } = stub();
     await request(app).post(`/key-reports/versions/${VERSION}/sync`).expect(404);
-    await request(app).get(`/key-reports/versions/${VERSION}/extracted-data`).expect(404);
+  });
+});
+
+describe("the extracted-data route", () => {
+  it("passes the query through and answers the page", async () => {
+    const { app, calls } = stub();
+    const res = await request(app)
+      .get(`/key-reports/versions/${VERSION}/extracted-data?dataType=profit_loss&year=2024&page=2&pageSize=25&search=rent`)
+      .expect(200);
+    expect(res.body.success).toBe(true);
+    expect(argsOf(calls, "extractedData")[2]).toEqual({
+      dataType: "profit_loss",
+      year: 2024,
+      page: 2,
+      pageSize: 25,
+      search: "rent",
+    });
+  });
+
+  it("omits what the caller did not ask, rather than passing empty values", async () => {
+    // A `year` of NaN or a `page` of "" would otherwise reach the reader as a
+    // filter, which is a different question from "no filter".
+    const { app, calls } = stub();
+    await request(app)
+      .get(`/key-reports/versions/${VERSION}/extracted-data?dataType=profit_loss&year=soon`)
+      .expect(200);
+    expect(argsOf(calls, "extractedData")[2]).toEqual({ dataType: "profit_loss" });
   });
 });
 
