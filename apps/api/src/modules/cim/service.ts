@@ -51,8 +51,19 @@ const isBrokerSide = (user: SessionUser): boolean =>
 /** A version past review is frozen: `CM - 0001` makes a published deck immutable. */
 const isOpen = (v: VersionRecord): boolean => v.status === "draft" || v.status === "in_review";
 
-/** Empty means unanswered. A blank string is not content, it is an unfilled field. */
-function hasContent(block: BlockRecord): boolean {
+/**
+ * Is this block filled in?
+ *
+ * Empty means unanswered, and a blank string is not content — it is an
+ * unfilled field. The distinction is the whole gap list: a block counted as
+ * filled never appears on it, and the CIM goes out with a heading and nothing
+ * under it.
+ *
+ * `populatedBy === null` is checked first and separately. A block whose
+ * content was cleared keeps its text column until something overwrites it, so
+ * the provenance is what says whether anybody put it there.
+ */
+export function hasContent(block: Pick<BlockRecord, "populatedBy" | "content">): boolean {
   if (block.populatedBy === null) return false;
   const c = block.content;
   if (c === null || c === undefined) return false;
