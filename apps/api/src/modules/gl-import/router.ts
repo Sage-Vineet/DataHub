@@ -110,7 +110,13 @@ export function createGlImportRouter(deps: GlImportRouterDeps): Router {
     const companyId = companyOf(req);
     // `glUploadIds` is legacy's name; `uploadIds` reads better and both arrive.
     const raw = Array.isArray(body.glUploadIds) ? body.glUploadIds : body.uploadIds;
-    const uploadIds = (Array.isArray(raw) ? raw : []).map(String).filter(Boolean);
+    // Filtered BEFORE stringifying: `String(null)` is `"null"`, which then
+    // reaches the store as an upload id and 404s "no such upload" rather than
+    // being ignored as the absent entry it is.
+    const uploadIds = (Array.isArray(raw) ? raw : [])
+      .filter((id): id is string | number => typeof id === "string" || typeof id === "number")
+      .map(String)
+      .filter((id) => id.trim() !== "");
     const versionId = String(body.versionId ?? "");
     const startMonth = Number.parseInt(String(body.fiscalYearStartMonth ?? ""), 10);
 

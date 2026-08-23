@@ -137,6 +137,77 @@ describe("adjustments", () => {
   });
 });
 
+describe("a request with pieces missing", () => {
+  // Every one of these reaches the service with empty strings rather than
+  // `undefined`. The service owns the refusal, so one place decides what an
+  // empty cell means — but the router must not throw on the way there.
+
+  it("takes an adjustment with no body at all", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .post("/bank-reconciliation-adjustments")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "setAdjustment")[2]).toEqual({
+      month: "",
+      rowKey: "",
+      amount: undefined,
+    });
+  });
+
+  it("takes an add-back with no body at all", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .post("/bank-reconciliation-addback-items")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "createAddbackItem")[2]).toEqual({
+      section: "",
+      name: "",
+      source: undefined,
+      monthAmounts: {},
+      reportSource: "",
+    });
+  });
+
+  it("takes an amount update with no body at all", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .put("/bank-reconciliation-addback-items/item-1")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "updateAddbackItemAmounts")[3]).toEqual({});
+  });
+
+  it("ignores a source sent as anything but a string", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .post("/bank-reconciliation-addback-items")
+      .set("x-client-id", COMPANY)
+      .send({ section: "deposits", name: "Owner draw", source: 42 })
+      .expect(200);
+    expect(argsOf(calls, "createAddbackItem")[2]).toMatchObject({ source: undefined });
+  });
+
+  it("filters by nothing when the query says nothing", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .get("/bank-reconciliation-addback-items")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "listAddbackItems")[2]).toEqual({ reportSource: "" });
+  });
+
+  it("ignores a section sent as anything but a string", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .get("/bank-reconciliation-addback-items?section[]=a&section[]=b")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "listAddbackItems")[2]).toEqual({ reportSource: "" });
+  });
+});
+
 describe("add-back items", () => {
   it("passes the report source and section as a filter", async () => {
     const { app, calls } = stub();
