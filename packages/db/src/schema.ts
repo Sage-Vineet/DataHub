@@ -414,6 +414,40 @@ export const groupMessageReads = pgTable(
   (t) => ({ pk: primaryKey({ columns: [t.groupId, t.userId] }) }),
 );
 
+/**
+ * Buyer groups (groups-domain) — a company's named groups of buyer users.
+ *
+ * Distinct from `message_groups` above despite the similar name: those are
+ * conversation topics, these are membership sets used to scope who sees what.
+ * The SPA lists them per company on the portal dashboard and file explorer.
+ *
+ * There is deliberately no `updated_at`. The legacy PATCH handler wrote one, and
+ * the column has never existed on this table — so that update has always failed
+ * against this database. The column is not added back: nothing reads it.
+ */
+export const buyerGroups = pgTable("buyer_groups", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  companyId: uuid("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  description: text("description"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const buyerGroupMembers = pgTable(
+  "buyer_group_members",
+  {
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => buyerGroups.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.groupId, t.userId] }) }),
+);
 
 /** Key Report versions (reports-domain). Exactly one active version per company (partial unique). */
 export const keyReportVersions = pgTable(

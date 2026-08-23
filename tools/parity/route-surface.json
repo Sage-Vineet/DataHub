@@ -99,6 +99,18 @@
         "POST /companies/:p/message-groups"
       ]
     },
+    "groups": {
+      "compare": [
+        "DELETE /groups/:p",
+        "DELETE /groups/:p/members/:p",
+        "GET /companies/:p/groups",
+        "GET /groups/:p/members",
+        "PATCH /groups/:p",
+        "POST /companies/:p/groups",
+        "POST /groups/:p/members"
+      ],
+      "additive": []
+    },
     "reports": {
       "compare": [
         "DELETE /key-reports/versions/:p",
@@ -116,8 +128,6 @@
     "DELETE /:p",
     "DELETE /bank-reconciliation-addback-items/:p",
     "DELETE /ebitda-adjustments/:p",
-    "DELETE /groups/:p",
-    "DELETE /groups/:p/members/:p",
     "DELETE /key-reports/mappings/:p",
     "DELETE /reminders/:p",
     "DELETE /workspace-page-state/:p",
@@ -136,14 +146,12 @@
     "GET /bank-vs-books",
     "GET /broker/activity",
     "GET /cim-questionnaire",
-    "GET /companies/:p/groups",
     "GET /companies/test",
     "GET /customers",
     "GET /ebitda-adjustment-types",
     "GET /ebitda-adjustments",
     "GET /extract-bank-pdf-records",
     "GET /general-ledger",
-    "GET /groups/:p/members",
     "GET /invoices",
     "GET /invoices/doc/:p",
     "GET /key-reports/file-references",
@@ -237,7 +245,6 @@
     "GET /tax-data",
     "GET /workspace-page-state/:p",
     "PATCH /:p",
-    "PATCH /groups/:p",
     "PATCH /key-reports/chart-of-accounts/:p",
     "PATCH /reminders/:p",
     "POST /api/auth/transfer-confirm",
@@ -253,7 +260,6 @@
     "POST /bank-reconciliation-adjustments",
     "POST /bank-transactions",
     "POST /companies/:p/folders/cleanup",
-    "POST /companies/:p/groups",
     "POST /companies/:p/message-groups/auto-create",
     "POST /companies/:p/reminders",
     "POST /customers",
@@ -261,7 +267,6 @@
     "POST /ebitda-adjustments/:p/comments",
     "POST /ebitda-adjustments/batch",
     "POST /ebitda/generate-comments",
-    "POST /groups/:p/members",
     "POST /key-reports/chart-of-accounts/:p/reset",
     "POST /key-reports/versions/:p/chart-of-accounts/regenerate",
     "POST /key-reports/versions/:p/chart-of-accounts/reset",
