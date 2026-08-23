@@ -609,3 +609,84 @@ describe("tenant isolation", () => {
     expect(emitted).toContain("qa.item.created");
   });
 });
+
+describe("who may be put on a question", () => {
+  it("refuses a nominee who is not on the deal", async () => {
+    // The nominee list decides who gets chased for an answer; naming an
+    // outsider would make them accountable for a deal they cannot see.
+    const cat = await categoryId("finance");
+    await expect(
+      service.replaceNominees(broker, CO, cat, { user_ids: [outsider.id] }),
+    ).rejects.toThrow(/on this deal/i);
+  });
+
+  it("refuses a nomination aimed at a deal the caller is not on", async () => {
+    // Access is checked before the category is even resolved, so a category id
+    // borrowed from another tenant is refused at the door rather than 404ing —
+    // which also means the response says nothing about whether it exists.
+    const cat = await categoryId("finance");
+    await expect(
+      service.replaceNominees(broker, OTHER_CO, cat, { user_ids: [broker.id] }),
+    ).rejects.toThrow(/access to this deal/i);
+  });
+
+  it("refuses a requestee who is not on the deal", async () => {
+    await expect(ask({ requestee_ids: [outsider.id] })).rejects.toThrow(/on this deal/i);
+  });
+
+  it("rejects a category from another deal when asking", async () => {
+    const cat = await categoryId("finance");
+    const service2 = service;
+    await expect(
+      service2.createItem(broker, OTHER_CO, {
+        title: "Cross-tenant",
+        body: "x",
+        priority: "medium",
+        category_id: cat,
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("falls back to the category's nominees when no requestee is named", async () => {
+    // The point of nominating: a question filed under a category lands on
+    // whoever owns it, without the asker choosing each time.
+    const cat = await categoryId("finance");
+    await service.replaceNominees(broker, CO, cat, { user_ids: [cfo.id] });
+
+    const item = await ask({ category_id: cat });
+    expect(item.assignees.map((a) => a.user_id)).toContain(cfo.id);
+  });
+});
+
+describe("editing a question", () => {
+  it("applies only the fields present in the patch", async () => {
+    const item = await ask();
+    const updated = await service.updateItem(broker, item.id, { title: "Reworded" });
+
+    expect(updated.title).toBe("Reworded");
+    // Everything unnamed is untouched, rather than reset to a default.
+    expect(updated.body).toBe("Revenue moved 18% — why?");
+    expect(updated.priority).toBe("medium");
+  });
+
+  it("can change priority, status and due date", async () => {
+    const item = await ask();
+    const updated = await service.updateItem(broker, item.id, {
+      priority: "high",
+      status: "answered",
+      due_date: "2099-01-01",
+    });
+    expect(updated).toMatchObject({ priority: "high", status: "answered" });
+  });
+
+  it("404s a question that does not exist", async () => {
+    await expect(
+      service.updateItem(broker, "11111111-0000-4000-8000-000000000000", { title: "x" }),
+    ).rejects.toThrow(/not found/i);
+  });
+
+  it("refuses an edit from someone outside the deal", async () => {
+    const item = await ask();
+    await expect(service.updateItem(outsider, item.id, { title: "x" })).rejects.toThrow();
+  });
+});

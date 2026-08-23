@@ -5,7 +5,7 @@ import { users as contracts, type SessionUser } from "@datahub/contracts";
 import { BadRequestError, ForbiddenError } from "../../shared/errors.js";
 import { NoopAuthCachePort } from "./adapters.js";
 import { InMemoryUsersRepository } from "./repository.memory.js";
-import { UsersService } from "./service.js";
+import { isBcryptHash, UsersService } from "./service.js";
 import type { EmailerPort, NotificationPort } from "./ports.js";
 
 class SpyEmailer implements EmailerPort {
@@ -197,5 +197,143 @@ describe("UsersService — membership + broker-team", () => {
 
     const buyer = repo.seedUser({ id: randomUUID(), email: "nb@x.com", role: "buyer" });
     await expect(service.inviteBrokerToTeam(broker, buyer.id)).rejects.toBeInstanceOf(BadRequestError);
+  });
+});
+
+describe("UsersService — finding by email", () => {
+  it("finds a user the viewer may see", async () => {
+    const { repo, service } = makeService();
+    const brokerId = randomUUID();
+    repo.seedUser({ id: brokerId, email: "broker@x.com", role: "broker", companyId: COMPANY_A });
+    repo.seedUser({ id: randomUUID(), email: "client@x.com", role: "buyer", companyId: COMPANY_A });
+
+    const found = await service.findByEmail(
+      session({ id: brokerId, role: "broker", company_ids: [COMPANY_A] }),
+      "client@x.com",
+    );
+    expect(found?.email).toBe("client@x.com");
+  });
+
+  it("matches regardless of case or surrounding space", async () => {
+    // The address is typed by a person, into a search box.
+    const { repo, service } = makeService();
+    repo.seedUser({ id: randomUUID(), email: "client@x.com", role: "buyer", companyId: COMPANY_A });
+    const admin = session({ role: "admin" });
+
+    expect((await service.findByEmail(admin, "  CLIENT@X.COM "))?.email).toBe("client@x.com");
+  });
+
+  it("returns null for an address nobody has, rather than throwing", async () => {
+    // A miss is an answer; the caller renders "no match".
+    const { service } = makeService();
+    expect(await service.findByEmail(session({ role: "admin" }), "nobody@x.com")).toBeNull();
+  });
+
+  it("refuses to confirm a user the viewer may not see", async () => {
+    // Otherwise the endpoint is a directory of every account in the system.
+    const { repo, service } = makeService();
+    repo.seedUser({ id: randomUUID(), email: "elsewhere@x.com", role: "buyer", companyId: COMPANY_B });
+    const outsider = session({ role: "buyer", company_ids: [COMPANY_A] });
+
+    await expect(service.findByEmail(outsider, "elsewhere@x.com")).rejects.toThrow(ForbiddenError);
+  });
+});
+
+describe("UsersService — the broker team", () => {
+  it("invites another broker", async () => {
+    const { repo, service } = makeService();
+    const brokerId = randomUUID();
+    repo.seedUser({ id: brokerId, email: "broker@x.com", role: "broker" });
+    const friend = repo.seedUser({ id: randomUUID(), email: "friend@x.com", role: "broker" });
+
+    await service.inviteBrokerToTeam(session({ id: brokerId, role: "broker" }), friend.id);
+
+    // The invitation is what makes them mutually visible.
+    const seen = (await service.list(session({ id: brokerId, role: "broker" }))).map((u) => u.id);
+    expect(seen).toContain(friend.id);
+  });
+
+  it("refuses to invite somebody who is not a broker account", async () => {
+    // A client on a broker's team would see every deal the broker sees.
+    const { repo, service } = makeService();
+    const brokerId = randomUUID();
+    repo.seedUser({ id: brokerId, email: "broker@x.com", role: "broker" });
+    const client = repo.seedUser({ id: randomUUID(), email: "client@x.com", role: "buyer" });
+
+    await expect(
+      service.inviteBrokerToTeam(session({ id: brokerId, role: "broker" }), client.id),
+    ).rejects.toThrow(BadRequestError);
+  });
+
+  it("404s an invitation to somebody who does not exist", async () => {
+    const { service } = makeService();
+    await expect(
+      service.inviteBrokerToTeam(session({ role: "broker" }), randomUUID()),
+    ).rejects.toThrow(/not found/i);
+  });
+
+  it("lets only a broker or admin manage the team", async () => {
+    const { repo, service } = makeService();
+    const friend = repo.seedUser({ id: randomUUID(), email: "friend@x.com", role: "broker" });
+    const client = session({ role: "buyer" });
+
+    await expect(service.inviteBrokerToTeam(client, friend.id)).rejects.toThrow(ForbiddenError);
+    await expect(service.removeBrokerFromTeam(client, friend.id)).rejects.toThrow(ForbiddenError);
+  });
+
+  it("removes a broker from the team, and they stop being visible", async () => {
+    const { repo, service } = makeService();
+    const brokerId = randomUUID();
+    repo.seedUser({ id: brokerId, email: "broker@x.com", role: "broker" });
+    const friend = repo.seedUser({ id: randomUUID(), email: "friend@x.com", role: "broker" });
+    const actor = session({ id: brokerId, role: "broker" });
+
+    await service.inviteBrokerToTeam(actor, friend.id);
+    await service.removeBrokerFromTeam(actor, friend.id);
+
+    expect((await service.list(actor)).map((u) => u.id)).not.toContain(friend.id);
+  });
+});
+
+describe("UsersService — company assignment", () => {
+  it("revokes a granted company, leaving the primary one alone", async () => {
+    // `users.company_id` is an assignment in its own right and survives a link
+    // being revoked — so the grant under test is the `user_companies` one.
+    const { repo, service } = makeService();
+    const client = repo.seedUser({ id: randomUUID(), email: "c@x.com", role: "buyer", companyId: COMPANY_A });
+    const admin = session({ role: "admin" });
+
+    const granted = await service.addCompanies(admin, client.id, [COMPANY_B]);
+    expect(granted.assigned_companies?.map((c) => c.id) ?? []).toContain(COMPANY_B);
+
+    const after = await service.removeCompanies(admin, client.id, [COMPANY_B]);
+    const ids = after.assigned_companies?.map((c) => c.id) ?? [];
+    expect(ids).not.toContain(COMPANY_B);
+    expect(ids).toContain(COMPANY_A);
+  });
+
+  it("lets a broker revoke only companies they are on themselves", async () => {
+    const { repo, service } = makeService();
+    const brokerId = randomUUID();
+    repo.seedUser({ id: brokerId, email: "broker@x.com", role: "broker", companyId: COMPANY_A });
+    const client = repo.seedUser({ id: randomUUID(), email: "c@x.com", role: "buyer", companyId: COMPANY_A });
+    const broker = session({ id: brokerId, role: "broker", company_ids: [COMPANY_A] });
+
+    await expect(service.removeCompanies(broker, client.id, [COMPANY_B])).rejects.toThrow(
+      ForbiddenError,
+    );
+    await expect(service.removeCompanies(broker, client.id, [COMPANY_A])).resolves.toBeTruthy();
+  });
+});
+
+describe("isBcryptHash", () => {
+  it("recognises a real bcrypt hash and rejects anything else", async () => {
+    // The guard that stops a plaintext or differently-hashed password being
+    // treated as a valid credential.
+    const real = await bcrypt.hash("correct1horse", 10);
+    expect(isBcryptHash(real)).toBe(true);
+    for (const bad of ["", "plaintext", "!", "$2z$10$notreal", "md5:abc"]) {
+      expect(isBcryptHash(bad)).toBe(false);
+    }
   });
 });

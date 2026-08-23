@@ -38,11 +38,18 @@ export default defineConfig({
         "src/modules/**/emailer.ts", // dev console stub (the real Graph adapter IS tested)
         "src/modules/**/better-test-harness.ts", // test-only harness (PGlite wiring)
       ],
+      /**
+       * A ratchet at what the suite actually reaches, not an aspiration.
+       *
+       * Raise these when you add tests; the only thing they forbid is going
+       * backwards. They were 80/80/70 while the real figure was 92 — a gate
+       * eleven points below the truth cannot fail, so it was not a gate.
+       */
       thresholds: {
-        lines: 80,
-        functions: 80,
-        branches: 70,
-        statements: 80,
+        lines: 95,
+        functions: 92,
+        branches: 85,
+        statements: 95,
       },
     },
   },
