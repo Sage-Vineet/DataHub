@@ -4,6 +4,7 @@ import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { BadRequestError, ForbiddenError, NotFoundError } from "../../shared/errors.js";
 import type { CashFlowService } from "./cash-flow.js";
+import type { DashboardService } from "./dashboard.js";
 import { createStatementsRouter } from "./router.js";
 import type { StatementsService } from "./service.js";
 
@@ -75,8 +76,20 @@ function stub(over: Record<string, unknown> = {}) {
     ...(over.cashFlow as object | undefined),
   } as unknown as CashFlowService;
 
+  const dashboard = {
+    build: record("build", {
+      years: ["All Files"],
+      reports: {},
+      allFiles: { kpis: {} },
+      trends: [],
+    }),
+    ...(over.dashboard as object | undefined),
+  } as unknown as DashboardService;
+
   const app = express();
-  app.use(createStatementsRouter({ service, cashFlow, requireAuth: authAs("caller-1") }));
+  app.use(
+    createStatementsRouter({ service, cashFlow, dashboard, requireAuth: authAs("caller-1") }),
+  );
   return { app, calls };
 }
 
@@ -274,8 +287,60 @@ describe("the source tree", () => {
 
 describe("paths this router does not own", () => {
   it("leaves them for the proxy", async () => {
+    // An unmatched path has to reach the proxy untouched, which is what
+    // 404-from-this-router means in isolation.
+    //
+    // `qms-dashboard` used to be listed here and no longer is: this router
+    // serves it now, and leaving the assertion would have pinned the route as
+    // absent rather than noticing it had arrived.
     const { app } = stub();
-    await request(app).get("/manual-report-uploads/qms-dashboard").expect(404);
     await request(app).get("/manual-report-uploads/tax-data").expect(404);
+  });
+});
+
+describe("the dashboards", () => {
+  it("serves each source under its own path", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .get("/manual-report-uploads/qms-dashboard")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "build")[2]).toBe("quickbooks_manual");
+
+    await request(app)
+      .get("/manual-report-uploads/manual-upload-dashboard")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "build")[2]).toBe("manual_upload_excel_pdf");
+  });
+
+  it("accepts the source name the page sends", async () => {
+    const { app } = stub();
+    await request(app)
+      .get("/manual-report-uploads/qms-dashboard?source=quickbooks_manual")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    await request(app)
+      .get("/manual-report-uploads/manual-upload-dashboard?source=manual_upload")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+  });
+
+  it("refuses a source belonging to the other dashboard", async () => {
+    // The page sends which dashboard it thinks it is showing. Serving one
+    // source's figures under another's heading is what this catches.
+    const { app } = stub();
+    await request(app)
+      .get("/manual-report-uploads/qms-dashboard?source=manual_upload")
+      .set("x-client-id", COMPANY)
+      .expect(400);
+  });
+
+  it("answers without a source, because the page does not always send one", async () => {
+    const { app } = stub();
+    await request(app)
+      .get("/manual-report-uploads/manual-upload-dashboard")
+      .set("x-client-id", COMPANY)
+      .expect(200);
   });
 });

@@ -7,11 +7,13 @@ import { REPORT_SOURCE_KEYS } from "../report-sources/ports.js";
 import { withCommonMiddleware } from "../../shared/router.js";
 import type { StatementExtract } from "./ports.js";
 import { MissingCashFlowInputsError, type CashFlowService } from "./cash-flow.js";
+import type { DashboardService } from "./dashboard.js";
 import type { StatementsService } from "./service.js";
 
 export interface StatementsRouterDeps {
   service: StatementsService;
   cashFlow: CashFlowService;
+  dashboard: DashboardService;
   requireAuth: RequestHandler;
 }
 
@@ -27,7 +29,7 @@ export interface StatementsRouterDeps {
  * it was read out of.
  */
 export function createStatementsRouter(deps: StatementsRouterDeps): Router {
-  const { service, cashFlow, requireAuth } = deps;
+  const { service, cashFlow, dashboard, requireAuth } = deps;
   const router = express.Router();
   withCommonMiddleware(router, [helmet(), pinoHttp(), express.json(), requireAuth]);
 
@@ -215,7 +217,45 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
     res.json({ success: true, source: "manual_upload_generated", ...statement });
   }));
 
+  /**
+   * A source's landing dashboard.
+   *
+   * Derived on the request. Legacy kept it in a five-minute in-process map, so
+   * uploading a corrected statement left the old figures on screen for up to
+   * five minutes, two gateway instances disagreed with each other, and nothing
+   * invalidated it on write — the timer was the only thing that cleared it.
+   * The inputs are a handful of rows and the derivation is arithmetic.
+   *
+   * `source` is validated rather than ignored: the page sends which dashboard
+   * it thinks it is showing, and serving one source's figures under another's
+   * heading is the failure the check exists to catch.
+   */
+  const dashboardFor = (sourceKey: string, accepted: readonly string[], label: string) =>
+    handle(async (req: Request, res: Response) => {
+      const requested = str(req.query.source);
+      if (requested !== undefined && !accepted.includes(requested)) {
+        res.status(400).json({ success: false, message: "Invalid dashboard source" });
+        return;
+      }
+      const built = await dashboard.build(req.user!, companyOf(req), sourceKey);
+      res.json({ success: true, source: label, ...built });
+    });
+
   const QMS = REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
+
+  router.get(
+    "/manual-report-uploads/qms-dashboard",
+    dashboardFor(QMS, ["quickbooks_manual"], "quickbooks_manual"),
+  );
+
+  router.get(
+    "/manual-report-uploads/manual-upload-dashboard",
+    dashboardFor(
+      MANUAL,
+      ["manual_upload_excel_pdf", "manual_upload"],
+      "manual_upload_excel_pdf",
+    ),
+  );
 
   router.get("/manual-report-uploads/qms-reports/:statementType/all", listFiles(QMS));
 

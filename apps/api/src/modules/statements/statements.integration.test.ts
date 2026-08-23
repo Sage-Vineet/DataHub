@@ -536,6 +536,140 @@ describe("statement extracts (real Postgres)", () => {
     }
   });
 
+  it("builds a dashboard with a card per year", async () => {
+    const bs2023 = await addDocument("BS 2023.pdf");
+    const bs2024 = await addDocument("BS 2024.pdf");
+    const pl2024 = await addDocument("PL 2024.pdf");
+
+    const rows = (revenue: number) => ({
+      rows: [
+        { name: "Total Income", amount: revenue },
+        { name: "Total Expenses", amount: 80 },
+        { name: "Net Income", amount: revenue - 80 },
+      ],
+    });
+
+    await save(bs2023, { asOfDate: "2023-12-31", payload: { rows: [{ name: "Total Assets", amount: 900 }] } });
+    await save(bs2024, { asOfDate: "2024-12-31", payload: { rows: [{ name: "Total Assets", amount: 1000 }] } });
+    await service.save(current, companyId, {
+      provenance: { from: "document", documentId: pl2024 },
+      statementType: "profit_and_loss",
+      periodEnd: "2024-12-31",
+      payload: rows(500),
+    });
+
+    const res = await request(app)
+      .get("/manual-report-uploads/manual-upload-dashboard")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+
+    expect(res.body.years).toEqual(["All Files", "2024", "2023"]);
+    expect(res.body.reports["2024"].kpis.totalAssets).toBe(1000);
+    expect(res.body.reports["2024"].kpis.totalRevenue).toBe(500);
+    expect(res.body.reports["2024"].balanceSheet.fileName).toBe("BS 2024.pdf");
+  });
+
+  it("names what is missing for a year rather than counting it", () => {
+    // "Balance Sheet missing for 2023" tells somebody which file to upload;
+    // "2 warnings" does not.
+    return (async () => {
+      const bs = await addDocument("BS 2023.pdf");
+      await save(bs, { asOfDate: "2023-12-31" });
+
+      const res = await request(app)
+        .get("/manual-report-uploads/manual-upload-dashboard")
+        .set("X-Client-Id", companyId)
+        .expect(200);
+      expect(res.body.reports["2023"].warnings).toEqual(["Profit & Loss missing for 2023"]);
+    })();
+  });
+
+  it("draws the trend oldest first", async () => {
+    for (const year of [2022, 2024, 2023]) {
+      const doc = await addDocument(`PL ${year}.pdf`);
+      await service.save(current, companyId, {
+        provenance: { from: "document", documentId: doc },
+        statementType: "profit_and_loss",
+        periodEnd: `${year}-12-31`,
+        payload: { rows: [{ name: "Total Income", amount: year }] },
+      });
+    }
+
+    const res = await request(app)
+      .get("/manual-report-uploads/manual-upload-dashboard")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(res.body.trends.map((t: { year: string }) => t.year)).toEqual(["2022", "2023", "2024"]);
+  });
+
+  it("uses the most recently extracted statement when a year has several", async () => {
+    // A corrected re-upload should win over the file it corrects, and
+    // extraction time is the only ordering that says so — the period is the
+    // same for both.
+    const first = await addDocument("BS 2024 v1.pdf");
+    const second = await addDocument("BS 2024 v2.pdf");
+    await save(first, { asOfDate: "2024-12-31", payload: { rows: [{ name: "Total Assets", amount: 1 }] } });
+    await save(second, { asOfDate: "2024-12-31", payload: { rows: [{ name: "Total Assets", amount: 2 }] } });
+
+    const res = await request(app)
+      .get("/manual-report-uploads/manual-upload-dashboard")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(res.body.reports["2024"].kpis.totalAssets).toBe(2);
+    expect(res.body.reports["2024"].balanceSheet.fileName).toBe("BS 2024 v2.pdf");
+  });
+
+  it("keeps one source's dashboard off another's", async () => {
+    const manual = await addDocument("Manual BS.pdf");
+    const qms = await addDocument("QMS BS.pdf");
+    await save(manual, { asOfDate: "2024-12-31", payload: { rows: [{ name: "Total Assets", amount: 111 }] } });
+    await save(qms, {
+      asOfDate: "2024-12-31",
+      sourceKey: "quickbooks_manual",
+      payload: { rows: [{ name: "Total Assets", amount: 999 }] },
+    });
+
+    const manualRes = await request(app)
+      .get("/manual-report-uploads/manual-upload-dashboard")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(manualRes.body.reports["2024"].kpis.totalAssets).toBe(111);
+
+    const qmsRes = await request(app)
+      .get("/manual-report-uploads/qms-dashboard?source=quickbooks_manual")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(qmsRes.body.reports["2024"].kpis.totalAssets).toBe(999);
+  });
+
+  it("refuses a source that is not this dashboard's", async () => {
+    // The page sends which dashboard it thinks it is showing. Serving one
+    // source's figures under another's heading is what this catches.
+    await request(app)
+      .get("/manual-report-uploads/qms-dashboard?source=manual_upload")
+      .set("X-Client-Id", companyId)
+      .expect(400);
+  });
+
+  it("shows a company with nothing uploaded an empty dashboard", async () => {
+    const res = await request(app)
+      .get("/manual-report-uploads/manual-upload-dashboard")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(res.body.years).toEqual(["All Files"]);
+    expect(res.body.allFiles.warnings).toEqual([
+      "No Balance Sheet files found",
+      "No Profit & Loss files found",
+    ]);
+  });
+
+  it("403s a company the caller cannot reach", async () => {
+    await request(app)
+      .get("/manual-report-uploads/manual-upload-dashboard")
+      .set("X-Client-Id", "11111111-1111-4111-8111-111111111111")
+      .expect(403);
+  });
+
   it("builds a tree that reaches the document and folder names", async () => {
     const documentId = await addDocument("BS 2024.pdf");
     await save(documentId);

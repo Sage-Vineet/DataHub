@@ -66,6 +66,8 @@
   "GET /manual-gl/upload-jobs/:p",
   "GET /manual-gl/validation/balance-sheet",
   "GET /manual-report-uploads/folder-files",
+  "GET /manual-report-uploads/manual-upload-dashboard",
+  "GET /manual-report-uploads/qms-dashboard",
   "GET /manual-report-uploads/qms-reports/:p/all",
   "GET /manual-report-uploads/qms-reports/:p/latest",
   "GET /manual-report-uploads/qms-source-tree",
