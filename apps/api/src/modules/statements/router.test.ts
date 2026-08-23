@@ -66,6 +66,13 @@ function stub(over: Record<string, unknown> = {}) {
 
   const service = {
     resolve: record("resolve", EXTRACT_ROW),
+    latestOrNull: record("latestOrNull", {
+      ...EXTRACT_ROW,
+      statementType: "bank_reconciliation",
+      documentId: null,
+      reportParams: { accountingMethod: "Cash" },
+      payload: { accounts: [], months: [] },
+    }),
     list: record("list", [EXTRACT_ROW]),
     sourceTree: record("sourceTree", [
       { documentId: DOCUMENT, documentName: "BS 2024.pdf", statements: [] },
@@ -432,6 +439,100 @@ describe("syncing a source", () => {
     await post(app, "/manual-report-uploads/qms-parse-documents", {
       documents: [{ documentId: DOCUMENT, statementType: "balance_sheet" }],
     }).expect(503);
+  });
+});
+
+describe("requests with pieces missing", () => {
+  // These reach the service with empty strings rather than `undefined`, so one
+  // place decides what a missing value means. The router must not throw on the
+  // way there.
+
+  it("takes a sync with no body at all", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .post("/manual-report-uploads/sync-source")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "syncSource")[3]).toEqual({});
+  });
+
+  it("400s a parse with a body that is not an object", async () => {
+    const { app } = stub();
+    await request(app)
+      .post("/manual-report-uploads/qms-parse-documents")
+      .set("x-client-id", COMPANY)
+      .expect(400);
+  });
+
+  it("lower-cases the statement type, so the path is not case-sensitive", async () => {
+    // The SPA builds these paths from labels. "Balance_Sheet" and
+    // "balance_sheet" are the same statement, and 404ing one of them reads as
+    // a company with no balance sheet.
+    const { app, calls } = stub();
+    await request(app)
+      .get("/manual-report-uploads/reports/BALANCE_SHEET/latest")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "resolve")[2]).toBe("balance_sheet");
+  });
+
+  it("lower-cases it on the listing too", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .get("/manual-report-uploads/reports/Profit_And_Loss/all")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "list")[2]).toBe("profit_and_loss");
+  });
+
+  it("answers the saved reconciliation, naming its range and basis", async () => {
+    const { app } = stub();
+    const res = await request(app)
+      .get("/qb-bank-activity/saved")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(res.body).toMatchObject({ found: true, accountingMethod: "Cash" });
+  });
+
+  it("says so plainly when nothing has been saved", async () => {
+    // The page calls this on load to restore what it can WITHOUT a live
+    // QuickBooks connection. A 404 there reads as an error rather than as
+    // "nothing saved yet".
+    const { app } = stub({ latestOrNull: () => Promise.resolve(null) });
+    const res = await request(app)
+      .get("/qb-bank-activity/saved")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(res.body).toEqual({ found: false });
+  });
+
+  it("defaults the accounting method rather than answering undefined", async () => {
+    const { app } = stub({
+      latestOrNull: () => Promise.resolve({ ...EXTRACT_ROW, reportParams: {}, documentId: null }),
+    });
+    const res = await request(app)
+      .get("/qb-bank-activity/saved")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(res.body.accountingMethod).toBe("Accrual");
+  });
+
+  it("narrows the saved reconciliation by source when one is asked for", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .get("/qb-bank-activity/saved?sourceKey=quickbooks_manual")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "latestOrNull")[3]).toMatchObject({
+      provenance: "pull",
+      sourceKey: "quickbooks_manual",
+    });
+  });
+
+  it("passes an empty company on, for the service to refuse", async () => {
+    const { app, calls } = stub();
+    await request(app).get("/manual-report-uploads/reports/balance_sheet/latest").expect(200);
+    expect(argsOf(calls, "resolve")[1]).toBe("");
   });
 });
 

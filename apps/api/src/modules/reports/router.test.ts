@@ -22,6 +22,7 @@ import type { ReportsService } from "./service.js";
 
 const VERSION = "vvvvvvvv-vvvv-4vvv-8vvv-vvvvvvvvvvvv";
 const COMPANY = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const DOCUMENT = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 
 const authAs = (id: string): RequestHandler => (req, _res, next) => {
   req.user = {
@@ -236,6 +237,95 @@ describe("versions", () => {
     const { app, calls } = stub();
     await request(app).delete(`/key-reports/versions/${VERSION}`).expect(204);
     expect(argsOf(calls, "delete")[1]).toBe(VERSION);
+  });
+
+  it("takes camelCase as well as snake_case on create and update", async () => {
+    // The SPA sends `versionName` from one screen and `version_name` from
+    // another. Normalised at the boundary rather than widened in the contract,
+    // so the internal shape stays one thing.
+    const { app, calls } = stub();
+    await request(app)
+      .post("/key-reports/versions")
+      .send({ companyId: COMPANY, versionName: "Q3 close" })
+      .expect(201);
+    expect(argsOf(calls, "create")[1]).toMatchObject({
+      company_id: COMPANY,
+      version_name: "Q3 close",
+    });
+
+    const { app: put, calls: putCalls } = stub();
+    await request(put)
+      .put(`/key-reports/versions/${VERSION}`)
+      .send({ versionName: "Renamed" })
+      .expect(200);
+    expect(argsOf(putCalls, "update")[2]).toMatchObject({ version_name: "Renamed" });
+  });
+
+  it("400s a create with no company anywhere, naming the field", async () => {
+    const { app, calls } = stub();
+    const res = await request(app).post("/key-reports/versions").send({}).expect(400);
+    expect(String(res.body.error)).toMatch(/company_id/);
+    expect(calls.map((c) => c.method)).not.toContain("create");
+  });
+
+  it("400s an update the contract rejects", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .put(`/key-reports/versions/${VERSION}`)
+      .send({ status: "whatever" })
+      .expect(400);
+    expect(calls.map((c) => c.method)).not.toContain("update");
+  });
+});
+
+describe("linking documents to a version", () => {
+  it("takes one document or a list of them", async () => {
+    // One screen links a single file and another links a multi-select. Reading
+    // only one of the two silently links nothing.
+    const { app, calls } = stub();
+    await request(app)
+      .post(`/key-reports/versions/${VERSION}/mappings`)
+      .send({ reportCategory: "balance_sheet", documentId: DOCUMENT })
+      .expect(201);
+    expect(argsOf(calls, "linkMappings")[2]).toMatchObject({ documentIds: [DOCUMENT] });
+
+    const { app: many, calls: manyCalls } = stub();
+    await request(many)
+      .post(`/key-reports/versions/${VERSION}/mappings`)
+      .send({ reportCategory: "balance_sheet", documentIds: [DOCUMENT, "second"] })
+      .expect(201);
+    expect(argsOf(manyCalls, "linkMappings")[2]).toMatchObject({
+      documentIds: [DOCUMENT, "second"],
+    });
+  });
+
+  it("passes an empty category and no documents on, for the service to refuse", async () => {
+    const { app, calls } = stub();
+    await request(app).post(`/key-reports/versions/${VERSION}/mappings`).expect(201);
+    expect(argsOf(calls, "linkMappings")[2]).toEqual({ reportCategory: "", documentIds: [] });
+  });
+});
+
+describe("the popup preference", () => {
+  it("takes the string a form sends as well as the boolean", async () => {
+    const { app, calls } = stub();
+    await request(app).put("/key-reports/popup-preference").send({ dismissed: "true" }).expect(200);
+    expect(argsOf(calls, "setPopupDismissed")[1]).toBe(true);
+  });
+
+  it("treats anything else as not dismissed rather than as an error", async () => {
+    // The worst outcome of a bad body here is a popup shown once more.
+    for (const dismissed of [false, "yes", 1, null, undefined]) {
+      const { app, calls } = stub();
+      await request(app).put("/key-reports/popup-preference").send({ dismissed }).expect(200);
+      expect(argsOf(calls, "setPopupDismissed")[1]).toBe(false);
+    }
+  });
+
+  it("takes a request with no body at all", async () => {
+    const { app, calls } = stub();
+    await request(app).put("/key-reports/popup-preference").expect(200);
+    expect(argsOf(calls, "setPopupDismissed")[1]).toBe(false);
   });
 });
 
