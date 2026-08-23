@@ -428,7 +428,15 @@ export function detectMapping(input: {
     }
     if (bestColumn && bestScore >= 0.6) {
       detected.split_amount = bestColumn;
-      confidence.split_amount = Math.min(1, bestScore);
+      // Deliberately below the confidence threshold, whatever the score.
+      //
+      // This column was chosen because NOTHING matched — not its header, not
+      // the both-signs shape a signed amount column has. Reporting that as
+      // `min(1, bestScore)` gave it 1.0, the highest confidence in the system,
+      // so `canAutoProcess` came back true and the import ran on a guess
+      // without anybody looking at it. The comment above has always said
+      // "a flagged guess"; this is what makes it one.
+      confidence.split_amount = round3(CONFIDENCE_THRESHOLD - 0.01);
       sources.split_amount = "auto-value";
     }
   }

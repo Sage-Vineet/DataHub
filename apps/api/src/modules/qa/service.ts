@@ -349,7 +349,19 @@ export class QaService {
     itemId: string,
     patch: ItemUpdate,
   ): Promise<ItemResponse> {
-    await this.requireItem(user, itemId);
+    const existing = await this.requireItem(user, itemId);
+
+    // The same check `createItem` makes. Without it an EDIT could file a
+    // question under a category belonging to a different deal — the id would
+    // be stored, the label would not resolve, and the question would sit under
+    // a heading its own deal cannot see.
+    if (patch.category_id) {
+      const category = await this.deps.categories.getById(patch.category_id);
+      if (!category || category.companyId !== existing.companyId) {
+        throw new BadRequestError("That category does not belong to this deal.");
+      }
+    }
+
     const updated = await this.deps.items.update(itemId, {
       ...(patch.title !== undefined ? { title: patch.title } : {}),
       ...(patch.body !== undefined ? { body: patch.body } : {}),

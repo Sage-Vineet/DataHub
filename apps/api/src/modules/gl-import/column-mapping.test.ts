@@ -5,6 +5,7 @@ import {
   emptyMapping,
   headerScore,
   looksLikeDate,
+  valueScore,
   parseAmount,
   profileColumn,
   validateMapping,
@@ -48,6 +49,22 @@ describe("reading a cell", () => {
     for (const value of ["", "   ", null, undefined, "n/a"]) {
       expect(looksLikeDate(value)).toBe(false);
     }
+  });
+
+  it("takes a Date the spreadsheet reader already parsed", () => {
+    // `xlsx` hands back real Dates for date-formatted cells, so the common
+    // case never reaches the string parsing at all.
+    expect(looksLikeDate(new Date("2024-01-15"))).toBe(true);
+    expect(looksLikeDate(new Date("not a date"))).toBe(false);
+  });
+
+  it("declines a word with no separator and no letters to go on", () => {
+    expect(looksLikeDate("____")).toBe(false);
+  });
+
+  it("declines a number that is not finite", () => {
+    expect(parseAmount(Number.NaN)).toBeNull();
+    expect(parseAmount(Number.POSITIVE_INFINITY)).toBeNull();
   });
 
   it("reads an amount however it is decorated", () => {
@@ -111,6 +128,32 @@ describe("scoring a header", () => {
 
   it("scores an unrelated header at nothing", () => {
     expect(headerScore("Widget Colour", "date")).toBe(0);
+  });
+
+  it("scores a header of nothing at nothing", () => {
+    // Exports do carry unnamed columns — a leading index, a spacer. Scoring
+    // one above zero would let it win a field on values alone.
+    expect(headerScore("", "date")).toBe(0);
+    expect(headerScore("   ", "date")).toBe(0);
+    expect(headerScore("###", "date")).toBe(0);
+  });
+
+  it("gives partial credit for part of a multi-word phrase", () => {
+    // "Transaction" alone is some evidence of "transaction date", but less
+    // than the whole phrase — otherwise a Transaction Type column wins `date`.
+    const partial = headerScore("Transaction Ref", "date");
+    const whole = headerScore("Transaction Date", "date");
+    expect(partial).toBeGreaterThan(0);
+    expect(whole).toBeGreaterThan(partial);
+  });
+});
+
+describe("scoring a column nobody profiled", () => {
+  it("scores nothing rather than guessing", () => {
+    // A column named in the header row but absent from every data row. Scoring
+    // it on absent values is how an empty column wins a required field.
+    expect(valueScore("date", undefined)).toBe(0);
+    expect(valueScore("split_amount", undefined)).toBe(0);
   });
 });
 
@@ -283,5 +326,50 @@ describe("the shape of a mapping", () => {
       credit: "Col4",
     }), {});
     expect(new Set(result.lowConfidenceFields).size).toBe(result.lowConfidenceFields.length);
+  });
+});
+
+describe("a file whose amount column is not called anything useful", () => {
+  const rows = [
+    { "Txn Date": "2024-01-15", Ledger: "Sales", Zeta: "1200.00", Ref: "INV-1" },
+    { "Txn Date": "2024-02-15", Ledger: "Rent", Zeta: "400.00", Ref: "INV-2" },
+    { "Txn Date": "2024-03-15", Ledger: "Sales", Zeta: "900.00", Ref: "INV-3" },
+  ];
+
+  it("falls back to the most numeric column rather than refusing outright", () => {
+    // Better a flagged guess than an import that cannot proceed at all: the
+    // header says nothing, and the values are all one sign — so the normal
+    // scoring, which looks for a column carrying BOTH signs, does not reach
+    // its threshold either.
+    const result = detectMapping({ columns: ["Txn Date", "Ledger", "Zeta", "Ref"], rows });
+    expect(result.mapping.split_amount).toBe("Zeta");
+    expect(result.sources.split_amount).toBe("auto-value");
+  });
+
+  it("flags the guess as low confidence rather than proceeding on it", () => {
+    // A guessed amount column is exactly the thing somebody must look at
+    // before an import runs, and `canAutoProcess` is what decides whether they
+    // are asked.
+    const result = detectMapping({ columns: ["Txn Date", "Ledger", "Zeta", "Ref"], rows });
+    expect(result.canAutoProcess).toBe(false);
+    expect(result.lowConfidenceFields).toContain("split_amount");
+  });
+
+  it("guesses nothing when no column is numeric enough to be an amount", () => {
+    // A guess on a column of words is worse than reporting the file as
+    // unmappable: the import runs and every row lands as zero.
+    const words = [
+      { "Txn Date": "2024-01-15", Ledger: "Sales", Ref: "INV-1" },
+      { "Txn Date": "2024-02-15", Ledger: "Rent", Ref: "INV-2" },
+    ];
+    const result = detectMapping({ columns: ["Txn Date", "Ledger", "Ref"], rows: words });
+    expect(result.mapping.split_amount).toBe("");
+    expect(result.missingRequired).toContain("debit_credit_or_split_amount");
+  });
+
+  it("guesses nothing for a file with no rows to judge by", () => {
+    const result = detectMapping({ columns: ["A", "B"], rows: [] });
+    expect(result.mapping.split_amount).toBe("");
+    expect(result.canAutoProcess).toBe(false);
   });
 });

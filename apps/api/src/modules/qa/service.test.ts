@@ -690,3 +690,79 @@ describe("editing a question", () => {
     await expect(service.updateItem(outsider, item.id, { title: "x" })).rejects.toThrow();
   });
 });
+
+describe("editing a question — the fields nothing else reaches", () => {
+  it("rewrites the body without touching the title", async () => {
+    const item = await ask();
+    const updated = await service.updateItem(broker, item.id, { body: "Rewritten." });
+    expect(updated.body).toBe("Rewritten.");
+    expect(updated.title).toBe("Explain the Q3 swing");
+  });
+
+  it("moves a question to another category, and relabels it", async () => {
+    // The label travels with the row so the list does not need a join. Left
+    // behind, the question would show under its old heading with a new
+    // category id — visibly wrong to a reader and invisible to a query.
+    const item = await ask();
+    const finance = await categoryId("finance");
+    const updated = await service.updateItem(broker, item.id, { category_id: finance });
+    expect(updated.category_id).toBe(finance);
+    expect(updated.category_label).toBeTruthy();
+  });
+
+  it("takes a question out of every category", async () => {
+    const finance = await categoryId("finance");
+    const item = await ask({ category_id: finance });
+    const updated = await service.updateItem(broker, item.id, { category_id: null });
+    expect(updated.category_id).toBeNull();
+    expect(updated.category_label).toBeNull();
+  });
+
+  it("stamps the closing time when a question is closed", async () => {
+    const item = await ask();
+    const closed = await service.updateItem(broker, item.id, { status: "closed" });
+    expect(closed.closed_at).toBeTruthy();
+  });
+
+  it("clears the closing time when a closed question is reopened", async () => {
+    // Left behind, the question reads as open and closed at once, and any
+    // report counting closed items by `closed_at` double counts it.
+    const item = await ask();
+    await service.updateItem(broker, item.id, { status: "closed" });
+    const reopened = await service.updateItem(broker, item.id, { status: "open" });
+    expect(reopened.closed_at).toBeNull();
+  });
+
+  it("clears a due date", async () => {
+    const item = await ask({ due_date: "2099-01-01" });
+    const updated = await service.updateItem(broker, item.id, { due_date: null });
+    expect(updated.due_date).toBeNull();
+  });
+
+  it("refuses a category belonging to another company", async () => {
+    // Categories are per company. Accepting one from elsewhere files a
+    // question under a heading its own deal cannot see.
+    const item = await ask();
+    await expect(
+      service.updateItem(broker, item.id, {
+        category_id: "99999999-0000-4000-8000-000000000999",
+      }),
+    ).rejects.toThrow();
+  });
+});
+
+describe("listing what is mine", () => {
+  it("answers only the questions this user asked", async () => {
+    const mine = await ask();
+    store.addMember(CO, cfo.id, "Casey CFO");
+    await service.createItem(cfo, CO, { title: "Theirs", body: "b", priority: "low" });
+
+    const asRequestor = await service.listItems(broker, CO, { mine: "requestor" });
+    expect(asRequestor.map((i) => i.id)).toEqual([mine.id]);
+  });
+
+  it("keeps another company's questions out of the list entirely", async () => {
+    await ask();
+    expect(await service.listItems(outsider, OTHER_CO, {})).toEqual([]);
+  });
+});
