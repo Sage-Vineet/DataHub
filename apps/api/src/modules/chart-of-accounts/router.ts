@@ -88,5 +88,31 @@ export function createChartOfAccountsRouter(deps: ChartOfAccountsRouterDeps): Ro
     }),
   );
 
+  router.post(
+    "/key-reports/versions/:versionId/chart-of-accounts/save",
+    handle(async (req, res) => {
+      const body = req.body as { nodes?: unknown } | undefined;
+      const nodes = Array.isArray(body?.nodes) ? body.nodes : [];
+      const result = await service.saveHierarchy(
+        req.user!,
+        req.params.versionId!,
+        nodes.map((n) => ({ ...(n as object), ...readPatch(n) })),
+      );
+      // The refreshed chart comes back with the result, so the grid does not
+      // have to re-request it to show what the save did.
+      const coa = await service.list(req.user!, req.params.versionId!);
+      res.json({ success: true, ...result, ...coa });
+    }),
+  );
+
+  router.post(
+    "/key-reports/versions/:versionId/chart-of-accounts/reset",
+    handle(async (req, res) => {
+      const result = await service.resetVersion(req.user!, req.params.versionId!);
+      const coa = await service.list(req.user!, req.params.versionId!);
+      res.json({ success: true, ...result, ...coa });
+    }),
+  );
+
   return router;
 }

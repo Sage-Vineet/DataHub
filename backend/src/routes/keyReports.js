@@ -319,32 +319,7 @@ router.post("/key-reports/versions/:versionId/chart-of-accounts/regenerate", asy
 // audit; never touches the original AI classification.
 // Restore a single account to its original AI classification.
 // Bulk-save an edited hierarchy for a version.
-router.post("/key-reports/versions/:versionId/chart-of-accounts/save", async (req, res) => {
-  try {
-    const version = await loadVersionWithAccess(req, res);
-    if (!version) return;
-    const nodes = Array.isArray(req.body?.nodes) ? req.body.nodes : [];
-    const result = await chartOfAccountsService.saveHierarchy(version.id, nodes, req.user?.id || null);
-    const coa = await chartOfAccountsService.getChartOfAccounts(version.id);
-    return res.json({ success: true, ...result, ...coa });
-  } catch (error) {
-    return handleError(res, error, "POST chart-of-accounts/save");
-  }
-});
-
 // Restore the entire version's hierarchy to the original AI classification.
-router.post("/key-reports/versions/:versionId/chart-of-accounts/reset", async (req, res) => {
-  try {
-    const version = await loadVersionWithAccess(req, res);
-    if (!version) return;
-    const result = await chartOfAccountsService.resetVersion(version.id, req.user?.id || null);
-    const coa = await chartOfAccountsService.getChartOfAccounts(version.id);
-    return res.json({ success: true, ...result, ...coa });
-  } catch (error) {
-    return handleError(res, error, "POST chart-of-accounts/reset-version");
-  }
-});
-
 // ---- File references (deletion guard / "linked" badges) --------------------
 
 router.get("/key-reports/file-references", async (req, res) => {

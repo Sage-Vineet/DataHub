@@ -136,7 +136,9 @@
         "GET /key-reports/versions/:p/chart-of-accounts",
         "GET /key-reports/versions/:p/chart-of-accounts/history",
         "PATCH /key-reports/chart-of-accounts/:p",
-        "POST /key-reports/chart-of-accounts/:p/reset"
+        "POST /key-reports/chart-of-accounts/:p/reset",
+        "POST /key-reports/versions/:p/chart-of-accounts/reset",
+        "POST /key-reports/versions/:p/chart-of-accounts/save"
       ]
     },
     "reports": {
@@ -235,8 +237,6 @@
     "POST /bank-reconciliation-adjustments",
     "POST /customers",
     "POST /key-reports/versions/:p/chart-of-accounts/regenerate",
-    "POST /key-reports/versions/:p/chart-of-accounts/reset",
-    "POST /key-reports/versions/:p/chart-of-accounts/save",
     "POST /key-reports/versions/:p/mappings",
     "POST /key-reports/versions/:p/sync",
     "POST /manual-gl/continue",

@@ -2,6 +2,7 @@ import type { SessionUser } from "@datahub/contracts";
 import { NotFoundError } from "../../shared/errors.js";
 import {
   buildTree,
+  isModified,
   hierarchySnapshot,
   MAX_LEVELS,
   statementTypeFor,
@@ -73,17 +74,73 @@ export class ChartOfAccountsService {
     return { versionId, flat, tree: buildTree(flat), accountCount: flat.length };
   }
 
-  /** The audit trail: what changed, and what the classification looked like. */
+  /**
+   * The audit trail: what changed, and what the classification looked like.
+   *
+   * Keyed `classificationHistory` rather than `history` to match the response
+   * legacy served — the endpoint is otherwise identical, and a gratuitous
+   * rename is a compatibility break for nothing.
+   */
   async history(
     user: SessionUser,
     versionId: string,
-  ): Promise<{ adjustments: AdjustmentRecord[]; history: ClassificationHistoryRecord[] }> {
+  ): Promise<{
+    adjustments: AdjustmentRecord[];
+    classificationHistory: ClassificationHistoryRecord[];
+  }> {
     await this.requireVersion(user, versionId);
-    const [adjustments, history] = await Promise.all([
+    const [adjustments, classificationHistory] = await Promise.all([
       this.repo.listAdjustments(versionId),
       this.repo.listHistory(versionId),
     ]);
-    return { adjustments, history };
+    return { adjustments, classificationHistory };
+  }
+
+  /**
+   * Persist an edited hierarchy for many accounts at once.
+   *
+   * Applied one at a time through the single-account path, so every node gets
+   * the same audit trail and the same `user_modified` flag. A bulk shortcut
+   * that wrote the rows directly would be a second writer, silently diverging
+   * the moment either changed.
+   */
+  async saveHierarchy(
+    user: SessionUser,
+    versionId: string,
+    nodes: ReadonlyArray<{ accountId?: string; id?: string } & AccountPatch>,
+  ): Promise<{ updated: number }> {
+    await this.requireVersion(user, versionId);
+
+    let updated = 0;
+    for (const node of nodes) {
+      const accountId = node.accountId ?? node.id;
+      if (!accountId) continue;
+      await this.updateAccount(user, accountId, {
+        adjustedName: node.adjustedName,
+        accountType: node.accountType,
+        statementType: node.statementType,
+        levels: node.levels,
+        isActive: node.isActive,
+        movedParent: node.movedParent,
+      });
+      updated += 1;
+    }
+    return { updated };
+  }
+
+  /**
+   * Restore every edited account in a version to the classifier's answer.
+   *
+   * Only the edited ones are touched — resetting an untouched account would
+   * write an audit entry saying nothing changed.
+   */
+  async resetVersion(user: SessionUser, versionId: string): Promise<{ reset: number }> {
+    await this.requireVersion(user, versionId);
+
+    const rows = await this.repo.listByVersion(versionId);
+    const edited = rows.filter(isModified);
+    for (const row of edited) await this.resetAccount(user, row.id);
+    return { reset: edited.length };
   }
 
   /** The standard hierarchy vocabulary. Reference data, not per-company. */

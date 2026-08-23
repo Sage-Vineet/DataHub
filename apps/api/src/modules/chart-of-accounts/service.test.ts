@@ -295,7 +295,7 @@ describe("the audit trail and the vocabulary", () => {
 
     const history = await service.history(session(), VERSION);
     expect(history.adjustments).toHaveLength(1);
-    expect(history.history).toHaveLength(1);
+    expect(history.classificationHistory).toHaveLength(1);
   });
 
   it("refuses the trail for a company the caller is not on", async () => {
@@ -311,5 +311,72 @@ describe("the audit trail and the vocabulary", () => {
       { levelNumber: 1, statementType: "profit_loss", parentLabel: null, label: "Income Statement", sortOrder: 0, isStandard: true },
     ]);
     expect((await service.hierarchyLevels()).map((l) => l.label)).toEqual(["Income Statement"]);
+  });
+});
+
+describe("bulk editing", () => {
+  const seedTwo = (repo: InMemoryChartOfAccountsRepository) => {
+    repo.seed({ id: "a1", versionId: VERSION, companyId: COMPANY, accountName: "One" });
+    repo.seed({ id: "a2", versionId: VERSION, companyId: COMPANY, accountName: "Two" });
+  };
+
+  it("applies each node through the single-account path, audit and all", async () => {
+    // A bulk shortcut writing rows directly would be a second writer, and would
+    // diverge from the grid's the moment either changed.
+    const { repo, service } = make();
+    seedTwo(repo);
+
+    const result = await service.saveHierarchy(session(), VERSION, [
+      { accountId: "a1", adjustedName: "First" },
+      { id: "a2", accountType: "asset" },
+    ]);
+
+    expect(result).toEqual({ updated: 2 });
+    expect(repo.adjustments.map((a) => a.fieldChanged).sort()).toEqual(["name", "reclassify"]);
+    expect(repo.history).toHaveLength(2);
+  });
+
+  it("accepts a node keyed either `accountId` or `id`", async () => {
+    const { repo, service } = make();
+    seedTwo(repo);
+    expect(await service.saveHierarchy(session(), VERSION, [{ id: "a1", adjustedName: "X" }])).toEqual(
+      { updated: 1 },
+    );
+  });
+
+  it("skips a node that names no account rather than failing the batch", async () => {
+    const { repo, service } = make();
+    seedTwo(repo);
+    const result = await service.saveHierarchy(session(), VERSION, [
+      { adjustedName: "orphan" },
+      { accountId: "a1", adjustedName: "First" },
+    ]);
+    expect(result).toEqual({ updated: 1 });
+  });
+
+  it("resets only the accounts somebody edited", async () => {
+    // Resetting an untouched account writes an audit entry saying nothing
+    // changed, which is worse than doing nothing.
+    const { repo, service } = make();
+    seedTwo(repo);
+    await service.updateAccount(session(), "a1", { adjustedName: "Edited" });
+    repo.adjustments.length = 0;
+    repo.history.length = 0;
+
+    expect(await service.resetVersion(session(), VERSION)).toEqual({ reset: 1 });
+    expect(repo.adjustments.map((a) => a.accountId)).toEqual(["a1"]);
+  });
+
+  it("reports zero when nothing has been edited", async () => {
+    const { repo, service } = make();
+    seedTwo(repo);
+    expect(await service.resetVersion(session(), VERSION)).toEqual({ reset: 0 });
+  });
+
+  it("refuses both against a company the caller is not on", async () => {
+    const { service } = make();
+    const outsider = session({ company_ids: [OTHER] });
+    await expect(service.saveHierarchy(outsider, VERSION, [])).rejects.toThrow(ForbiddenError);
+    await expect(service.resetVersion(outsider, VERSION)).rejects.toThrow(ForbiddenError);
   });
 });

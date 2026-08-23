@@ -89,6 +89,8 @@
   "POST /folders/:p/unarchive",
   "POST /groups/:p/members",
   "POST /key-reports/chart-of-accounts/:p/reset",
+  "POST /key-reports/versions/:p/chart-of-accounts/reset",
+  "POST /key-reports/versions/:p/chart-of-accounts/save",
   "POST /message-groups/:p/members",
   "POST /message-groups/:p/messages",
   "POST /message-groups/:p/messages/mark-read",
