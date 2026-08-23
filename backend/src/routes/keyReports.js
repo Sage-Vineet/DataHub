@@ -5,7 +5,6 @@ const keyReportService = require("../services/keyReports/keyReportService");
 const fileReferenceService = require("../services/fileReferenceService");
 const userPreferenceService = require("../services/userPreferenceService");
 const chartOfAccountsService = require("../services/chartOfAccountsService");
-const keyReportReportService = require("../services/keyReports/keyReportReportService");
 const { generateFinancialStatements } = require("../services/keyReports/financialStatementService");
 const { normalizeError, isConnectionError } = require("../utils/dbErrorHandler");
 
@@ -461,78 +460,6 @@ function parseReportQuery(q = {}) {
     pageSize: parseInt(String(q.pageSize || 500), 10) || 500,
   };
 }
-
-router.get("/key-reports/versions/:versionId/reports/profit-loss", async (req, res) => {
-  try {
-    const version = await loadVersionWithAccess(req, res);
-    if (!version) return;
-    const { year, startDate, endDate, period } = parseReportQuery(req.query);
-    const result = await keyReportReportService.getProfitLossReport(version.id, { year, startDate, endDate, period });
-    return res.json({ success: true, ...result });
-  } catch (error) {
-    return handleError(res, error, "GET reports/profit-loss");
-  }
-});
-
-router.get("/key-reports/versions/:versionId/reports/balance-sheet", async (req, res) => {
-  try {
-    const version = await loadVersionWithAccess(req, res);
-    if (!version) return;
-    const { year, startDate, endDate, period } = parseReportQuery(req.query);
-    const result = await keyReportReportService.getBalanceSheetReport(version.id, { year, startDate, endDate, period });
-    return res.json({ success: true, ...result });
-  } catch (error) {
-    return handleError(res, error, "GET reports/balance-sheet");
-  }
-});
-
-router.get("/key-reports/versions/:versionId/reports/cashflow", async (req, res) => {
-  try {
-    const version = await loadVersionWithAccess(req, res);
-    if (!version) return;
-    const { year, startDate, endDate } = parseReportQuery(req.query);
-    const result = await keyReportReportService.getCashflowReport(version.id, { year, startDate, endDate });
-    return res.json({ success: true, ...result });
-  } catch (error) {
-    return handleError(res, error, "GET reports/cashflow");
-  }
-});
-
-router.get("/key-reports/versions/:versionId/reports/general-ledger", async (req, res) => {
-  try {
-    const version = await loadVersionWithAccess(req, res);
-    if (!version) return;
-    const { year, startDate, endDate, page, pageSize } = parseReportQuery(req.query);
-    const result = await keyReportReportService.getGeneralLedgerReport(version.id, { year, startDate, endDate, page, pageSize });
-    return res.json({ success: true, ...result });
-  } catch (error) {
-    return handleError(res, error, "GET reports/general-ledger");
-  }
-});
-
-router.get("/key-reports/versions/:versionId/reports/bank-statement", async (req, res) => {
-  try {
-    const version = await loadVersionWithAccess(req, res);
-    if (!version) return;
-    const { year, page, pageSize } = parseReportQuery(req.query);
-    const result = await keyReportReportService.getBankStatementReport(version.id, { year, page, pageSize });
-    return res.json({ success: true, ...result });
-  } catch (error) {
-    return handleError(res, error, "GET reports/bank-statement");
-  }
-});
-
-router.get("/key-reports/versions/:versionId/reports/tax-return", async (req, res) => {
-  try {
-    const version = await loadVersionWithAccess(req, res);
-    if (!version) return;
-    const { year } = parseReportQuery(req.query);
-    const result = await keyReportReportService.getTaxReturnReport(version.id, { year });
-    return res.json({ success: true, ...result });
-  } catch (error) {
-    return handleError(res, error, "GET reports/tax-return");
-  }
-});
 
 // ── COA-mapped Financial Statements (P&L + Balance Sheet, monthly + yearly) ───
 // GET /key-reports/versions/:versionId/reports/financial-statements?year=2024&currency=USD
