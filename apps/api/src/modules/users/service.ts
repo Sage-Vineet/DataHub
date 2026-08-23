@@ -32,6 +32,21 @@ export interface UsersServiceDeps {
 
 const BCRYPT_HASH_RE = /^\$2[aby]\$/;
 
+/**
+ * A user's companies, out of the map the repository answers with.
+ *
+ * The port guarantees an entry per id asked about, so this cannot actually
+ * miss — but the type says `Map`, which does not. Stated once rather than at
+ * each of the eight read sites, where it read as eight separate decisions and
+ * no test could reach any of them.
+ */
+function assignedOf(
+  companies: ReadonlyMap<string, AssignedCompany[]>,
+  userId: string,
+): AssignedCompany[] {
+  return companies.get(userId) ?? [];
+}
+
 export class UsersService {
   private readonly repo: UsersRepository;
   private readonly emailer: EmailerPort;
@@ -51,7 +66,7 @@ export class UsersService {
     const companies = await this.repo.assignedCompaniesFor(records.map((r) => r.id));
 
     if (viewer.role === "admin") {
-      return records.map((r) => this.toResponse(r, companies.get(r.id) ?? []));
+      return records.map((r) => this.toResponse(r, assignedOf(companies, r.id)));
     }
 
     if (viewer.role === "broker") {
@@ -62,15 +77,15 @@ export class UsersService {
           if (r.id === viewer.id) return true;
           if (r.role === "admin") return false;
           if (invited.has(r.id)) return true;
-          return this.companyIdsOf(r, companies.get(r.id) ?? []).some((id) => viewerCompanies.has(id));
+          return this.companyIdsOf(r, assignedOf(companies, r.id)).some((id) => viewerCompanies.has(id));
         })
-        .map((r) => this.toResponse(r, companies.get(r.id) ?? [], invited.has(r.id)));
+        .map((r) => this.toResponse(r, assignedOf(companies, r.id), invited.has(r.id)));
     }
 
     // Clients/users see only themselves.
     return records
       .filter((r) => r.id === viewer.id)
-      .map((r) => this.toResponse(r, companies.get(r.id) ?? []));
+      .map((r) => this.toResponse(r, assignedOf(companies, r.id)));
   }
 
   async get(viewer: SessionUser, id: string): Promise<UserResponse> {
@@ -81,7 +96,7 @@ export class UsersService {
   async findByEmail(viewer: SessionUser, email: string): Promise<UserResponse | null> {
     const record = await this.repo.getByEmail(email.trim().toLowerCase());
     if (!record) return null;
-    const companies = (await this.repo.assignedCompaniesFor([record.id])).get(record.id) ?? [];
+    const companies = assignedOf(await this.repo.assignedCompaniesFor([record.id]), record.id);
     if (!this.canView(viewer, record, companies)) throw new ForbiddenError("You cannot view this user.");
     return this.toResponse(record, companies);
   }
@@ -122,7 +137,7 @@ export class UsersService {
     await this.emailer.sendWelcome(created).catch(() => {});
     await this.notifications.notifyUserCreated(created.id, actor.id).catch(() => {});
 
-    const companies = (await this.repo.assignedCompaniesFor([created.id])).get(created.id) ?? [];
+    const companies = assignedOf(await this.repo.assignedCompaniesFor([created.id]), created.id);
     return this.toResponse(created, companies);
   }
 
@@ -139,7 +154,7 @@ export class UsersService {
 
     const existing = await this.repo.getById(id);
     if (!existing) throw new NotFoundError("User not found.");
-    const targetCompanies = (await this.repo.assignedCompaniesFor([id])).get(id) ?? [];
+    const targetCompanies = assignedOf(await this.repo.assignedCompaniesFor([id]), id);
 
     if (!isSelf && actor.role !== "admin") {
       const shared = this.companyIdsOf(existing, targetCompanies).some((cid) =>
@@ -181,7 +196,7 @@ export class UsersService {
 
     const updated = (await this.repo.update(id, patch)) ?? existing;
     this.authCache.invalidate(id); // next /me reflects the change
-    const companies = (await this.repo.assignedCompaniesFor([id])).get(id) ?? [];
+    const companies = assignedOf(await this.repo.assignedCompaniesFor([id]), id);
     return this.toResponse(updated, companies);
   }
 
@@ -189,7 +204,7 @@ export class UsersService {
   async delete(actor: SessionUser, id: string): Promise<void> {
     const target = await this.repo.getById(id);
     if (!target) throw new NotFoundError("User not found.");
-    const targetCompanies = (await this.repo.assignedCompaniesFor([id])).get(id) ?? [];
+    const targetCompanies = assignedOf(await this.repo.assignedCompaniesFor([id]), id);
     const shares = this.companyIdsOf(target, targetCompanies).some((cid) =>
       this.viewerCompanyIds(actor).has(cid),
     );
@@ -247,7 +262,7 @@ export class UsersService {
   ): Promise<{ record: UserRecord; companies: AssignedCompany[] }> {
     const record = await this.repo.getById(id);
     if (!record) throw new NotFoundError("User not found.");
-    const companies = (await this.repo.assignedCompaniesFor([id])).get(id) ?? [];
+    const companies = assignedOf(await this.repo.assignedCompaniesFor([id]), id);
     if (!this.canView(viewer, record, companies)) {
       throw new ForbiddenError("You do not have permission to view this user.");
     }

@@ -607,6 +607,65 @@ describe("publishing", () => {
   });
 });
 
+describe("forking a new draft", () => {
+  it("carries the cover and theme forward", async () => {
+    // A fork that lost them would put the next version's first page in the
+    // default styling, and nobody would know it had happened until it went out.
+    const { deck, versionId } = await newDeck();
+    await service.saveBlocks(broker, versionId, {
+      cover: { title: "Project Atlas", subtitle: "Confidential" },
+      blocks: [],
+    });
+    await service.publish(broker, versionId, Buffer.from("pdf"), {
+      contentType: "application/pdf",
+      pageCount: 1,
+    });
+
+    const next = await service.createDraftFrom(broker, deck.id);
+    expect(next.version_no).toBe(2);
+
+    const detail = await service.getVersion(broker, next.id);
+    expect(detail.cover).toMatchObject({ title: "Project Atlas" });
+  });
+
+  it("refuses a second draft while one is open", async () => {
+    // Two open drafts of one CIM means two people editing what they each
+    // believe is the next version.
+    const { deck } = await newDeck();
+    await expect(service.createDraftFrom(broker, deck.id)).rejects.toThrow(/already has an open/i);
+  });
+});
+
+describe("recording an approval", () => {
+  it("answers the version as it now stands, not as it was read", async () => {
+    // Re-read after the write, so the approval it just recorded is on the
+    // answer. Returning the copy read before the write shows the caller a
+    // version with no approval and invites them to press the button again.
+    const { versionId } = await newDeck();
+    const after = await service.recordApproval(broker, versionId);
+
+    expect(after.id).toBe(versionId);
+    expect(after.approved_at).toBeTruthy();
+    expect(after.approved_by).toBe(broker.id);
+  });
+});
+
+describe("saving the cover", () => {
+  it("stores it, and leaves it alone when the request does not mention it", async () => {
+    // The page saves blocks and cover through one call. Clearing the cover on
+    // every block save would wipe the title each time somebody typed.
+    const { versionId } = await newDeck();
+    await service.saveBlocks(broker, versionId, {
+      cover: { title: "Project Atlas", subtitle: "Confidential" },
+      blocks: [],
+    });
+    await service.saveBlocks(broker, versionId, { blocks: [] });
+
+    const detail = await service.getVersion(broker, versionId);
+    expect(detail.cover).toMatchObject({ title: "Project Atlas" });
+  });
+});
+
 describe("deck health", () => {
   it("counts what is still unfilled", async () => {
     const { versionId } = await newDeck();

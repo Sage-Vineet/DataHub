@@ -474,6 +474,78 @@ describe("UsersService — company assignment", () => {
   });
 });
 
+describe("UsersService — the repository's own guarantee", () => {
+  it("answers an entry for a user with no companies, not no entry", () => {
+    // Eight read sites in the service depend on this. Without it each needs
+    // its own `?? []`, which is eight separate decisions no test can reach —
+    // and a store that started omitting the key would break all eight at once
+    // with nothing to catch it.
+    const { repo } = makeService();
+    const id = randomUUID();
+    repo.seedUser({ id, email: "lonely@x.com", role: "buyer" });
+
+    return repo.assignedCompaniesFor([id, randomUUID()]).then((map) => {
+      expect(map.size).toBe(2);
+      expect([...map.values()].every(Array.isArray)).toBe(true);
+    });
+  });
+
+  it("answers an empty map when asked about nobody", async () => {
+    const { repo } = makeService();
+    expect((await repo.assignedCompaniesFor([])).size).toBe(0);
+  });
+});
+
+describe("UsersService — visibility, the rest of it", () => {
+  it("lets a broker see somebody they invited to their team", async () => {
+    // An invited broker has no company in common yet — the invite IS the
+    // relationship, and without it the invitee is invisible to the person who
+    // invited them.
+    const { repo, service } = makeService();
+    const brokerId = randomUUID();
+    const invitedId = randomUUID();
+    repo.seedUser({ id: brokerId, email: "host@x.com", role: "broker", companyId: COMPANY_A });
+    repo.seedUser({ id: invitedId, email: "guest@x.com", role: "broker", companyId: COMPANY_B });
+    await repo.inviteBrokerToTeam(brokerId, invitedId);
+
+    const seen = await service.list(
+      session({ id: brokerId, role: "broker", company_ids: [COMPANY_A] }),
+    );
+    expect(seen.map((u) => u.id)).toContain(invitedId);
+    expect(seen.find((u) => u.id === invitedId)?.is_team_invite).toBe(true);
+  });
+
+  it("keeps admins out of a broker's list", async () => {
+    // A broker sharing a company with an admin should not see the admin in
+    // their people list; the admin is not part of the deal team.
+    const { repo, service } = makeService();
+    const brokerId = randomUUID();
+    repo.seedUser({ id: brokerId, email: "b@x.com", role: "broker", companyId: COMPANY_A });
+    repo.seedUser({ id: randomUUID(), email: "admin@x.com", role: "admin", companyId: COMPANY_A });
+
+    const seen = await service.list(session({ id: brokerId, role: "broker", company_ids: [COMPANY_A] }));
+    expect(seen.some((u) => u.role === "admin")).toBe(false);
+  });
+
+  it("shows a buyer only themselves", async () => {
+    const { repo, service } = makeService();
+    const buyerId = randomUUID();
+    repo.seedUser({ id: buyerId, email: "buyer@x.com", role: "buyer", companyId: COMPANY_A });
+    repo.seedUser({ id: randomUUID(), email: "other@x.com", role: "buyer", companyId: COMPANY_A });
+
+    const seen = await service.list(session({ id: buyerId, role: "buyer", company_ids: [COMPANY_A] }));
+    expect(seen.map((u) => u.id)).toEqual([buyerId]);
+  });
+
+  it("shows an admin everybody", async () => {
+    const { repo, service } = makeService();
+    repo.seedUser({ id: randomUUID(), email: "a@x.com", role: "buyer", companyId: COMPANY_A });
+    repo.seedUser({ id: randomUUID(), email: "b@x.com", role: "broker", companyId: COMPANY_B });
+
+    expect((await service.list(session({ role: "admin" }))).length).toBe(2);
+  });
+});
+
 describe("isBcryptHash", () => {
   it("recognises a real bcrypt hash and rejects anything else", async () => {
     // The guard that stops a plaintext or differently-hashed password being

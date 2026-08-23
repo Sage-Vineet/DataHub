@@ -54,7 +54,15 @@ export interface UsersRepository {
   create(input: UserCreateInput): Promise<UserRecord>;
   update(id: string, patch: UserUpdatePatch): Promise<UserRecord | null>;
 
-  /** Assigned companies per user (user_companies ∪ primary company_id). */
+  /**
+   * Assigned companies per user (user_companies ∪ primary company_id).
+   *
+   * ONE ENTRY PER ID ASKED ABOUT, including users with no companies — those
+   * get an empty array rather than no key. Both implementations pre-seed the
+   * map, and the caller relies on it: without the guarantee every read site
+   * needs its own `?? []`, and eight of those were sitting in the service
+   * where no test could reach them.
+   */
   assignedCompaniesFor(userIds: readonly string[]): Promise<Map<string, AssignedCompany[]>>;
 
   addCompanies(userId: string, companyIds: readonly string[]): Promise<void>;
