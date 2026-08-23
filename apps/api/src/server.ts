@@ -34,6 +34,7 @@ import { createMessagesModule } from "./modules/messages/index.js";
 import { createReportsModule } from "./modules/reports/index.js";
 import { createBankReconciliationModule } from "./modules/bank-reconciliation/index.js";
 import { createReportSourcesModule } from "./modules/report-sources/index.js";
+import { GeminiClient } from "./shared/gemini.js";
 import { createStatementsModule } from "./modules/statements/index.js";
 import { createTaxOverridesModule } from "./modules/tax-overrides/index.js";
 import { createQuickBooksModule } from "./modules/quickbooks/index.js";
@@ -275,7 +276,24 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
     }
 
     if (flags.STATEMENTS_MODULE_ENABLED) {
-      modules.push({ path: "/", router: createStatementsModule({ db, requireAuth }).router });
+      // Document extraction needs a model. Where no key is configured the
+      // module still serves everything else and the extraction route answers
+      // 503 saying so — which is the honest answer for a deployment that does
+      // not use it.
+      const geminiKey = process.env.GEMINI_API_KEY;
+      modules.push({
+        path: "/",
+        router: createStatementsModule({
+          db,
+          requireAuth,
+          ...(geminiKey ? { reader: new GeminiClient({ apiKey: geminiKey }) } : {}),
+        }).router,
+      });
+      if (!geminiKey) {
+        console.warn(
+          "[gateway] GEMINI_API_KEY is not set — tax-return extraction will answer 503",
+        );
+      }
     }
 
     if (flags.TAX_OVERRIDES_MODULE_ENABLED) {

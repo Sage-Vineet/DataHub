@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { BadRequestError, ForbiddenError, NotFoundError } from "../../shared/errors.js";
 import type { CashFlowService } from "./cash-flow.js";
 import type { DashboardService } from "./dashboard.js";
+import type { TaxReturnService } from "./tax-return.js";
 import { createStatementsRouter } from "./router.js";
 import type { StatementsService } from "./service.js";
 
@@ -86,9 +87,42 @@ function stub(over: Record<string, unknown> = {}) {
     ...(over.dashboard as object | undefined),
   } as unknown as DashboardService;
 
+  const taxReturn =
+    over.taxReturn === null
+      ? undefined
+      : ({
+          read: record("read", {
+            figures: {
+              year: 2023,
+              formType: "1120-S",
+              totalRevenue: 1250000,
+              totalCostOfGoodsSold: 500000,
+              grossProfit: 750000,
+              officerWages: 120000,
+              depreciation: 45000,
+              amortization: 5000,
+              interestExpense: 30000,
+              netIncome: 400000,
+              allOtherExpenses: 150000,
+              reconcilingItems: [{ label: "Meals", value: 12500 }],
+            },
+            documentId: "doc-1",
+            documentName: "Return 2023.pdf",
+            extractedAt: "2025-01-01T00:00:00.000Z",
+            source: "stored",
+          }),
+          ...(over.taxReturn as object | undefined),
+        } as unknown as TaxReturnService);
+
   const app = express();
   app.use(
-    createStatementsRouter({ service, cashFlow, dashboard, requireAuth: authAs("caller-1") }),
+    createStatementsRouter({
+      service,
+      cashFlow,
+      dashboard,
+      ...(taxReturn ? { taxReturn } : {}),
+      requireAuth: authAs("caller-1"),
+    }),
   );
   return { app, calls };
 }
@@ -290,11 +324,68 @@ describe("paths this router does not own", () => {
     // An unmatched path has to reach the proxy untouched, which is what
     // 404-from-this-router means in isolation.
     //
-    // `qms-dashboard` used to be listed here and no longer is: this router
-    // serves it now, and leaving the assertion would have pinned the route as
-    // absent rather than noticing it had arrived.
+    // `qms-dashboard` and `tax-data` were both listed here and no longer are:
+    // this router serves them now, and leaving the assertions would have
+    // pinned the routes as absent rather than noticing they had arrived.
     const { app } = stub();
-    await request(app).get("/manual-report-uploads/tax-data").expect(404);
+    await request(app).get("/manual-report-uploads/pl-for-tax").expect(404);
+  });
+});
+
+describe("the tax return", () => {
+  it("answers the figures and the nine rows the page renders", async () => {
+    const { app } = stub();
+    const res = await request(app)
+      .get("/tax-data")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(res.body.taxData.totalRevenue).toBe(1250000);
+    expect(res.body.data).toHaveLength(9);
+    expect(res.body.data[0]).toEqual({ label: "Total Revenue", taxReturn: 1250000 });
+  });
+
+  it("names the document it read", async () => {
+    // So a reader who doubts a figure can get back to the file it came from —
+    // which the version that read a PDF off the filesystem could not offer.
+    const { app } = stub();
+    const res = await request(app)
+      .get("/tax-data")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(res.body.documentName).toBe("Return 2023.pdf");
+  });
+
+  it("serves both paths the page calls, through one handler", async () => {
+    // Two handlers could answer different figures for the same company.
+    const { app } = stub();
+    const direct = await request(app).get("/tax-data").set("x-client-id", COMPANY).expect(200);
+    const prefixed = await request(app)
+      .get("/manual-report-uploads/tax-data")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(prefixed.body.taxData).toEqual(direct.body.taxData);
+  });
+
+  it("passes the version and the refresh through", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .get("/tax-data?keyReportVersionId=v-1&force=1")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "read")[2]).toEqual({ keyReportVersionId: "v-1", force: true });
+  });
+
+  it("omits what the caller did not ask for", async () => {
+    const { app, calls } = stub();
+    await request(app).get("/tax-data").set("x-client-id", COMPANY).expect(200);
+    expect(argsOf(calls, "read")[2]).toEqual({});
+  });
+
+  it("says so plainly when no model is configured", async () => {
+    // A 503 naming the reason, rather than a 500 from a null.
+    const { app } = stub({ taxReturn: null });
+    const res = await request(app).get("/tax-data").set("x-client-id", COMPANY).expect(503);
+    expect(res.body.error).toMatch(/not configured/);
   });
 });
 

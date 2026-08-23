@@ -8,12 +8,15 @@ import { withCommonMiddleware } from "../../shared/router.js";
 import type { StatementExtract } from "./ports.js";
 import { MissingCashFlowInputsError, type CashFlowService } from "./cash-flow.js";
 import type { DashboardService } from "./dashboard.js";
+import { toTaxReturnRows, type TaxReturnService } from "./tax-return.js";
 import type { StatementsService } from "./service.js";
 
 export interface StatementsRouterDeps {
   service: StatementsService;
   cashFlow: CashFlowService;
   dashboard: DashboardService;
+  /** Absent where no model is configured; the route says so rather than failing. */
+  taxReturn?: TaxReturnService;
   requireAuth: RequestHandler;
 }
 
@@ -29,7 +32,7 @@ export interface StatementsRouterDeps {
  * it was read out of.
  */
 export function createStatementsRouter(deps: StatementsRouterDeps): Router {
-  const { service, cashFlow, dashboard, requireAuth } = deps;
+  const { service, cashFlow, dashboard, taxReturn, requireAuth } = deps;
   const router = express.Router();
   withCommonMiddleware(router, [helmet(), pinoHttp(), express.json(), requireAuth]);
 
@@ -240,6 +243,52 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
       const built = await dashboard.build(req.user!, companyOf(req), sourceKey);
       res.json({ success: true, source: label, ...built });
     });
+
+  /**
+   * What a company's tax return says.
+   *
+   * Read out of the company's OWN linked document. The version this replaces
+   * read a PDF off the server's filesystem, matched by filename against the
+   * requested year and ignoring the company — so it never worked in a deployed
+   * environment, and would have served one company's figures to all of them
+   * had a file ever appeared in that directory.
+   *
+   * Answers `{ taxData, data }` — the figures and the nine rows the page sets
+   * beside `/quickbooks-pl`'s.
+   */
+  const taxData = handle(async (req: Request, res: Response) => {
+    if (!taxReturn) {
+      res.status(503).json({
+        success: false,
+        error: "Tax return extraction is not configured on this server.",
+      });
+      return;
+    }
+    const result = await taxReturn.read(req.user!, companyOf(req), {
+      ...(str(req.query.keyReportVersionId)
+        ? { keyReportVersionId: str(req.query.keyReportVersionId)! }
+        : {}),
+      // `force=1` is legacy's name for it, and what the page's refresh sends.
+      ...(str(req.query.force) ? { force: true } : {}),
+    });
+    res.json({
+      success: true,
+      year: result.figures.year,
+      formType: result.figures.formType,
+      documentId: result.documentId,
+      documentName: result.documentName,
+      extractedAt: result.extractedAt,
+      source: result.source,
+      taxData: result.figures,
+      data: toTaxReturnRows(result.figures),
+      reconcilingItems: result.figures.reconcilingItems,
+    });
+  });
+
+  // Both paths the SPA calls. One handler, so the two cannot answer different
+  // figures for the same company.
+  router.get("/tax-data", taxData);
+  router.get("/manual-report-uploads/tax-data", taxData);
 
   const QMS = REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
 
