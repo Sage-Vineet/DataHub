@@ -196,7 +196,16 @@
         "GET /manual-report-uploads/reports/:p/all",
         "GET /manual-report-uploads/reports/:p/latest",
         "GET /manual-report-uploads/source-tree",
+        "GET /manual-upload/cashflow",
+        "GET /manual-upload/cashflow/periods",
         "GET /qb-bank-activity/saved"
+      ]
+    },
+    "taxOverrides": {
+      "compare": [],
+      "additive": [
+        "GET /manual-report-uploads/tax-reconciliation-overrides",
+        "PUT /manual-report-uploads/tax-reconciliation-overrides"
       ]
     },
     "quickbooks": {
@@ -255,10 +264,7 @@
     "GET /manual-report-uploads/qms-bank-data",
     "GET /manual-report-uploads/qms-dashboard",
     "GET /manual-report-uploads/tax-data",
-    "GET /manual-report-uploads/tax-reconciliation-overrides",
     "GET /manual-upload/bank-data",
-    "GET /manual-upload/cashflow",
-    "GET /manual-upload/cashflow/periods",
     "GET /profit-and-loss-statement",
     "GET /qb-bank-activity",
     "GET /qb-cashflow",
@@ -276,7 +282,6 @@
     "POST /manual-report-uploads/sync-qms-source",
     "POST /manual-report-uploads/sync-source",
     "POST /parse-bank-statement",
-    "PUT /api/invoices/:p",
-    "PUT /manual-report-uploads/tax-reconciliation-overrides"
+    "PUT /api/invoices/:p"
   ]
 }

@@ -320,6 +320,132 @@ describe("statement extracts (real Postgres)", () => {
     ]);
   });
 
+  it("derives a cash flow from statements already on file", async () => {
+    // Legacy served these from a cache written during "Sync All", so a company
+    // with every input uploaded still got "Run Sync All to generate cash flow
+    // reports automatically" until somebody did. Nothing is cached here.
+    const bs2023 = await addDocument("BS 2023.pdf");
+    const bs2024 = await addDocument("BS 2024.pdf");
+    const pl2024 = await addDocument("PL 2024.pdf");
+    await save(bs2023, { asOfDate: "2023-12-31", payload: { rows: [{ name: "Cash", amount: 100 }] } });
+    await save(bs2024, { asOfDate: "2024-12-31", payload: { rows: [{ name: "Cash", amount: 150 }] } });
+    await service.save(current, companyId, {
+      provenance: { from: "document", documentId: pl2024 },
+      statementType: "profit_and_loss",
+      periodStart: "2024-01-01",
+      periodEnd: "2024-12-31",
+      payload: { rows: [{ name: "Net Income", amount: 50 }] },
+    });
+
+    const res = await request(app)
+      .get("/manual-upload/cashflow?period=2024")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.beginningCash).toBe(100);
+    expect(res.body.endingCash).toBe(150);
+    expect(res.body.cashValidated).toBe(true);
+  });
+
+  it("names the file that is missing rather than telling somebody to sync", async () => {
+    // The person reading this is the person who can fix it by uploading that
+    // file. Legacy's message pointed them at a sync that would not have helped.
+    const bs2024 = await addDocument("BS 2024.pdf");
+    await save(bs2024, { asOfDate: "2024-12-31" });
+
+    const res = await request(app)
+      .get("/manual-upload/cashflow?period=2024")
+      .set("X-Client-Id", companyId)
+      .expect(404);
+    expect(res.body.missingInputs).toEqual(["Profit and Loss 2024"]);
+    expect(res.body.fiscalYear).toBe(2024);
+  });
+
+  it("refuses a period that is not a year rather than guessing one", async () => {
+    await request(app)
+      .get("/manual-upload/cashflow?period=last%20year")
+      .set("X-Client-Id", companyId)
+      .expect(400);
+    await request(app)
+      .get("/manual-upload/cashflow")
+      .set("X-Client-Id", companyId)
+      .expect(400);
+  });
+
+  it("offers the years that have both inputs, not the years somebody cached", async () => {
+    const bs2023 = await addDocument("BS 2023.pdf");
+    const bs2024 = await addDocument("BS 2024.pdf");
+    const pl2024 = await addDocument("PL 2024.pdf");
+    await save(bs2023, { asOfDate: "2023-12-31" });
+    await save(bs2024, { asOfDate: "2024-12-31" });
+    await service.save(current, companyId, {
+      provenance: { from: "document", documentId: pl2024 },
+      statementType: "profit_and_loss",
+      periodEnd: "2024-12-31",
+      payload: { rows: [] },
+    });
+
+    const res = await request(app)
+      .get("/manual-upload/cashflow/periods")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    // 2023 has a balance sheet but no P&L, so no cash flow can be built for it.
+    expect(res.body.periods).toEqual([{ fiscalYear: 2024, hasPriorBalanceSheet: true }]);
+  });
+
+  it("says when a year has no prior balance sheet to measure against", async () => {
+    // Without one every movement is measured against nothing, so the statement
+    // shows the P&L's addbacks and no working capital at all. Worth saying on
+    // the picker rather than letting somebody wonder why a year looks empty.
+    const bs = await addDocument("BS 2024.pdf");
+    const pl = await addDocument("PL 2024.pdf");
+    await save(bs, { asOfDate: "2024-12-31" });
+    await service.save(current, companyId, {
+      provenance: { from: "document", documentId: pl },
+      statementType: "profit_and_loss",
+      periodEnd: "2024-12-31",
+      payload: { rows: [] },
+    });
+
+    const res = await request(app)
+      .get("/manual-upload/cashflow/periods")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(res.body.periods).toEqual([{ fiscalYear: 2024, hasPriorBalanceSheet: false }]);
+  });
+
+  it("keeps one source's cash flow off another source's page", async () => {
+    const bs = await addDocument("QMS BS 2024.pdf");
+    const pl = await addDocument("QMS PL 2024.pdf");
+    await save(bs, { asOfDate: "2024-12-31", sourceKey: "quickbooks_manual" });
+    await service.save(current, companyId, {
+      provenance: { from: "document", documentId: pl },
+      statementType: "profit_and_loss",
+      sourceKey: "quickbooks_manual",
+      periodEnd: "2024-12-31",
+      payload: { rows: [] },
+    });
+
+    const manual = await request(app)
+      .get("/manual-upload/cashflow/periods")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(manual.body.periods).toEqual([]);
+
+    const qms = await request(app)
+      .get("/manual-upload/cashflow/periods?sourceKey=quickbooks_manual")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(qms.body.periods).toHaveLength(1);
+  });
+
+  it("403s a company the caller cannot reach", async () => {
+    await request(app)
+      .get("/manual-upload/cashflow/periods")
+      .set("X-Client-Id", "11111111-1111-4111-8111-111111111111")
+      .expect(403);
+  });
+
   it("builds a tree that reaches the document and folder names", async () => {
     const documentId = await addDocument("BS 2024.pdf");
     await save(documentId);

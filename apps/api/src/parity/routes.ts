@@ -13,6 +13,7 @@ import { createMessagesModule } from "../modules/messages/index.js";
 import { createReportsModule } from "../modules/reports/index.js";
 import { createBankReconciliationModule } from "../modules/bank-reconciliation/index.js";
 import { createReportSourcesModule } from "../modules/report-sources/index.js";
+import { createTaxOverridesModule } from "../modules/tax-overrides/index.js";
 import { createStatementsModule } from "../modules/statements/index.js";
 import { createQuickBooksModule } from "../modules/quickbooks/index.js";
 import { createSyncModule } from "../modules/sync/index.js";
@@ -207,6 +208,11 @@ export function moduleSurfaces(): ModuleSurface[] {
       name: "statements",
       mount: "/",
       router: createStatementsModule({ db, requireAuth }).router,
+    },
+    {
+      name: "taxOverrides",
+      mount: "/",
+      router: createTaxOverridesModule({ db, requireAuth }).router,
     },
     {
       name: "quickbooks",

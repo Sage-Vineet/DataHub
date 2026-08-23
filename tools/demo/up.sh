@@ -33,18 +33,31 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 COMPOSE="docker compose -f docker-compose.demo.yml"
 
-# LEGACY_MODE=1 turns every module off, so the same stack runs entirely on the
-# legacy backend. Useful for a side-by-side — but slow without real Supabase
-# credentials, since legacy tries Supabase first on every read.
+# The migrated domains default to on in docker-compose.demo.yml, and every one
+# of them now HAS to be. They were cutover flags — on served the module, off
+# fell through to legacy — but each of those legacy handlers has since been
+# deleted, so "off" is not a rollback any more, it is a hole.
+#
+# `assertReapedModulesEnabled` refuses to start when one is off, for exactly
+# that reason. Nothing is exported here; the compose defaults are the single
+# place those flags are set, and a second copy would be one to forget.
+
+# LEGACY_MODE=1 turned every module off so the same stack ran entirely on the
+# legacy backend, for a side-by-side.
+#
+# It cannot do that any more, and saying so beats appearing to work. The legacy
+# handlers for the domains above are gone; turning the modules off would serve
+# 404s, not legacy behaviour. Kept as a refusal rather than deleted, because a
+# flag that silently stopped meaning what it says is worse than one that tells
+# you it is over.
 if [[ "${LEGACY_MODE:-0}" == "1" ]]; then
-  export BETTER_AUTH_ENABLED=false COMPANIES_MODULE_ENABLED=false USERS_MODULE_ENABLED=false \
-         FOLDERS_MODULE_ENABLED=false UPLOADS_MODULE_ENABLED=false REQUESTS_MODULE_ENABLED=false \
-         MESSAGES_MODULE_ENABLED=false REPORTS_MODULE_ENABLED=false QOE_MODULE_ENABLED=false
+  echo "LEGACY_MODE is no longer available: the legacy handlers for the migrated" >&2
+  echo "domains have been deleted, so running without the modules serves 404s" >&2
+  echo "rather than legacy behaviour. Check out a commit before the reap instead." >&2
+  exit 2
 fi
 # The greenfield capabilities have no legacy predecessor at their prefixes, so they
 # default ON — there is nothing to fall back to and nothing they can shadow.
-# LEGACY_MODE leaves them on for the same reason: turning them off would not show
-# you the legacy behaviour, because there isn't any.
 # Plumbing rather than a capability: legacy verifies HS256 JWTs and the gateway
 # issues Better Auth sessions, so without the bridge every un-migrated route
 # refuses the SPA's own credentials.
@@ -625,16 +638,11 @@ $(printf '\033[1mDemo is up.\033[0m')
   Cardinal Foods belongs to nobody: it is the control that proves cross-tenant
   denial rather than assuming it.
 
-  Every domain is served by the TypeScript modules. To run the same stack
-  entirely on legacy and compare:
-
-    LEGACY_MODE=1 ./tools/demo/up.sh
-
-  (slow without real Supabase credentials — legacy tries Supabase on every read)
-
-  Or move a single domain back:
-
-    FOLDERS_MODULE_ENABLED=false ./tools/demo/up.sh
+  Every domain is served by the TypeScript modules, and their legacy handlers
+  have been deleted — so there is no longer a legacy mode to compare against,
+  and turning a module off serves 404s rather than legacy behaviour. The
+  gateway refuses to start in that state rather than serve a surface with
+  holes in it. To see the old behaviour, check out a commit before the reap.
 
   Tear down (and drop the data):
 

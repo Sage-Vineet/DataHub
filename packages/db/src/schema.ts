@@ -1048,3 +1048,60 @@ export const activityChainHead = pgTable("activity_chain_head", {
   lastSeq: bigint("last_seq", { mode: "number" }).notNull(),
   lastHash: text("last_hash"),
 });
+
+/**
+ * Hand corrections to a tax reconciliation.
+ *
+ * A row per CELL — company, year, line — rather than legacy's one blob per
+ * company. These are manual adjustments to figures that end up in a valuation,
+ * so "who changed the 2023 meals figure, from what, and when" is the first
+ * question anybody asks about a number that moved, and one blob with one
+ * `updated_at` cannot answer it for any individual cell.
+ *
+ * Distinct from `statement_extracts` on purpose: every row there is something
+ * a machine READ out of a document, and every row here is something a PERSON
+ * TYPED, disagreeing with what the machine read. An extract can be recomputed
+ * from its source; a correction cannot be recovered from anything.
+ */
+export const taxReconciliationOverrides = pgTable(
+  "tax_reconciliation_overrides",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    fiscalYear: integer("fiscal_year").notNull(),
+    /**
+     * The reconciling line as it reads on the return. Text rather than a
+     * foreign key: these come off whatever the accountant wrote on a Schedule
+     * K, and a fixed list would refuse the edit somebody is trying to make.
+     */
+    lineLabel: text("line_label").notNull(),
+    /**
+     * The two sides being reconciled, nullable independently: an override
+     * often corrects one side and leaves the other as extracted, and a zero
+     * would read as "this line really is nil".
+     */
+    taxReturnAmount: numeric("tax_return_amount", { precision: 18, scale: 2 }),
+    bookAmount: numeric("book_amount", { precision: 18, scale: 2 }),
+    /**
+     * Whether a person added this line rather than correcting one extraction
+     * found. A user-added line has no extracted counterpart, so its absence
+     * from the return is not a discrepancy.
+     */
+    userAdded: boolean("user_added").notNull().default(false),
+    updatedBy: uuid("updated_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // One correction per line per year; two rows for the same cell would leave
+    // the reconciliation picking whichever came back first.
+    uniqueIndex("uq_tax_reconciliation_overrides_cell").on(
+      t.companyId,
+      t.fiscalYear,
+      t.lineLabel,
+    ),
+    index("idx_tax_reconciliation_overrides_company").on(t.companyId, t.fiscalYear),
+  ],
+);

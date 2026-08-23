@@ -3,6 +3,7 @@ import type { RequestHandler } from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { BadRequestError, ForbiddenError, NotFoundError } from "../../shared/errors.js";
+import type { CashFlowService } from "./cash-flow.js";
 import { createStatementsRouter } from "./router.js";
 import type { StatementsService } from "./service.js";
 
@@ -68,8 +69,14 @@ function stub(over: Record<string, unknown> = {}) {
     ...over,
   } as unknown as StatementsService;
 
+  const cashFlow = {
+    periods: record("periods", [{ fiscalYear: 2024, hasPriorBalanceSheet: true }]),
+    forFiscalYear: record("forFiscalYear", { fiscalYear: 2024, method: "indirect" }),
+    ...(over.cashFlow as object | undefined),
+  } as unknown as CashFlowService;
+
   const app = express();
-  app.use(createStatementsRouter({ service, requireAuth: authAs("caller-1") }));
+  app.use(createStatementsRouter({ service, cashFlow, requireAuth: authAs("caller-1") }));
   return { app, calls };
 }
 

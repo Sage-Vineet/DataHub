@@ -35,6 +35,7 @@ import { createReportsModule } from "./modules/reports/index.js";
 import { createBankReconciliationModule } from "./modules/bank-reconciliation/index.js";
 import { createReportSourcesModule } from "./modules/report-sources/index.js";
 import { createStatementsModule } from "./modules/statements/index.js";
+import { createTaxOverridesModule } from "./modules/tax-overrides/index.js";
 import { createQuickBooksModule } from "./modules/quickbooks/index.js";
 import { createSyncModule } from "./modules/sync/index.js";
 import { createDatasetsModule } from "./modules/datasets/index.js";
@@ -150,7 +151,8 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
     flags.QUICKBOOKS_MODULE_ENABLED ||
     flags.SYNC_MODULE_ENABLED ||
     flags.DATASETS_MODULE_ENABLED ||
-    flags.GL_IMPORT_MODULE_ENABLED;
+    flags.GL_IMPORT_MODULE_ENABLED ||
+    flags.TAX_OVERRIDES_MODULE_ENABLED;
   if (domainsEnabled) {
     const db = getDb();
     const auth = createBetterAuth({
@@ -264,6 +266,10 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
 
     if (flags.STATEMENTS_MODULE_ENABLED) {
       modules.push({ path: "/", router: createStatementsModule({ db, requireAuth }).router });
+    }
+
+    if (flags.TAX_OVERRIDES_MODULE_ENABLED) {
+      modules.push({ path: "/", router: createTaxOverridesModule({ db, requireAuth }).router });
     }
 
     if (flags.REPORT_SOURCES_MODULE_ENABLED) {

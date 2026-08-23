@@ -62,6 +62,9 @@
   "GET /manual-report-uploads/reports/:p/latest",
   "GET /manual-report-uploads/source-tree",
   "GET /manual-report-uploads/sync-progress",
+  "GET /manual-report-uploads/tax-reconciliation-overrides",
+  "GET /manual-upload/cashflow",
+  "GET /manual-upload/cashflow/periods",
   "GET /manual-upload/sync-progress",
   "GET /message-groups/:p/members",
   "GET /message-groups/:p/messages",
@@ -151,6 +154,7 @@
   "PUT /cim-questionnaire",
   "PUT /key-reports/popup-preference",
   "PUT /key-reports/versions/:p",
+  "PUT /manual-report-uploads/tax-reconciliation-overrides",
   "PUT /report-sources/selected",
   "PUT /workspace-page-state/:p"
 ]

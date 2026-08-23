@@ -2,14 +2,16 @@ import express from "express";
 import type { Request, RequestHandler, Response, Router } from "express";
 import helmet from "helmet";
 import { pinoHttp } from "pino-http";
-import { HttpError } from "../../shared/errors.js";
+import { BadRequestError, HttpError } from "../../shared/errors.js";
 import { REPORT_SOURCE_KEYS } from "../report-sources/ports.js";
 import { withCommonMiddleware } from "../../shared/router.js";
 import type { StatementExtract } from "./ports.js";
+import { MissingCashFlowInputsError, type CashFlowService } from "./cash-flow.js";
 import type { StatementsService } from "./service.js";
 
 export interface StatementsRouterDeps {
   service: StatementsService;
+  cashFlow: CashFlowService;
   requireAuth: RequestHandler;
 }
 
@@ -25,7 +27,7 @@ export interface StatementsRouterDeps {
  * it was read out of.
  */
 export function createStatementsRouter(deps: StatementsRouterDeps): Router {
-  const { service, requireAuth } = deps;
+  const { service, cashFlow, requireAuth } = deps;
   const router = express.Router();
   withCommonMiddleware(router, [helmet(), pinoHttp(), express.json(), requireAuth]);
 
@@ -33,6 +35,17 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
     (fn: (req: Request, res: Response) => Promise<void>): RequestHandler =>
     (req, res, next) =>
       fn(req, res).catch((err: unknown) => {
+        if (err instanceof MissingCashFlowInputsError) {
+          // The list, not just the sentence: the page turns `missingInputs`
+          // into the files to go and upload.
+          res.status(err.status).json({
+            success: false,
+            error: err.message,
+            fiscalYear: err.fiscalYear,
+            missingInputs: err.missingInputs,
+          });
+          return;
+        }
         if (err instanceof HttpError) {
           res.status(err.status).json({ success: false, error: err.message });
           return;
@@ -171,6 +184,37 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
    * forget — which is how you end up showing a spreadsheet's figures on the
    * QuickBooks tab.
    */
+  /**
+   * Cash flow, derived rather than stored.
+   *
+   * Legacy served these from a cache written during "Sync All", so a company
+   * with every input uploaded still got "Run Sync All to generate cash flow
+   * reports automatically" until somebody did. The inputs are on file and the
+   * derivation is a pure function over them, so it runs on the request.
+   */
+  router.get("/manual-upload/cashflow/periods", handle(async (req, res) => {
+    const periods = await cashFlow.periods(req.user!, companyOf(req), {
+      sourceKey: str(req.query.sourceKey) ?? MANUAL,
+    });
+    res.json({ success: true, periods });
+  }));
+
+  router.get("/manual-upload/cashflow", handle(async (req, res) => {
+    const raw = String(req.query.period ?? req.query.fiscalYear ?? "").trim();
+    if (!/^\d{4}$/.test(raw)) {
+      throw new BadRequestError(
+        "period is required and must be a four-digit year, for example 2024.",
+      );
+    }
+    const statement = await cashFlow.forFiscalYear(
+      req.user!,
+      companyOf(req),
+      Number.parseInt(raw, 10),
+      { sourceKey: str(req.query.sourceKey) ?? MANUAL },
+    );
+    res.json({ success: true, source: "manual_upload_generated", ...statement });
+  }));
+
   const QMS = REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
 
   router.get("/manual-report-uploads/qms-reports/:statementType/all", listFiles(QMS));

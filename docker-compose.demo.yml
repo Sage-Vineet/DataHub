@@ -86,8 +86,10 @@ services:
       # login takes ~49s of failing calls. That is the dual data-access path
       # ADR-0002 exists to delete — and a fair illustration of why.
       #
-      # Run `LEGACY_MODE=1 ./tools/demo/up.sh` to flip everything back to legacy
-      # and compare (slow without real Supabase credentials).
+      # These all default ON and now have to be. They began as cutover flags —
+      # on served the module, off fell through to legacy — but the legacy
+      # handlers behind them have been deleted, so "off" is a hole rather than
+      # a rollback, and the gateway refuses to start in that state.
       BETTER_AUTH_ENABLED: ${BETTER_AUTH_ENABLED:-true}
       COMPANIES_MODULE_ENABLED: ${COMPANIES_MODULE_ENABLED:-true}
       USERS_MODULE_ENABLED: ${USERS_MODULE_ENABLED:-true}
@@ -108,6 +110,7 @@ services:
       BANK_RECONCILIATION_MODULE_ENABLED: ${BANK_RECONCILIATION_MODULE_ENABLED:-true}
       REPORT_SOURCES_MODULE_ENABLED: ${REPORT_SOURCES_MODULE_ENABLED:-true}
       STATEMENTS_MODULE_ENABLED: ${STATEMENTS_MODULE_ENABLED:-true}
+      TAX_OVERRIDES_MODULE_ENABLED: ${TAX_OVERRIDES_MODULE_ENABLED:-true}
       QUICKBOOKS_MODULE_ENABLED: ${QUICKBOOKS_MODULE_ENABLED:-true}
       SYNC_MODULE_ENABLED: ${SYNC_MODULE_ENABLED:-true}
       DATASETS_MODULE_ENABLED: ${DATASETS_MODULE_ENABLED:-true}

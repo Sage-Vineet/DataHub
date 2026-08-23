@@ -37,6 +37,7 @@ const FLAG_OF_DOMAIN: Record<string, ModuleFlag> = {
   sync: "SYNC_MODULE_ENABLED",
   datasets: "DATASETS_MODULE_ENABLED",
   glImport: "GL_IMPORT_MODULE_ENABLED",
+  taxOverrides: "TAX_OVERRIDES_MODULE_ENABLED",
 };
 
 export interface ReapedGap {

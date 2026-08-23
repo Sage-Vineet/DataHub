@@ -23,8 +23,9 @@
 --   packages/db/migrations/0010_dataset_versions.sql
 --   packages/db/migrations/0011_statement_extracts_pulled.sql
 --   packages/db/migrations/0012_gl_import_mappings.sql
+--   packages/db/migrations/0013_tax_reconciliation_overrides.sql
 --
--- source-sha256: 14e4e4304553b80ccd29632aef58804fe592249c7f27a32fe1ff5ba85828d18f
+-- source-sha256: 6bc72b2b744e986a815149fb084adeb3d7b58956deb78aa8ef89f109470615b9
 --
 -- PostgreSQL database dump
 --
@@ -1723,6 +1724,25 @@ CREATE TABLE public.sync_runs (
 );
 
 --
+-- Name: tax_reconciliation_overrides; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.tax_reconciliation_overrides (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    company_id uuid NOT NULL,
+    fiscal_year integer NOT NULL,
+    line_label text NOT NULL,
+    tax_return_amount numeric(18,2),
+    book_amount numeric(18,2),
+    user_added boolean DEFAULT false NOT NULL,
+    updated_by uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT tax_reconciliation_overrides_label_check CHECK ((btrim(line_label) <> ''::text)),
+    CONSTRAINT tax_reconciliation_overrides_year_check CHECK (((fiscal_year >= 1900) AND (fiscal_year <= 2200)))
+);
+
+--
 -- Name: tax_return_entries; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2569,6 +2589,13 @@ ALTER TABLE ONLY public.statement_extracts
 
 ALTER TABLE ONLY public.sync_runs
     ADD CONSTRAINT sync_runs_pkey PRIMARY KEY (id);
+
+--
+-- Name: tax_reconciliation_overrides tax_reconciliation_overrides_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tax_reconciliation_overrides
+    ADD CONSTRAINT tax_reconciliation_overrides_pkey PRIMARY KEY (id);
 
 --
 -- Name: tax_return_entries tax_return_entries_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -3447,6 +3474,12 @@ CREATE INDEX idx_statement_extracts_year ON public.statement_extracts USING btre
 CREATE INDEX idx_sync_runs_company_recent ON public.sync_runs USING btree (company_id, started_at DESC);
 
 --
+-- Name: idx_tax_reconciliation_overrides_company; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_tax_reconciliation_overrides_company ON public.tax_reconciliation_overrides USING btree (company_id, fiscal_year);
+
+--
 -- Name: idx_tax_return_entries_company; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3577,6 +3610,12 @@ CREATE UNIQUE INDEX uq_statement_extracts_from_pull ON public.statement_extracts
 --
 
 CREATE UNIQUE INDEX uq_sync_runs_one_active ON public.sync_runs USING btree (company_id, source_key) WHERE (status = ANY (ARRAY['queued'::text, 'running'::text]));
+
+--
+-- Name: uq_tax_reconciliation_overrides_cell; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_tax_reconciliation_overrides_cell ON public.tax_reconciliation_overrides USING btree (company_id, fiscal_year, line_label);
 
 --
 -- Name: verification_identifier_idx; Type: INDEX; Schema: public; Owner: -
@@ -4780,6 +4819,20 @@ ALTER TABLE ONLY public.sync_runs
 
 ALTER TABLE ONLY public.sync_runs
     ADD CONSTRAINT sync_runs_started_by_fkey FOREIGN KEY (started_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+--
+-- Name: tax_reconciliation_overrides tax_reconciliation_overrides_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tax_reconciliation_overrides
+    ADD CONSTRAINT tax_reconciliation_overrides_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: tax_reconciliation_overrides tax_reconciliation_overrides_updated_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tax_reconciliation_overrides
+    ADD CONSTRAINT tax_reconciliation_overrides_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id) ON DELETE SET NULL;
 
 --
 -- Name: tax_return_entries tax_return_entries_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
