@@ -105,13 +105,33 @@ export class InMemoryRequestsRepository implements RequestsRepository {
       .sort((a, b) => b.sentAt.localeCompare(a.sentAt))
       .map((r) => ({ requestId: r.requestId, sentAt: r.sentAt, sentBy: r.sentBy, sentByName: null, sentByEmail: null }));
   }
+  /**
+   * Author names, for the narrative join the Drizzle adapter does in SQL.
+   * Unseeded ids resolve to null, which is what a LEFT JOIN miss produces.
+   */
+  private readonly people = new Map<string, { name: string; role: string }>();
+
+  seedUser(id: string, name: string, role: string): void {
+    this.people.set(id, { name, role });
+  }
+
   async getNarrative(requestId: string): Promise<NarrativeRecord | null> {
-    return this.narratives.get(requestId) ?? null;
+    const rec = this.narratives.get(requestId);
+    if (!rec) return null;
+    const author = this.people.get(rec.updatedBy);
+    return { ...rec, authorName: author?.name ?? null, authorRole: author?.role ?? null };
   }
   async upsertNarrative(requestId: string, content: string, updatedBy: string): Promise<NarrativeRecord> {
-    const rec: NarrativeRecord = { requestId, content, updatedBy, updatedAt: new Date(0).toISOString() };
+    const rec: NarrativeRecord = {
+      requestId,
+      content,
+      updatedBy,
+      updatedAt: new Date(0).toISOString(),
+      authorName: null,
+      authorRole: null,
+    };
     this.narratives.set(requestId, rec);
-    return rec;
+    return (await this.getNarrative(requestId))!;
   }
   async linkDocument(requestId: string, documentId: string, visible: boolean): Promise<RequestDocumentLinkRecord> {
     const rec: RequestDocumentLinkRecord = { id: randomUUID(), requestId, documentId, visible };

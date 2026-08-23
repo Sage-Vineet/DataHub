@@ -1,6 +1,7 @@
 import type {
   DirectContactsResponse,
   GroupCreate,
+  GroupType,
   GroupMessageResponse,
   GroupResponse,
   MessageResponse,
@@ -8,6 +9,7 @@ import type {
   UnreadCountResponse,
 } from "@datahub/contracts";
 import { canAccessCompany } from "../../shared/access.js";
+import { planCompanyGroups } from "./auto-groups.js";
 import { ForbiddenError, NotFoundError } from "../../shared/errors.js";
 import type {
   GroupMessageRecord,
@@ -89,6 +91,59 @@ export class MessagesService {
   async groupsForUser(user: SessionUser): Promise<GroupResponse[]> {
     return (await this.repo.listGroupsForUser(user.id)).map(toGroup);
   }
+  /**
+   * Bring a company's auto-created groups in line with who is on the deal.
+   *
+   * Re-run whenever membership changes, so it must be idempotent: an existing
+   * group is matched on (company, type, buyer) and renamed if the firm name
+   * moved, never duplicated. Only the groups the plan names are touched — a
+   * group somebody made by hand is left alone.
+   *
+   * Any member of the company may trigger it. Legacy restricted this to brokers
+   * and then deliberately opened it up, because a client or buyer who cannot
+   * regenerate groups simply has no rooms to talk in.
+   */
+  async autoCreateGroups(
+    user: SessionUser,
+    companyId: string,
+  ): Promise<{ success: true; created: Array<{ groupId: string; groupType: GroupType }> }> {
+    this.requireCompany(user, companyId);
+
+    const company = await this.repo.getCompany(companyId);
+    if (!company) throw new NotFoundError("Company not found");
+
+    const members = await this.repo.listMembersForGrouping(companyId);
+    const plan = planCompanyGroups(company.name ?? "", members);
+    const existing = await this.repo.listGroupsByCompany(companyId);
+    const created: Array<{ groupId: string; groupType: GroupType }> = [];
+
+    for (const planned of plan) {
+      const match = existing.find(
+        (g) => g.groupType === planned.groupType && g.buyerUserId === planned.buyerUserId,
+      );
+
+      if (match) {
+        if (match.name !== planned.name) await this.repo.renameGroup(match.id, planned.name);
+        // Members are added, never removed: leaving a room is a decision, and
+        // reconciliation must not undo it.
+        for (const memberId of planned.memberIds) await this.repo.addMember(match.id, memberId);
+        continue;
+      }
+
+      const group = await this.repo.createGroup({
+        companyId,
+        name: planned.name,
+        groupType: planned.groupType,
+        buyerUserId: planned.buyerUserId,
+        autoCreated: true,
+        memberIds: planned.memberIds,
+      });
+      created.push({ groupId: group.id, groupType: planned.groupType });
+    }
+
+    return { success: true, created };
+  }
+
   async createGroup(user: SessionUser, companyId: string, input: GroupCreate): Promise<GroupResponse> {
     this.requireCompany(user, companyId);
     this.requireManager(user);

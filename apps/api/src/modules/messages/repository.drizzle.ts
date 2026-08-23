@@ -10,6 +10,7 @@ import type {
   MessageRecord,
   MessagesRepository,
 } from "./ports.js";
+import type { GroupingMember } from "./auto-groups.js";
 
 const {
   companies,
@@ -159,6 +160,25 @@ export class DrizzleMessagesRepository implements MessagesRepository {
       .innerJoin(messageGroupMembers, eq(messageGroupMembers.groupId, messageGroups.id))
       .where(eq(messageGroupMembers.userId, userId));
     return rows.map((r) => toGroup(r.message_groups));
+  }
+  async listMembersForGrouping(companyId: string): Promise<GroupingMember[]> {
+    const rows = await this.db
+      .select({ user: users })
+      .from(userCompanies)
+      .innerJoin(users, eq(users.id, userCompanies.userId))
+      .where(eq(userCompanies.companyId, companyId));
+    return rows.map((r) => ({
+      id: r.user.id,
+      role: r.user.role,
+      subRole: r.user.subRole,
+      parentUserId: r.user.parentUserId,
+      name: r.user.name,
+      brokerCompany: r.user.brokerCompany,
+      buyerCompanyName: r.user.buyerCompanyName,
+    }));
+  }
+  async renameGroup(groupId: string, name: string): Promise<void> {
+    await this.db.update(messageGroups).set({ name }).where(eq(messageGroups.id, groupId));
   }
   async createGroup(input: CreateGroupInput): Promise<GroupRecord> {
     return this.db.transaction(async (tx) => {

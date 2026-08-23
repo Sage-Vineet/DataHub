@@ -104,6 +104,15 @@ export interface NarrativeRecord {
   content: string;
   updatedBy: string;
   updatedAt: string;
+  /**
+   * The author, resolved from `users` at read time rather than denormalized.
+   *
+   * Null when the narrative predates the author's row or the join misses — the
+   * legacy query used a LEFT JOIN for exactly that reason, and the SPA renders
+   * the narrative with an anonymous byline rather than failing.
+   */
+  authorName: string | null;
+  authorRole: string | null;
 }
 
 export interface RequestDocumentLinkRecord {

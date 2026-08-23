@@ -79,6 +79,12 @@ export function createMessagesRouter(deps: MessagesRouterDeps): Router {
   router.get("/companies/:companyId/message-groups", handle(async (req, res) => {
     res.json(await service.groupsByCompany(req.user!, req.params.companyId!));
   }));
+  // Idempotent: safe to fire on every membership change, which is what the SPA
+  // does after adding a user.
+  router.post("/companies/:companyId/message-groups/auto-create", handle(async (req, res) => {
+    res.json(await service.autoCreateGroups(req.user!, req.params.companyId!));
+  }));
+
   router.post("/companies/:companyId/message-groups", handle(async (req, res) => {
     const parsed = contracts.groupCreate.safeParse(req.body);
     if (!parsed.success) {

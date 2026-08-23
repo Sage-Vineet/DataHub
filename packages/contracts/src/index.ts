@@ -27,6 +27,7 @@ export * as users from "./users.js";
 export {
   BROKER_SUB_ROLES,
   BROKER_TEAM_SUB_ROLES,
+  BUYER_SIDE_SUB_ROLES,
   CLIENT_SIDE_SUB_ROLES,
   CLIENT_TEAM_SUB_ROLES,
 } from "./users.js";

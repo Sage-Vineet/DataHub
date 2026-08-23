@@ -8,6 +8,7 @@ import type {
   MessageRecord,
   MessagesRepository,
 } from "./ports.js";
+import type { GroupingMember } from "./auto-groups.js";
 
 export class InMemoryMessagesRepository implements MessagesRepository {
   private readonly company: MessageRecord[] = [];
@@ -91,6 +92,23 @@ export class InMemoryMessagesRepository implements MessagesRepository {
   async listGroupsForUser(userId: string) {
     return [...this.groups.values()].filter((g) => this.members.has(`${g.id}:${userId}`));
   }
+  /** Members available for grouping; seeded by tests via `seedGroupingMember`. */
+  private readonly grouping = new Map<string, GroupingMember[]>();
+
+  /** Replace the company's roster wholesale — lets a test model someone leaving. */
+  setGroupingMembers(companyId: string, members: readonly GroupingMember[]): void {
+    this.grouping.set(companyId, members.map((m) => ({ ...m })));
+  }
+
+  async listMembersForGrouping(companyId: string): Promise<GroupingMember[]> {
+    return this.grouping.get(companyId) ?? [];
+  }
+
+  async renameGroup(groupId: string, name: string): Promise<void> {
+    const g = this.groups.get(groupId);
+    if (g) this.groups.set(groupId, { ...g, name });
+  }
+
   async createGroup(input: CreateGroupInput): Promise<GroupRecord> {
     const g: GroupRecord = { id: randomUUID(), companyId: input.companyId, name: input.name, groupType: input.groupType, buyerUserId: input.buyerUserId, autoCreated: input.autoCreated };
     this.groups.set(g.id, g);

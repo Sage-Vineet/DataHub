@@ -156,9 +156,23 @@ export class DrizzleRequestsRepository implements RequestsRepository {
   }
 
   async getNarrative(requestId: string): Promise<NarrativeRecord | null> {
-    const rows = await this.db.select().from(requestNarratives).where(eq(requestNarratives.requestId, requestId)).limit(1);
+    // LEFT JOIN, not INNER: a narrative whose author row has gone still reads.
+    const rows = await this.db
+      .select({ narrative: requestNarratives, author: users })
+      .from(requestNarratives)
+      .leftJoin(users, eq(users.id, requestNarratives.updatedBy))
+      .where(eq(requestNarratives.requestId, requestId))
+      .limit(1);
     const r = rows[0];
-    return r ? { requestId: r.requestId, content: r.content, updatedBy: r.updatedBy, updatedAt: r.updatedAt.toISOString() } : null;
+    if (!r) return null;
+    return {
+      requestId: r.narrative.requestId,
+      content: r.narrative.content,
+      updatedBy: r.narrative.updatedBy,
+      updatedAt: r.narrative.updatedAt.toISOString(),
+      authorName: r.author?.name ?? null,
+      authorRole: r.author?.role ?? null,
+    };
   }
 
   async upsertNarrative(requestId: string, content: string, updatedBy: string): Promise<NarrativeRecord> {
@@ -168,7 +182,18 @@ export class DrizzleRequestsRepository implements RequestsRepository {
       .onConflictDoUpdate({ target: requestNarratives.requestId, set: { content, updatedBy, updatedAt: new Date() } })
       .returning();
     const r = rows[0]!;
-    return { requestId: r.requestId, content: r.content, updatedBy: r.updatedBy, updatedAt: r.updatedAt.toISOString() };
+    // Re-read so the author is resolved the one way, in `getNarrative`, rather
+    // than joined by hand here and left to drift from it.
+    return (
+      (await this.getNarrative(r.requestId)) ?? {
+        requestId: r.requestId,
+        content: r.content,
+        updatedBy: r.updatedBy,
+        updatedAt: r.updatedAt.toISOString(),
+        authorName: null,
+        authorRole: null,
+      }
+    );
   }
 
   async linkDocument(requestId: string, documentId: string, visible: boolean): Promise<RequestDocumentLinkRecord> {

@@ -27,6 +27,14 @@ function isFutureDate(yyyyMmDd: string): boolean {
   return yyyyMmDd > todayStr;
 }
 
+/** The `/narrative/file` wire shape — snake_case, and every field always present. */
+export interface NarrativeFileResponse {
+  content: string;
+  author_name: string | null;
+  author_role: string | null;
+  updated_at: string | null;
+}
+
 export class RequestsService {
   private readonly repo: RequestsRepository;
   constructor(deps: RequestsServiceDeps) {
@@ -109,6 +117,25 @@ export class RequestsService {
     await this.requireAccessible(user, id);
     const n = await this.repo.getNarrative(id);
     return n ? { content: n.content } : null;
+  }
+
+  /**
+   * The narrative as the SPA's request-detail pane reads it.
+   *
+   * Legacy served this at `/narrative/file` and always answered 200 — an absent
+   * narrative is empty content, not a missing resource, because the pane renders
+   * an empty editor either way. The sibling `/narrative` keeps its 404, since a
+   * caller asking for the resource itself is asking a different question.
+   */
+  async getNarrativeFile(user: SessionUser, id: string): Promise<NarrativeFileResponse> {
+    await this.requireAccessible(user, id);
+    const n = await this.repo.getNarrative(id);
+    return {
+      content: n?.content ?? "",
+      author_name: n?.authorName ?? null,
+      author_role: n?.authorRole ?? null,
+      updated_at: n?.updatedAt ?? null,
+    };
   }
 
   async updateNarrative(user: SessionUser, id: string, input: NarrativeUpdate): Promise<{ content: string }> {

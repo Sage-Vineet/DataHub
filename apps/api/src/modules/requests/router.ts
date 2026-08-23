@@ -100,6 +100,11 @@ export function createRequestsRouter(deps: RequestsRouterDeps): Router {
     res.json(n);
   }));
 
+  // Always 200: an absent narrative is empty content, not a missing resource.
+  router.get("/requests/:id/narrative/file", handle(async (req, res) => {
+    res.json(await service.getNarrativeFile(req.user!, req.params.id!));
+  }));
+
   router.patch("/requests/:id/narrative", handle(async (req, res) => {
     const parsed = contracts.narrativeUpdate.safeParse(req.body);
     if (!parsed.success) {

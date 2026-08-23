@@ -33,6 +33,18 @@ export const CLIENT_SIDE_SUB_ROLES: readonly SubRole[] = [
 ];
 /** Client-team sub-roles whose visibility is request-restricted. */
 export const CLIENT_TEAM_SUB_ROLES: readonly SubRole[] = ["client_team_member", "client_accountant"];
+/**
+ * Sub-roles on the buying side — the third side of a deal.
+ *
+ * Distinct from `CLIENT_SIDE_SUB_ROLES` despite the `buyer` DB role overlapping:
+ * a user whose `role` is "buyer" but who has no sub-role is the *seller's*
+ * client in legacy's reckoning, whereas these sub-roles mark an actual bidder.
+ */
+export const BUYER_SIDE_SUB_ROLES: readonly SubRole[] = [
+  "buyer_primary",
+  "buyer_team_member",
+  "buyer_accountant",
+];
 
 /** The computed role clients/UI reason about. */
 export const effectiveRole = z.enum(["admin", "broker", "client", "user"]);

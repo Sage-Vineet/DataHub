@@ -1,4 +1,5 @@
 import type { GroupType } from "@datahub/contracts";
+import type { GroupingMember } from "./auto-groups.js";
 
 export interface MessageRecord {
   id: string;
@@ -76,6 +77,14 @@ export interface MessagesRepository {
 
   // Groups + membership.
   listGroupsByCompany(companyId: string): Promise<GroupRecord[]>;
+  /**
+   * Company members with the fields `auto-groups.ts` classifies them by.
+   * Separate from `listCompanyMembers` because that one answers "who can be
+   * messaged", which does not need sub-roles or parentage.
+   */
+  listMembersForGrouping(companyId: string): Promise<GroupingMember[]>;
+  /** Rename a group in place — auto-creation re-runs when a firm name changes. */
+  renameGroup(groupId: string, name: string): Promise<void>;
   listGroupsForUser(userId: string): Promise<GroupRecord[]>;
   createGroup(input: CreateGroupInput): Promise<GroupRecord>;
   getGroup(id: string): Promise<GroupRecord | null>;

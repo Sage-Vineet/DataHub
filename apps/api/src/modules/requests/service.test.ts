@@ -91,3 +91,64 @@ describe("RequestsService — narrative / reminders / documents", () => {
     expect((await service.listDocuments(user, r.id)).map((d) => d.document_id)).toEqual([docId]);
   });
 });
+
+describe("RequestsService — the narrative as the detail pane reads it", () => {
+  /**
+   * `/narrative/file` is the SPA's read path. It differs from `/narrative` in
+   * two ways that both matter: it carries the author's name and role for the
+   * byline, and it answers 200 with empty content when there is no narrative
+   * yet, because the pane renders an empty editor either way.
+   */
+  it("returns empty content rather than 404 when nothing has been written", async () => {
+    const { service } = make();
+    const user = session();
+    const r = await service.create(user, COMPANY, contracts.requestCreate.parse(base));
+
+    expect(await service.getNarrativeFile(user, r.id)).toEqual({
+      content: "",
+      author_name: null,
+      author_role: null,
+      updated_at: null,
+    });
+    // The sibling endpoint keeps its 404 — asking for the resource is a
+    // different question from asking what to render.
+    expect(await service.getNarrative(user, r.id)).toBeNull();
+  });
+
+  it("carries the author's name and role for the byline", async () => {
+    const { repo, service } = make();
+    const user = session();
+    repo.seedUser(user.id, "Dana Reed", "broker");
+    const r = await service.create(user, COMPANY, contracts.requestCreate.parse(base));
+    await service.updateNarrative(user, r.id, contracts.narrativeUpdate.parse({ content: "hi" }));
+
+    expect(await service.getNarrativeFile(user, r.id)).toMatchObject({
+      content: "hi",
+      author_name: "Dana Reed",
+      author_role: "broker",
+    });
+  });
+
+  it("still reads when the author's row has gone", async () => {
+    // The query is a LEFT JOIN for exactly this: an unknown author is an
+    // anonymous byline, not a missing narrative.
+    const { service } = make();
+    const user = session();
+    const r = await service.create(user, COMPANY, contracts.requestCreate.parse(base));
+    await service.updateNarrative(user, r.id, contracts.narrativeUpdate.parse({ content: "orphan" }));
+
+    expect(await service.getNarrativeFile(user, r.id)).toMatchObject({
+      content: "orphan",
+      author_name: null,
+      author_role: null,
+    });
+  });
+
+  it("refuses a request the caller cannot reach", async () => {
+    const { service } = make();
+    const r = await service.create(session(), COMPANY, contracts.requestCreate.parse(base));
+    await expect(
+      service.getNarrativeFile(session({ role: "buyer", company_ids: [OTHER] }), r.id),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+});
