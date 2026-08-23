@@ -33,6 +33,7 @@ import { createWorkspaceModule } from "./modules/workspace/index.js";
 import { createMessagesModule } from "./modules/messages/index.js";
 import { createReportsModule } from "./modules/reports/index.js";
 import { createBankReconciliationModule } from "./modules/bank-reconciliation/index.js";
+import { createReportSourcesModule } from "./modules/report-sources/index.js";
 import { assertReapedModulesEnabled } from "./parity/reaped-guard.js";
 import { createQoeModule } from "./modules/qoe/index.js";
 import { createDataRoomModule } from "./modules/dataroom/index.js";
@@ -138,7 +139,8 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
     flags.CHART_OF_ACCOUNTS_MODULE_ENABLED ||
     flags.REPORTS_MODULE_ENABLED ||
     flags.QOE_MODULE_ENABLED ||
-    flags.BANK_RECONCILIATION_MODULE_ENABLED;
+    flags.BANK_RECONCILIATION_MODULE_ENABLED ||
+    flags.REPORT_SOURCES_MODULE_ENABLED;
   if (domainsEnabled) {
     const db = getDb();
     const auth = createBetterAuth({
@@ -218,6 +220,10 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
         path: "/",
         router: createBankReconciliationModule({ db, requireAuth }).router,
       });
+    }
+
+    if (flags.REPORT_SOURCES_MODULE_ENABLED) {
+      modules.push({ path: "/", router: createReportSourcesModule({ db, requireAuth }).router });
     }
 
     if (flags.REPORTS_MODULE_ENABLED) {

@@ -8,7 +8,6 @@ const { timingMiddleware } = require("./middleware/timing");
 const { quickBooksAuth } = require("./middleware/quickbooksAuth");
 const manualGlRoutes = require("./routes/manualGl");
 const manualReportUploadRoutes = require("./routes/manualReportUploads");
-const reportSourceRoutes = require("./routes/reportSources");
 const keyReportRoutes = require("./routes/keyReports");
 const balanceSheetRoutes = require("./routes/quickbooks/balancesheet/balanceSheet");
 const balanceSheetDetailRoutes = require("./routes/quickbooks/balancesheet/balanceSheetFullDetail");
@@ -107,7 +106,6 @@ app.get("/health", (req, res) => res.json({ ok: true }));
 app.use("/", tokenRoutes);
 app.use("/", manualGlRoutes);
 app.use("/", manualReportUploadRoutes);
-app.use("/", reportSourceRoutes);
 app.use("/", keyReportRoutes);
 
 // QuickBooks & Financial Routes (with consolidated auth)

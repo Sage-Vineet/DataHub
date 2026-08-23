@@ -522,8 +522,11 @@ export const keyReportFileMappings = pgTable(
       .references(() => companies.id, { onDelete: "cascade" }),
     /** profit_loss | balance_sheet | general_ledger | bank_statement | tax_return */
     reportCategory: text("report_category").notNull(),
-    documentId: uuid("document_id"),
-    uploadId: uuid("upload_id"),
+    // Both are ON DELETE SET NULL in the deployed schema: deleting the file
+    // leaves the mapping behind as a record that something was once linked
+    // here, rather than silently removing the row.
+    documentId: uuid("document_id").references(() => documents.id, { onDelete: "set null" }),
+    uploadId: uuid("upload_id").references(() => uploads.id, { onDelete: "set null" }),
     fileName: text("file_name"),
     /** Inferred from the file name at link time; null when none could be read. */
     year: integer("year"),
@@ -541,6 +544,40 @@ export const keyReportFileMappings = pgTable(
       t.versionId,
       t.reportCategory,
       t.documentId,
+    ),
+  }),
+);
+
+/**
+ * Which set of books a company's reports are read from.
+ *
+ * One row per source per company, unique on `(company_id, source_key)`, with
+ * exactly one carrying `is_selected`. `companies.data_source_type` holds the
+ * same answer as a denormalized cache; this table is the authority.
+ */
+export const reportSourceRecords = pgTable(
+  "report_source_records",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    sourceKey: text("source_key").notNull(),
+    sourceLabel: text("source_label").notNull().default(""),
+    isSelected: boolean("is_selected").notNull().default(false),
+    /** Does anything back this source for this company? Derived, not stored truth. */
+    isAvailable: boolean("is_available").notNull().default(false),
+    isConnected: boolean("is_connected").notNull().default(false),
+    lastConnectedAt: timestamp("last_connected_at", { withTimezone: true }),
+    lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
+    metadata: jsonb("metadata").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    companySource: uniqueIndex("uq_report_source_records_company_source").on(
+      t.companyId,
+      t.sourceKey,
     ),
   }),
 );

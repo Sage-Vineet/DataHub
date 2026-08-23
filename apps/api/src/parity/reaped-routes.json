@@ -55,6 +55,7 @@
   "GET /messages/threads",
   "GET /my-direct-contacts",
   "GET /my-groups",
+  "GET /report-sources",
   "GET /reports/balance-sheet",
   "GET /reports/balance-sheet/monthly-detail",
   "GET /reports/cashflow",
@@ -131,5 +132,6 @@
   "PUT /cim-questionnaire",
   "PUT /key-reports/popup-preference",
   "PUT /key-reports/versions/:p",
+  "PUT /report-sources/selected",
   "PUT /workspace-page-state/:p"
 ]

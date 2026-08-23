@@ -45,7 +45,6 @@
   "GET /qb-one-bank-activity",
   "GET /quickbooks-pl",
   "GET /refresh-token",
-  "GET /report-sources",
   "GET /tax-data",
   "POST /api/auth/transfer-confirm",
   "POST /api/quickbooks/sync",
@@ -61,6 +60,5 @@
   "POST /manual-report-uploads/sync-source",
   "POST /parse-bank-statement",
   "PUT /api/invoices/:p",
-  "PUT /manual-report-uploads/tax-reconciliation-overrides",
-  "PUT /report-sources/selected"
+  "PUT /manual-report-uploads/tax-reconciliation-overrides"
 ]
