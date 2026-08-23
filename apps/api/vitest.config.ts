@@ -29,6 +29,11 @@ export default defineConfig({
       exclude: [
         "src/**/*.test.ts",
         "src/server.ts", // listen bootstrap
+        // Type-only: every `ports.ts` is interfaces and nothing else, so there
+        // is no runtime code to execute and v8 scores them 0%. Counting them
+        // depressed the total by roughly a point and a half while describing
+        // nothing that could be tested.
+        "src/modules/**/ports.ts",
         "src/modules/**/repository.drizzle.ts", // runtime DB adapter — exercised by integration tests, not unit-counted
         "src/modules/**/emailer.ts", // dev console stub (the real Graph adapter IS tested)
         "src/modules/**/better-test-harness.ts", // test-only harness (PGlite wiring)
