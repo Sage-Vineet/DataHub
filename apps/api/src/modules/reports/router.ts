@@ -242,6 +242,13 @@ export function createReportsRouter(deps: ReportsRouterDeps): Router {
     res.json({ success: true, ...payload });
   }));
 
+  router.get("/reports/profit-loss/detail-vendor", handle(async (req, res) => {
+    const payload = await service.vendorDetail(req.user!, companyOf(req), {
+      fiscalYears: yearsOf(req),
+    });
+    res.json({ success: true, ...payload });
+  }));
+
   router.get("/reports/cashflow/monthly-detail", handle(async (req, res) => {
     const payload = await service.cashFlowMonthlyDetail(
       req.user!,

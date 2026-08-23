@@ -136,6 +136,13 @@ function stub(over: Record<string, unknown> = {}) {
     cashFlow: record("cashFlow", emptyCashFlow),
     monthlyDetail: record("monthlyDetail", emptyMonthlyDetail),
     balanceSheetMonthlyDetail: record("balanceSheetMonthlyDetail", emptyBsMonthlyDetail),
+    vendorDetail: record("vendorDetail", {
+      source: "general_ledger_entries",
+      reportType: "vendor_analysis",
+      filters: {},
+      years: [],
+      vendors: [],
+    }),
     cashFlowMonthlyDetail: record("cashFlowMonthlyDetail", {
       source: "general_ledger_entries",
       reportType: "cash_flow_monthly_detail",
@@ -570,5 +577,39 @@ describe("the cash-flow monthly-detail route", () => {
         Promise.reject(new HttpError(422, "No balance sheet has been ingested")),
     });
     await request(app).get(`/reports/cashflow/monthly-detail?clientId=${COMPANY}`).expect(422);
+  });
+});
+
+describe("the vendor-detail route", () => {
+  it("takes the years, and does not shadow the P&L summary", async () => {
+    const { app, calls } = stub();
+    await request(app).get(`/reports/profit-loss?clientId=${COMPANY}`).expect(200);
+    await request(app)
+      .get(`/reports/profit-loss/detail-vendor?clientId=${COMPANY}&fiscalYear=2024`)
+      .expect(200);
+
+    expect(calls.map((c) => c.method)).toEqual(["profitLoss", "vendorDetail"]);
+    expect(argsOf(calls, "vendorDetail")[2]).toEqual({ fiscalYears: [2024] });
+  });
+
+  it("400s without a company, and answers under the envelope with one", async () => {
+    const { app } = stub();
+    await request(app).get("/reports/profit-loss/detail-vendor").expect(400);
+    const res = await request(app)
+      .get(`/reports/profit-loss/detail-vendor?clientId=${COMPANY}`)
+      .expect(200);
+    expect(res.body.reportType).toBe("vendor_analysis");
+  });
+
+  it("maps access and missing-version failures to their statuses", async () => {
+    for (const [err, status] of [
+      [new ForbiddenError("denied"), 403],
+      [new NotFoundError("No key-report version for this company."), 404],
+    ] as const) {
+      const { app } = stub({ vendorDetail: () => Promise.reject(err) });
+      await request(app)
+        .get(`/reports/profit-loss/detail-vendor?clientId=${COMPANY}`)
+        .expect(status);
+    }
   });
 });

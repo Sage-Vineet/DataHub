@@ -48,6 +48,7 @@
   "GET /reports/cashflow",
   "GET /reports/cashflow/monthly-detail",
   "GET /reports/profit-loss",
+  "GET /reports/profit-loss/detail-vendor",
   "GET /reports/profit-loss/monthly-detail",
   "GET /requests/:p",
   "GET /requests/:p/documents",

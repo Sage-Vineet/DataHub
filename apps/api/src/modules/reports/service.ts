@@ -20,6 +20,11 @@ import {
   type ProfitLossSummaryPayload,
 } from "./profit-loss-view.js";
 import {
+  buildVendorDetail,
+  type VendorDetailFilters,
+  type VendorDetailPayload,
+} from "./vendor-detail-view.js";
+import {
   buildCashFlowMonthlyDetail,
   type CashFlowMonthlyFilters,
   type CashFlowMonthlyPayload,
@@ -198,6 +203,15 @@ export class ReportsService {
       if (err instanceof NoBalanceSheetError) throw new HttpError(422, err.message);
       throw err;
     }
+  }
+
+  /** Spend by vendor, then by account. */
+  async vendorDetail(
+    user: SessionUser,
+    companyId: string,
+    filters: VendorDetailFilters = {},
+  ): Promise<VendorDetailPayload> {
+    return buildVendorDetail(await this.activeEngagement(user, companyId), filters);
   }
 
   /** The engagement behind a company's active key-report version. */

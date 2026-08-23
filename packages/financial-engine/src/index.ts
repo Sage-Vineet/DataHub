@@ -2,6 +2,7 @@ export * from "./types.js";
 export * from "./periods.js";
 export * from "./coa-roles.js";
 export * from "./income-statement.js";
+export * from "./vendor-breakdown.js";
 export * from "./addbacks.js";
 export * from "./bridge.js";
 export { engagementFixture, type EngagementFixture } from "./fixture.js";

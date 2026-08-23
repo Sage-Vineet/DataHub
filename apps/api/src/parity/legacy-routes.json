@@ -58,7 +58,6 @@
   "GET /quickbooks-pl",
   "GET /refresh-token",
   "GET /report-sources",
-  "GET /reports/profit-loss/detail-vendor",
   "GET /tax-data",
   "POST /api/auth/transfer-confirm",
   "POST /api/quickbooks/sync",
