@@ -237,3 +237,104 @@ describe("choosing the year", () => {
     expect(payload.sections.Assets.total).toBe(0);
   });
 });
+
+describe("months the ledger never reached", () => {
+  it("carries the last known position forward rather than showing zero", () => {
+    // The roll only produces months with activity. Showing zero in a quiet
+    // month claims the company's bank account emptied and refilled.
+    const payload = buildBalanceSheetMonthlyDetail(engagement, ledger);
+    const cash = cashAccount(payload);
+    expect(cash.monthly[3]).toBe(cash.monthly[12]);
+    expect(cash.monthly[12]).not.toBe(0);
+  });
+
+  it("shows the opening position for months before the first rolled one", () => {
+    // A January before any activity holds what the engagement opened with, not
+    // nothing.
+    const later: EngagementData = {
+      ...engagement,
+      entries: entries.map((e) => ({ ...e, month: 6 })),
+    };
+    const cash = cashAccount(buildBalanceSheetMonthlyDetail(later, ledger));
+    expect(cash.monthly[1]).toBe(2000);
+    expect(cash.monthly[5]).toBe(2000);
+  });
+
+  it("shows no current-year income before the year's first rolled month", () => {
+    // Income resets at each fiscal year start, so carrying it backwards would
+    // show last year's result in this year's January.
+    const later: EngagementData = {
+      ...engagement,
+      entries: entries.map((e) => ({ ...e, month: 6 })),
+    };
+    const netIncome = buildBalanceSheetMonthlyDetail(later, ledger)
+      .sections.Equity.categories.find((c) => c.label === "Net Income")!
+      .accounts[0]!;
+    expect(netIncome.monthly[1]).toBe(0);
+    expect(netIncome.monthly[6]).not.toBe(0);
+  });
+});
+
+describe("rows the ledger cannot drill into", () => {
+  it("gives the derived equity rows an empty drill-down rather than a wrong one", () => {
+    // Retained earnings and net income are derived by the roll rather than
+    // posted, so there are no transactions behind them. Borrowing another
+    // account's would be worse than none.
+    const equity = buildBalanceSheetMonthlyDetail(engagement, ledger).sections.Equity;
+    const retained = equity.categories.find((c) => c.label === "Retained Earnings")!;
+    expect(retained.accounts[0]!.transactions).toEqual([]);
+  });
+
+  it("orders a drill-down by date, and puts an undated row first", () => {
+    const undated: LedgerTransaction[] = [
+      { ...ledger[1]!, id: "t3", date: null },
+      ...ledger,
+    ];
+    const cash = cashAccount(buildBalanceSheetMonthlyDetail(engagement, undated));
+    expect(cash.transactions.map((t) => t.id)).toEqual(["t3", "t1", "t2"]);
+  });
+});
+
+describe("an account the chart barely describes", () => {
+  it("files an account the chart never classified under other current assets", () => {
+    // No account type and no stated heading, so nothing can derive a group.
+    // Dropped for want of one it would be a line missing from a sheet that
+    // still balances — the amount reaches the total and the row does not
+    // appear.
+    const unclassified: EngagementData = {
+      ...engagement,
+      accounts: [
+        ...accounts,
+        {
+          id: "mystery",
+          name: "Suspense",
+          statementType: "balance_sheet",
+        } as (typeof accounts)[number],
+      ],
+      entries: [...entries, { accountId: "mystery", fiscalYear: 2024, month: 1, amount: 50 }],
+    };
+    const assets = buildBalanceSheetMonthlyDetail(unclassified, ledger).sections.Assets;
+    const named = assets.categories.flatMap((c) => c.accounts.map((a) => `${c.label}/${a.name}`));
+    expect(named).toContain("Other Current Assets/Suspense");
+  });
+
+  it("puts a category the order does not name last rather than dropping it", () => {
+    const odd: EngagementData = {
+      ...engagement,
+      accounts: accounts.map((a) => (a.id === "cash" ? { ...a, group: "Crypto Wallets" } : a)),
+      anchors: [
+        {
+          ...opening,
+          rows: opening.rows.map((r) =>
+            r.accountId === "cash" ? { ...r, group: "Crypto Wallets" } : r,
+          ),
+        },
+      ],
+    };
+    const labels = buildBalanceSheetMonthlyDetail(odd, ledger).sections.Assets.categories.map(
+      (c) => c.label,
+    );
+    expect(labels).toContain("Crypto Wallets");
+    expect(labels[labels.length - 1]).toBe("Crypto Wallets");
+  });
+});

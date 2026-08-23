@@ -1,3 +1,4 @@
+import { amountAt, round2, roundedAt } from "./amounts.js";
 import { periodKey, rollForwardBalanceSheet } from "@datahub/financial-engine";
 import type { EngagementData } from "../../shared/engagement.drizzle.js";
 import { NoBalanceSheetError } from "./balance-sheet-view.js";
@@ -18,7 +19,6 @@ import type { LedgerTransaction } from "./ports.js";
  * read from different places on purpose.
  */
 
-const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 
 export interface BsDetailAccount {
   name: string;
@@ -94,7 +94,9 @@ export function buildBalanceSheetMonthlyDetail(
     Equity: emptySection("Equity", months),
   };
 
-  const empty = (): BalanceSheetMonthlyPayload => ({
+  // The envelope. Its `sections` is the object filled in below, so calling it
+  // at the end returns the built report rather than an empty one.
+  const envelope = (): BalanceSheetMonthlyPayload => ({
     source: "general_ledger_entries",
     reportType: "balance_sheet_monthly_detail",
     year,
@@ -103,7 +105,7 @@ export function buildBalanceSheetMonthlyDetail(
     sections,
     filters,
   });
-  if (year === null) return empty();
+  if (year === null) return envelope();
 
   // Rolled over every year the engagement has, because a position part-way
   // through cannot be derived from its own year alone.
@@ -152,10 +154,11 @@ export function buildBalanceSheetMonthlyDetail(
     return found;
   };
 
-  const shown = months;
-  const lastMonth = shown[shown.length - 1];
-
-  const shownSet = new Set(shown);
+  // `resolveMonths` always answers at least one month — it falls back to all
+  // twelve — so the closing month is stated once here rather than guarded at
+  // each of the three places that read it.
+  const lastMonth = months[months.length - 1]!;
+  const shownSet = new Set(months);
   const byAccount = new Map<string, DetailTransaction[]>();
   for (const tx of transactions) {
     if (tx.fiscalYear !== year) continue;
@@ -205,10 +208,10 @@ export function buildBalanceSheetMonthlyDetail(
     for (const month of months) {
       const key = asOf(month);
       const balance =
-        key === null ? round2(options.before ?? 0) : round2(balances[key] ?? 0);
+        key === null ? round2(options.before ?? 0) : roundedAt(balances, key);
       monthly[month] = balance;
-      category.monthlyTotals[month] = round2((category.monthlyTotals[month] ?? 0) + balance);
-      section.monthlyTotals[month] = round2((section.monthlyTotals[month] ?? 0) + balance);
+      category.monthlyTotals[month] = round2((amountAt(category.monthlyTotals, month)) + balance);
+      section.monthlyTotals[month] = round2((amountAt(section.monthlyTotals, month)) + balance);
     }
 
     const drill = accountId === null ? [] : (byAccount.get(accountId) ?? []);
@@ -216,7 +219,7 @@ export function buildBalanceSheetMonthlyDetail(
       name,
       monthly,
       // A closing position, not a sum of the months.
-      total: lastMonth === undefined ? 0 : round2(monthly[lastMonth] ?? 0),
+      total: roundedAt(monthly, lastMonth),
       transactions: [...drill].sort((a, b) => (a.date ?? "").localeCompare(b.date ?? "")),
     });
   };
@@ -227,7 +230,7 @@ export function buildBalanceSheetMonthlyDetail(
     const label =
       sectionKey === "Equity" ? "Owner Equity" : (line.group ?? "Other Current Assets");
     addAccount(sectionKey, label, line.accountName, line.balances, line.accountId, {
-      before: balanceSheet.openingBalances[line.accountId] ?? 0,
+      before: amountAt(balanceSheet.openingBalances, line.accountId),
     });
   }
 
@@ -248,10 +251,10 @@ export function buildBalanceSheetMonthlyDetail(
     );
     for (const category of section.categories) {
       category.accounts.sort((a, b) => a.name.localeCompare(b.name));
-      category.total = lastMonth === undefined ? 0 : round2(category.monthlyTotals[lastMonth] ?? 0);
+      category.total = roundedAt(category.monthlyTotals, lastMonth);
     }
-    section.total = lastMonth === undefined ? 0 : round2(section.monthlyTotals[lastMonth] ?? 0);
+    section.total = roundedAt(section.monthlyTotals, lastMonth);
   }
 
-  return empty();
+  return envelope();
 }

@@ -1,3 +1,4 @@
+import { amountAt, round2, roundedAt, sumAt } from "./amounts.js";
 import {
   buildCashFlow,
   buildIncomeStatement,
@@ -23,7 +24,6 @@ import { MONTH_NAMES, resolveMonths } from "./monthly-detail-view.js";
  * walked in order rather than each derived independently.
  */
 
-const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 
 export interface CfMonthlyAccount {
   accountName: string;
@@ -110,10 +110,10 @@ export function buildCashFlowMonthlyDetail(
 
   const at = (record: Record<string, number>, month: number): number => {
     const key = keyOf(month);
-    return key === null ? 0 : round2(record[key] ?? 0);
+    return roundedAt(record, key);
   };
   const sumMonths = (values: Record<number, number>): number =>
-    round2(months.reduce((total, m) => total + (values[m] ?? 0), 0));
+    sumAt(values, months);
 
   const sections: CfMonthlySection[] = [];
 
@@ -131,7 +131,7 @@ export function buildCashFlowMonthlyDetail(
       const monthly = Object.fromEntries(months.map((m) => [m, at(line.amounts, m)]));
       const total = sumMonths(monthly);
       // An account that did not move in the window is not a line.
-      if (Math.abs(total) <= 0.005 && months.every((m) => Math.abs(monthly[m] ?? 0) <= 0.005)) {
+      if (Math.abs(total) <= 0.005 && months.every((m) => Math.abs(amountAt(monthly, m)) <= 0.005)) {
         continue;
       }
       accounts.push({ accountName: line.accountName, monthly, total });
@@ -164,7 +164,7 @@ export function buildCashFlowMonthlyDetail(
   const netCashMonthly = Object.fromEntries(
     months.map((m) => [
       m,
-      round2(sections.reduce((total, s) => total + (s.monthlyTotals[m] ?? 0), 0)),
+      round2(sections.reduce((total, s) => total + (amountAt(s.monthlyTotals, m)), 0)),
     ]),
   );
   sections.push({
@@ -183,8 +183,8 @@ export function buildCashFlowMonthlyDetail(
   for (const month of months) {
     const key = keyOf(month);
     const opening: number =
-      carried !== null ? carried : key === null ? 0 : round2(cashFlow.openingCash[key] ?? 0);
-    const closing: number = key === null ? opening : round2(cashFlow.closingCash[key] ?? 0);
+      carried !== null ? carried : roundedAt(cashFlow.openingCash, key);
+    const closing: number = key === null ? opening : roundedAt(cashFlow.closingCash, key);
     beginningCash[month] = opening;
     endingCash[month] = closing;
     carried = closing;
@@ -198,7 +198,7 @@ export function buildCashFlowMonthlyDetail(
     isCalculated: true,
     monthlyTotals: beginningCash,
     // A balance, so the year's figure is the first month's opening.
-    total: firstMonth === undefined ? 0 : (beginningCash[firstMonth] ?? 0),
+    total: amountAt(beginningCash, firstMonth),
   });
   sections.push({
     key: "ending_cash",
@@ -206,7 +206,7 @@ export function buildCashFlowMonthlyDetail(
     isCalculated: true,
     monthlyTotals: endingCash,
     // Likewise the last month's close, never the sum.
-    total: lastMonth === undefined ? 0 : (endingCash[lastMonth] ?? 0),
+    total: amountAt(endingCash, lastMonth),
   });
 
   return shell(sections);

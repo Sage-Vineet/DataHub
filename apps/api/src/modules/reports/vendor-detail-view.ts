@@ -1,3 +1,4 @@
+import { amountAt } from "./amounts.js";
 import { buildPeriods, buildVendorBreakdown } from "@datahub/financial-engine";
 import type { EngagementData } from "../../shared/engagement.drizzle.js";
 import { categoryOf } from "./profit-loss-view.js";
@@ -46,7 +47,7 @@ export interface VendorDetailFilters {
 export const NO_VENDOR_LABEL = "No Vendor";
 
 const toYearly = (amounts: Record<string, number>, years: number[]): Record<number, number> =>
-  Object.fromEntries(years.map((y) => [y, amounts[String(y)] ?? 0]));
+  Object.fromEntries(years.map((y) => [y, amountAt(amounts, String(y))]));
 
 export function buildVendorDetail(
   engagement: EngagementData,

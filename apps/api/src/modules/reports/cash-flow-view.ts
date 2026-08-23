@@ -1,3 +1,4 @@
+import { roundedAt, sumAt } from "./amounts.js";
 import {
   buildCashFlow,
   buildIncomeStatement,
@@ -27,7 +28,6 @@ import { NoBalanceSheetError } from "./balance-sheet-view.js";
  * looks plausible on the page.
  */
 
-const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 
 export interface CfItem {
   label: string;
@@ -77,7 +77,7 @@ const amountsFromByYear = (
   byYear: Record<number, number>,
   years: readonly number[],
 ): Record<string, number> =>
-  Object.fromEntries(years.map((y) => [`y${y}`, round2(byYear[y] ?? 0)]));
+  Object.fromEntries(years.map((y) => [`y${y}`, roundedAt(byYear, y)]));
 
 /** The period keys belonging to each year, in order. */
 function keysByYear(
@@ -100,7 +100,7 @@ export function buildSections(
   keys: Map<number, string[]>,
 ): CashFlowPayload["sections"] {
   const sumOver = (record: Record<string, number>, year: number): number =>
-    round2((keys.get(year) ?? []).reduce((total, key) => total + (record[key] ?? 0), 0));
+    sumAt(record, keys.get(year));
 
   const make = (key: SectionKey): CfSection => {
     const totals: Record<string, number> =
@@ -148,7 +148,7 @@ export function buildCashFlowRows(
   const amounts = (byYear: Record<number, number>) => amountsFromByYear(byYear, years);
   const scalar = (byYear: Record<string, number>): number => {
     const last = years[years.length - 1];
-    return last === undefined ? 0 : round2(byYear[`y${last}`] ?? 0);
+    return roundedAt(byYear, last === undefined ? null : `y${last}`);
   };
 
   const rows: PlRow[] = [];
@@ -259,7 +259,7 @@ export function buildCashFlowReport(
   const sections = buildSections(cashFlow, years, keys);
 
   const sumOver = (record: Record<string, number>, year: number): number =>
-    round2((keys.get(year) ?? []).reduce((total, key) => total + (record[key] ?? 0), 0));
+    sumAt(record, keys.get(year));
 
   const netCashChange: Record<number, number> = {};
   const netIncomeByYear: Record<number, number> = {};
@@ -275,8 +275,8 @@ export function buildCashFlowReport(
     const yearKeys = keys.get(year) ?? [];
     const first = yearKeys[0];
     const last = yearKeys[yearKeys.length - 1];
-    beginningCash[`y${year}`] = first === undefined ? 0 : round2(cashFlow.openingCash[first] ?? 0);
-    endingCash[`y${year}`] = last === undefined ? 0 : round2(cashFlow.closingCash[last] ?? 0);
+    beginningCash[`y${year}`] = roundedAt(cashFlow.openingCash, first);
+    endingCash[`y${year}`] = roundedAt(cashFlow.closingCash, last);
   }
 
   return {

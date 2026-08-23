@@ -1,3 +1,4 @@
+import { amountAt, round2 } from "./amounts.js";
 import type { Account } from "@datahub/financial-engine";
 import type { EngagementData } from "../../shared/engagement.drizzle.js";
 import type { LedgerTransaction } from "./ports.js";
@@ -22,7 +23,6 @@ import { categoryOf, type PlCategory } from "./profit-loss-view.js";
  * Signs follow the summary: revenue positive, costs positive as costs.
  */
 
-const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 
 export const MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
@@ -97,7 +97,7 @@ const emptyTotals = (months: readonly number[]): Totals => ({
 });
 
 const addTo = (totals: Totals, month: number, amount: number): void => {
-  totals.monthly[month] = round2((totals.monthly[month] ?? 0) + amount);
+  totals.monthly[month] = round2((amountAt(totals.monthly, month)) + amount);
   totals.total = round2(totals.total + amount);
 };
 
@@ -108,7 +108,7 @@ const combine = (
   monthly: Object.fromEntries(
     months.map((m) => [
       m,
-      round2(parts.reduce((sum, p) => sum + p.sign * (p.totals.monthly[m] ?? 0), 0)),
+      round2(parts.reduce((sum, p) => sum + p.sign * (amountAt(p.totals.monthly, m)), 0)),
     ]),
   ),
   total: round2(parts.reduce((sum, p) => sum + p.sign * p.totals.total, 0)),
@@ -162,7 +162,7 @@ export function buildMonthlyDetail(
         }),
       );
     }
-    row.monthly[tx.month] = round2((row.monthly[tx.month] ?? 0) + amount);
+    row.monthly[tx.month] = round2((amountAt(row.monthly, tx.month)) + amount);
     row.total = round2(row.total + amount);
     row.transactions.push({
       id: tx.id,

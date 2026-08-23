@@ -1,3 +1,4 @@
+import { amountAt, round2, roundedAt } from "./amounts.js";
 import {
   buildIncomeStatement,
   buildPeriods,
@@ -46,7 +47,6 @@ import type { EngagementData } from "../../shared/engagement.drizzle.js";
  * when it has children — so today it never is.
  */
 
-const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 
 /** The four buckets a P&L account can land in. */
 export type PlCategory = "Revenue" | "COGS" | "Operating Expenses" | "Other Expenses";
@@ -286,7 +286,7 @@ function accountTotals(
     for (const year of years) {
       // `byAccount` signs costs negative; these rows want magnitudes, so a
       // cost account is flipped back and revenue is left as it is.
-      const raw = signed[String(year)] ?? 0;
+      const raw = amountAt(signed, String(year));
       const total = category === "Revenue" ? round2(raw) : round2(-raw);
       totalsByYear[year] = total;
       if (total !== 0) anything = true;
@@ -311,7 +311,7 @@ const amountsFromByYear = (
   byYear: Record<number, number>,
   years: readonly number[],
 ): Record<string, number> =>
-  Object.fromEntries(years.map((y) => [`y${y}`, round2(byYear[y] ?? 0)]));
+  Object.fromEntries(years.map((y) => [`y${y}`, roundedAt(byYear, y)]));
 
 export function buildHierarchicalRows(
   engagement: EngagementData,
@@ -330,7 +330,7 @@ export function buildHierarchicalRows(
 
   // The latest selected year, for the scalar `amount` the older table reads.
   const scalar = (byYear: Record<number, number>): number =>
-    displayYear === null ? 0 : round2(byYear[displayYear] ?? 0);
+    roundedAt(byYear, displayYear);
 
   const sectionNode = (byYear: Record<number, number>) => ({
     amount: scalar(byYear),
@@ -410,7 +410,7 @@ export function buildHierarchicalRows(
   if (byCategory["Other Expenses"].length > 0) {
     const otherByYear = metricByYear("Other Expenses");
     const displayed = Object.fromEntries(
-      selected.map((y) => [y, round2(-(otherByYear[y] ?? 0))]),
+      selected.map((y) => [y, round2(-(amountAt(otherByYear, y)))]),
     ) as Record<number, number>;
     rows.push({
       id: "other-income-expense",

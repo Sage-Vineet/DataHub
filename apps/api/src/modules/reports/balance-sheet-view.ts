@@ -1,3 +1,4 @@
+import { amountAt, round2, roundedAt } from "./amounts.js";
 import {
   periodKey,
   rollForwardBalanceSheet,
@@ -22,7 +23,6 @@ import type { PlRow } from "./profit-loss-view.js";
  * thing to get wrong when assembling yearly columns from monthly ones.
  */
 
-const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 
 /** The sub-headings each section presents, in the order the statement prints them. */
 const ASSET_GROUPS = [
@@ -94,7 +94,7 @@ const amountsFromByYear = (
   byYear: Record<number, number>,
   years: readonly number[],
 ): Record<string, number> =>
-  Object.fromEntries(years.map((y) => [`y${y}`, round2(byYear[y] ?? 0)]));
+  Object.fromEntries(years.map((y) => [`y${y}`, roundedAt(byYear, y)]));
 
 /**
  * The closing period key for each year — the last month the roll-forward
@@ -140,10 +140,10 @@ export function buildSections(
     const balancesByYear: Record<number, number> = {};
     for (const year of years) {
       const key = keys.get(year);
-      const balance = round2(key === undefined ? 0 : (line.balances[key] ?? 0));
+      const balance = roundedAt(line.balances, key);
       balancesByYear[year] = balance;
-      category.totalByYear[year] = round2((category.totalByYear[year] ?? 0) + balance);
-      section.totalByYear[year] = round2((section.totalByYear[year] ?? 0) + balance);
+      category.totalByYear[year] = round2((amountAt(category.totalByYear, year)) + balance);
+      section.totalByYear[year] = round2((amountAt(section.totalByYear, year)) + balance);
     }
     category.accounts.push({ name: line.accountName, balancesByYear });
   }
@@ -160,10 +160,10 @@ export function buildSections(
     const balancesByYear: Record<number, number> = {};
     for (const year of years) {
       const key = keys.get(year);
-      const balance = round2(key === undefined ? 0 : (source[key] ?? 0));
+      const balance = roundedAt(source, key);
       balancesByYear[year] = balance;
-      category.totalByYear[year] = round2((category.totalByYear[year] ?? 0) + balance);
-      sections.Equity.totalByYear[year] = round2((sections.Equity.totalByYear[year] ?? 0) + balance);
+      category.totalByYear[year] = round2((amountAt(category.totalByYear, year)) + balance);
+      sections.Equity.totalByYear[year] = round2((amountAt(sections.Equity.totalByYear, year)) + balance);
     }
     category.accounts.push({ name: label, balancesByYear });
   }
@@ -195,11 +195,11 @@ export function buildBalanceSheetRows(
     sections[sectionKey].categories.find((c) => c.label === label) ?? null;
 
   const scalar = (byYear: Record<number, number>): number =>
-    displayYear === null ? 0 : round2(byYear[displayYear] ?? 0);
+    roundedAt(byYear, displayYear);
 
   const sumByYear = (...maps: Array<Record<number, number>>): Record<number, number> =>
     Object.fromEntries(
-      years.map((y) => [y, round2(maps.reduce((total, m) => total + (m[y] ?? 0), 0))]),
+      years.map((y) => [y, round2(maps.reduce((total, m) => total + (amountAt(m, y)), 0))]),
     );
 
   const node = (
@@ -332,9 +332,9 @@ export function buildAudit(
   // A cent of rounding across a hundred accounts is not an unbalanced sheet.
   const EPSILON = 0.01;
   return years.map((year) => {
-    const assets = round2(sections.Assets.totalByYear[year] ?? 0);
-    const liabilities = round2(sections.Liabilities.totalByYear[year] ?? 0);
-    const equity = round2(sections.Equity.totalByYear[year] ?? 0);
+    const assets = roundedAt(sections.Assets.totalByYear, year);
+    const liabilities = roundedAt(sections.Liabilities.totalByYear, year);
+    const equity = roundedAt(sections.Equity.totalByYear, year);
     const difference = round2(assets - (liabilities + equity));
     return {
       year,
