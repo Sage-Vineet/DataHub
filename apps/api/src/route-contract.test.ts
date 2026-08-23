@@ -37,6 +37,11 @@ const INTENTIONAL_ADDITIONS: ReadonlyArray<string> = [
   // messages-domain: legacy creates groups only via .../message-groups/auto-create
   // (a non-goal that stays on legacy). The module adds explicit creation.
   "POST /companies/:p/message-groups",
+  // sync-domain: legacy kept sync progress in two module-level Maps, so there
+  // was no history to serve and no endpoint to serve it from. Moving progress
+  // into a table makes "did last night's run finish?" answerable, which is the
+  // question the Maps could never answer.
+  "GET /manual-report-uploads/sync-history",
 ];
 
 describe("route contract — new modules answer on the legacy paths", () => {

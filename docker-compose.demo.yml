@@ -109,6 +109,7 @@ services:
       REPORT_SOURCES_MODULE_ENABLED: ${REPORT_SOURCES_MODULE_ENABLED:-true}
       STATEMENTS_MODULE_ENABLED: ${STATEMENTS_MODULE_ENABLED:-true}
       QUICKBOOKS_MODULE_ENABLED: ${QUICKBOOKS_MODULE_ENABLED:-true}
+      SYNC_MODULE_ENABLED: ${SYNC_MODULE_ENABLED:-true}
       # Greenfield capabilities. Legacy serves none of these prefixes, so there is
       # nothing to fall back to and nothing to shadow — they default on, like QoE.
       # Sub-flags so one unfinished feature can be switched off without losing the

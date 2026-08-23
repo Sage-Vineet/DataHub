@@ -19,8 +19,9 @@
 --   packages/db/migrations/0006_bank_reconciliation.sql
 --   packages/db/migrations/0007_statement_extracts.sql
 --   packages/db/migrations/0008_quickbooks_connections.sql
+--   packages/db/migrations/0009_sync_runs.sql
 --
--- source-sha256: fa9dacd097ca72e76a7fec772c45cf786f7a406da2cd24886c315bdebb6d8d7b
+-- source-sha256: e4f429ff4dfb1e8c7a71e69b9f62295154d0b1e24ff0fda92837bf7db326fadd
 --
 -- PostgreSQL database dump
 --
@@ -1646,6 +1647,32 @@ CREATE TABLE public.statement_extracts (
 );
 
 --
+-- Name: sync_runs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sync_runs (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    company_id uuid NOT NULL,
+    source_key text NOT NULL,
+    kind text DEFAULT 'documents'::text NOT NULL,
+    status text DEFAULT 'queued'::text NOT NULL,
+    total_files integer DEFAULT 0 NOT NULL,
+    processed_files integer DEFAULT 0 NOT NULL,
+    current_file text,
+    current_step text,
+    result jsonb DEFAULT '{}'::jsonb NOT NULL,
+    error_message text,
+    started_at timestamp with time zone DEFAULT now() NOT NULL,
+    heartbeat_at timestamp with time zone DEFAULT now() NOT NULL,
+    finished_at timestamp with time zone,
+    started_by uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT sync_runs_finished_check CHECK ((((status = ANY (ARRAY['completed'::text, 'failed'::text, 'cancelled'::text])) AND (finished_at IS NOT NULL)) OR ((status = ANY (ARRAY['queued'::text, 'running'::text])) AND (finished_at IS NULL)))),
+    CONSTRAINT sync_runs_status_check CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'completed'::text, 'failed'::text, 'cancelled'::text])))
+);
+
+--
 -- Name: tax_return_entries; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2471,6 +2498,13 @@ ALTER TABLE ONLY public.session
 
 ALTER TABLE ONLY public.statement_extracts
     ADD CONSTRAINT statement_extracts_pkey PRIMARY KEY (id);
+
+--
+-- Name: sync_runs sync_runs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sync_runs
+    ADD CONSTRAINT sync_runs_pkey PRIMARY KEY (id);
 
 --
 -- Name: tax_return_entries tax_return_entries_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -3337,6 +3371,12 @@ CREATE INDEX idx_statement_extracts_latest ON public.statement_extracts USING bt
 CREATE INDEX idx_statement_extracts_year ON public.statement_extracts USING btree (company_id, fiscal_year);
 
 --
+-- Name: idx_sync_runs_company_recent; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sync_runs_company_recent ON public.sync_runs USING btree (company_id, started_at DESC);
+
+--
 -- Name: idx_tax_return_entries_company; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3437,6 +3477,12 @@ CREATE UNIQUE INDEX uq_quickbooks_connections_realm_live ON public.quickbooks_co
 --
 
 CREATE UNIQUE INDEX uq_statement_extracts_document_type ON public.statement_extracts USING btree (company_id, document_id, statement_type);
+
+--
+-- Name: uq_sync_runs_one_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_sync_runs_one_active ON public.sync_runs USING btree (company_id, source_key) WHERE (status = ANY (ARRAY['queued'::text, 'running'::text]));
 
 --
 -- Name: verification_identifier_idx; Type: INDEX; Schema: public; Owner: -
@@ -4570,6 +4616,20 @@ ALTER TABLE ONLY public.statement_extracts
 
 ALTER TABLE ONLY public.statement_extracts
     ADD CONSTRAINT statement_extracts_upload_id_fkey FOREIGN KEY (upload_id) REFERENCES public.uploads(id) ON DELETE SET NULL;
+
+--
+-- Name: sync_runs sync_runs_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sync_runs
+    ADD CONSTRAINT sync_runs_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: sync_runs sync_runs_started_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sync_runs
+    ADD CONSTRAINT sync_runs_started_by_fkey FOREIGN KEY (started_by) REFERENCES public.users(id) ON DELETE SET NULL;
 
 --
 -- Name: tax_return_entries tax_return_entries_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -

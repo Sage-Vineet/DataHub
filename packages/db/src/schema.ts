@@ -549,6 +549,61 @@ export const keyReportFileMappings = pgTable(
 );
 
 /**
+ * One attempt at pulling a source's data in, and how far it got.
+ *
+ * Replaces `sync_jobs`, `sync_logs`, `sync_metadata` and `connection_status` —
+ * all absent — and the two in-memory Maps that actually served the progress
+ * bar. See migration 0009 for why a table rather than a Map.
+ *
+ * `heartbeatAt` is what a reader compares to now: a process that died holding
+ * a `running` row cannot write its own epitaph, so staleness is the reader's
+ * judgement rather than a state stored here.
+ */
+export const syncRuns = pgTable(
+  "sync_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    /** Same vocabulary as `report_source_records.source_key`. */
+    sourceKey: text("source_key").notNull(),
+    /** documents | quickbooks — what kind of work this is. */
+    kind: text("kind").notNull().default("documents"),
+    /** queued | running | completed | failed | cancelled */
+    status: text("status").notNull().default("queued"),
+    totalFiles: integer("total_files").notNull().default(0),
+    processedFiles: integer("processed_files").notNull().default(0),
+    currentFile: text("current_file"),
+    currentStep: text("current_step"),
+    /** What it produced. Kept even on a failure — nine imports and one error. */
+    result: jsonb("result").notNull().default({}),
+    errorMessage: text("error_message"),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    heartbeatAt: timestamp("heartbeat_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    startedBy: uuid("started_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("idx_sync_runs_company_recent").on(t.companyId, t.startedAt),
+    uniqueIndex("uq_sync_runs_one_active")
+      .on(t.companyId, t.sourceKey)
+      .where(sql`${t.status} IN ('queued', 'running')`),
+    check(
+      "sync_runs_status_check",
+      sql`${t.status} IN ('queued', 'running', 'completed', 'failed', 'cancelled')`,
+    ),
+    check(
+      "sync_runs_finished_check",
+      sql`(${t.status} IN ('completed', 'failed', 'cancelled') AND ${t.finishedAt} IS NOT NULL)
+          OR (${t.status} IN ('queued', 'running') AND ${t.finishedAt} IS NULL)`,
+    ),
+  ],
+);
+
+/**
  * A company's link to its QuickBooks Online account.
  *
  * The token columns are named `*Sealed` because they hold ciphertext, not

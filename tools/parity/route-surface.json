@@ -201,6 +201,14 @@
         "GET /api/auth/disconnect",
         "GET /api/auth/status"
       ]
+    },
+    "sync": {
+      "compare": [],
+      "additive": [
+        "GET /manual-report-uploads/sync-history",
+        "GET /manual-report-uploads/sync-progress",
+        "GET /manual-upload/sync-progress"
+      ]
     }
   },
   "backlog": [
@@ -230,13 +238,11 @@
     "GET /manual-report-uploads/qms-reports/:p/all",
     "GET /manual-report-uploads/qms-reports/:p/latest",
     "GET /manual-report-uploads/qms-source-tree",
-    "GET /manual-report-uploads/sync-progress",
     "GET /manual-report-uploads/tax-data",
     "GET /manual-report-uploads/tax-reconciliation-overrides",
     "GET /manual-upload/bank-data",
     "GET /manual-upload/cashflow",
     "GET /manual-upload/cashflow/periods",
-    "GET /manual-upload/sync-progress",
     "GET /profit-and-loss-statement",
     "GET /qb-bank-activity",
     "GET /qb-bank-activity/saved",

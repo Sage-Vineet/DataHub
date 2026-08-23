@@ -54,6 +54,8 @@
   "GET /manual-report-uploads/reports/:p/all",
   "GET /manual-report-uploads/reports/:p/latest",
   "GET /manual-report-uploads/source-tree",
+  "GET /manual-report-uploads/sync-progress",
+  "GET /manual-upload/sync-progress",
   "GET /message-groups/:p/members",
   "GET /message-groups/:p/messages",
   "GET /message-groups/:p/messages/unread-count",
