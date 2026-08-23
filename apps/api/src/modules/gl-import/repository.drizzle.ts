@@ -1,9 +1,16 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { schema, type Db } from "@datahub/db";
 import { emptyMapping, type ColumnMapping, type MappingResult } from "./column-mapping.js";
-import type { GlImportRepository, StoredMapping, UploadRecord } from "./ports.js";
+import type {
+  GlImportRepository,
+  LedgerWriter,
+  StoredMapping,
+  UploadOrigin,
+  UploadRecord,
+  WriteLedgerInput,
+} from "./ports.js";
 
-const { documents, glImportMappings, uploads } = schema;
+const { documents, generalLedgerEntries, glImportMappings, uploads } = schema;
 
 export class DrizzleGlImportRepository implements GlImportRepository {
   constructor(private readonly db: Db) {}
@@ -99,5 +106,71 @@ export class DrizzleGlImportRepository implements GlImportRepository {
       confirmedBy: row!.confirmedBy ?? null,
       confirmedAt: row!.confirmedAt ? row!.confirmedAt.toISOString() : null,
     };
+  }
+}
+
+/** Writes ledger rows, and finds the document an upload arrived as. */
+export class DrizzleLedgerWriter implements LedgerWriter {
+  constructor(private readonly db: Db) {}
+
+  async originOf(companyId: string, uploadId: string): Promise<UploadOrigin | null> {
+    const [row] = await this.db
+      .select({ documentId: documents.id, companyId: documents.companyId })
+      .from(documents)
+      .where(and(eq(documents.companyId, companyId), eq(documents.uploadId, uploadId)))
+      .limit(1);
+    return row ?? null;
+  }
+
+  async writeEntries(input: WriteLedgerInput): Promise<{ inserted: number; skipped: number }> {
+    if (input.entries.length === 0) return { inserted: 0, skipped: 0 };
+
+    let inserted = 0;
+    // In batches, because a ledger is tens of thousands of rows and one
+    // statement with that many parameters exceeds what the protocol carries.
+    const BATCH = 500;
+    for (let start = 0; start < input.entries.length; start += BATCH) {
+      const slice = input.entries.slice(start, start + BATCH);
+      const written = await this.db
+        .insert(generalLedgerEntries)
+        .values(
+          slice.map((entry) => ({
+            versionId: input.versionId,
+            companyId: input.companyId,
+            sourceFileId: input.documentId,
+            transactionDate: entry.transactionDate,
+            fiscalYear: entry.fiscalYear,
+            accountName: entry.accountName,
+            accountNumber: entry.accountNumber,
+            accountType: entry.accountType,
+            description: entry.description,
+            reference: entry.reference,
+            transactionType: entry.transactionType,
+            amount: entry.amount,
+            debit: entry.debit,
+            credit: entry.credit,
+            rowNumber: entry.rowNumber,
+            transactionHash: entry.transactionHash,
+            rowType: "TRANSACTION",
+          })),
+        )
+        // Nothing, not update: a row already in the ledger is the same row, and
+        // rewriting it would change `updated_at` on every re-import for no
+        // reason. This is what makes importing a file twice a no-op.
+        .onConflictDoNothing({
+          target: [
+            generalLedgerEntries.versionId,
+            generalLedgerEntries.sourceFileId,
+            generalLedgerEntries.transactionHash,
+          ],
+          // `where` is the index predicate here, not a row filter — this is a
+          // partial index and Postgres needs the predicate to recognise it.
+          where: sql`${generalLedgerEntries.transactionHash} IS NOT NULL`,
+        })
+        .returning({ id: generalLedgerEntries.id });
+      inserted += written.length;
+    }
+
+    return { inserted, skipped: input.entries.length - inserted };
   }
 }

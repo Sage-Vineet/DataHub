@@ -291,3 +291,194 @@ describe("previewing what would be imported", () => {
     expect(res.body.rows).toHaveLength(25);
   });
 });
+
+/**
+ * Writing an uploaded ledger into a version.
+ *
+ * The highest-consequence operation in the product: every figure any user sees
+ * is derived from what lands in `general_ledger_entries`. Two properties carry
+ * the weight — the rows are right, and importing the same file twice does not
+ * double them.
+ */
+describe("staging into the ledger (real Postgres)", () => {
+  let versionId: string;
+
+  beforeEach(async () => {
+    const [version] = await db
+      .insert(schema.keyReportVersions)
+      .values({ companyId, versionNumber: 1 })
+      .returning();
+    versionId = version!.id;
+  });
+
+  /** Run the import to completion, rather than polling the 202. */
+  const stage = async (ids: string[] = [uploadId]) => {
+    const module = createGlImportModule({ db, requireAuth: (_q, _s, n) => n() });
+    return module.service.stage(current, companyId, { versionId, uploadIds: ids });
+  };
+
+  const ledgerRows = () => db.select().from(schema.generalLedgerEntries);
+
+  it("writes the rows, with the right signs and years", async () => {
+    const result = await stage();
+    expect(result.inserted).toBe(2);
+    expect(result.fiscalYears).toEqual([2024]);
+
+    const rows = await ledgerRows();
+    const sales = rows.find((r) => r.accountName === "Sales")!;
+    const materials = rows.find((r) => r.accountName === "Materials")!;
+    expect(Number(sales.amount)).toBe(-1200);
+    expect(Number(materials.amount)).toBe(450);
+    expect(sales.fiscalYear).toBe(2024);
+  });
+
+  it("marks them as postings, so the reports count them", async () => {
+    // `row_type` is what separates a transaction from a subtotal, and every
+    // report filters on it.
+    await stage();
+    for (const row of await ledgerRows()) expect(row.rowType).toBe("TRANSACTION");
+  });
+
+  it("ties each row to the document it came from", async () => {
+    await stage();
+    const [document] = await db.select().from(schema.documents).limit(1);
+    for (const row of await ledgerRows()) expect(row.sourceFileId).toBe(document!.id);
+  });
+
+  it("imports the same file twice without doubling it", async () => {
+    // The property the whole design turns on. An upload that half-succeeded
+    // and gets retried is the normal case, not the exception.
+    const first = await stage();
+    const second = await stage();
+
+    expect(first.inserted).toBe(2);
+    expect(second.inserted).toBe(0);
+    expect(second.skipped).toBe(2);
+    expect(await ledgerRows()).toHaveLength(2);
+  });
+
+  it("keeps two genuinely identical lines as two rows", async () => {
+    // Two identical taxi fares on one day are two transactions.
+    const twice = await addUpload(
+      companyId,
+      workbook([
+        ["Date", "Distribution Account", "Debit", "Credit"],
+        ["2024-01-15", "Travel", "20.00", ""],
+        ["2024-01-15", "Travel", "20.00", ""],
+      ]),
+      "taxis.xlsx",
+    );
+    const result = await stage([twice]);
+    expect(result.inserted).toBe(2);
+  });
+
+  it("keeps one file's rows apart from another's", async () => {
+    const second = await addUpload(companyId, workbook(LEDGER), "gl-copy.xlsx");
+    await stage([uploadId]);
+    await stage([second]);
+    // Same content, different documents — two imports, not a re-import.
+    expect(await ledgerRows()).toHaveLength(4);
+  });
+
+  it("reports what each file contributed and what it dropped", async () => {
+    const partial = await addUpload(
+      companyId,
+      workbook([
+        ["Date", "Distribution Account", "Debit", "Credit"],
+        ["2024-01-15", "Sales", "", "1200.00"],
+        ["2024-02-03", "", "450.00", ""],
+      ]),
+      "partial.xlsx",
+    );
+    const result = await stage([uploadId, partial]);
+
+    expect(result.files).toHaveLength(2);
+    const second = result.files.find((f) => f.fileName === "partial.xlsx")!;
+    expect(second.inserted).toBe(1);
+    expect(second.dropped.noAccount).toBe(1);
+  });
+
+  it("uses the mapping somebody confirmed for that file", async () => {
+    // Confirmed while looking at THIS file; a batch mapping is at best a guess
+    // that every file has the same shape.
+    await request(app)
+      .post("/manual-gl/save-mapping")
+      .set("X-Client-Id", companyId)
+      .send({
+        uploadId,
+        mapping: {
+          date: "Date",
+          account_name: "Memo/Description",
+          debit: "Debit",
+          credit: "Credit",
+        },
+      })
+      .expect(200);
+
+    await stage();
+    const rows = await ledgerRows();
+    expect(rows.map((r) => r.accountName).sort()).toEqual([
+      "Consulting work for Q1",
+      "Materials for the workshop",
+    ]);
+  });
+
+  it("refuses a file whose required fields are unmapped, before writing anything", async () => {
+    const vague = await addUpload(
+      companyId,
+      workbook([
+        ["Alpha", "Beta"],
+        ["one", "two"],
+      ]),
+      "vague.xlsx",
+    );
+    await expect(stage([vague])).rejects.toThrow(/vague\.xlsx/);
+    expect(await ledgerRows()).toHaveLength(0);
+  });
+
+  it("refuses an upload from another company", async () => {
+    const theirs = await addUpload(otherId, workbook(LEDGER), "theirs.xlsx");
+    await expect(stage([theirs])).rejects.toThrow();
+    expect(await ledgerRows()).toHaveLength(0);
+  });
+});
+
+describe("the staging route (real Postgres)", () => {
+  it("answers 202 with a run to poll, and records the import against it", async () => {
+    const [version] = await db
+      .insert(schema.keyReportVersions)
+      .values({ companyId, versionNumber: 1 })
+      .returning();
+
+    const res = await request(app)
+      .post("/manual-gl/staging/multi-year")
+      .set("X-Client-Id", companyId)
+      .send({ versionId: version!.id, glUploadIds: [uploadId] })
+      .expect(202);
+
+    expect(res.body.runId).toBeTruthy();
+    // Legacy's name for the same id, so existing pollers keep working.
+    expect(res.body.jobId).toBe(res.body.runId);
+
+    // The work happens after the response; wait for the run to settle rather
+    // than for a fixed time.
+    for (let i = 0; i < 50; i++) {
+      const [run] = await db.select().from(schema.syncRuns);
+      if (run && run.status !== "running") break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    const [run] = await db.select().from(schema.syncRuns);
+    expect(run!.status).toBe("completed");
+    expect((run!.result as { inserted?: number }).inserted).toBe(2);
+    expect(await db.select().from(schema.generalLedgerEntries)).toHaveLength(2);
+  });
+
+  it("400s a request naming no uploads", async () => {
+    await request(app)
+      .post("/manual-gl/staging/multi-year")
+      .set("X-Client-Id", companyId)
+      .send({ versionId: randomUUID(), glUploadIds: [] })
+      .expect(400);
+  });
+});

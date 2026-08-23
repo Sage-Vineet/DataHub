@@ -225,7 +225,8 @@
       "additive": [
         "GET /manual-gl/columns/:p",
         "GET /manual-gl/preview/:p",
-        "POST /manual-gl/save-mapping"
+        "POST /manual-gl/save-mapping",
+        "POST /manual-gl/staging/multi-year"
       ]
     }
   },
@@ -271,7 +272,6 @@
     "POST /customers",
     "POST /key-reports/versions/:p/chart-of-accounts/regenerate",
     "POST /key-reports/versions/:p/sync",
-    "POST /manual-gl/staging/multi-year",
     "POST /manual-report-uploads/qms-parse-documents",
     "POST /manual-report-uploads/sync-qms-source",
     "POST /manual-report-uploads/sync-source",

@@ -1,5 +1,5 @@
 import {
-  bigint,
+  bigserial,
   boolean,
   date,
   index,
@@ -161,7 +161,11 @@ export const coaHierarchyLevels = pgTable("coa_hierarchy_levels", {
 export const generalLedgerEntries = pgTable(
   "general_ledger_entries",
   {
-    id: bigint("id", { mode: "number" }).primaryKey(),
+    // `bigserial`, not a bare bigint: the deployed column has
+    // `DEFAULT nextval(...)`, and modelling it without one made `id` required
+    // on every insert — so every caller had to invent a primary key, which is
+    // both the database's job and a race waiting to happen.
+    id: bigserial("id", { mode: "number" }).primaryKey(),
     versionId: uuid("version_id").notNull(),
     companyId: uuid("company_id")
       .notNull()
@@ -191,6 +195,20 @@ export const generalLedgerEntries = pgTable(
     journalType: text("journal_type"),
     debit: numeric("debit", { precision: 18, scale: 2 }),
     credit: numeric("credit", { precision: 18, scale: 2 }),
+    accountType: text("account_type"),
+    transactionType: text("transaction_type"),
+    /** Which row of the source file this came from, for an error message. */
+    rowNumber: integer("row_number"),
+    /**
+     * What makes re-importing a file a no-op.
+     *
+     * `idx_general_ledger_entries_hash` is unique over
+     * `(version_id, source_file_id, transaction_hash)` where the hash is not
+     * null, so an insert that conflicts is silently the row already there. It
+     * is the only thing standing between a second upload of the same export
+     * and a doubled ledger.
+     */
+    transactionHash: text("transaction_hash"),
   },
   (t) => [index("idx_gl_version_year").on(t.versionId, t.fiscalYear)],
 );
@@ -206,7 +224,11 @@ export const generalLedgerEntries = pgTable(
 export const balanceSheetEntries = pgTable(
   "balance_sheet_entries",
   {
-    id: bigint("id", { mode: "number" }).primaryKey(),
+    // `bigserial`, not a bare bigint: the deployed column has
+    // `DEFAULT nextval(...)`, and modelling it without one made `id` required
+    // on every insert — so every caller had to invent a primary key, which is
+    // both the database's job and a race waiting to happen.
+    id: bigserial("id", { mode: "number" }).primaryKey(),
     versionId: uuid("version_id").notNull(),
     companyId: uuid("company_id")
       .notNull()

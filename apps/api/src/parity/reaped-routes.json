@@ -131,6 +131,7 @@
   "POST /manual-gl/dataset-versions/:p/activate",
   "POST /manual-gl/dataset-versions/:p/rollback",
   "POST /manual-gl/save-mapping",
+  "POST /manual-gl/staging/multi-year",
   "POST /message-groups/:p/members",
   "POST /message-groups/:p/messages",
   "POST /message-groups/:p/messages/mark-read",

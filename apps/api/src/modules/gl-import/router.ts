@@ -6,24 +6,22 @@ import { HttpError } from "../../shared/errors.js";
 import { withCommonMiddleware } from "../../shared/router.js";
 import type { ColumnMapping } from "./column-mapping.js";
 import { SheetParseError } from "./sheet.js";
+import type { SyncService } from "../sync/service.js";
 import type { GlImportService } from "./service.js";
 
 export interface GlImportRouterDeps {
   service: GlImportService;
+  /** Staging is a sync run, so its progress survives a restart. */
+  sync: SyncService;
   requireAuth: RequestHandler;
 }
 
 /**
- * Reading an uploaded general ledger, and agreeing what its columns mean.
- *
- * `/manual-gl/staging/multi-year` is NOT here. It writes the ledger, and
- * writing is the half that needs a dataset version to write into and a sync run
- * to report against — both now exist, but wiring them together is a change with
- * consequences for every report, and it should land on its own rather than
- * riding in with the reading half.
+ * Reading an uploaded general ledger, agreeing what its columns mean, and
+ * writing it into a version.
  */
 export function createGlImportRouter(deps: GlImportRouterDeps): Router {
-  const { service, requireAuth } = deps;
+  const { service, sync, requireAuth } = deps;
   const router = express.Router();
   withCommonMiddleware(router, [helmet(), pinoHttp(), express.json(), requireAuth]);
 
@@ -86,6 +84,102 @@ export function createGlImportRouter(deps: GlImportRouterDeps): Router {
       skipped: preview.skipped,
       rows: preview.rows.slice(0, capped),
     });
+  }));
+
+  /**
+   * Write the uploads into a version.
+   *
+   * Answers 202 with a run id and does the work afterwards, which is legacy's
+   * contract and the right one for a job that takes minutes.
+   *
+   * What is different is where the progress lives. Legacy ran this in a
+   * `setImmediate` and reported through an in-memory Map, so a restart
+   * mid-import left the screen saying "idle" while rows were still landing —
+   * and no record afterwards that it had ever started. The run is a row now:
+   * a process that dies leaves something reapable, and the import is
+   * idempotent, so the retry that follows costs nothing.
+   */
+  router.post("/manual-gl/staging/multi-year", handle(async (req, res) => {
+    const body = (req.body ?? {}) as {
+      versionId?: unknown;
+      glUploadIds?: unknown;
+      uploadIds?: unknown;
+      mapping?: unknown;
+      fiscalYearStartMonth?: unknown;
+    };
+    const companyId = companyOf(req);
+    // `glUploadIds` is legacy's name; `uploadIds` reads better and both arrive.
+    const raw = Array.isArray(body.glUploadIds) ? body.glUploadIds : body.uploadIds;
+    const uploadIds = (Array.isArray(raw) ? raw : []).map(String).filter(Boolean);
+    const versionId = String(body.versionId ?? "");
+    const startMonth = Number.parseInt(String(body.fiscalYearStartMonth ?? ""), 10);
+
+    if (uploadIds.length === 0) {
+      throw new HttpError(400, "At least one upload is required.");
+    }
+
+    const run = await sync.start(req.user!, companyId, {
+      sourceKey: "manual_gl_upload",
+      kind: "gl_import",
+      totalFiles: uploadIds.length,
+    });
+
+    res.status(202).json({
+      success: true,
+      runId: run.id,
+      // Legacy's name for it, so existing pollers keep working.
+      jobId: run.id,
+      message: "Import started. Poll /manual-report-uploads/sync-progress for progress.",
+    });
+
+    // After the response, and every step recorded on the run rather than in
+    // memory. Failures here cannot reach the client — the run is where they go.
+    void (async () => {
+      try {
+        const result = await service.stage(
+          req.user!,
+          companyId,
+          {
+            versionId,
+            uploadIds,
+            mapping: (body.mapping ?? {}) as Partial<ColumnMapping>,
+            ...(Number.isInteger(startMonth) ? { fiscalYearStartMonth: startMonth } : {}),
+          },
+          {
+            onFile: async (fileName, index) => {
+              await sync.advance(req.user!, companyId, run.id, {
+                processedFiles: index,
+                currentFile: fileName,
+                currentStep: "importing",
+              });
+            },
+          },
+        );
+
+        await sync.advance(req.user!, companyId, run.id, {
+          processedFiles: uploadIds.length,
+          currentStep: "completed",
+        });
+        await sync.finish(req.user!, companyId, run.id, {
+          status: "completed",
+          result: {
+            inserted: result.inserted,
+            skipped: result.skipped,
+            fiscalYears: result.fiscalYears,
+            files: result.files,
+          },
+        });
+      } catch (err) {
+        await sync
+          .finish(req.user!, companyId, run.id, {
+            status: "failed",
+            errorMessage: err instanceof Error ? err.message : String(err),
+          })
+          // A failure to record a failure must not become an unhandled
+          // rejection that takes the process with it.
+          .catch(() => undefined);
+      }
+    })();
   }));
 
   return router;
