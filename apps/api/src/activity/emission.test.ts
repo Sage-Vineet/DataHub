@@ -31,7 +31,7 @@ const BROKER: SessionUser = {
   name: "Broker",
   email: "broker@example.com",
   role: "broker",
-  sub_role: "broker_admin",
+  status: "active",
   company_id: null,
   company_ids: [COMPANY],
 };
@@ -62,7 +62,6 @@ beforeEach(async () => {
     color: null,
     createdBy: BROKER.id,
     archivedAt: null,
-    createdAt: new Date(),
   });
 
   const foldersService = new FoldersService({

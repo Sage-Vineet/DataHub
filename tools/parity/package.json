@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "parity": "tsx src/cli.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "lint": "eslint .",
     "test": "vitest run",
     "test:cov": "vitest run --coverage"

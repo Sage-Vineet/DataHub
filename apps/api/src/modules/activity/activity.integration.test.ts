@@ -104,7 +104,8 @@ describe("the feed a broker gets", () => {
       companyId: MINE,
       folderId: folder!.id,
       fileUrl: `/uploads/${upload!.id}/content`,
-      size: 1,
+      // `documents.size` is a text column, not numeric.
+      size: "1",
       ext: "pdf",
       // The deployed `document_status` enum is verified|under-review|rejected.
       // `packages/db` declares active|processing|error and shares no value with

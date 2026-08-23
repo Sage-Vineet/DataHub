@@ -535,7 +535,7 @@ describe("the audit trail (real Postgres)", () => {
     const audit = await request(app).get(`/qa/items/${item.id}/audit`);
 
     expect(audit.status).toBe(200);
-    const kinds = audit.body.entries.map((e) => e.kind);
+    const kinds = (audit.body.entries as Array<{ kind: string; at: string }>).map((e) => e.kind);
     // Asked, assigned, delegated, answered, corrected, reworded — the exchange,
     // in the order it happened, without the reader interleaving three lists.
     expect(kinds).toContain("asked");
@@ -543,7 +543,7 @@ describe("the audit trail (real Postgres)", () => {
     expect(kinds).toContain("answered");
     expect(kinds).toContain("corrected");
     expect(kinds).toContain("reworded");
-    const times = audit.body.entries.map((e) => e.at);
+    const times = (audit.body.entries as Array<{ kind: string; at: string }>).map((e) => e.at);
     expect([...times].sort()).toEqual(times);
   });
 
@@ -555,7 +555,9 @@ describe("the audit trail (real Postgres)", () => {
 
     const audit = await request(app).get(`/qa/items/${item.id}/audit`);
 
-    expect(audit.body.entries.every((e) => e.actor_name)).toBe(true);
+    expect(
+      (audit.body.entries as Array<{ actor_name: string | null }>).every((e) => e.actor_name),
+    ).toBe(true);
   });
 
   it("keeps an unpublished rewording out of the record", async () => {
@@ -571,7 +573,7 @@ describe("the audit trail (real Postgres)", () => {
 
     const audit = await request(app).get(`/qa/items/${item.id}/audit`);
 
-    expect(audit.body.entries.map((e) => e.kind)).not.toContain("reworded");
+    expect((audit.body.entries as Array<{ kind: string; at: string }>).map((e) => e.kind)).not.toContain("reworded");
   });
 
   it("refuses the audit of a question the viewer cannot see", async () => {

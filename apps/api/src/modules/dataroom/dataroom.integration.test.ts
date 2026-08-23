@@ -27,10 +27,20 @@ import { createDataRoomModule } from "./index.js";
 const BROKER_ID = "11111111-1111-4111-8111-111111111111";
 const SELLER_ID = "22222222-2222-4222-8222-222222222222";
 
-function binaryParser(res: Request, cb: (err: Error | null, body: Buffer) => void) {
+/**
+ * Collect a binary response body.
+ *
+ * The parameter is superagent's response, not Express's — they are different
+ * types with the same name, and importing the wrong one made this silently
+ * mistyped until tests were brought under `tsc`.
+ */
+function binaryParser(
+  res: NodeJS.EventEmitter,
+  cb: (err: Error | null, body: Buffer) => void,
+): void {
   const chunks: Buffer[] = [];
-  (res as unknown as NodeJS.EventEmitter).on("data", (c: Buffer) => chunks.push(Buffer.from(c)));
-  (res as unknown as NodeJS.EventEmitter).on("end", () => cb(null, Buffer.concat(chunks)));
+  res.on("data", (c: Buffer) => chunks.push(Buffer.from(c)));
+  res.on("end", () => cb(null, Buffer.concat(chunks)));
 }
 
 let client: PGlite;
@@ -160,7 +170,7 @@ describe("chunked upload assembles in the database (real Postgres)", () => {
     const content = await request(app)
       .get(`/dataroom/versions/${done.body.version_id}/content`)
       .buffer(true)
-      .parse(binaryParser);
+      .parse(binaryParser as unknown as (res: unknown, cb: (err: Error | null, body: unknown) => void) => void);
     // Sampling each chunk's first byte pins the order precisely.
     expect(content.body.length).toBe(CHUNK * 3);
     expect(String.fromCharCode(content.body[0]!)).toBe("A");
@@ -191,7 +201,7 @@ describe("chunked upload assembles in the database (real Postgres)", () => {
     const content = await request(app)
       .get(`/dataroom/versions/${done.body.version_id}/content`)
       .buffer(true)
-      .parse(binaryParser);
+      .parse(binaryParser as unknown as (res: unknown, cb: (err: Error | null, body: unknown) => void) => void);
     expect(content.body.toString()).toBe("OK!");
   });
 
@@ -248,11 +258,11 @@ describe("versioning through the database (real Postgres)", () => {
     const got1 = await request(app)
       .get(`/dataroom/versions/${v1.id}/content`)
       .buffer(true)
-      .parse(binaryParser);
+      .parse(binaryParser as unknown as (res: unknown, cb: (err: Error | null, body: unknown) => void) => void);
     const got2 = await request(app)
       .get(`/dataroom/versions/${v2.id}/content`)
       .buffer(true)
-      .parse(binaryParser);
+      .parse(binaryParser as unknown as (res: unknown, cb: (err: Error | null, body: unknown) => void) => void);
     expect(got1.body.toString()).toBe("ORIGINAL");
     expect(got2.body.toString()).toBe("REPLACEMENT");
   });
@@ -293,7 +303,7 @@ describe("versioning through the database (real Postgres)", () => {
     const content = await request(app)
       .get(`/dataroom/versions/${restored.body.id}/content`)
       .buffer(true)
-      .parse(binaryParser);
+      .parse(binaryParser as unknown as (res: unknown, cb: (err: Error | null, body: unknown) => void) => void);
     expect(content.body.toString()).toBe("ORIGINAL");
   });
 

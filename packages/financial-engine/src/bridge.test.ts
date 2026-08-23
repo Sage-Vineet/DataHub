@@ -21,7 +21,7 @@ describe("reported EBITDA", () => {
     expect(line("interest_expense")!.amounts["2024"]).toBeCloseTo(87176.03, 2);
     expect(line("interest_income")!.amounts["2024"]).toBeCloseTo(-5115.91, 2);
     expect(line("depreciation")!.amounts["2024"]).toBeCloseTo(217775, 2);
-    expect(result.reportedEbitda["2024"]).toBeCloseTo(347403.35, 2);
+    expect(result.reportedEbitda["2024"]!).toBeCloseTo(347403.35, 2);
   });
 
   it("itemizes each EBIT add-back rather than pre-aggregating", () => {
@@ -52,8 +52,8 @@ describe("reported EBITDA", () => {
 
     // Had they been added back they would have contributed $83,981.56 —
     // nearly doubling FY2024 reported EBITDA.
-    expect(result.reportedEbitda["2024"]).toBeCloseTo(347403.35, 2);
-    expect(result.reportedEbitda["2024"]).not.toBeCloseTo(347403.35 + 83981.56, 2);
+    expect(result.reportedEbitda["2024"]!).toBeCloseTo(347403.35, 2);
+    expect(result.reportedEbitda["2024"]!).not.toBeCloseTo(347403.35 + 83981.56, 2);
   });
 
   it("reports every unflagged P&L account so nothing is silently skipped", () => {
@@ -90,10 +90,10 @@ describe("Adjusted EBITDA vs SDE", () => {
 
     expect(sde.ownerCompensation!.amounts["2024"]).toBeCloseTo(250000, 2);
     expect(adj.ownerCompensation!.amounts["2024"]).toBeCloseTo(160000, 2);
-    expect(sde.adjusted["2024"] - adj.adjusted["2024"]).toBeCloseTo(90000, 2);
+    expect(sde.adjusted["2024"]! - adj.adjusted["2024"]!).toBeCloseTo(90000, 2);
 
     // Everything above the owner-comp line is identical.
-    expect(sde.reportedEbitda["2024"]).toBeCloseTo(adj.reportedEbitda["2024"], 2);
+    expect(sde.reportedEbitda["2024"]!).toBeCloseTo(adj.reportedEbitda["2024"]!, 2);
     expect(sde.metricLabel).toBe("Seller's Discretionary Earnings");
     expect(adj.metricLabel).toBe("Adjusted EBITDA");
   });
@@ -120,7 +120,7 @@ describe("add-back sourcing kinds", () => {
         },
       ],
     });
-    expect(result.addbackGroups[0].items[0].amounts["2024"]).toBeCloseTo(1163.86, 2);
+    expect(result.addbackGroups[0]!.items[0]!.amounts["2024"]!).toBeCloseTo(1163.86, 2);
   });
 
   it("computes a recast as the delta from the normalized value", () => {
@@ -140,7 +140,7 @@ describe("add-back sourcing kinds", () => {
       ],
     });
     // Actual FY2024 rent 240,741.20 less normalized 180,000.
-    expect(result.addbackGroups[0].items[0].amounts["2024"]).toBeCloseTo(60741.2, 2);
+    expect(result.addbackGroups[0]!.items[0]!.amounts["2024"]!).toBeCloseTo(60741.2, 2);
   });
 
   it("refuses a manual adjustment with no written explanation", () => {
@@ -178,7 +178,7 @@ describe("add-back sourcing kinds", () => {
         },
       ],
     });
-    const amounts = Object.values(result.addbackGroups[0].items[0].amounts);
+    const amounts = Object.values(result.addbackGroups[0]!.items[0]!.amounts);
     expect(amounts).toHaveLength(12);
     for (const amount of amounts) expect(amount).toBeCloseTo(1000, 2);
   });
@@ -205,7 +205,7 @@ describe("data source toggle", () => {
       addbacks: [taxOnly],
       dataSource: "tax_return",
     });
-    expect(fromReturn.addbackGroups[0].items[0].amounts["2024"]).toBeCloseTo(10000, 2);
+    expect(fromReturn.addbackGroups[0]!.items[0]!.amounts["2024"]!).toBeCloseTo(10000, 2);
   });
 
   it("moves the net income note with the toggle", () => {

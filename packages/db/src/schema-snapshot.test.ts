@@ -44,14 +44,15 @@ describe("schema snapshot", () => {
 
   it("carries every table the Drizzle model declares", async () => {
     // A model table absent from the deployed schema is a migration nobody ran.
+    // Names read directly rather than through a type predicate: narrowing to
+    // `{ _: { name: string } }` is not assignable to the schema union, so the
+    // predicate was a type error hiding behind an untypechecked test file.
     const declared = new Set(
-      Object.values(schema)
-        .filter((v): v is { _: { name: string } } =>
-          typeof v === "object" && v !== null && "_" in v &&
-          typeof (v as { _: unknown })._ === "object" &&
-          (v as { _: { name?: unknown } })._?.name !== undefined,
-        )
-        .map((t) => t._.name),
+      Object.values(schema as Record<string, unknown>).flatMap((v) => {
+        if (typeof v !== "object" || v === null || !("_" in v)) return [];
+        const meta = (v as { _: { name?: unknown } })._;
+        return typeof meta?.name === "string" ? [meta.name] : [];
+      }),
     );
     const db = await createSchemaDb();
     const rows = await db.query<{ table_name: string }>(

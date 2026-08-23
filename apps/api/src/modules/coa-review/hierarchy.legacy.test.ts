@@ -12,8 +12,15 @@ import { createLegacyHierarchyWriter } from "./hierarchy.legacy.js";
  * could name a different one would be a way to forge an audit entry.
  */
 
+/**
+ * Parameters are declared even though the body ignores them: without them
+ * `vi.fn` infers a zero-length call tuple, and every `mock.calls[0]` read below
+ * becomes an index into an empty tuple.
+ */
 const ok = () =>
-  vi.fn(async () => new Response(JSON.stringify({ success: true }), { status: 200 }));
+  vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+    new Response(JSON.stringify({ success: true }), { status: 200 }),
+  );
 
 const patch = { levels: ["Net Income", "Other Income", "Interest Income"], movedParent: true };
 

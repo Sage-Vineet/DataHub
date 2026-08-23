@@ -92,9 +92,9 @@ describe("QoeService — add-backs", () => {
     await service.createAddback(user, manual);
     const after = await service.bridge(user, VERSION);
 
-    expect(after.adjusted["2024"] - before.adjusted["2024"]).toBeCloseTo(12000, 2);
+    expect(after.adjusted["2024"]! - before.adjusted["2024"]!).toBeCloseTo(12000, 2);
     // Reported EBITDA is above the add-back section and must not move.
-    expect(after.reportedEbitda["2024"]).toBeCloseTo(before.reportedEbitda["2024"], 2);
+    expect(after.reportedEbitda["2024"]!).toBeCloseTo(before.reportedEbitda["2024"]!, 2);
   });
 
   it("rejects an add-back for a different company than the version", async () => {
@@ -136,8 +136,8 @@ describe("QoeService — account roles drive the EBIT lines", () => {
 
     const taxLine = after.ebitLines.find((l) => l.key === "income_tax");
     expect(taxLine!.amounts["2024"]).toBeCloseTo(37820.18, 2);
-    expect(after.reportedEbitda["2024"]).toBeCloseTo(
-      before.reportedEbitda["2024"] + 37820.18,
+    expect(after.reportedEbitda["2024"]!).toBeCloseTo(
+      before.reportedEbitda["2024"]! + 37820.18,
       2,
     );
     await repo.setAccountRole(VERSION, "meals-tax", null);

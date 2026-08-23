@@ -21,10 +21,11 @@ const BROKER: SessionUser = {
 };
 
 /** Collect a binary response body into a Buffer. */
-function binaryParser(res: Request, cb: (err: Error | null, body: Buffer) => void) {
+/** Superagent's response, not Express's — same name, different type. */
+function binaryParser(res: NodeJS.EventEmitter, cb: (err: Error | null, body: Buffer) => void) {
   const chunks: Buffer[] = [];
-  (res as unknown as NodeJS.EventEmitter).on("data", (c: Buffer) => chunks.push(Buffer.from(c)));
-  (res as unknown as NodeJS.EventEmitter).on("end", () => cb(null, Buffer.concat(chunks)));
+  res.on("data", (c: Buffer) => chunks.push(Buffer.from(c)));
+  res.on("end", () => cb(null, Buffer.concat(chunks)));
 }
 
 let client: PGlite;
@@ -77,7 +78,7 @@ describe("uploads router — blob round-trip through bytea (real Postgres)", () 
     expect(up.status).toBe(201);
     expect(up.body.size_bytes).toBe(payload.length);
 
-    const got = await request(app).get(`/uploads/${up.body.id}/content`).buffer(true).parse(binaryParser);
+    const got = await request(app).get(`/uploads/${up.body.id}/content`).buffer(true).parse(binaryParser as unknown as (res: unknown, cb: (err: Error | null, body: unknown) => void) => void);
     expect(got.status).toBe(200);
     expect(got.headers["content-type"]).toContain("application/octet-stream");
     expect(Buffer.compare(got.body, payload)).toBe(0);

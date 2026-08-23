@@ -120,7 +120,9 @@ describe("createGeminiClassifier", () => {
     });
 
     it("backs off before the quota retry", async () => {
-      const sleep = vi.fn(async () => {});
+      // Declared parameters, so `sleep.mock.calls[0][0]` is a typed number
+      // rather than an index into an empty tuple.
+      const sleep = vi.fn(async (_ms: number) => {});
       const { client } = scriptedClient([new Error("429 quota"), "ok"]);
       const classifier = createGeminiClassifier({
         apiKey: "k",

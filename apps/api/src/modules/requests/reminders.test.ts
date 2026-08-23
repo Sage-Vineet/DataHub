@@ -1,6 +1,11 @@
 import type { SessionUser } from "@datahub/contracts";
 import { describe, expect, it } from "vitest";
-import type { ReminderHistoryRow, ReminderSourceRow, RequestRecord } from "./ports.js";
+import type {
+  ReminderHistoryRow,
+  ReminderSourceRow,
+  RequestRecord,
+  RequestStatusValue,
+} from "./ports.js";
 import { buildReminders, canSeeReminder, reminderStatus } from "./reminders.js";
 
 const NOW = new Date("2026-08-21T12:00:00.000Z");
@@ -39,7 +44,15 @@ function request(over: Partial<RequestRecord> = {}): RequestRecord {
   };
 }
 
-function source(over: Partial<ReminderSourceRow> & { request?: Partial<RequestRecord> } = {}): ReminderSourceRow {
+/**
+ * `request` is omitted from the base before being re-added as a partial.
+ * Intersecting `Partial<ReminderSourceRow>` with `{ request?: Partial<…> }`
+ * makes the property `RequestRecord & Partial<RequestRecord>` — which demands a
+ * complete record and defeats the point of an override helper.
+ */
+function source(
+  over: Omit<Partial<ReminderSourceRow>, "request"> & { request?: Partial<RequestRecord> } = {},
+): ReminderSourceRow {
   const { request: reqOver, ...rest } = over;
   return {
     request: request(reqOver),
@@ -78,7 +91,12 @@ describe("canSeeReminder", () => {
 
 describe("reminderStatus", () => {
   it("never chases a completed or rejected request", () => {
-    for (const status of ["completed", "rejected"] as const) {
+    // "rejected" is not in the `request_status` enum — the database cannot
+    // produce it. `isRequestResolved` accepts it anyway, and this pins that
+    // tolerance: legacy rows and imports have carried the value, and chasing a
+    // rejected request would be worse than ignoring an unknown status.
+    const statuses = ["completed", "rejected" as RequestStatusValue] as const;
+    for (const status of statuses) {
       expect(reminderStatus(source({ request: { status } }), "2026-01-01T00:00:00.000Z", NOW)).toBe("resolved");
     }
   });

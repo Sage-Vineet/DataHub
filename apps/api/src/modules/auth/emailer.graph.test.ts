@@ -7,7 +7,9 @@ function mockFetch(responses: Array<{ status: number; body?: unknown }>) {
   let i = 0;
   const fn = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     calls.push({ url: String(url), init });
-    const r = responses[Math.min(i, responses.length - 1)];
+    // Non-null: the index is clamped to the last element, and the helper is
+    // never called with an empty script.
+    const r = responses[Math.min(i, responses.length - 1)]!;
     i += 1;
     return {
       ok: r.status >= 200 && r.status < 300,
@@ -43,11 +45,11 @@ describe("GraphEmailer", () => {
     expect(result.sent).toBe(true);
 
     // First call: token endpoint. Second: sendMail with Bearer + the code in the body.
-    expect(calls[0].url).toContain("login.microsoftonline.com/tenant/oauth2/v2.0/token");
-    expect(calls[1].url).toContain("graph.microsoft.com/v1.0/users/noreply%40datahub.test/sendMail");
-    const headers = calls[1].init?.headers as Record<string, string>;
+    expect(calls[0]!.url).toContain("login.microsoftonline.com/tenant/oauth2/v2.0/token");
+    expect(calls[1]!.url).toContain("graph.microsoft.com/v1.0/users/noreply%40datahub.test/sendMail");
+    const headers = calls[1]!.init?.headers as Record<string, string>;
     expect(headers.Authorization).toBe("Bearer tok-123");
-    expect(String(calls[1].init?.body)).toContain("123456");
+    expect(String(calls[1]!.init?.body)).toContain("123456");
   });
 
   it("caches the token across sends (only one token fetch)", async () => {

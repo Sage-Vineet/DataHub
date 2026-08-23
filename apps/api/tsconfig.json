@@ -6,5 +6,8 @@
     "types": ["node"]
   },
   "include": ["src/**/*.ts"],
+  // Tests are excluded from the BUILD so they stay out of `dist`. They are
+  // still typechecked: `pnpm typecheck` uses tsconfig.test.json, which includes
+  // them. Excluding them from both is how 111 type errors accumulated unseen.
   "exclude": ["dist", "node_modules", "src/**/*.test.ts"]
 }

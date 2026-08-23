@@ -20,7 +20,19 @@ import type { ApplyResult } from "./ports.js";
  */
 
 const authAs = (id: string | null): RequestHandler => (req, _res, next) => {
-  if (id) (req as Request & { user?: { id: string } }).user = { id };
+  // A full session user, not `{ id }`: `req.user` is typed as `SessionUser`,
+  // and a partial one only typechecked because tests were excluded from tsc.
+  if (id) {
+    req.user = {
+      id,
+      name: "Reviewer",
+      email: `${id}@example.test`,
+      role: "broker",
+      company_id: null,
+      status: "active",
+      company_ids: [],
+    };
+  }
   next();
 };
 

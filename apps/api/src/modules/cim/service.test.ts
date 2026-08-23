@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { SessionUser } from "@datahub/contracts";
 import { CimStore, memoryCim, unavailableCimDataRoom, unavailableQa } from "./repository.memory.js";
+import type { CimServiceDeps } from "./service.js";
 import { CimService } from "./service.js";
 import type { CimActivityPort } from "./ports.js";
 
@@ -23,7 +24,13 @@ let store: CimStore;
 let service: CimService;
 let emitted: string[];
 
-function build(overrides: Partial<Parameters<typeof CimService.prototype.constructor>[0]> = {}) {
+/**
+ * `CimServiceDeps` directly, rather than reaching through
+ * `Parameters<typeof CimService.prototype.constructor>` — that resolves to the
+ * base `Function` type, whose parameter list is `never`, so every override was
+ * silently unchecked.
+ */
+function build(overrides: Partial<CimServiceDeps> = {}) {
   const ports = memoryCim(new CimStore());
   store = ports.store;
   emitted = [];
@@ -401,6 +408,10 @@ describe("the guided Q&A loop", () => {
     await service.acceptAnswer(broker, gap.block_id, {
       qa_item_id: "i-1",
       qa_response_id: "r-1",
+      // `mode` is `.default("skip")` in the contract, so the router never sends
+      // it absent. Calling the service directly skips that, and omitting it
+      // here tested a shape the service can never receive.
+      mode: "skip",
       text: "Tidied for a buyer audience.",
     });
 
@@ -472,6 +483,7 @@ describe("the guided Q&A loop", () => {
     await service.acceptAnswer(broker, gap.block_id, {
       qa_item_id: "i-1",
       qa_response_id: "r-1",
+      mode: "skip",
     });
 
     expect(await service.reviewQueue(broker, versionId)).toHaveLength(0);
@@ -503,6 +515,7 @@ describe("the guided Q&A loop", () => {
     await service.acceptAnswer(broker, gap.block_id, {
       qa_item_id: "i-1",
       qa_response_id: "r-1",
+      mode: "skip",
     });
 
     expect(emitted).toContain("cim.answer.accepted");
