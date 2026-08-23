@@ -1,14 +1,21 @@
-import { asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { schema, type Db } from "@datahub/db";
 import type { ReportVersionStatus } from "@datahub/contracts";
 import type {
   CreateVersionInput,
+  LinkDocumentInput,
+  LinkedDocument,
+  MappingRecord,
+  MappingsRepository,
   ReportsRepository,
   UpdateVersionPatch,
   VersionRecord,
 } from "./ports.js";
 
-const { keyReportVersions } = schema;
+const { documents, fileReferences, keyReportFileMappings, keyReportVersions } = schema;
+
+/** What `file_references.linked_module` says for a key-report link. */
+const KEY_REPORTS_MODULE = "key_reports";
 type Row = typeof keyReportVersions.$inferSelect;
 
 function toRecord(r: Row): VersionRecord {
@@ -101,5 +108,155 @@ export class DrizzleReportsRepository implements ReportsRepository {
         .returning();
       return toRecord(rows[0]!);
     });
+  }
+}
+
+/** Mappings, and the file references that hold their documents in place. */
+export class DrizzleMappingsRepository implements MappingsRepository {
+  constructor(private readonly db: Db) {}
+
+  private static toRecord(row: typeof keyReportFileMappings.$inferSelect): MappingRecord {
+    return {
+      id: row.id,
+      versionId: row.versionId,
+      companyId: row.companyId,
+      reportCategory: row.reportCategory,
+      documentId: row.documentId ?? null,
+      uploadId: row.uploadId ?? null,
+      fileName: row.fileName ?? null,
+      year: row.year ?? null,
+      status: row.status,
+      linkedBy: row.linkedBy ?? null,
+      metadata: (row.metadata ?? {}) as Record<string, unknown>,
+      createdAt: row.createdAt ? row.createdAt.toISOString() : null,
+    };
+  }
+
+  async listByVersion(versionId: string): Promise<MappingRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(keyReportFileMappings)
+      .where(eq(keyReportFileMappings.versionId, versionId))
+      .orderBy(asc(keyReportFileMappings.createdAt));
+    return rows.map(DrizzleMappingsRepository.toRecord);
+  }
+
+  async getById(mappingId: string): Promise<MappingRecord | null> {
+    const [row] = await this.db
+      .select()
+      .from(keyReportFileMappings)
+      .where(eq(keyReportFileMappings.id, mappingId))
+      .limit(1);
+    return row ? DrizzleMappingsRepository.toRecord(row) : null;
+  }
+
+  async link(input: LinkDocumentInput): Promise<MappingRecord> {
+    // `onConflictDoUpdate` rather than `doNothing`: nothing would return no
+    // row, and the caller needs the mapping back either way. Re-linking also
+    // refreshes the file name and inferred year, which is right — the document
+    // may have been renamed since.
+    const [row] = await this.db
+      .insert(keyReportFileMappings)
+      .values({
+        versionId: input.versionId,
+        companyId: input.companyId,
+        reportCategory: input.reportCategory,
+        documentId: input.documentId,
+        uploadId: input.uploadId,
+        fileName: input.fileName,
+        year: input.year,
+        status: "linked",
+        linkedBy: input.linkedBy,
+      })
+      .onConflictDoUpdate({
+        target: [
+          keyReportFileMappings.versionId,
+          keyReportFileMappings.reportCategory,
+          keyReportFileMappings.documentId,
+        ],
+        set: {
+          fileName: input.fileName,
+          year: input.year,
+          uploadId: input.uploadId,
+          status: "linked",
+        },
+      })
+      .returning();
+    return DrizzleMappingsRepository.toRecord(row!);
+  }
+
+  async delete(mappingId: string): Promise<void> {
+    await this.db.delete(keyReportFileMappings).where(eq(keyReportFileMappings.id, mappingId));
+  }
+
+  async countForDocument(versionId: string, documentId: string): Promise<number> {
+    const rows = await this.db
+      .select({ id: keyReportFileMappings.id })
+      .from(keyReportFileMappings)
+      .where(
+        and(
+          eq(keyReportFileMappings.versionId, versionId),
+          eq(keyReportFileMappings.documentId, documentId),
+        ),
+      );
+    return rows.length;
+  }
+
+  async getDocument(documentId: string): Promise<LinkedDocument | null> {
+    const [row] = await this.db
+      .select({
+        id: documents.id,
+        companyId: documents.companyId,
+        name: documents.name,
+        uploadId: documents.uploadId,
+      })
+      .from(documents)
+      .where(eq(documents.id, documentId))
+      .limit(1);
+    return row ? { ...row, name: row.name ?? null, uploadId: row.uploadId ?? null } : null;
+  }
+
+  async addFileReference(input: {
+    companyId: string;
+    documentId: string;
+    linkedEntityId: string;
+    createdBy: string | null;
+    metadata: Record<string, unknown>;
+  }): Promise<void> {
+    // Re-linking the same document must not stack references, or the count the
+    // Data Room reads never falls back to zero and the file becomes permanent.
+    const existing = await this.db
+      .select({ id: fileReferences.id })
+      .from(fileReferences)
+      .where(
+        and(
+          eq(fileReferences.documentId, input.documentId),
+          eq(fileReferences.linkedEntityId, input.linkedEntityId),
+          eq(fileReferences.linkedModule, KEY_REPORTS_MODULE),
+        ),
+      )
+      .limit(1);
+    if (existing.length > 0) return;
+
+    await this.db.insert(fileReferences).values({
+      companyId: input.companyId,
+      documentId: input.documentId,
+      linkedModule: KEY_REPORTS_MODULE,
+      linkedEntityId: input.linkedEntityId,
+      createdBy: input.createdBy,
+      metadata: input.metadata,
+    });
+  }
+
+  async removeFileReference(documentId: string, linkedEntityId: string): Promise<void> {
+    await this.db
+      .delete(fileReferences)
+      .where(
+        and(
+          eq(fileReferences.documentId, documentId),
+          eq(fileReferences.linkedEntityId, linkedEntityId),
+          eq(fileReferences.linkedModule, KEY_REPORTS_MODULE),
+        ),
+      );
   }
 }

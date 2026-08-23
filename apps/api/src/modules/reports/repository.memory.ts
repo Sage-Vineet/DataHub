@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 import type {
   CreateVersionInput,
   LedgerTransaction,
+  LinkDocumentInput,
+  LinkedDocument,
+  MappingRecord,
   ReportsRepository,
   UpdateVersionPatch,
   VersionRecord,
@@ -105,5 +108,85 @@ export class InMemoryLedgerDetailPort {
     this.lastVersionId = versionId;
     // Copied on the way out too, for the same reason in reverse.
     return Promise.resolve([...(this.ledgers.get(versionId) ?? [])]);
+  }
+}
+
+/** Mappings, documents and file references in memory, for the service tests. */
+export class InMemoryMappingsRepository {
+  private readonly mappings = new Map<string, MappingRecord>();
+  private readonly documents = new Map<string, LinkedDocument>();
+  readonly fileReferences = new Set<string>();
+
+  seedDocument(document: LinkedDocument): void {
+    this.documents.set(document.id, document);
+  }
+
+  listByVersion(versionId: string): Promise<MappingRecord[]> {
+    return Promise.resolve(
+      [...this.mappings.values()]
+        .filter((m) => m.versionId === versionId)
+        .sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? "")),
+    );
+  }
+
+  getById(mappingId: string): Promise<MappingRecord | null> {
+    return Promise.resolve(this.mappings.get(mappingId) ?? null);
+  }
+
+  link(input: LinkDocumentInput): Promise<MappingRecord> {
+    // The real table's unique index is on this triple, and the fake has to
+    // agree or a test proves an idempotence the database does not provide.
+    const existing = [...this.mappings.values()].find(
+      (m) =>
+        m.versionId === input.versionId &&
+        m.reportCategory === input.reportCategory &&
+        m.documentId === input.documentId,
+    );
+    if (existing) return Promise.resolve(existing);
+
+    const record: MappingRecord = {
+      id: randomUUID(),
+      versionId: input.versionId,
+      companyId: input.companyId,
+      reportCategory: input.reportCategory,
+      documentId: input.documentId,
+      uploadId: input.uploadId,
+      fileName: input.fileName,
+      year: input.year,
+      status: "linked",
+      linkedBy: input.linkedBy,
+      metadata: {},
+      // Ordered by insertion, which is what `created_at ASC` gives in practice.
+      createdAt: String(this.mappings.size).padStart(6, "0"),
+    };
+    this.mappings.set(record.id, record);
+    return Promise.resolve(record);
+  }
+
+  delete(mappingId: string): Promise<void> {
+    this.mappings.delete(mappingId);
+    return Promise.resolve();
+  }
+
+  countForDocument(versionId: string, documentId: string): Promise<number> {
+    return Promise.resolve(
+      [...this.mappings.values()].filter(
+        (m) => m.versionId === versionId && m.documentId === documentId,
+      ).length,
+    );
+  }
+
+  getDocument(documentId: string): Promise<LinkedDocument | null> {
+    return Promise.resolve(this.documents.get(documentId) ?? null);
+  }
+
+  addFileReference(input: { documentId: string; linkedEntityId: string }): Promise<void> {
+    this.fileReferences.add(`${input.linkedEntityId}:${input.documentId}`);
+    return Promise.resolve();
+  }
+
+  removeFileReference(documentId: string, linkedEntityId: string): Promise<void> {
+    this.fileReferences.delete(`${linkedEntityId}:${documentId}`);
+    return Promise.resolve();
   }
 }

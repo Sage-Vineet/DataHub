@@ -93,3 +93,75 @@ export interface LedgerTransaction {
 export interface LedgerDetailPort {
   list(versionId: string): Promise<LedgerTransaction[]>;
 }
+
+/** The five categories a key-report version files documents under. */
+export const REPORT_CATEGORIES = [
+  "profit_loss",
+  "balance_sheet",
+  "general_ledger",
+  "bank_statement",
+  "tax_return",
+] as const;
+
+export type ReportCategory = (typeof REPORT_CATEGORIES)[number];
+
+/** A Data Room document linked to one category of a version. */
+export interface MappingRecord {
+  id: string;
+  versionId: string;
+  companyId: string;
+  reportCategory: string;
+  documentId: string | null;
+  uploadId: string | null;
+  fileName: string | null;
+  year: number | null;
+  status: string;
+  linkedBy: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string | null;
+}
+
+export interface LinkDocumentInput {
+  versionId: string;
+  companyId: string;
+  reportCategory: ReportCategory;
+  documentId: string;
+  uploadId: string | null;
+  fileName: string | null;
+  year: number | null;
+  linkedBy: string | null;
+}
+
+/** The Data Room document a mapping points at, as far as this module needs it. */
+export interface LinkedDocument {
+  id: string;
+  companyId: string;
+  name: string | null;
+  uploadId: string | null;
+}
+
+export interface MappingsRepository {
+  listByVersion(versionId: string): Promise<MappingRecord[]>;
+  getById(mappingId: string): Promise<MappingRecord | null>;
+  /**
+   * Link a document, or return the existing row unchanged.
+   *
+   * Idempotent on `(version_id, report_category, document_id)`: the SPA
+   * re-sends its whole selection whenever a checkbox changes, so linking the
+   * same file twice must not produce a second row.
+   */
+  link(input: LinkDocumentInput): Promise<MappingRecord>;
+  delete(mappingId: string): Promise<void>;
+  /** Is this document still linked anywhere in the version? */
+  countForDocument(versionId: string, documentId: string): Promise<number>;
+  getDocument(documentId: string): Promise<LinkedDocument | null>;
+  /** Hold the document in place so the Data Room will not delete it. */
+  addFileReference(input: {
+    companyId: string;
+    documentId: string;
+    linkedEntityId: string;
+    createdBy: string | null;
+    metadata: Record<string, unknown>;
+  }): Promise<void>;
+  removeFileReference(documentId: string, linkedEntityId: string): Promise<void>;
+}

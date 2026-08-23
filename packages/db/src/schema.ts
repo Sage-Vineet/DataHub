@@ -503,6 +503,69 @@ export const keyReportVersions = pgTable(
 );
 
 /**
+ * A Data Room document linked to a category of a key-report version.
+ *
+ * The unique index is `(version_id, report_category, document_id)`, which is
+ * what makes linking the same file twice a no-op rather than a duplicate row —
+ * the SPA re-sends the whole selection when a checkbox changes.
+ */
+export const keyReportFileMappings = pgTable(
+  "key_report_file_mappings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    versionId: uuid("version_id")
+      .notNull()
+      .references(() => keyReportVersions.id, { onDelete: "cascade" }),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    /** profit_loss | balance_sheet | general_ledger | bank_statement | tax_return */
+    reportCategory: text("report_category").notNull(),
+    documentId: uuid("document_id"),
+    uploadId: uuid("upload_id"),
+    fileName: text("file_name"),
+    /** Inferred from the file name at link time; null when none could be read. */
+    year: integer("year"),
+    status: text("status").notNull().default("linked"),
+    linkedBy: uuid("linked_by"),
+    metadata: jsonb("metadata").notNull().default({}),
+    extractedRows: integer("extracted_rows").default(0),
+    extractionStatus: text("extraction_status").default("pending"),
+    extractionError: text("extraction_error"),
+    lastExtractedAt: timestamp("last_extracted_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    unique: uniqueIndex("uq_key_report_file_mappings_unique").on(
+      t.versionId,
+      t.reportCategory,
+      t.documentId,
+    ),
+  }),
+);
+
+/**
+ * What is holding a document in place.
+ *
+ * A row here is the reason a Data Room file cannot be deleted: some module has
+ * linked it to one of its entities. `folders/adapters.ts` already reads this
+ * table to report a document's reference count; this is the write side.
+ */
+export const fileReferences = pgTable("file_references", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  companyId: uuid("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  documentId: uuid("document_id").notNull(),
+  /** Which module is holding it — "key_reports", and others in time. */
+  linkedModule: text("linked_module").notNull(),
+  linkedEntityId: uuid("linked_entity_id"),
+  metadata: jsonb("metadata").notNull().default({}),
+  createdBy: uuid("created_by"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
  * ── Activity log (SE-0004, capture half) ──────────────────────────────────────
  *
  * One append-only table holds all three record kinds (envelope / event / gap) so

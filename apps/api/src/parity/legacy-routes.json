@@ -1,6 +1,5 @@
 [
   "DELETE /bank-reconciliation-addback-items/:p",
-  "DELETE /key-reports/mappings/:p",
   "GET /all-reports",
   "GET /api/auth/callback",
   "GET /api/auth/disconnect",
@@ -19,7 +18,6 @@
   "GET /invoices/doc/:p",
   "GET /key-reports/popup-preference",
   "GET /key-reports/versions/:p/extracted-data",
-  "GET /key-reports/versions/:p/mappings",
   "GET /key-reports/versions/:p/sync-logs",
   "GET /manual-gl/columns/:p",
   "GET /manual-gl/dataset-versions",
@@ -60,7 +58,6 @@
   "POST /bank-reconciliation-adjustments",
   "POST /customers",
   "POST /key-reports/versions/:p/chart-of-accounts/regenerate",
-  "POST /key-reports/versions/:p/mappings",
   "POST /key-reports/versions/:p/sync",
   "POST /manual-gl/dataset-versions/:p/activate",
   "POST /manual-gl/dataset-versions/:p/rollback",

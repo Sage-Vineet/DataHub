@@ -76,54 +76,6 @@ function handleError(res, error, label) {
 
 // ---- Mappings --------------------------------------------------------------
 
-router.get("/key-reports/versions/:versionId/mappings", async (req, res) => {
-  try {
-    const version = await loadVersionWithAccess(req, res);
-    if (!version) return;
-    const mappingsByCategory = await keyReportService.getMappingsByCategory(version.id);
-    return res.json({ success: true, mappingsByCategory });
-  } catch (error) {
-    return handleError(res, error, "GET mappings");
-  }
-});
-
-router.post("/key-reports/versions/:versionId/mappings", async (req, res) => {
-  try {
-    const version = await loadVersionWithAccess(req, res);
-    if (!version) return;
-    const { reportCategory, documentId, documentIds } = req.body || {};
-    const ids = Array.isArray(documentIds) ? documentIds : documentId ? [documentId] : [];
-    if (!ids.length) {
-      return res.status(400).json({ success: false, error: "documentId(s) required." });
-    }
-    const created = [];
-    for (const id of ids) {
-      created.push(await keyReportService.addMapping(version.id, { reportCategory, documentId: id }, req.user?.id));
-    }
-    return res.status(201).json({ success: true, mappings: created });
-  } catch (error) {
-    return handleError(res, error, "POST mappings");
-  }
-});
-
-router.delete("/key-reports/mappings/:mappingId", async (req, res) => {
-  try {
-    // Access is enforced via the parent version's company. Look it up first.
-    const { supabase } = require("../db");
-    const { data: row } = await supabase
-      .from("key_report_file_mappings")
-      .select("company_id")
-      .eq("id", req.params.mappingId)
-      .maybeSingle();
-    if (!row) return res.status(404).json({ success: false, error: "Mapping not found." });
-    if (!requireCompanyAccess(req, res, row.company_id)) return;
-    await keyReportService.removeMapping(req.params.mappingId);
-    return res.status(204).send();
-  } catch (error) {
-    return handleError(res, error, "DELETE mapping");
-  }
-});
-
 // ---- Sync ------------------------------------------------------------------
 
 router.post("/key-reports/versions/:versionId/sync", async (req, res) => {

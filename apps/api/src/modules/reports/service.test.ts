@@ -6,6 +6,7 @@ import { LegacyReportSyncPort } from "./adapters.js";
 import {
   InMemoryEngagementPort,
   InMemoryLedgerDetailPort,
+  InMemoryMappingsRepository,
   InMemoryReportsRepository,
 } from "./repository.memory.js";
 import { ReportsService } from "./service.js";
@@ -17,11 +18,19 @@ function make() {
   const repo = new InMemoryReportsRepository();
   const engagement = new InMemoryEngagementPort();
   const ledger = new InMemoryLedgerDetailPort();
+  const mappings = new InMemoryMappingsRepository();
   return {
     repo,
     engagement,
     ledger,
-    service: new ReportsService({ repo, sync: new LegacyReportSyncPort(), engagement, ledger }),
+    mappings,
+    service: new ReportsService({
+      repo,
+      sync: new LegacyReportSyncPort(),
+      engagement,
+      ledger,
+      mappings,
+    }),
   };
 }
 const session = (over: Partial<SessionUser> = {}): SessionUser => ({
@@ -214,5 +223,177 @@ describe("ReportsService — monthly detail", () => {
   it("404s a company with no version rather than an empty month grid", async () => {
     const { service } = make();
     await expect(service.monthlyDetail(session(), COMPANY)).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+/**
+ * Linking Data Room documents to a version.
+ *
+ * Two things carry real consequence here and both are asserted: a file that is
+ * linked must not be deletable from the Data Room, and it must become deletable
+ * again exactly when the last mapping to it goes — not before, and not never.
+ */
+describe("ReportsService — mappings", () => {
+  const DOC_A = "dddddddd-dddd-4ddd-8ddd-dddddddddda";
+  const DOC_B = "dddddddd-dddd-4ddd-8ddd-ddddddddddb";
+
+  const setup = async () => {
+    const h = make();
+    const user = session();
+    const version = await h.service.create(
+      user,
+      contracts.reportVersionCreate.parse({ company_id: COMPANY }),
+    );
+    h.mappings.seedDocument({ id: DOC_A, companyId: COMPANY, name: "P&L 2024.pdf", uploadId: null });
+    h.mappings.seedDocument({ id: DOC_B, companyId: COMPANY, name: "BS Jan 24.pdf", uploadId: null });
+    return { ...h, user, versionId: version.id };
+  };
+
+  it("groups by category, with every category present", async () => {
+    // The page renders one drop zone per category by iterating these keys, so
+    // an absent key is a missing drop zone rather than an empty one.
+    const { service, user, versionId } = await setup();
+    const grouped = await service.listMappings(user, versionId);
+    expect(Object.keys(grouped).sort()).toEqual([
+      "balance_sheet",
+      "bank_statement",
+      "general_ledger",
+      "profit_loss",
+      "tax_return",
+    ]);
+    expect(grouped.profit_loss).toEqual([]);
+  });
+
+  it("links a document and reads back the year from its name", async () => {
+    const { service, user, versionId } = await setup();
+    const [mapping] = await service.linkMappings(user, versionId, {
+      reportCategory: "profit_loss",
+      documentIds: [DOC_A],
+    });
+    expect(mapping!.fileName).toBe("P&L 2024.pdf");
+    expect(mapping!.year).toBe(2024);
+
+    const grouped = await service.listMappings(user, versionId);
+    expect(grouped.profit_loss).toHaveLength(1);
+  });
+
+  it("holds the document in place so the Data Room will not delete it", async () => {
+    const { service, mappings, user, versionId } = await setup();
+    await service.linkMappings(user, versionId, {
+      reportCategory: "profit_loss",
+      documentIds: [DOC_A],
+    });
+    expect(mappings.fileReferences.has(`${versionId}:${DOC_A}`)).toBe(true);
+  });
+
+  it("links many at once", async () => {
+    const { service, user, versionId } = await setup();
+    const linked = await service.linkMappings(user, versionId, {
+      reportCategory: "general_ledger",
+      documentIds: [DOC_A, DOC_B],
+    });
+    expect(linked).toHaveLength(2);
+  });
+
+  it("is idempotent: re-linking the same file does not stack rows", async () => {
+    // The SPA re-sends its whole selection whenever a checkbox changes.
+    const { service, user, versionId } = await setup();
+    await service.linkMappings(user, versionId, {
+      reportCategory: "profit_loss",
+      documentIds: [DOC_A],
+    });
+    await service.linkMappings(user, versionId, {
+      reportCategory: "profit_loss",
+      documentIds: [DOC_A],
+    });
+    const grouped = await service.listMappings(user, versionId);
+    expect(grouped.profit_loss).toHaveLength(1);
+  });
+
+  it("releases the document only when the last mapping to it goes", async () => {
+    // Unlinking a file from the P&L must not make it deletable while the
+    // balance sheet still uses it.
+    const { service, mappings, user, versionId } = await setup();
+    await service.linkMappings(user, versionId, {
+      reportCategory: "profit_loss",
+      documentIds: [DOC_A],
+    });
+    const [second] = await service.linkMappings(user, versionId, {
+      reportCategory: "balance_sheet",
+      documentIds: [DOC_A],
+    });
+    const grouped = await service.listMappings(user, versionId);
+
+    await service.deleteMapping(user, grouped.profit_loss![0]!.id);
+    expect(mappings.fileReferences.has(`${versionId}:${DOC_A}`)).toBe(true);
+
+    await service.deleteMapping(user, second!.id);
+    expect(mappings.fileReferences.has(`${versionId}:${DOC_A}`)).toBe(false);
+  });
+
+  it("refuses a category that is not one of the five", async () => {
+    const { service, user, versionId } = await setup();
+    await expect(
+      service.linkMappings(user, versionId, {
+        reportCategory: "cashflow",
+        documentIds: [DOC_A],
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("refuses a link that names no document", async () => {
+    const { service, user, versionId } = await setup();
+    await expect(
+      service.linkMappings(user, versionId, { reportCategory: "profit_loss", documentIds: [] }),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("404s a document that is not in the Data Room", async () => {
+    // A mapping pointing at a file that is not there renders as a linked
+    // document that cannot be opened, and fails the sync later and elsewhere.
+    const { service, user, versionId } = await setup();
+    await expect(
+      service.linkMappings(user, versionId, {
+        reportCategory: "profit_loss",
+        documentIds: ["dddddddd-dddd-4ddd-8ddd-dddddddddd0"],
+      }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("refuses to link another company's document into this version", async () => {
+    const { service, mappings, user, versionId } = await setup();
+    const foreign = "dddddddd-dddd-4ddd-8ddd-ddddddddddc";
+    mappings.seedDocument({ id: foreign, companyId: OTHER, name: "Theirs.pdf", uploadId: null });
+    await expect(
+      service.linkMappings(user, versionId, {
+        reportCategory: "profit_loss",
+        documentIds: [foreign],
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("checks access against the mapping's own company, not the caller's claim", async () => {
+    const { service, user, versionId } = await setup();
+    const [mapping] = await service.linkMappings(user, versionId, {
+      reportCategory: "profit_loss",
+      documentIds: [DOC_A],
+    });
+    await expect(
+      service.deleteMapping(session({ role: "buyer", company_ids: [OTHER] }), mapping!.id),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("404s a mapping that is not there", async () => {
+    const { service, user } = await setup();
+    await expect(
+      service.deleteMapping(user, "dddddddd-dddd-4ddd-8ddd-ddddddddd99"),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("refuses to list mappings for a version the caller cannot reach", async () => {
+    const { service, versionId } = await setup();
+    await expect(
+      service.listMappings(session({ role: "buyer", company_ids: [OTHER] }), versionId),
+    ).rejects.toBeInstanceOf(ForbiddenError);
   });
 });

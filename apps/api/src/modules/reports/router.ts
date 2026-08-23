@@ -299,6 +299,47 @@ export function createReportsRouter(deps: ReportsRouterDeps): Router {
     res.json({ success: true, ...payload });
   }));
 
+  router.get("/key-reports/versions/:versionId/mappings", handle(async (req, res) => {
+    const mappingsByCategory = await service.listMappings(req.user!, req.params.versionId!);
+    res.json({ success: true, mappingsByCategory });
+  }));
+
+  /**
+   * Link documents to a category.
+   *
+   * `documentId` and `documentIds` are both accepted because the SPA sends
+   * whichever suits the screen — one file from a picker, a whole selection from
+   * a multi-select.
+   */
+  router.post("/key-reports/versions/:versionId/mappings", handle(async (req, res) => {
+    const body = (req.body ?? {}) as {
+      reportCategory?: unknown;
+      documentId?: unknown;
+      documentIds?: unknown;
+    };
+    const documentIds = Array.isArray(body.documentIds)
+      ? body.documentIds.map(String)
+      : body.documentId
+        ? [String(body.documentId)]
+        : [];
+
+    const mappings = await service.linkMappings(req.user!, req.params.versionId!, {
+      reportCategory: String(body.reportCategory ?? ""),
+      documentIds,
+    });
+    res.status(201).json({ success: true, mappings });
+  }));
+
+  /**
+   * Unlink one. Addressed by mapping id rather than nested under its version,
+   * because that is the id the list hands back — and access is checked against
+   * the mapping's own company rather than trusting the caller to name it.
+   */
+  router.delete("/key-reports/mappings/:mappingId", handle(async (req, res) => {
+    await service.deleteMapping(req.user!, req.params.mappingId!);
+    res.status(204).send();
+  }));
+
   router.get("/manual-gl/staging/filter-options", handle(async (req, res) => {
     const payload = await service.filterOptions(req.user!, companyOf(req));
     res.json({ success: true, ...payload });

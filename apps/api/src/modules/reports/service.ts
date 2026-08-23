@@ -6,6 +6,13 @@ import type {
 } from "@datahub/contracts";
 import { canAccessCompany } from "../../shared/access.js";
 import { ForbiddenError, HttpError, NotFoundError } from "../../shared/errors.js";
+import { inferMappingYear } from "./mapping-year.js";
+import {
+  REPORT_CATEGORIES,
+  type MappingRecord,
+  type MappingsRepository,
+  type ReportCategory,
+} from "./ports.js";
 import type {
   EngagementPort,
   LedgerDetailPort,
@@ -64,6 +71,7 @@ export interface ReportsServiceDeps {
   sync: ReportSyncPort;
   engagement: EngagementPort;
   ledger: LedgerDetailPort;
+  mappings: MappingsRepository;
 }
 
 export class ReportsService {
@@ -71,11 +79,13 @@ export class ReportsService {
   private readonly syncPort: ReportSyncPort;
   private readonly engagement: EngagementPort;
   private readonly ledger: LedgerDetailPort;
+  private readonly mappings: MappingsRepository;
   constructor(deps: ReportsServiceDeps) {
     this.repo = deps.repo;
     this.syncPort = deps.sync;
     this.engagement = deps.engagement;
     this.ledger = deps.ledger;
+    this.mappings = deps.mappings;
   }
 
   /**
@@ -235,6 +245,104 @@ export class ReportsService {
   /** What the report filters can offer, drawn from the ledger itself. */
   async filterOptions(user: SessionUser, companyId: string): Promise<FilterOptionsPayload> {
     return buildFilterOptions(await this.activeEngagement(user, companyId));
+  }
+
+  /**
+   * The documents linked to a version, grouped by category.
+   *
+   * Every category is present whether or not anything is filed under it: the
+   * page renders one drop zone per category and iterates the object's keys, so
+   * an absent key is a missing drop zone rather than an empty one.
+   */
+  async listMappings(
+    user: SessionUser,
+    versionId: string,
+  ): Promise<Record<string, MappingRecord[]>> {
+    await this.requireAccessible(user, versionId);
+    const grouped: Record<string, MappingRecord[]> = Object.fromEntries(
+      REPORT_CATEGORIES.map((category) => [category, []]),
+    );
+    for (const mapping of await this.mappings.listByVersion(versionId)) {
+      (grouped[mapping.reportCategory] ??= []).push(mapping);
+    }
+    return grouped;
+  }
+
+  /**
+   * Link one or more Data Room documents to a category.
+   *
+   * The document is looked up rather than trusted: a mapping pointing at a file
+   * that is not there renders as a linked document that cannot be opened, and
+   * the sync that reads it fails later and further away.
+   */
+  async linkMappings(
+    user: SessionUser,
+    versionId: string,
+    input: { reportCategory: string; documentIds: string[] },
+  ): Promise<MappingRecord[]> {
+    const version = await this.requireAccessible(user, versionId);
+
+    if (!(REPORT_CATEGORIES as readonly string[]).includes(input.reportCategory)) {
+      throw new HttpError(
+        400,
+        `Invalid report category: ${input.reportCategory}. ` +
+          `Expected one of ${REPORT_CATEGORIES.join(", ")}.`,
+      );
+    }
+    if (input.documentIds.length === 0) throw new HttpError(400, "documentId(s) required.");
+
+    const category = input.reportCategory as ReportCategory;
+    const linked: MappingRecord[] = [];
+    for (const documentId of input.documentIds) {
+      const document = await this.mappings.getDocument(documentId);
+      if (!document) throw new NotFoundError("Document not found in the Data Room.");
+      // A document belongs to one company; linking another company's file into
+      // this version would leak it into a report the owner never sees.
+      if (document.companyId !== version.companyId) {
+        throw new ForbiddenError("That document belongs to another company.");
+      }
+
+      const mapping = await this.mappings.link({
+        versionId,
+        companyId: version.companyId,
+        reportCategory: category,
+        documentId,
+        uploadId: document.uploadId,
+        fileName: document.name,
+        year: inferMappingYear(document.name),
+        linkedBy: user.id,
+      });
+      await this.mappings.addFileReference({
+        companyId: version.companyId,
+        documentId,
+        linkedEntityId: versionId,
+        createdBy: user.id,
+        metadata: { reportCategory: category },
+      });
+      linked.push(mapping);
+    }
+    return linked;
+  }
+
+  /**
+   * Unlink one mapping.
+   *
+   * The file reference is released only when no OTHER mapping in the same
+   * version still points at that document — unlinking a file from the P&L
+   * category must not make it deletable while the balance sheet still uses it.
+   */
+  async deleteMapping(user: SessionUser, mappingId: string): Promise<void> {
+    const mapping = await this.mappings.getById(mappingId);
+    if (!mapping) throw new NotFoundError("Mapping not found.");
+    this.requireCompany(user, mapping.companyId);
+
+    await this.mappings.delete(mappingId);
+    if (!mapping.documentId) return;
+
+    const remaining = await this.mappings.countForDocument(mapping.versionId, mapping.documentId);
+    if (remaining === 0) {
+      await this.mappings.removeFileReference(mapping.documentId, mapping.versionId);
+    }
   }
 
   /** The engagement behind a company's active key-report version. */

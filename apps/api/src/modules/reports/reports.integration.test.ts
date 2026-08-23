@@ -329,3 +329,133 @@ describe("reports over a real ledger (real Postgres)", () => {
     await request(app).get("/reports/profit-loss").set("X-Client-Id", companyId).expect(403);
   });
 });
+
+/**
+ * Mappings against a real database.
+ *
+ * The two behaviours worth a real Postgres are the ones enforced by the schema
+ * rather than by code: the unique index that makes re-linking a no-op, and the
+ * file-reference row that stops the Data Room deleting a file somebody's report
+ * depends on.
+ */
+describe("key-report mappings (real Postgres)", () => {
+  let versionId: string;
+  let documentId: string;
+
+  beforeEach(async () => {
+    versionId = (
+      await request(app).post("/key-reports/versions").send({ company_id: companyId })
+    ).body.version.id;
+
+    const [folder] = await db
+      .insert(schema.folders)
+      .values({ companyId, name: "Financials", createdBy: BROKER.id })
+      .returning();
+    const [document] = await db
+      .insert(schema.documents)
+      .values({
+        name: "Balance Sheet Jan 24.pdf",
+        companyId,
+        folderId: folder!.id,
+        fileUrl: "/uploads/bs.pdf",
+        size: "1",
+        ext: "pdf",
+        status: "under-review" as never,
+        uploadedBy: BROKER.id,
+      })
+      .returning();
+    documentId = document!.id;
+  });
+
+  const references = () => db.select().from(schema.fileReferences);
+
+  it("links a document and infers its year from the name", async () => {
+    // "Jan 24" — the two-digit form legacy's month-year regex never matched,
+    // because it was built from a string literal and compiled as `[s._-]*(d{2,4})`.
+    const res = await request(app)
+      .post(`/key-reports/versions/${versionId}/mappings`)
+      .send({ reportCategory: "balance_sheet", documentId })
+      .expect(201);
+
+    expect(res.body.mappings[0].year).toBe(2024);
+    expect(res.body.mappings[0].fileName).toBe("Balance Sheet Jan 24.pdf");
+  });
+
+  it("holds the file in place, once, however many times it is linked", async () => {
+    // Stacking references would leave the count permanently above zero and the
+    // document undeletable forever.
+    for (let i = 0; i < 3; i++) {
+      await request(app)
+        .post(`/key-reports/versions/${versionId}/mappings`)
+        .send({ reportCategory: "balance_sheet", documentId })
+        .expect(201);
+    }
+    expect(await references()).toHaveLength(1);
+
+    const grouped = (
+      await request(app).get(`/key-reports/versions/${versionId}/mappings`).expect(200)
+    ).body.mappingsByCategory;
+    // The unique index does the work; the row count proves it did.
+    expect(grouped.balance_sheet).toHaveLength(1);
+  });
+
+  it("releases the file only when the last category lets go of it", async () => {
+    await request(app)
+      .post(`/key-reports/versions/${versionId}/mappings`)
+      .send({ reportCategory: "balance_sheet", documentId })
+      .expect(201);
+    await request(app)
+      .post(`/key-reports/versions/${versionId}/mappings`)
+      .send({ reportCategory: "general_ledger", documentId })
+      .expect(201);
+
+    const grouped = (
+      await request(app).get(`/key-reports/versions/${versionId}/mappings`)
+    ).body.mappingsByCategory;
+
+    await request(app)
+      .delete(`/key-reports/mappings/${grouped.balance_sheet[0].id}`)
+      .expect(204);
+    expect(await references()).toHaveLength(1);
+
+    await request(app)
+      .delete(`/key-reports/mappings/${grouped.general_ledger[0].id}`)
+      .expect(204);
+    expect(await references()).toHaveLength(0);
+  });
+
+  it("refuses a document from another company", async () => {
+    const other = randomUUID();
+    await db.insert(schema.companies).values({ id: other, name: "Other", industry: "" });
+    const [folder] = await db
+      .insert(schema.folders)
+      .values({ companyId: other, name: "Theirs", createdBy: BROKER.id })
+      .returning();
+    const [foreign] = await db
+      .insert(schema.documents)
+      .values({
+        name: "Theirs.pdf",
+        companyId: other,
+        folderId: folder!.id,
+        fileUrl: "/uploads/theirs.pdf",
+        size: "1",
+        ext: "pdf",
+        status: "under-review" as never,
+        uploadedBy: BROKER.id,
+      })
+      .returning();
+
+    await request(app)
+      .post(`/key-reports/versions/${versionId}/mappings`)
+      .send({ reportCategory: "profit_loss", documentId: foreign!.id })
+      .expect(403);
+    expect(await references()).toHaveLength(0);
+  });
+
+  it("404s a document that is not in the Data Room at all", async () => {
+    await request(app)
+      .post(`/key-reports/versions/${versionId}/mappings`)
+      .send({ reportCategory: "profit_loss", documentId: randomUUID() })
+      .expect(404);
+  });
+});

@@ -2,7 +2,12 @@ import express from "express";
 import type { RequestHandler } from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { ForbiddenError, HttpError, NotFoundError } from "../../shared/errors.js";
+import {
+  BadRequestError,
+  ForbiddenError,
+  HttpError,
+  NotFoundError,
+} from "../../shared/errors.js";
 import { createReportsRouter } from "./router.js";
 import type { ReportsService } from "./service.js";
 
@@ -136,6 +141,9 @@ function stub(over: Record<string, unknown> = {}) {
     cashFlow: record("cashFlow", emptyCashFlow),
     monthlyDetail: record("monthlyDetail", emptyMonthlyDetail),
     balanceSheetMonthlyDetail: record("balanceSheetMonthlyDetail", emptyBsMonthlyDetail),
+    listMappings: record("listMappings", { profit_loss: [], balance_sheet: [] }),
+    linkMappings: record("linkMappings", [{ id: "m1" }]),
+    deleteMapping: record("deleteMapping", undefined),
     filterOptions: record("filterOptions", {
       source: "general_ledger_entries",
       rowCount: 0,
@@ -287,8 +295,12 @@ describe("what a domain error becomes on the wire", () => {
 
 describe("paths this router does not own", () => {
   it("leaves them for the proxy", async () => {
+    // The GL sync and the extracted-data read still belong to legacy
+    // (reports-domain D2). An unmatched path has to reach the proxy untouched,
+    // which is what 404-from-this-router means in isolation.
     const { app } = stub();
-    await request(app).get(`/key-reports/versions/${VERSION}/mappings`).expect(404);
+    await request(app).post(`/key-reports/versions/${VERSION}/sync`).expect(404);
+    await request(app).get(`/key-reports/versions/${VERSION}/extracted-data`).expect(404);
   });
 });
 
@@ -670,5 +682,88 @@ describe("the filter-options route", () => {
         .get(`/manual-gl/staging/filter-options?clientId=${COMPANY}`)
         .expect(status);
     }
+  });
+});
+
+describe("the mappings routes", () => {
+  const MAPPING = "mmmmmmmm-mmmm-4mmm-8mmm-mmmmmmmmmmmm";
+  const DOCUMENT = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+
+  it("lists under the envelope the page reads", async () => {
+    const { app, calls } = stub();
+    const res = await request(app).get(`/key-reports/versions/${VERSION}/mappings`).expect(200);
+    expect(res.body.success).toBe(true);
+    expect(Object.keys(res.body.mappingsByCategory)).toContain("profit_loss");
+    expect(argsOf(calls, "listMappings")[1]).toBe(VERSION);
+  });
+
+  it("takes one document or many, because both screens exist", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .post(`/key-reports/versions/${VERSION}/mappings`)
+      .send({ reportCategory: "profit_loss", documentId: DOCUMENT })
+      .expect(201);
+    expect(argsOf(calls, "linkMappings")[2]).toEqual({
+      reportCategory: "profit_loss",
+      documentIds: [DOCUMENT],
+    });
+
+    await request(app)
+      .post(`/key-reports/versions/${VERSION}/mappings`)
+      .send({ reportCategory: "general_ledger", documentIds: [DOCUMENT, MAPPING] })
+      .expect(201);
+    expect(argsOf(calls, "linkMappings")[2]).toEqual({
+      reportCategory: "general_ledger",
+      documentIds: [DOCUMENT, MAPPING],
+    });
+  });
+
+  it("passes an empty selection through, for the service to refuse", async () => {
+    // The router does not second-guess it: the category and the emptiness are
+    // both checked in the service, so one place decides what is valid.
+    const { app, calls } = stub();
+    await request(app)
+      .post(`/key-reports/versions/${VERSION}/mappings`)
+      .send({ reportCategory: "profit_loss" })
+      .expect(201);
+    expect(argsOf(calls, "linkMappings")[2]).toEqual({
+      reportCategory: "profit_loss",
+      documentIds: [],
+    });
+  });
+
+  it("surfaces the service's refusal as a 400", async () => {
+    const { app } = stub({
+      linkMappings: () => Promise.reject(new BadRequestError("documentId(s) required.")),
+    });
+    await request(app)
+      .post(`/key-reports/versions/${VERSION}/mappings`)
+      .send({ reportCategory: "profit_loss" })
+      .expect(400);
+  });
+
+  it("answers 204 on unlink, addressed by mapping id", async () => {
+    const { app, calls } = stub();
+    await request(app).delete(`/key-reports/mappings/${MAPPING}`).expect(204);
+    expect(argsOf(calls, "deleteMapping")[1]).toBe(MAPPING);
+  });
+
+  it("maps the failures to their statuses", async () => {
+    for (const [err, status] of [
+      [new BadRequestError("Invalid report category: cashflow"), 400],
+      [new ForbiddenError("denied"), 403],
+      [new NotFoundError("Mapping not found."), 404],
+    ] as const) {
+      const { app } = stub({ deleteMapping: () => Promise.reject(err) });
+      await request(app).delete(`/key-reports/mappings/${MAPPING}`).expect(status);
+    }
+  });
+
+  it("does not read `mappings` as a version id", async () => {
+    // `/key-reports/mappings/:id` and `/key-reports/versions/:id/mappings` are
+    // different routes that share a word.
+    const { app, calls } = stub();
+    await request(app).delete(`/key-reports/mappings/${MAPPING}`).expect(204);
+    expect(calls.map((c) => c.method)).toEqual(["deleteMapping"]);
   });
 });
