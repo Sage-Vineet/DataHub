@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { BadRequestError, ForbiddenError, NotFoundError } from "../../shared/errors.js";
 import type { CashFlowService } from "./cash-flow.js";
 import type { DashboardService, TaxComparisonService } from "./dashboard.js";
+import type { BankStatementsService } from "./bank-statements.js";
 import type { TaxReturnService } from "./tax-return.js";
 import { createStatementsRouter } from "./router.js";
 import type { StatementsService } from "./service.js";
@@ -122,6 +123,21 @@ function stub(over: Record<string, unknown> = {}) {
     ...(over.taxComparison as object | undefined),
   } as unknown as TaxComparisonService;
 
+  const bankStatements =
+    over.bankStatements === null
+      ? undefined
+      : ({
+          grid: record("grid", {
+            banks: [{ bank_name: "Wells Fargo (0067)", accounts: [{ months: [] }] }],
+            months: ["Jan-2024"],
+            totals: [{ month: "Jan-2024", monthKey: "2024-01" }],
+            skipped: 1,
+            documentCount: 3,
+            extractedCount: 2,
+          }),
+          ...(over.bankStatements as object | undefined),
+        } as unknown as BankStatementsService);
+
   const app = express();
   app.use(
     createStatementsRouter({
@@ -129,6 +145,7 @@ function stub(over: Record<string, unknown> = {}) {
       cashFlow,
       dashboard,
       taxComparison,
+      ...(bankStatements ? { bankStatements } : {}),
       ...(taxReturn ? { taxReturn } : {}),
       requireAuth: authAs("caller-1"),
     }),
@@ -337,7 +354,76 @@ describe("paths this router does not own", () => {
     // this router serves them now, and leaving the assertions would have
     // pinned the routes as absent rather than noticing they had arrived.
     const { app } = stub();
-    await request(app).get("/manual-report-uploads/qms-bank-data").expect(404);
+    await request(app).post("/manual-report-uploads/sync-source").expect(404);
+  });
+});
+
+describe("the bank reconciliation grid", () => {
+  it("serves each source under its own path, through one handler", async () => {
+    // Legacy had three near-identical handlers, and they are the kind that
+    // drift.
+    const { app, calls } = stub();
+    await request(app)
+      .get("/manual-upload/bank-data")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "grid")[2]).toMatchObject({ sourceKey: "manual_upload_excel_pdf" });
+
+    await request(app)
+      .get("/manual-report-uploads/qms-bank-data")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "grid")[2]).toMatchObject({ sourceKey: "quickbooks_manual" });
+
+    await request(app)
+      .get("/extract-bank-pdf-records")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "grid")[2]).toMatchObject({ sourceKey: "manual_upload_excel_pdf" });
+  });
+
+  it("reports what it could not read", async () => {
+    // A short grid can then be explained rather than read as a company with no
+    // bank activity.
+    const { app } = stub();
+    const res = await request(app)
+      .get("/manual-upload/bank-data")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(res.body).toMatchObject({ skipped: 1, documentCount: 3, extractedCount: 2 });
+    expect(res.body.bank_count).toBe(1);
+  });
+
+  it("passes the year, the version and the refresh through", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .get("/manual-upload/bank-data?fiscalYear=2024&keyReportVersionId=v-1&force=1")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "grid")[2]).toEqual({
+      sourceKey: "manual_upload_excel_pdf",
+      keyReportVersionId: "v-1",
+      fiscalYear: 2024,
+      force: true,
+    });
+  });
+
+  it("ignores a year that is not one", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .get("/manual-upload/bank-data?fiscalYear=soon")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "grid")[2]).toEqual({ sourceKey: "manual_upload_excel_pdf" });
+  });
+
+  it("says so plainly when no model is configured", async () => {
+    const { app } = stub({ bankStatements: null });
+    const res = await request(app)
+      .get("/manual-upload/bank-data")
+      .set("x-client-id", COMPANY)
+      .expect(503);
+    expect(res.body.error).toMatch(/not configured/);
   });
 });
 

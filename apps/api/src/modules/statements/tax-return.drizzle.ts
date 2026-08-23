@@ -75,10 +75,86 @@ export class DrizzleDocumentBytesPort implements DocumentBytesPort {
     if (!row?.data) return null;
     return {
       bytes: Buffer.isBuffer(row.data) ? row.data : Buffer.from(row.data as never),
-      // The stored content type, falling back to the extension. A model asked
-      // to read `application/octet-stream` refuses; asked to read a PDF it
-      // reads one.
-      mimeType: row.contentType ?? (row.ext === "pdf" ? "application/pdf" : "application/octet-stream"),
+      mimeType: mimeTypeFor(row.contentType, row.ext),
     };
   }
+}
+
+/**
+ * Which documents hold a company's bank statements.
+ *
+ * The key-report version's linked `bank_statement` documents when one is
+ * named, and every PDF whose name suggests a statement otherwise. Both filter
+ * on the company — a version id from elsewhere resolves to nothing.
+ */
+export class DrizzleBankStatementDocumentPort {
+  constructor(private readonly db: Db) {}
+
+  async forCompany(
+    companyId: string,
+    options: { sourceKey: string; keyReportVersionId?: string },
+  ): Promise<Array<{ id: string; name: string | null }>> {
+    if (options.keyReportVersionId) {
+      const linked = await this.db
+        .select({ id: documents.id, name: documents.name })
+        .from(keyReportFileMappings)
+        .innerJoin(documents, eq(documents.id, keyReportFileMappings.documentId))
+        .where(
+          and(
+            eq(keyReportFileMappings.versionId, options.keyReportVersionId),
+            eq(keyReportFileMappings.reportCategory, "bank_statement"),
+            eq(keyReportFileMappings.companyId, companyId),
+            eq(documents.companyId, companyId),
+          ),
+        )
+        .orderBy(desc(documents.uploadedAt));
+      // A version that links statements is the answer. Falling through when it
+      // links none would mix the version's documents with the company's
+      // others, which is the thing selecting a version is meant to prevent.
+      if (linked.length > 0) return linked;
+    }
+
+    const rows = await this.db
+      .select({ id: documents.id, name: documents.name })
+      .from(documents)
+      .where(eq(documents.companyId, companyId))
+      .orderBy(desc(documents.uploadedAt));
+
+    // By name, because a document does not carry what kind of statement it is
+    // until something has been read out of it. Narrow rather than broad: a
+    // false positive here sends a P&L to a bank-statement prompt, which
+    // answers `[]` — a wasted call, but not a wrong figure.
+    return rows.filter((row) =>
+      /bank|statement|chequing|checking|savings/i.test(String(row.name ?? "")),
+    );
+  }
+}
+
+/** What extension a browser gives an upload it could not identify. */
+const GENERIC_TYPES = new Set(["", "application/octet-stream", "binary/octet-stream"]);
+
+const BY_EXTENSION: Readonly<Record<string, string>> = {
+  pdf: "application/pdf",
+  csv: "text/csv",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+};
+
+/**
+ * The content type to send a model.
+ *
+ * `uploads.content_type` is NOT NULL, so it is always something — but a browser
+ * that could not identify a file sends `application/octet-stream`, and a model
+ * asked to read that refuses. The extension is the better guess in exactly that
+ * case, and only in that case: a stored type that says something specific is
+ * what the uploader's own browser determined and beats an extension anybody can
+ * rename.
+ */
+export function mimeTypeFor(contentType: string | null, ext: string | null): string {
+  const stored = String(contentType ?? "").trim().toLowerCase();
+  if (!GENERIC_TYPES.has(stored)) return stored;
+  return BY_EXTENSION[String(ext ?? "").trim().toLowerCase()] ?? "application/octet-stream";
 }

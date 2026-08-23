@@ -267,33 +267,6 @@ router.post("/manual-report-uploads/qms-parse-documents", async (req, res) => {
    Returns the aggregated bank reconciliation data synced from the QMS Bank Statement folder.
    Response shape: { success, banks, months, totals } — same as /extract-bank-pdf-records.
 =========================== */
-router.get("/manual-report-uploads/qms-bank-data", async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
-
-    const datasetVersion = String(req.query.datasetVersion || "").trim() || null;
-    const keyReportVersionId = String(req.query.keyReportVersionId || "").trim() || null;
-
-    // Bank statement is resolved from the SELECTED Key Reports version (single
-    // source of truth, active when none selected); P&L financials remain QMS-scoped.
-    const [{ body: bankBody }, plFinancials] = await Promise.all([
-      runBankExtraction(clientId, "quickbooks_manual_upload", "Manual Upload Source", datasetVersion, keyReportVersionId),
-      extractPlFinancials(clientId, "quickbooks_manual_upload").catch(() => null),
-    ]);
-
-    return res.json({
-      success: true,
-      banks: bankBody?.banks || [],
-      months: bankBody?.months || [],
-      totals: bankBody?.totals || [],
-      message: bankBody?.message,
-      plFinancials,
-    });
-  } catch (error) {
-    return res.status(500).json({ success: false, error: error.message || "Failed to fetch QMS bank data." });
-  }
-});
 
 
 /* ===========================
@@ -410,73 +383,6 @@ function enrichTaxYears(taxYears) {
    Response shape: { success, source: "manual_upload", banks, months, totals }
               or: { success: true, empty: true, message: "..." }
 =========================== */
-router.get("/manual-upload/bank-data", async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
-
-    // Optional Key Reports scoping so a selected Version (not just the active one)
-    // drives which documents this Manual Upload flow reads.
-    const datasetVersion = String(req.query.datasetVersion || "").trim() || null;
-    const keyReportVersionId = String(req.query.keyReportVersionId || "").trim() || null;
-
-    // Fetch P&L financials in parallel — merges Sales/Expenses per Financials into this response
-    const plFinancialsPromise = extractPlFinancials(clientId, MANUAL_REPORT_UPLOAD_SOURCE, {
-      keyReportVersionId,
-      datasetVersion
-    }).catch(() => null);
-
-    // Start BS bank accounts fetch in parallel — merges /bs-bank-balances into this response
-    const bsBankAccountsPromise = runBsBankBalancesExtraction(
-      clientId, MANUAL_REPORT_UPLOAD_SOURCE, "Manual Upload Source", null, datasetVersion, keyReportVersionId
-    ).then(r => {
-      const b = r?.body;
-      if (b?.bankAccounts?.length > 0) {
-        return { year: b.year ?? null, fileName: b.fileName ?? null, documentId: b.documentId ?? null, bankAccounts: b.bankAccounts };
-      }
-      return null;
-    }).catch(e => {
-      console.warn(`[BANK SOURCE] BS bank accounts non-fatal: ${e.message}`);
-      return null;
-    });
-
-    console.log(`[BANK SOURCE] source=manual_upload clientId=${clientId} — resolving bank statement from active Key Reports version...`);
-
-    // Bank statement is resolved strictly from the active Key Reports version
-    // (version-aware cache + live extraction handled by runBankExtraction). BS
-    // bank accounts and P&L financials remain manual_upload-source-scoped.
-    const { body: bankBody } = await runBankExtraction(clientId, MANUAL_REPORT_UPLOAD_SOURCE, "Manual Upload Source", datasetVersion, keyReportVersionId);
-    const [balanceSheetBankAccounts, plFinancials] = await Promise.all([bsBankAccountsPromise, plFinancialsPromise]);
-
-    if (!bankBody?.banks?.length) {
-      return res.json({
-        success: true,
-        empty: true,
-        source: "manual_upload",
-        banks: [],
-        months: [],
-        totals: [],
-        message: bankBody?.message || "No Bank Statement is linked in the active Key Reports version. Link a Bank Statement in Key Reports and sync before using Bank Reconciliation.",
-        balanceSheetBankAccounts,
-        plFinancials,
-      });
-    }
-
-    return res.json({
-      success: true,
-      source: "manual_upload",
-      banks: bankBody.banks,
-      months: bankBody.months || [],
-      totals: bankBody.totals || [],
-      syncedAt: bankBody.syncedAt,
-      balanceSheetBankAccounts,
-      plFinancials,
-    });
-  } catch (error) {
-    console.error("[BANK SOURCE] Error:", error);
-    return res.status(500).json({ success: false, error: error.message || "Failed to fetch manual upload bank data." });
-  }
-});
 
 /* ===========================
    GET /manual-report-uploads/tax-reconciliation-overrides

@@ -8,6 +8,7 @@ import { withCommonMiddleware } from "../../shared/router.js";
 import type { StatementExtract } from "./ports.js";
 import { MissingCashFlowInputsError, type CashFlowService } from "./cash-flow.js";
 import type { DashboardService, TaxComparisonService } from "./dashboard.js";
+import type { BankStatementsService } from "./bank-statements.js";
 import { toTaxReturnRows, type TaxReturnService } from "./tax-return.js";
 import type { StatementsService } from "./service.js";
 
@@ -16,8 +17,9 @@ export interface StatementsRouterDeps {
   cashFlow: CashFlowService;
   dashboard: DashboardService;
   taxComparison: TaxComparisonService;
-  /** Absent where no model is configured; the route says so rather than failing. */
+  /** Absent where no model is configured; the routes say so rather than failing. */
   taxReturn?: TaxReturnService;
+  bankStatements?: BankStatementsService;
   requireAuth: RequestHandler;
 }
 
@@ -33,7 +35,15 @@ export interface StatementsRouterDeps {
  * it was read out of.
  */
 export function createStatementsRouter(deps: StatementsRouterDeps): Router {
-  const { service, cashFlow, dashboard, taxComparison, taxReturn, requireAuth } = deps;
+  const {
+    service,
+    cashFlow,
+    dashboard,
+    taxComparison,
+    taxReturn,
+    bankStatements,
+    requireAuth,
+  } = deps;
   const router = express.Router();
   withCommonMiddleware(router, [helmet(), pinoHttp(), express.json(), requireAuth]);
 
@@ -309,7 +319,51 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
     res.json({ success: true, ...built });
   }));
 
+  /**
+   * The bank reconciliation's grid.
+   *
+   * One handler behind three paths, differing only in which source's
+   * statements they read. Legacy had three near-identical handlers, and they
+   * are the kind that drift.
+   */
+  const bankData = (defaultSourceKey: string) =>
+    handle(async (req: Request, res: Response) => {
+      if (!bankStatements) {
+        res.status(503).json({
+          success: false,
+          error: "Bank statement extraction is not configured on this server.",
+        });
+        return;
+      }
+      const year = Number.parseInt(String(req.query.fiscalYear ?? ""), 10);
+      const grid = await bankStatements.grid(req.user!, companyOf(req), {
+        sourceKey: str(req.query.sourceKey) ?? defaultSourceKey,
+        ...(str(req.query.keyReportVersionId)
+          ? { keyReportVersionId: str(req.query.keyReportVersionId)! }
+          : {}),
+        ...(Number.isInteger(year) ? { fiscalYear: year } : {}),
+        ...(str(req.query.force) ? { force: true } : {}),
+      });
+      res.json({
+        success: true,
+        bank_count: grid.banks.length,
+        banks: grid.banks,
+        months: grid.months,
+        totals: grid.totals,
+        // How many statements could not be dated, and how many documents were
+        // read against how many were found — so a short grid can be explained
+        // rather than read as a company with no bank activity.
+        skipped: grid.skipped,
+        documentCount: grid.documentCount,
+        extractedCount: grid.extractedCount,
+      });
+    });
+
   const QMS = REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
+
+  router.get("/manual-upload/bank-data", bankData(MANUAL));
+  router.get("/extract-bank-pdf-records", bankData(MANUAL));
+  router.get("/manual-report-uploads/qms-bank-data", bankData(QMS));
 
   router.get(
     "/manual-report-uploads/qms-dashboard",

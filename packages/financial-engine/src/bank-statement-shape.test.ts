@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   buildBankResponseShape,
   deduplicateStatements,
+  normaliseExtractedStatement,
   scopeToYear,
+  statementBalanceStatus,
   statementKey,
   toDisplayMonth,
   toMonthKey,
@@ -293,5 +295,161 @@ describe("narrowing to one year", () => {
 
   it("leaves the grid alone when no year is asked for", () => {
     expect(scopeToYear(shape, null)).toBe(shape);
+  });
+});
+
+describe("whether a statement adds up", () => {
+  it("verifies one that does", () => {
+    expect(
+      statementBalanceStatus({
+        beginning_balance: 10000,
+        deposits: 5000,
+        withdrawals: 3000,
+        fees: 0,
+        ending_balance: 12000,
+      }),
+    ).toBe("Verified");
+  });
+
+  it("flags one that does not", () => {
+    // A statement that fails this was misread — a figure off the wrong line,
+    // or a withdrawals total that was really a deposits total.
+    expect(
+      statementBalanceStatus({
+        beginning_balance: 10000,
+        deposits: 5000,
+        withdrawals: 3000,
+        ending_balance: 99999,
+      }),
+    ).toBe("Needs Review");
+  });
+
+  it("allows a pound, because a statement rounds and a model transcribes", () => {
+    expect(
+      statementBalanceStatus({
+        beginning_balance: 10000,
+        deposits: 5000,
+        withdrawals: 3000,
+        ending_balance: 12000.5,
+      }),
+    ).toBe("Verified");
+  });
+
+  it("counts the fees", () => {
+    expect(
+      statementBalanceStatus({
+        beginning_balance: 10000,
+        deposits: 5000,
+        withdrawals: 3000,
+        fees: 25,
+        ending_balance: 11975,
+      }),
+    ).toBe("Verified");
+  });
+});
+
+describe("normalising what a model returned", () => {
+  const raw = {
+    bankName: "Wells Fargo",
+    accountName: "MSX Mobility LLC",
+    accountNumber: "8209360067",
+    statementStartDate: "2025-01-01",
+    statementEndDate: "2025-01-31",
+    startingBalance: 4306.99,
+    deposits: 174012.41,
+    withdrawals: 121647.89,
+    fees: 0,
+    endingBalance: 56671.51,
+  };
+
+  it("reads the camelCase shape the prompt asks for", () => {
+    const s = normaliseExtractedStatement(raw);
+    expect(s.bank_name_clean).toBe("Wells Fargo");
+    expect(s.period_end).toBe("2025-01-31");
+    expect(s.beginning_balance).toBe(4306.99);
+  });
+
+  it("reads the snake_case shape older extractions stored", () => {
+    // Both are on file.
+    const s = normaliseExtractedStatement({
+      bank_name: "Chase",
+      period_end: "2024-06-30",
+      beginning_balance: 100,
+      ending_balance: 200,
+      deposits: 100,
+    });
+    expect(s.bank_name_clean).toBe("Chase");
+    expect(s.period_end).toBe("2024-06-30");
+  });
+
+  it("reads a figure that carries a comma", () => {
+    // The prompt says "no commas". A model that includes one anyway turned
+    // that figure into ZERO under `Number(x) || 0` — a statement showing no
+    // deposits for a month that had them.
+    const s = normaliseExtractedStatement({ ...raw, deposits: "174,012.41" });
+    expect(s.deposits).toBe(174012.41);
+  });
+
+  it("keeps only the last four digits of an account number", () => {
+    // A full account number on a page anybody with data room access can open
+    // is more of it than the reconciliation needs.
+    expect(normaliseExtractedStatement(raw).account_number).toBe("0067");
+  });
+
+  it("puts the last four in the grouping key, so two accounts stay two rows", () => {
+    expect(normaliseExtractedStatement(raw).bank_name).toBe("Wells Fargo (0067)");
+  });
+
+  it("forces withdrawals positive", () => {
+    // A statement writes them as a positive total; a transcribed minus makes
+    // the arithmetic add rather than subtract.
+    expect(normaliseExtractedStatement({ ...raw, withdrawals: -121647.89 }).withdrawals).toBe(
+      121647.89,
+    );
+  });
+
+  it("corrects the opening balance taken off the closing line", () => {
+    // The commonest misread. Recognisable because the period's own net
+    // movement already equals the closing figure, which can only be true if
+    // the account opened at nothing.
+    const s = normaliseExtractedStatement({
+      bankName: "Chase",
+      startingBalance: 5000,
+      deposits: 8000,
+      withdrawals: 3000,
+      endingBalance: 5000,
+    });
+    expect(s.beginning_balance).toBe(0);
+  });
+
+  it("leaves a real unchanged balance alone", () => {
+    // An account that genuinely did not move has beginning = ending AND no
+    // movement. The correction's second condition — that the period's own net
+    // already equals the closing figure — is false here (0 ≠ 5000), so it does
+    // not fire and the opening balance survives.
+    const s = normaliseExtractedStatement({
+      bankName: "Chase",
+      startingBalance: 5000,
+      deposits: 0,
+      withdrawals: 0,
+      endingBalance: 5000,
+    });
+    expect(s.beginning_balance).toBe(5000);
+    expect(s.status).toBe("Verified");
+  });
+
+  it("marks a statement that does not add up", () => {
+    const s = normaliseExtractedStatement({
+      bankName: "Chase",
+      startingBalance: 1000,
+      deposits: 100,
+      withdrawals: 0,
+      endingBalance: 99999,
+    });
+    expect(s.status).toBe("Needs Review");
+  });
+
+  it("names a bank the statement did not", () => {
+    expect(normaliseExtractedStatement({}).bank_name_clean).toBe("Unknown Bank");
   });
 });

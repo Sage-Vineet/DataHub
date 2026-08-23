@@ -659,29 +659,6 @@ function filterBankReconByYear(body, fiscalYear) {
  *     tags: [Reconciliation]
  *     summary: Extract bank-wise summary records from PDF bank statements using Gemini AI
  */
-router.get("/extract-bank-pdf-records", extractClientId, async (req, res) => {
-  try {
-    if (!req.clientId) {
-      return res.status(400).json({ success: false, error: "Missing clientId." });
-    }
-    const sourceKey = req.query.source || "manual_upload_excel_pdf";
-    // Optional Manual GL scoping: restrict the response to the selected dataset
-    // version's fiscal year so versions never mix. datasetVersion is logged for
-    // traceability; fiscalYear is the actual data filter.
-    const fiscalYear = String(req.query.fiscalYear || "").trim() || null;
-    const datasetVersion = String(req.query.datasetVersion || "").trim() || null;
-    const keyReportVersionId = String(req.query.keyReportVersionId || "").trim() || null;
-    const { cacheSource, folderRootName } = SOURCE_CONFIG[sourceKey] || DEFAULT_SOURCE_CONFIG;
-    console.log(`[BankPDF] source="${sourceKey}" → cacheSource="${cacheSource}", folder="${folderRootName}", keyReportVersionId=${keyReportVersionId}, datasetVersion=${datasetVersion}, fiscalYear=${fiscalYear}`);
-    // keyReportVersionId / datasetVersion scope document resolution to the SELECTED Key Reports version.
-    const { statusCode, body } = await runBankExtraction(req.clientId, cacheSource, folderRootName, datasetVersion, keyReportVersionId);
-    const scoped = fiscalYear ? filterBankReconByYear(body, fiscalYear) : body;
-    return res.status(statusCode).json(scoped);
-  } catch (error) {
-    console.error("[BankPDF] Extraction error:", error);
-    return res.status(500).json({ success: false, error: error.message || "Failed to extract bank PDF records." });
-  }
-});
 
 /* ===========================
    GET /manual-report-uploads/manual-bank-data

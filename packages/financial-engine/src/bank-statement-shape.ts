@@ -365,3 +365,124 @@ export function scopeToYear(shape: BankResponseShape, year: number | null): Bank
     skipped: shape.skipped,
   };
 }
+
+/**
+ * Whether a statement's own figures add up.
+ *
+ * `opening + deposits − withdrawals − fees` should be the closing balance. A
+ * statement that fails this was misread — a figure taken off the wrong line,
+ * or a withdrawals total that was actually a deposits total — and the grid has
+ * a `status` column precisely so the page can say which rows to look at rather
+ * than presenting every figure with equal confidence.
+ *
+ * A pound of tolerance, because a statement rounds and a model transcribes.
+ */
+export function statementBalanceStatus(
+  statement: {
+    beginning_balance?: unknown;
+    deposits?: unknown;
+    withdrawals?: unknown;
+    fees?: unknown;
+    ending_balance?: unknown;
+  },
+  toleranceMinorUnits = 1,
+): "Verified" | "Needs Review" {
+  const expected =
+    num(statement.beginning_balance) +
+    num(statement.deposits) -
+    num(statement.withdrawals) -
+    num(statement.fees);
+  return Math.abs(expected - num(statement.ending_balance)) <= toleranceMinorUnits
+    ? "Verified"
+    : "Needs Review";
+}
+
+/** A statement as a model returns it, before normalisation. */
+export interface RawExtractedStatement {
+  bankName?: unknown;
+  bank_name?: unknown;
+  accountName?: unknown;
+  account_name?: unknown;
+  accountNumber?: unknown;
+  account_number?: unknown;
+  statementStartDate?: unknown;
+  period_start?: unknown;
+  statementEndDate?: unknown;
+  period_end?: unknown;
+  startingBalance?: unknown;
+  beginning_balance?: unknown;
+  deposits?: unknown;
+  withdrawals?: unknown;
+  fees?: unknown;
+  endingBalance?: unknown;
+  ending_balance?: unknown;
+}
+
+const text = (...values: unknown[]): string => {
+  for (const value of values) {
+    const trimmed = String(value ?? "").trim();
+    if (trimmed !== "") return trimmed;
+  }
+  return "";
+};
+
+/**
+ * Normalise one extracted statement.
+ *
+ * Accepts both the camelCase shape the prompt asks for and the snake_case one
+ * older extractions stored, because both are on file.
+ *
+ * Amounts go through the same reader the rest of the engine uses, which
+ * handles thousands separators and accounting parentheses. The version this
+ * replaces used `Number(x) || 0`: the prompt says "no commas", and a model
+ * that includes one anyway turned that figure into ZERO — a statement showing
+ * no deposits for a month that had them.
+ */
+export function normaliseExtractedStatement(
+  raw: RawExtractedStatement,
+): ExtractedBankStatement & { fees: number; status: string } {
+  const bankNameClean =
+    text(raw.bankName, raw.bank_name, "Unknown Bank").replace(/\s*\(\d{4}\)\s*$/, "").trim() ||
+    "Unknown Bank";
+  const rawAccountNumber = text(raw.accountNumber, raw.account_number);
+  // Last four digits only. A full account number on a page anybody with data
+  // room access can open is more of it than the reconciliation needs.
+  const accountNumber = rawAccountNumber.replace(/\D/g, "").slice(-4) || rawAccountNumber.slice(-4);
+
+  let beginning = num(raw.startingBalance ?? raw.beginning_balance);
+  const deposits = num(raw.deposits);
+  // Always positive: a statement writes withdrawals as a positive total, and a
+  // model that transcribes the minus makes the arithmetic add rather than
+  // subtract.
+  const withdrawals = Math.abs(num(raw.withdrawals));
+  const fees = num(raw.fees);
+  const ending = num(raw.endingBalance ?? raw.ending_balance);
+
+  // The commonest misread: the opening balance taken off the closing line.
+  // Recognisable because the period's own net movement already equals the
+  // closing figure, which can only be true if it opened at nothing.
+  if (
+    Math.abs(beginning - ending) < 0.02 &&
+    Math.abs(deposits - withdrawals - fees - ending) <= 1
+  ) {
+    beginning = 0;
+  }
+
+  const statement = {
+    // The grouping key carries the last four, so two accounts at one bank stay
+    // two rows.
+    bank_name: accountNumber ? `${bankNameClean} (${accountNumber})` : bankNameClean,
+    bank_name_clean: bankNameClean,
+    account_name: text(raw.accountName, raw.account_name),
+    account_number: accountNumber,
+    period_start: text(raw.statementStartDate, raw.period_start),
+    period_end: text(raw.statementEndDate, raw.period_end),
+    beginning_balance: beginning,
+    deposits,
+    withdrawals,
+    fees,
+    ending_balance: ending,
+  };
+
+  return { ...statement, status: statementBalanceStatus(statement) };
+}

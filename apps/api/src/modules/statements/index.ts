@@ -3,8 +3,10 @@ import type { Db } from "@datahub/db";
 import type { DocumentReader } from "../../shared/gemini.js";
 import { CashFlowService } from "./cash-flow.js";
 import { DashboardService, TaxComparisonService } from "./dashboard.js";
+import { BankStatementsService } from "./bank-statements.js";
 import { TaxReturnService } from "./tax-return.js";
 import {
+  DrizzleBankStatementDocumentPort,
   DrizzleDocumentBytesPort,
   DrizzleTaxReturnDocumentPort,
 } from "./tax-return.drizzle.js";
@@ -19,6 +21,7 @@ export interface StatementsModule {
   dashboard: DashboardService;
   taxComparison: TaxComparisonService;
   taxReturn: TaxReturnService | undefined;
+  bankStatements: BankStatementsService | undefined;
 }
 
 export interface CreateStatementsModuleOptions {
@@ -59,6 +62,15 @@ export function createStatementsModule(
       })
     : undefined;
 
+  const bankStatements = opts.reader
+    ? new BankStatementsService({
+        statements: repo,
+        documents: new DrizzleBankStatementDocumentPort(opts.db),
+        bytes: new DrizzleDocumentBytesPort(opts.db),
+        reader: opts.reader,
+      })
+    : undefined;
+
   return {
     router: createStatementsRouter({
       service,
@@ -66,6 +78,7 @@ export function createStatementsModule(
       dashboard,
       taxComparison,
       ...(taxReturn ? { taxReturn } : {}),
+      ...(bankStatements ? { bankStatements } : {}),
       requireAuth: opts.requireAuth,
     }),
     service,
@@ -73,6 +86,7 @@ export function createStatementsModule(
     dashboard,
     taxComparison,
     taxReturn,
+    bankStatements,
   };
 }
 
@@ -83,6 +97,7 @@ export { createStatementsRouter } from "./router.js";
 export { CashFlowService, MissingCashFlowInputsError } from "./cash-flow.js";
 export { DashboardService, TaxComparisonService } from "./dashboard.js";
 export { TaxReturnService, toTaxReturnFigures, toTaxReturnRows } from "./tax-return.js";
+export { BankStatementsService } from "./bank-statements.js";
 export type { TaxReturnFigures } from "./tax-return.js";
 export type { SourceDashboard, DashboardYear } from "./dashboard.js";
 export type { CashFlowPeriod } from "./cash-flow.js";
