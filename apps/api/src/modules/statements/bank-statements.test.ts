@@ -363,4 +363,158 @@ describe("the bank balances the balance sheet states", () => {
       service.balanceSheetBalances(USER, "dddddddd-dddd-4ddd-8ddd-dddddddddddd"),
     ).rejects.toBeInstanceOf(ForbiddenError);
   });
+
+  it("refuses a request naming no company", async () => {
+    const { service } = withBalanceSheet();
+    await expect(service.balanceSheetBalances(USER, "")).rejects.toThrow(/clientId/);
+  });
+
+  it("says so when this deployment cannot look a balance sheet up at all", async () => {
+    // Configured without the port. A 400 naming the configuration beats a
+    // TypeError, which reads as a fault in the reconciliation.
+    const statements = new InMemoryStatementsRepository();
+    const service = new BankStatementsService({
+      statements,
+      documents: { forCompany: () => Promise.resolve([]) },
+      bytes: bytes({}),
+      reader: reader({}),
+    });
+    await expect(service.balanceSheetBalances(USER, COMPANY)).rejects.toThrow(/not available/i);
+  });
+
+  it("says so when the balance sheet has no file behind it", async () => {
+    const statements = new InMemoryStatementsRepository();
+    const service = new BankStatementsService({
+      statements,
+      documents: { forCompany: () => Promise.resolve([]) },
+      balanceSheetDocuments: {
+        forVersion: () => Promise.resolve([]),
+        latest: () => Promise.resolve({ id: "bs-missing", name: "Gone.pdf" }),
+      },
+      bytes: { bytesFor: () => Promise.resolve(null) },
+      reader: reader({}),
+    });
+    await expect(service.balanceSheetBalances(USER, COMPANY)).rejects.toThrow(/no file stored/i);
+  });
+
+  it("prefers the balance sheet a version links over the company's latest", async () => {
+    // Opening a six-month-old report version and being shown last week's
+    // upload is a different company's-worth of numbers, with nothing on
+    // screen to say so.
+    const statements = new InMemoryStatementsRepository();
+    const r = reader({ a: { year: 2023, bankAccounts: [] } as never });
+    const service = new BankStatementsService({
+      statements,
+      documents: { forCompany: () => Promise.resolve([]) },
+      balanceSheetDocuments: {
+        forVersion: () => Promise.resolve([{ id: "linked", name: "Linked BS.pdf" }]),
+        latest: () => Promise.resolve({ id: "latest", name: "Latest BS.pdf" }),
+      },
+      bytes: bytes({}),
+      reader: r,
+    });
+
+    const result = await service.balanceSheetBalances(USER, COMPANY, {
+      keyReportVersionId: "v1",
+    });
+    expect(result.documentId).toBe("linked");
+  });
+
+  it("serves a stored account list rather than reading the document again", async () => {
+    const { service, statements, reader: r } = withBalanceSheet();
+    await statements.save({
+      companyId: COMPANY,
+      provenance: { from: "document", documentId: "bs-1" },
+      statementType: "balance_sheet",
+      sourceKey: "manual_upload_excel_pdf",
+      periodStart: null,
+      periodEnd: null,
+      asOfDate: "2024-12-31",
+      fiscalYear: 2024,
+      payload: { year: 2024, bankAccounts: [{ name: "Stored Bank", accountNumber: "1", amount: 5 }] },
+      extractedBy: null,
+    });
+
+    const result = await service.balanceSheetBalances(USER, COMPANY);
+    expect(result.source).toBe("stored");
+    expect(result.bankAccounts.map((a) => a.name)).toEqual(["Stored Bank"]);
+    expect(r.asks).toEqual([]);
+  });
+
+  it("reads it again when the caller asks for a refresh", async () => {
+    const { service, statements, reader: r } = withBalanceSheet();
+    await statements.save({
+      companyId: COMPANY,
+      provenance: { from: "document", documentId: "bs-1" },
+      statementType: "balance_sheet",
+      sourceKey: "manual_upload_excel_pdf",
+      periodStart: null,
+      periodEnd: null,
+      asOfDate: "2024-12-31",
+      fiscalYear: 2024,
+      payload: { year: 2024, bankAccounts: [{ name: "Stale", accountNumber: "1", amount: 5 }] },
+      extractedBy: null,
+    });
+
+    const result = await service.balanceSheetBalances(USER, COMPANY, { force: true });
+    expect(result.source).toBe("extracted");
+    expect(r.asks).toHaveLength(1);
+  });
+});
+
+describe("a balance sheet the model barely read", () => {
+  // None of these should throw: an exception takes the whole reconciliation
+  // off the page for one ragged row.
+  const service = () =>
+    new BankStatementsService({
+      statements: new InMemoryStatementsRepository(),
+      documents: { forCompany: () => Promise.resolve([]) },
+      balanceSheetDocuments: {
+        forVersion: () => Promise.resolve([]),
+        latest: () => Promise.resolve({ id: "bs-1", name: "BS.pdf" }),
+      },
+      bytes: bytes({}),
+      reader: reader({}),
+    });
+
+  const read = async (reply: unknown) => {
+    const statements = new InMemoryStatementsRepository();
+    const r = reader({ a: reply as never });
+    const built = new BankStatementsService({
+      statements,
+      documents: { forCompany: () => Promise.resolve([]) },
+      balanceSheetDocuments: {
+        forVersion: () => Promise.resolve([]),
+        latest: () => Promise.resolve({ id: "bs-1", name: "BS.pdf" }),
+      },
+      bytes: bytes({}),
+      reader: r,
+    });
+    return built.balanceSheetBalances(USER, COMPANY);
+  };
+
+  it("copes with a reply that is not an object at all", async () => {
+    expect(await read(null)).toMatchObject({ year: null, bankAccounts: [] });
+    expect(await read("I could not read it")).toMatchObject({ bankAccounts: [] });
+  });
+
+  it("copes with an account list that is not a list", async () => {
+    expect((await read({ year: 2024, bankAccounts: "none" })).bankAccounts).toEqual([]);
+  });
+
+  it("copes with an entry that is not an object", async () => {
+    const result = await read({ year: 2024, bankAccounts: [null, "Chase", 42] });
+    expect(result.bankAccounts).toEqual([]);
+  });
+
+  it("reads an account with no number and an unreadable amount", async () => {
+    // The name is what makes it an account. A missing number is common and a
+    // missing amount is nothing, not a reason to drop the row.
+    const result = await read({ bankAccounts: [{ name: "Chase Savings", amount: "n/a" }] });
+    expect(result.bankAccounts).toEqual([
+      { name: "Chase Savings", accountNumber: "", amount: 0 },
+    ]);
+    expect(result.year).toBeNull();
+    expect(service()).toBeDefined();
+  });
 });
