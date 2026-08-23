@@ -24,6 +24,7 @@ import { createUploadsModule } from "./modules/uploads/index.js";
 import { createRequestsModule } from "./modules/requests/index.js";
 import { createActivityModule } from "./modules/activity/index.js";
 import { createGroupsModule } from "./modules/groups/index.js";
+import { createWorkspaceModule } from "./modules/workspace/index.js";
 import { createMessagesModule } from "./modules/messages/index.js";
 import { createReportsModule } from "./modules/reports/index.js";
 import { createQoeModule } from "./modules/qoe/index.js";
@@ -125,6 +126,7 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
     flags.MESSAGES_MODULE_ENABLED ||
     flags.GROUPS_MODULE_ENABLED ||
     flags.ACTIVITY_MODULE_ENABLED ||
+    flags.WORKSPACE_MODULE_ENABLED ||
     flags.REPORTS_MODULE_ENABLED ||
     flags.QOE_MODULE_ENABLED;
   if (domainsEnabled) {
@@ -184,6 +186,11 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
     if (flags.ACTIVITY_MODULE_ENABLED) {
       modules.push({ path: "/", router: createActivityModule({ db, requireAuth }).router });
       console.warn("[gateway] activity module ENABLED at the API root (broker activity feed)");
+    }
+    // Persisted workspace UI state, and the shared CIM questionnaire.
+    if (flags.WORKSPACE_MODULE_ENABLED) {
+      modules.push({ path: "/", router: createWorkspaceModule({ db, requireAuth }).router });
+      console.warn("[gateway] workspace module ENABLED at the API root (page state, questionnaire)");
     }
     if (flags.REPORTS_MODULE_ENABLED) {
       modules.push({ path: "/", router: createReportsModule({ db, requireAuth }).router });

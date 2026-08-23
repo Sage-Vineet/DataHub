@@ -12,7 +12,9 @@
   "DELETE /users/:p",
   "DELETE /users/:p/remove-companies",
   "DELETE /users/broker-team/invite/:p",
+  "DELETE /workspace-page-state/:p",
   "GET /broker/activity",
+  "GET /cim-questionnaire",
   "GET /companies",
   "GET /companies/:p",
   "GET /companies/:p/activity",
@@ -43,6 +45,7 @@
   "GET /users",
   "GET /users/:p",
   "GET /users/find-by-email",
+  "GET /workspace-page-state/:p",
   "PATCH /:p",
   "PATCH /companies/:p",
   "PATCH /folder-access/:p",
@@ -82,5 +85,7 @@
   "POST /uploads/presign",
   "POST /users",
   "POST /users/:p/add-companies",
-  "POST /users/broker-team/invite"
+  "POST /users/broker-team/invite",
+  "PUT /cim-questionnaire",
+  "PUT /workspace-page-state/:p"
 ]

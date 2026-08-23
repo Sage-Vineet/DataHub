@@ -119,6 +119,16 @@
         "GET /broker/activity"
       ]
     },
+    "workspace": {
+      "compare": [],
+      "additive": [
+        "DELETE /workspace-page-state/:p",
+        "GET /cim-questionnaire",
+        "GET /workspace-page-state/:p",
+        "PUT /cim-questionnaire",
+        "PUT /workspace-page-state/:p"
+      ]
+    },
     "reports": {
       "compare": [
         "DELETE /key-reports/versions/:p",
@@ -135,7 +145,6 @@
   "backlog": [
     "DELETE /bank-reconciliation-addback-items/:p",
     "DELETE /key-reports/mappings/:p",
-    "DELETE /workspace-page-state/:p",
     "GET /all-reports",
     "GET /api/auth/callback",
     "GET /api/auth/disconnect",
@@ -149,7 +158,6 @@
     "GET /bank-reconciliation-adjustments",
     "GET /bank-reconciliation-line-items",
     "GET /bank-vs-books",
-    "GET /cim-questionnaire",
     "GET /customers",
     "GET /extract-bank-pdf-records",
     "GET /general-ledger",
@@ -205,9 +213,6 @@
     "GET /profit-and-loss",
     "GET /profit-and-loss-detail",
     "GET /profit-and-loss-statement",
-    "GET /public/health/db",
-    "GET /public/users",
-    "GET /public/users/:p",
     "GET /qb-accounts",
     "GET /qb-balance-sheet",
     "GET /qb-bank-accounts",
@@ -241,7 +246,6 @@
     "GET /reports/profit-loss/year-comparison",
     "GET /reports/vendor-analysis",
     "GET /tax-data",
-    "GET /workspace-page-state/:p",
     "PATCH /key-reports/chart-of-accounts/:p",
     "POST /api/auth/transfer-confirm",
     "POST /api/quickbooks/sync",
@@ -285,10 +289,8 @@
     "PUT /api/customers/:p",
     "PUT /api/invoices/:p",
     "PUT /bank-reconciliation-addback-items/:p",
-    "PUT /cim-questionnaire",
     "PUT /key-reports/popup-preference",
     "PUT /manual-report-uploads/tax-reconciliation-overrides",
-    "PUT /report-sources/selected",
-    "PUT /workspace-page-state/:p"
+    "PUT /report-sources/selected"
   ]
 }

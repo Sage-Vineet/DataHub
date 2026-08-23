@@ -449,6 +449,30 @@ export const buyerGroupMembers = pgTable(
   (t) => ({ pk: primaryKey({ columns: [t.groupId, t.userId] }) }),
 );
 
+/**
+ * Server-persisted workspace UI state (workspace-domain).
+ *
+ * One row per (company, page key), with the payload as opaque JSON — the server
+ * never reads inside it. There is deliberately no user column: per-user state is
+ * achieved by the caller appending the user id to the page key, which is what
+ * makes the same table serve both a private draft and a shared one like the CIM
+ * questionnaire.
+ */
+export const workspacePageState = pgTable(
+  "workspace_page_state",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    pageKey: text("page_key").notNull(),
+    payload: jsonb("payload").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ companyPage: uniqueIndex("uq_workspace_page_state_company_page").on(t.companyId, t.pageKey) }),
+);
+
 /** Key Report versions (reports-domain). Exactly one active version per company (partial unique). */
 export const keyReportVersions = pgTable(
   "key_report_versions",

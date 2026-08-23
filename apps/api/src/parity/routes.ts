@@ -7,6 +7,7 @@ import { createActivityModule } from "../modules/activity/index.js";
 import { createCompaniesModule } from "../modules/companies/index.js";
 import { createFoldersModule } from "../modules/folders/index.js";
 import { createGroupsModule } from "../modules/groups/index.js";
+import { createWorkspaceModule } from "../modules/workspace/index.js";
 import { createMessagesModule } from "../modules/messages/index.js";
 import { createReportsModule } from "../modules/reports/index.js";
 import { createRequestsModule } from "../modules/requests/index.js";
@@ -181,6 +182,7 @@ export function moduleSurfaces(): ModuleSurface[] {
     { name: "messages", mount: "/", router: createMessagesModule({ db, requireAuth }).router },
     { name: "groups", mount: "/", router: createGroupsModule({ db, requireAuth }).router },
     { name: "activity", mount: "/", router: createActivityModule({ db, requireAuth }).router },
+    { name: "workspace", mount: "/", router: createWorkspaceModule({ db, requireAuth }).router },
     { name: "reports", mount: "/", router: createReportsModule({ db, requireAuth }).router },
   ];
 }

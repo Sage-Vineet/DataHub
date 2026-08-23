@@ -6,9 +6,7 @@ const { timingMiddleware } = require("./middleware/timing");
 
 // Routes
 const authRoutes = require("./routes/auth");
-const publicRoutes = require("./routes/public");
 const { quickBooksAuth } = require("./middleware/quickbooksAuth");
-const workspacePageStateRoutes = require("./routes/workspacePageState");
 const manualGlRoutes = require("./routes/manualGl");
 const manualReportUploadRoutes = require("./routes/manualReportUploads");
 const reportSourceRoutes = require("./routes/reportSources");
@@ -110,9 +108,7 @@ app.get("/health", (req, res) => res.json({ ok: true }));
 
 // Standard Routes
 app.use("/auth", authRoutes);
-app.use("/public", publicRoutes);
 app.use("/", tokenRoutes);
-app.use("/", workspacePageStateRoutes);
 app.use("/", manualGlRoutes);
 app.use("/", manualReportUploadRoutes);
 app.use("/", reportSourceRoutes);
