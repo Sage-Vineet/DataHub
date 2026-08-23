@@ -165,3 +165,108 @@ describe("activity writer", () => {
     expect(writer.pending).toBe(0);
   });
 });
+
+describe("activity writer — the timer and the losses", () => {
+  it("flushes on its own when an interval is set", async () => {
+    // Every other test drives `flush()` by hand. In the product nothing does,
+    // so the timer is the only thing that ever writes anything.
+    const repo = new InMemoryActivityRepository();
+    const writer = new ActivityWriter(repo, { flushIntervalMs: 5 });
+    writer.record(envelope(1));
+
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(await repo.list()).toHaveLength(1);
+    await writer.close();
+  });
+
+  it("stops the timer on close, and writes what was still buffered", async () => {
+    const repo = new InMemoryActivityRepository();
+    const writer = new ActivityWriter(repo, { flushIntervalMs: 5 });
+    writer.record(envelope(2));
+    await writer.close();
+
+    expect(await repo.list()).toHaveLength(1);
+    // Closed: further records are dropped rather than buffered forever.
+    writer.record(envelope(3));
+    await writer.flush();
+    expect(await repo.list()).toHaveLength(1);
+  });
+
+  it("flushes nothing without touching the store", async () => {
+    const repo = new InMemoryActivityRepository();
+    const writer = makeWriter(repo);
+    await writer.flush();
+    expect(await repo.list()).toEqual([]);
+  });
+
+  it("merges consecutive losses into one marker rather than one per record", async () => {
+    // A marker per dropped record would flood the buffer it is reporting on,
+    // which is the condition that caused the loss.
+    const repo = new InMemoryActivityRepository();
+    const writer = new ActivityWriter(repo, { maxBuffer: 1, batchSize: 10, flushIntervalMs: 0 });
+
+    writer.record(envelope(1));
+    writer.record(envelope(2));
+    writer.record(envelope(3));
+    writer.record(envelope(4));
+    await writer.flush();
+
+    const gaps = (await repo.list()).filter((r) => r.kind === "gap");
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]!.droppedCount).toBe(3);
+  });
+
+  it("names both reasons when losses of two kinds run together", async () => {
+    const repo = new InMemoryActivityRepository();
+    let fail = true;
+    const flaky = {
+      ...repo,
+      append: async (batch: ActivityRecordInput[]) => {
+        if (fail) throw new Error("the store is down");
+        return repo.append(batch);
+      },
+      list: repo.list.bind(repo),
+    } as unknown as InMemoryActivityRepository;
+
+    const writer = new ActivityWriter(flaky, { maxBuffer: 1, batchSize: 10, flushIntervalMs: 0 });
+    writer.record(envelope(1));
+    writer.record(envelope(2));
+    await writer.flush();
+
+    fail = false;
+    writer.record(envelope(3));
+    await writer.flush();
+
+    const gaps = (await repo.list()).filter((r) => r.kind === "gap");
+    expect(gaps).toHaveLength(1);
+    const reason = String(gaps[0]!.reason ?? "");
+    expect(reason).toMatch(/buffer full/);
+    expect(reason).toMatch(/append failed/);
+  });
+
+  it("keeps the gap marker when the flush that carried it failed", async () => {
+    // The batch is gone AND the marker reporting it is gone. Accounting for
+    // both means the next successful flush still reports the loss, rather than
+    // the log quietly showing no gap at all.
+    const repo = new InMemoryActivityRepository();
+    let fail = true;
+    const flaky = {
+      append: async (batch: ActivityRecordInput[]) => {
+        if (fail) throw new Error("down");
+        return repo.append(batch);
+      },
+      list: repo.list.bind(repo),
+    } as unknown as InMemoryActivityRepository;
+
+    const writer = new ActivityWriter(flaky, { maxBuffer: 1, batchSize: 10, flushIntervalMs: 0 });
+    writer.record(envelope(1));
+    writer.record(envelope(2));
+    await writer.flush();
+
+    fail = false;
+    writer.record(envelope(3));
+    await writer.flush();
+
+    expect((await repo.list()).some((r) => r.kind === "gap")).toBe(true);
+  });
+});

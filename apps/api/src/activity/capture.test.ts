@@ -8,7 +8,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createGateway } from "../gateway.js";
 import { parseRoutingTable } from "../routing.js";
 import { withCommonMiddleware } from "../shared/router.js";
-import { createActivityCapture, emitActivity, normalizePath } from "./capture.js";
+import {
+  attributeActor,
+  createActivityCapture,
+  emitActivity,
+  normalizePath,
+} from "./capture.js";
 import { InMemoryActivityRepository } from "./repository.memory.js";
 import { ActivityWriter } from "./writer.js";
 
@@ -63,6 +68,11 @@ function moduleRouter(): express.Router {
   router.get("/companies/:id/denied", (_req, res) => {
     res.status(403).json({ error: "nope" });
   });
+  // An event that names its own actor, and one that names nothing else.
+  router.get("/companies/:id/impersonated", (_req, res) => {
+    emitActivity(res, { event_type: "access.granted", actor_id: "acting-as" });
+    res.json({ served: "module" });
+  });
   return router;
 }
 
@@ -93,6 +103,89 @@ afterAll(async () => {
 beforeEach(() => {
   repo = new InMemoryActivityRepository();
   writer = new ActivityWriter(repo, { flushIntervalMs: 0 });
+});
+
+describe("attributing a request to an actor", () => {
+  // Signature verified, no database lookup: tier 1 runs on every request, and
+  // a session read per request would put the audit log on the product's
+  // latency path.
+  const withAuth = (header?: string) =>
+    ({ headers: header === undefined ? {} : { authorization: header } }) as never;
+
+  it("reads the subject out of a token it can verify", () => {
+    const token = jwt.sign({ sub: "user-7" }, SECRET);
+    expect(attributeActor(withAuth(`Bearer ${token}`), SECRET)).toEqual({
+      actorId: "user-7",
+      actorKind: "user",
+    });
+  });
+
+  it("reads the other spelling legacy tokens use", () => {
+    const token = jwt.sign({ userId: "user-8" }, SECRET);
+    expect(attributeActor(withAuth(`Bearer ${token}`), SECRET)).toMatchObject({
+      actorId: "user-8",
+    });
+  });
+
+  it("is anonymous with no header, no scheme, or an empty token", () => {
+    for (const header of [undefined, "Basic abc", "Bearer", "Bearer    "]) {
+      expect(attributeActor(withAuth(header), SECRET).actorKind).toBe("anonymous");
+    }
+  });
+
+  it("is anonymous when this deployment has no secret to verify against", () => {
+    const token = jwt.sign({ sub: "user-7" }, SECRET);
+    expect(attributeActor(withAuth(`Bearer ${token}`), undefined).actorKind).toBe("anonymous");
+  });
+
+  it("is anonymous for a token signed with a different secret", () => {
+    // An unverifiable credential is itself worth recording — SE-0004 asks for
+    // failed and denied attempts, and an unauthenticated probe is one.
+    const token = jwt.sign({ sub: "user-7" }, "some-other-secret");
+    expect(attributeActor(withAuth(`Bearer ${token}`), SECRET).actorKind).toBe("anonymous");
+  });
+
+  it("is anonymous for a verified token that names no subject", () => {
+    const token = jwt.sign({ scope: "read" }, SECRET);
+    expect(attributeActor(withAuth(`Bearer ${token}`), SECRET)).toEqual({
+      actorId: null,
+      actorKind: "anonymous",
+    });
+  });
+
+  it("is anonymous for a token whose payload is not an object", () => {
+    // `jwt.sign("a string", secret)` is legal and verifies. There is no `sub`
+    // to read off a string, and treating one as an actor id would attribute
+    // the request to whatever the string happened to be.
+    const token = jwt.sign("just a string", SECRET);
+    expect(attributeActor(withAuth(`Bearer ${token}`), SECRET).actorKind).toBe("anonymous");
+  });
+});
+
+describe("an event that names its own actor", () => {
+  it("is attributed to that actor, as a user, whoever made the request", async () => {
+    // A module that has validated a session knows who is acting; tier 1 only
+    // knows what the bearer token asserted. The module's identity wins, and
+    // the record says "user" rather than carrying the request's anonymity.
+    const app = buildGateway({ capture: true });
+    await request(app).get("/companies/c-1/impersonated").expect(200);
+    await settle();
+
+    const event = (await repo.list()).find((r) => r.kind === "event");
+    expect(event).toMatchObject({ actorId: "acting-as", actorKind: "user" });
+  });
+
+  it("carries no subject, company or payload when the event names none", async () => {
+    // Nulls and an empty object rather than absent fields: the column is NOT
+    // NULL for the payload, and a reader distinguishing "no subject" from
+    // "field missing" would be distinguishing nothing.
+    const app = buildGateway({ capture: true });
+    await request(app).get("/companies/c-1/impersonated").expect(200);
+    await settle();
+
+    const event = (await repo.list()).find((r) => r.kind === "event");
+    expect(event).toMatchObject({ subjectId: null, companyId: null, payload: {} });
+  });
 });
 
 describe("path normalization", () => {
