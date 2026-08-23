@@ -459,7 +459,16 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
    */
   router.get("/qb-bank-activity/saved", handle(async (req, res) => {
     const companyId = companyOf(req);
+    // Pulls only. A company's UPLOADED bank statements are also
+    // `bank_reconciliation` extracts — one per document — and without this the
+    // newest of those answers here: a payload of `{ statements: [...] }` where
+    // the page expects a ladder of `{ accounts, months }`. It reads
+    // `data.accounts`, finds nothing, and renders an empty grid with nothing
+    // to say why. Filtered on provenance rather than on the source key because
+    // two spellings of "quickbooks" are in use and the distinction that
+    // matters is pulled-versus-uploaded.
     const saved = await service.latestOrNull(req.user!, companyId, "bank_reconciliation", {
+      provenance: "pull",
       ...(str(req.query.sourceKey) ? { sourceKey: str(req.query.sourceKey)! } : {}),
     });
 

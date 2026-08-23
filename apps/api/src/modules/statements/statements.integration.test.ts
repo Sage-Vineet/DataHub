@@ -1000,6 +1000,28 @@ describe("the saved bank reconciliation (real Postgres)", () => {
     });
   };
 
+  it("answers the PULLED reconciliation, not an uploaded statement", async () => {
+    // Both are `bank_reconciliation` extracts. The uploaded ones are one per
+    // document and hold `{ statements: [...] }`; the page here wants the
+    // QuickBooks ladder and reads `data.accounts`. Handed the wrong one it
+    // renders an empty grid with nothing to say why — so this saves the pull
+    // FIRST and the document extract second, and still expects the pull.
+    await record();
+    const documentId = await addDocument("January.pdf");
+    await service.save(current, companyId, {
+      provenance: { from: "document", documentId },
+      statementType: "bank_reconciliation",
+      sourceKey: "manual_upload_excel_pdf",
+      periodStart: "2024-05-01",
+      periodEnd: "2024-05-31",
+      payload: { statements: [{ bankName: "Wells Fargo" }] },
+    });
+
+    const res = await saved().expect(200);
+    expect(res.body.data).toEqual({ accounts: [{ name: "Operating", cleared: 5000 }] });
+    expect(res.body.startDate).toBe("2024-01-01");
+  });
+
   it("says so plainly when nothing has been saved", async () => {
     // The page calls this on load to restore what it can WITHOUT a live
     // QuickBooks connection. A 404 there reads as an error rather than as

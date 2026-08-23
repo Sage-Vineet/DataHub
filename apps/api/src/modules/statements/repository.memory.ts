@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   pullKeyFor,
+  type LatestFilter,
   type ListFilter,
   type SaveExtractInput,
   type SourceTreeEntry,
@@ -89,10 +90,18 @@ export class InMemoryStatementsRepository implements StatementsRepository {
   async latest(
     companyId: string,
     statementType: string,
-    filter: { sourceKey?: string },
+    filter: LatestFilter,
   ): Promise<StatementExtract | null> {
-    const rows = await this.list(companyId, { statementType, ...filter });
-    return rows[0] ?? null;
+    const { provenance, ...listFilter } = filter;
+    const rows = await this.list(companyId, { statementType, ...listFilter });
+    // A pull has no document behind it, and a document extract always has one.
+    const wanted =
+      provenance === "pull"
+        ? rows.filter((row) => row.documentId === null)
+        : provenance === "document"
+          ? rows.filter((row) => row.documentId !== null)
+          : rows;
+    return wanted[0] ?? null;
   }
 
   getById(companyId: string, id: string): Promise<StatementExtract | null> {

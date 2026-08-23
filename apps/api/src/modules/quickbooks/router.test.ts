@@ -8,6 +8,7 @@ import type { QuickBooksEntitiesService } from "./reports/entities.js";
 import type { QuickBooksReportsService } from "./reports/service.js";
 import type { QuickBooksSyncStatusService } from "./reports/status.js";
 import type { QuickBooksSyncService } from "./reports/sync.js";
+import type { QuickBooksBankActivityService } from "./reports/bank-activity.js";
 import { createQuickBooksRouter } from "./router.js";
 import type { QuickBooksService } from "./service.js";
 
@@ -88,6 +89,12 @@ function stub(over: Record<string, unknown> = {}) {
     ...(over.sync as object | undefined),
   } as unknown as QuickBooksSyncService;
 
+  const bankActivity = {
+    ladders: record("ladders", { success: true, accounts: [], months: [], truncated: [] }),
+    oneLadder: record("oneLadder", { success: true, account: { accountId: "35" }, monthlyData: [] }),
+    ...(over.bankActivity as object | undefined),
+  } as unknown as QuickBooksBankActivityService;
+
   const entities = {
     list: record("list", SERVED),
     invoiceByDocNumber: record("invoiceByDocNumber", { ...SERVED, data: { Id: "42" } }),
@@ -101,6 +108,7 @@ function stub(over: Record<string, unknown> = {}) {
       reports,
       syncStatus,
       sync,
+      bankActivity,
       entities,
       requireAuth: authAs("caller-1"),
     }),
@@ -351,6 +359,56 @@ describe("starting a sync", () => {
     });
     const res = await post(app).expect(401);
     expect(res.body.reconnectRequired).toBe(true);
+  });
+});
+
+describe("the bank activity ladder", () => {
+  const RANGE = "start_date=2026-01-01&end_date=2026-02-28";
+
+  it("serves the ladder for a valid range", async () => {
+    const { app, calls } = stub();
+    const res = await get(app, `/qb-bank-activity?${RANGE}`).expect(200);
+
+    expect(res.body.success).toBe(true);
+    expect(argsOf(calls, "ladders")[2]).toEqual({
+      startDate: "2026-01-01",
+      endDate: "2026-02-28",
+      accountingMethod: "Accrual",
+    });
+  });
+
+  it("takes the accounting basis when one is asked for", async () => {
+    const { app, calls } = stub();
+    await get(app, `/qb-bank-activity?${RANGE}&accounting_method=Cash`).expect(200);
+    expect(argsOf(calls, "ladders")[2]).toMatchObject({ accountingMethod: "Cash" });
+  });
+
+  it("400s a range it cannot read rather than asking QuickBooks", async () => {
+    // Legacy pasted both dates into the QuickBooks query language unchecked.
+    const { app, calls } = stub();
+    await get(app, "/qb-bank-activity?start_date=yesterday&end_date=2026-02-28").expect(400);
+    expect(calls.filter((c) => c.method === "ladders")).toEqual([]);
+  });
+
+  it("400s a request with no range at all", async () => {
+    const { app } = stub();
+    await get(app, "/qb-bank-activity").expect(400);
+  });
+
+  it("drills into one account", async () => {
+    const { app, calls } = stub();
+    const res = await get(app, `/qb-one-bank-activity?accountId=35&${RANGE}`).expect(200);
+
+    expect(res.body.account.accountId).toBe("35");
+    expect(argsOf(calls, "oneLadder")[2]).toBe("35");
+  });
+
+  it("passes an absent accountId on for the service to refuse", async () => {
+    // The service owns that rule, so the drill-down and anything else calling
+    // it answer the same way.
+    const { app, calls } = stub();
+    await get(app, `/qb-one-bank-activity?${RANGE}`).expect(200);
+    expect(argsOf(calls, "oneLadder")[2]).toBe("");
   });
 });
 

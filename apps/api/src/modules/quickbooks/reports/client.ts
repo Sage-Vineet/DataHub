@@ -52,9 +52,29 @@ export const QB_REPORT_NAMES = {
 export const QB_ENTITY_NAMES = {
   customers: "Customer",
   invoices: "Invoice",
+  // The five the bank-activity ladder is built from. Transactions rather than
+  // lists a page shows: they are queried, added up, and thrown away.
+  accounts: "Account",
+  deposits: "Deposit",
+  purchases: "Purchase",
+  transfers: "Transfer",
+  journal_entries: "JournalEntry",
 } as const;
 
 export type QbEntityType = keyof typeof QB_ENTITY_NAMES;
+
+/**
+ * The entity lists that are CACHED, as against merely queried.
+ *
+ * `statement_extracts` holds these two under their own names, so the type must
+ * stay a subset of `StatementType`. The transaction types above are added up
+ * and thrown away, and caching them would be caching the raw material rather
+ * than the answer — see migration 0017 on what this table will and will not
+ * stretch to.
+ */
+export const QB_LIST_ENTITY_TYPES = ["customers", "invoices"] as const;
+
+export type QbListEntityType = (typeof QB_LIST_ENTITY_TYPES)[number];
 
 export type QbReportType = keyof typeof QB_REPORT_NAMES;
 

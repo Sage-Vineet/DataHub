@@ -9,6 +9,11 @@ import type { QuickBooksEntitiesService } from "./reports/entities.js";
 import type { QuickBooksReportsService } from "./reports/service.js";
 import type { QuickBooksSyncStatusService } from "./reports/status.js";
 import type { QuickBooksSyncService } from "./reports/sync.js";
+import {
+  requireIsoDate,
+  toAccountingMethod,
+  type QuickBooksBankActivityService,
+} from "./reports/bank-activity.js";
 import type { QuickBooksService } from "./service.js";
 
 export interface QuickBooksRouterDeps {
@@ -16,6 +21,7 @@ export interface QuickBooksRouterDeps {
   reports: QuickBooksReportsService;
   syncStatus: QuickBooksSyncStatusService;
   sync: QuickBooksSyncService;
+  bankActivity: QuickBooksBankActivityService;
   entities: QuickBooksEntitiesService;
   requireAuth: RequestHandler;
 }
@@ -31,7 +37,7 @@ export interface QuickBooksRouterDeps {
  * `withCommonMiddleware` leaves possible.
  */
 export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
-  const { service, reports, syncStatus, sync, entities, requireAuth } = deps;
+  const { service, reports, syncStatus, sync, bankActivity, entities, requireAuth } = deps;
   const router = express.Router();
   withCommonMiddleware(router, [helmet(), pinoHttp(), express.json(), requireAuth]);
 
@@ -300,6 +306,35 @@ export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
       fetched: outcome.fetched,
       failed: outcome.failed,
     });
+  }));
+
+  /**
+   * The reconciliation page's Balance Review.
+   *
+   * One ladder per bank account: what moved each month, the balance that
+   * implies, and the balance the books state. The range is required and
+   * validated — legacy pasted both dates straight into the QuickBooks query
+   * language.
+   */
+  const rangeOf = (req: Request) => ({
+    startDate: requireIsoDate(req.query.start_date, "start_date"),
+    endDate: requireIsoDate(req.query.end_date, "end_date"),
+    accountingMethod: toAccountingMethod(req.query.accounting_method),
+  });
+
+  router.get("/qb-bank-activity", handle(async (req, res) => {
+    res.json(await bankActivity.ladders(req.user!, companyOf(req), rangeOf(req)));
+  }));
+
+  router.get("/qb-one-bank-activity", handle(async (req, res) => {
+    res.json(
+      await bankActivity.oneLadder(
+        req.user!,
+        companyOf(req),
+        String(req.query.accountId ?? ""),
+        rangeOf(req),
+      ),
+    );
   }));
 
   router.get("/api/quickbooks/sync-status", handle(async (req, res) => {

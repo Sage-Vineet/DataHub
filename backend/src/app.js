@@ -12,7 +12,6 @@ const tokenRoutes = require("./routes/quickbooks/token");
 const profitAndLossRoutes = require("./routes/quickbooks/profit_and_loss/profitAndLoss");
 const customerFinanceRoutes = require("./routes/quickbooks/customers/customers");
 const invoiceFinanceRoutes = require("./routes/quickbooks/invoices/invoices");
-const reconciliationRoutes = require("./routes/quickbooks/reconciliation/Reconciliation");
 const geminipdf = require("./routes/quickbooks/tax_reconciliation/geminiPdf");
 const bankVsBooksRoutes = require("./routes/quickbooks/reconciliation/bankVsBooks");
 
@@ -104,7 +103,6 @@ const financialRoutes = [
   profitAndLossRoutes,
   customerFinanceRoutes,
   invoiceFinanceRoutes,
-  reconciliationRoutes,
   geminipdf,
   bankVsBooksRoutes,
 ];

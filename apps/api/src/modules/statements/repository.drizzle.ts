@@ -1,7 +1,8 @@
-import { and, asc, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { schema, type Db } from "@datahub/db";
 import {
   pullKeyFor,
+  type LatestFilter,
   type ListFilter,
   type SaveExtractInput,
   type SourceTreeEntry,
@@ -107,13 +108,17 @@ export class DrizzleStatementsRepository implements StatementsRepository {
   async latest(
     companyId: string,
     statementType: string,
-    filter: { sourceKey?: string },
+    filter: LatestFilter,
   ): Promise<StatementExtract | null> {
     const clauses = [
       eq(statementExtracts.companyId, companyId),
       eq(statementExtracts.statementType, statementType),
     ];
     if (filter.sourceKey) clauses.push(eq(statementExtracts.sourceKey, filter.sourceKey));
+    // A pull has no document behind it, and a document extract always has one
+    // — migration 0016 makes that a constraint rather than a convention.
+    if (filter.provenance === "pull") clauses.push(isNull(statementExtracts.documentId));
+    if (filter.provenance === "document") clauses.push(isNotNull(statementExtracts.documentId));
 
     const [row] = await this.base()
       .where(and(...clauses))

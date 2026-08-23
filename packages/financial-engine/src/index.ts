@@ -24,3 +24,4 @@ export * from "./quickbooks-pl-summary.js";
 export * from "./quickbooks-monthly-items.js";
 export * from "./statement-kpis.js";
 export * from "./bank-statement-shape.js";
+export * from "./bank-activity.js";

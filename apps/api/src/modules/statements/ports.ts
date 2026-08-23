@@ -121,6 +121,20 @@ export interface SaveExtractInput {
   extractedBy: string | null;
 }
 
+export interface LatestFilter {
+  sourceKey?: string;
+  /**
+   * Where the extract came from.
+   *
+   * One statement type can hold both: a company's bank reconciliation exists
+   * as a PULL from QuickBooks and as one extract per UPLOADED statement, with
+   * different payload shapes. A caller that wants one and gets the other reads
+   * an object with none of the fields it expects and renders nothing, so the
+   * two are separable here rather than by guessing at the payload.
+   */
+  provenance?: "pull" | "document";
+}
+
 export interface ListFilter {
   sourceKey?: string;
   statementType?: string;
@@ -157,7 +171,7 @@ export interface StatementsRepository {
   latest(
     companyId: string,
     statementType: string,
-    filter: { sourceKey?: string },
+    filter: LatestFilter,
   ): Promise<StatementExtract | null>;
   getById(companyId: string, id: string): Promise<StatementExtract | null>;
   /** The extract taken from one specific document, if there is one. */

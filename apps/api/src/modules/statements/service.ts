@@ -4,6 +4,7 @@ import { BadRequestError, ForbiddenError, NotFoundError } from "../../shared/err
 import {
   CATEGORY_OF_STATEMENT,
   STATEMENT_TYPES,
+  type LatestFilter,
   type SourceTreeEntry,
   type StatementExtract,
   type Provenance,
@@ -160,7 +161,7 @@ export class StatementsService {
     user: SessionUser,
     companyId: string,
     statementType: string,
-    filter: { sourceKey?: string } = {},
+    filter: LatestFilter = {},
   ): Promise<StatementExtract | null> {
     this.requireCompany(user, companyId);
     return this.deps.repo.latest(companyId, this.requireType(statementType), filter);

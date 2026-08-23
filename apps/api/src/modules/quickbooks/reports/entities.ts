@@ -6,7 +6,7 @@ import type { QuickBooksRepository } from "../ports.js";
 import {
   QuickBooksAuthError,
   escapeQueryLiteral,
-  type QbEntityType,
+  type QbListEntityType,
   type ReportFetcher,
 } from "./client.js";
 import { QUICKBOOKS_SOURCE_KEY, type ServedReport } from "./service.js";
@@ -61,7 +61,7 @@ export class QuickBooksEntitiesService {
   async list(
     user: SessionUser,
     companyId: string,
-    entityType: QbEntityType,
+    entityType: QbListEntityType,
     now = new Date(),
   ): Promise<ServedReport> {
     this.requireCompany(user, companyId);
@@ -153,7 +153,7 @@ export class QuickBooksEntitiesService {
   private async fetchLive(
     companyId: string,
     realmId: string,
-    entityType: QbEntityType,
+    entityType: QbListEntityType,
     user: SessionUser,
   ): Promise<ServedReport | null> {
     const tokens = await this.deps.connections.tokens(companyId);

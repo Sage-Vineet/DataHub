@@ -10,6 +10,7 @@ import { QuickBooksEntitiesService } from "./reports/entities.js";
 import { QuickBooksReportsService } from "./reports/service.js";
 import { QuickBooksSyncStatusService } from "./reports/status.js";
 import { QuickBooksSyncService } from "./reports/sync.js";
+import { QuickBooksBankActivityService } from "./reports/bank-activity.js";
 import { DrizzleQuickBooksRepository } from "./repository.drizzle.js";
 import { createQuickBooksRouter } from "./router.js";
 import { QuickBooksService } from "./service.js";
@@ -20,6 +21,7 @@ export interface QuickBooksModule {
   reports: QuickBooksReportsService;
   syncStatus: QuickBooksSyncStatusService;
   sync: QuickBooksSyncService;
+  bankActivity: QuickBooksBankActivityService;
   entities: QuickBooksEntitiesService;
 }
 
@@ -79,6 +81,12 @@ export function createQuickBooksModule(
   // other sync uses.
   const sync = new QuickBooksSyncService({ runs: new SyncService({ repo: runs }), reports });
 
+  const bankActivity = new QuickBooksBankActivityService({
+    connections: repo,
+    fetcher,
+    statements,
+  });
+
   const entities = new QuickBooksEntitiesService({ statements, connections: repo, fetcher });
 
   return {
@@ -87,6 +95,7 @@ export function createQuickBooksModule(
       reports,
       syncStatus,
       sync,
+      bankActivity,
       entities,
       requireAuth: opts.requireAuth,
     }),
@@ -94,6 +103,7 @@ export function createQuickBooksModule(
     reports,
     syncStatus,
     sync,
+    bankActivity,
     entities,
   };
 }
@@ -112,6 +122,7 @@ export type { QbReportType, ReportFetcher } from "./reports/client.js";
 export { QuickBooksReportsService, QUICKBOOKS_SOURCE_KEY } from "./reports/service.js";
 export { QuickBooksSyncStatusService } from "./reports/status.js";
 export { QuickBooksSyncService, buildSyncPlan, SYNC_REPORT_TYPES } from "./reports/sync.js";
+export { QuickBooksBankActivityService } from "./reports/bank-activity.js";
 export { QuickBooksEntitiesService } from "./reports/entities.js";
 export type { QuickBooksSyncStatus } from "./reports/status.js";
 export type { ConnectionRecord, QuickBooksRepository } from "./ports.js";
