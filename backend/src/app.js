@@ -5,7 +5,6 @@ const { errorHandler } = require("./middleware/error");
 const { timingMiddleware } = require("./middleware/timing");
 
 // Routes
-const authRoutes = require("./routes/auth");
 const { quickBooksAuth } = require("./middleware/quickbooksAuth");
 const manualGlRoutes = require("./routes/manualGl");
 const manualReportUploadRoutes = require("./routes/manualReportUploads");
@@ -107,7 +106,6 @@ app.use(timingMiddleware);
 app.get("/health", (req, res) => res.json({ ok: true }));
 
 // Standard Routes
-app.use("/auth", authRoutes);
 app.use("/", tokenRoutes);
 app.use("/", manualGlRoutes);
 app.use("/", manualReportUploadRoutes);

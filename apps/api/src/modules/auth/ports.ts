@@ -32,6 +32,21 @@ export interface AuthRepository {
   findUserByEmail(email: string): Promise<AuthUserRecord | null>;
   findUserById(id: string): Promise<AuthUserRecord | null>;
   updatePasswordHash(userId: string, passwordHash: string): Promise<void>;
+  /**
+   * Create the business `users` row for an identity Better Auth just created.
+   *
+   * Better Auth owns identity — email, password, name — and writes only
+   * `auth_user`. Everything else in the app joins on `users`, keyed by the same
+   * id, so a new account needs both rows or it exists to log in and to nothing
+   * else.
+   */
+  createBrokerUser(user: {
+    id: string;
+    name: string;
+    email: string;
+    phone: string | null;
+    brokerCompany: string | null;
+  }): Promise<void>;
   listCompanyIdsForUser(userId: string): Promise<string[]>;
 
   // Post-login provisioning for client/buyer users (legacy parity).

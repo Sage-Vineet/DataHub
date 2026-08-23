@@ -39,6 +39,24 @@ export class InMemoryAuthRepository implements AuthRepository {
     if (u) u.passwordHash = passwordHash;
   }
 
+  async createBrokerUser(user: {
+    id: string;
+    name: string;
+    email: string;
+    phone: string | null;
+    brokerCompany: string | null;
+  }): Promise<void> {
+    this.users.set(user.id, {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      passwordHash: "!",
+      role: "broker",
+      companyId: null,
+      status: "active",
+    } as never);
+  }
+
   async listCompanyIdsForUser(userId: string): Promise<string[]> {
     const ids: string[] = [];
     for (const key of this.userCompanies) {

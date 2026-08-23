@@ -9,6 +9,7 @@ import { backfillBetterAuthIdentities } from "./backfill.js";
 import { DrizzleAuthRepository } from "./repository.drizzle.js";
 import { createBetterAuthRouter } from "./router.better.js";
 import { loadAuthConfig } from "./config.js";
+import { AuthService } from "./service.js";
 import type { Emailer } from "./ports.js";
 
 /**
@@ -163,7 +164,8 @@ export async function makeHarness(seed: HarnessSeed): Promise<Harness> {
     config: { secret: SECRET, baseURL: "http://localhost:8080", trustedOrigins: [] },
   });
   const repo = new DrizzleAuthRepository(db);
-  const router = createBetterAuthRouter({ auth, repo, config });
+  const signupOtp = new AuthService({ repo, emailer, config });
+  const router = createBetterAuthRouter({ auth, repo, config, signupOtp });
 
   const app = express();
   app.use("/auth", router);

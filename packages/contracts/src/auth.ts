@@ -44,6 +44,35 @@ export type OtpSendRequest = z.infer<typeof otpSendRequest>;
 export const otpVerifyRequest = z.object({ email, otp: otpCode });
 export type OtpVerifyRequest = z.infer<typeof otpVerifyRequest>;
 
+/**
+ * Broker self-registration.
+ *
+ * `verification_token` is the grant issued by `/auth/verify-verification-otp`:
+ * signup is the second half of a two-request flow, and without it anyone could
+ * register any address. `confirmPassword` is accepted under either spelling
+ * because the SPA has sent both.
+ */
+export const brokerSignupRequest = z
+  .object({
+    name: z.string().trim().min(1, "Full name is required."),
+    email,
+    password,
+    phone: z.string().trim().min(1, "Please enter a valid phone number."),
+    broker_company: z.string().trim().optional(),
+    brokerCompany: z.string().trim().optional(),
+    confirm_password: z.string().optional(),
+    confirmPassword: z.string().optional(),
+    verification_token: z.string().trim().min(1, "Email verification required."),
+  })
+  .refine(
+    (v) => {
+      const confirm = v.confirm_password ?? v.confirmPassword;
+      return confirm === undefined || confirm === v.password;
+    },
+    { message: "Passwords do not match.", path: ["confirmPassword"] },
+  );
+export type BrokerSignupRequest = z.infer<typeof brokerSignupRequest>;
+
 /** The user shape returned to clients (never includes password_hash). */
 export const sessionUser = z.object({
   id: z.string().uuid(),

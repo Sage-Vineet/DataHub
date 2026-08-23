@@ -2,6 +2,7 @@ import bcrypt from "bcryptjs";
 import { betterAuth } from "better-auth";
 import type { BetterAuthOptions } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { randomUUID } from "node:crypto";
 import { bearer, emailOTP } from "better-auth/plugins";
 import { schema } from "@datahub/db";
 import type { Db } from "@datahub/db";
@@ -51,6 +52,10 @@ export interface BetterAuth {
   api: {
     signInEmail(ctx: {
       body: { email: string; password: string };
+      returnHeaders: true;
+    }): Promise<{ headers: Headers; response: unknown }>;
+    signUpEmail(ctx: {
+      body: { email: string; password: string; name: string };
       returnHeaders: true;
     }): Promise<{ headers: Headers; response: unknown }>;
     getSession(ctx: { headers: Headers }): Promise<{ user?: unknown; session?: unknown } | null>;
@@ -118,6 +123,19 @@ export function createBetterAuth(opts: CreateBetterAuthOptions): BetterAuth {
     },
     advanced: {
       cookiePrefix: "datahub",
+      /**
+       * Generate UUIDs ourselves, rather than Better Auth's default nanoid.
+       *
+       * `auth_user` and `users` are keyed by the SAME value — the invariant the
+       * backfill establishes so `user_companies` and `folders` keep lining up.
+       * `users.id` is a `uuid` column, so a nanoid identity cannot have a
+       * business row at all, and broker signup failed on it.
+       *
+       * A function, not the string `"uuid"`: that string tells the Drizzle
+       * adapter the *database* supplies the id, so it inserts DEFAULT into
+       * `auth_user.id`, which has no default and is NOT NULL.
+       */
+      database: { generateId: () => randomUUID() },
       // Sessions are httpOnly by default; Secure + SameSite hardened here (M2/M3).
       defaultCookieAttributes: {
         httpOnly: true,

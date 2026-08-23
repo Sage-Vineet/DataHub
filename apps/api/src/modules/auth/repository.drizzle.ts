@@ -57,6 +57,31 @@ export class DrizzleAuthRepository implements AuthRepository {
       .where(eq(users.id, userId));
   }
 
+  async createBrokerUser(user: {
+    id: string;
+    name: string;
+    email: string;
+    phone: string | null;
+    brokerCompany: string | null;
+  }): Promise<void> {
+    await this.db.insert(users).values({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      // Not a credential. Better Auth holds the password in `account`; this
+      // column is NOT NULL and vestigial, and goes when legacy auth does.
+      passwordHash: "!",
+      role: "broker",
+      // `broker_primary`, not a bare `broker` role: the sub-role is what the
+      // rest of the app classifies people by (see `auto-groups.ts`), and a
+      // broker with none falls through to the role fallback.
+      subRole: "broker_primary",
+      brokerCompany: user.brokerCompany,
+      status: "active",
+    });
+  }
+
   async listCompanyIdsForUser(userId: string): Promise<string[]> {
     const rows = await this.db
       .select({ companyId: userCompanies.companyId })

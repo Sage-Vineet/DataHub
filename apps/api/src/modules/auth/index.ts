@@ -66,7 +66,11 @@ export function createBetterAuthModule(opts: CreateBetterAuthModuleOptions): Bet
       ? createBetterAuth({ db: opts.db, emailer, config: loadBetterAuthConfig(env) })
       : undefined);
   if (!auth) throw new Error("createBetterAuthModule requires a `db` or `auth`.");
-  return { router: createBetterAuthRouter({ auth, repo, config }), auth, config };
+  // Registration OTPs come from the module's own store, not Better Auth's — it
+  // will not send a code to an address that has no account yet, which is the
+  // only case signup has. See `SignupOtpPort`.
+  const signupOtp = new AuthService({ repo, emailer, config });
+  return { router: createBetterAuthRouter({ auth, repo, config, signupOtp }), auth, config };
 }
 
 export { AuthService, canAccessCompany } from "./service.js";

@@ -36,6 +36,11 @@ export type ActorKind = z.infer<typeof actorKind>;
 export const activityEventType = z.enum([
   "auth.login.succeeded",
   "auth.login.failed",
+  // Broker self-registration. The rejection is logged as well as the success:
+  // a run of them against one address is someone probing the signup flow with
+  // forged or stale verification grants, and nothing else would record it.
+  "auth.signup.succeeded",
+  "auth.signup.rejected",
   "auth.password.changed",
   "auth.session.terminated",
   "access.granted",

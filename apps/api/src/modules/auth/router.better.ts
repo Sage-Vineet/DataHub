@@ -7,6 +7,7 @@ import { fromNodeHeaders } from "better-auth/node";
 import { auth as contracts } from "@datahub/contracts";
 import { emitActivity } from "../../activity/capture.js";
 import { withCommonMiddleware } from "../../shared/router.js";
+import { issueVerificationGrant, verifyVerificationGrant } from "./verification-grant.js";
 import type { AuthConfig } from "./config.js";
 import type { BetterAuth } from "./better-auth.js";
 import type { AuthRepository } from "./ports.js";
@@ -54,10 +55,26 @@ async function provisionClient(
   }
 }
 
+/**
+ * Registration OTPs, which are not the same thing as Better Auth's.
+ *
+ * Better Auth's `sendVerificationOTP` verifies the address of an account that
+ * already exists; for an address with no account it returns success and sends
+ * nothing at all. Signup is precisely the case where no account exists yet, so
+ * it uses the module's own OTP store — the one the bespoke `AuthService`
+ * already implements, with its resend and attempt limits.
+ */
+export interface SignupOtpPort {
+  sendOtp(email: string): Promise<void>;
+  /** Throws `AuthError` when the code is wrong, stale or over its attempt cap. */
+  verifyOtp(email: string, otp: string): Promise<unknown>;
+}
+
 export interface BetterAuthRouterDeps {
   auth: BetterAuth;
   repo: AuthRepository;
   config: AuthConfig;
+  signupOtp: SignupOtpPort;
 }
 
 /**
@@ -70,7 +87,7 @@ export interface BetterAuthRouterDeps {
  * mount fall through to legacy untouched — see `withCommonMiddleware`.
  */
 export function createBetterAuthRouter(deps: BetterAuthRouterDeps): Router {
-  const { auth, repo, config } = deps;
+  const { auth, repo, config, signupOtp } = deps;
   const router = express.Router();
   withCommonMiddleware(router, [helmet(), pinoHttp(), express.json()]);
 
@@ -203,23 +220,32 @@ export function createBetterAuthRouter(deps: BetterAuthRouterDeps): Router {
     }),
   );
 
-  router.post(
-    "/send-otp",
+  // Two spellings: `/send-verification-otp` is what the SPA calls (and what
+  // legacy served); `/send-otp` predates it in this module. Both are registered
+  // rather than one redirecting, because a 307 on a POST is a trap.
+  for (const path of ["/send-otp", "/send-verification-otp"]) router.post(
+    path,
     handle(async (req, res) => {
       const parsed = contracts.otpSendRequest.safeParse(req.body);
       if (!parsed.success) {
         res.status(400).json({ error: firstError(parsed.error) });
         return;
       }
-      await auth.api.sendVerificationOTP({
-        body: { email: parsed.data.email, type: "email-verification" },
-      });
+      try {
+        await signupOtp.sendOtp(parsed.data.email);
+      } catch (err) {
+        const { status, message } = errorStatus(err);
+        res.status(status).json({ error: message });
+        return;
+      }
+      // Always the same answer, whether or not an account exists: the response
+      // must not tell a stranger which addresses are registered.
       res.json({ success: true });
     }),
   );
 
-  router.post(
-    "/verify-otp",
+  for (const path of ["/verify-otp", "/verify-verification-otp"]) router.post(
+    path,
     handle(async (req, res) => {
       const parsed = contracts.otpVerifyRequest.safeParse(req.body);
       if (!parsed.success) {
@@ -227,14 +253,93 @@ export function createBetterAuthRouter(deps: BetterAuthRouterDeps): Router {
         return;
       }
       try {
-        await auth.api.verifyEmailOTP({
-          body: { email: parsed.data.email, otp: parsed.data.otp },
+        await signupOtp.verifyOtp(parsed.data.email, parsed.data.otp);
+        // The grant is what lets `/broker/signup` know this happened. Without
+        // it, signup is a second, unauthenticated request that would let anyone
+        // register any address.
+        res.json({
+          verified: true,
+          verificationToken: issueVerificationGrant(
+            parsed.data.email,
+            config.jwtSecret,
+            Date.now(),
+          ),
         });
-        res.json({ verified: true });
       } catch (err) {
         const { status, message } = errorStatus(err);
         res.status(status).json({ error: message });
       }
+    }),
+  );
+
+  router.post(
+    "/broker/signup",
+    handle(async (req, res) => {
+      const parsed = contracts.brokerSignupRequest.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: firstError(parsed.error) });
+        return;
+      }
+      const input = parsed.data;
+
+      const grant = verifyVerificationGrant(
+        input.verification_token,
+        input.email,
+        config.jwtSecret,
+        Date.now(),
+      );
+      if (!grant.ok) {
+        // One message for every failure mode. Telling the caller whether a grant
+        // was expired, forged or issued for a different address is an oracle,
+        // and the remedy is the same in all three cases.
+        emitActivity(res, {
+          event_type: "auth.signup.rejected",
+          payload: { email: input.email, reason: grant.reason },
+        });
+        res.status(403).json({
+          error: "Email verification required. Please verify your email address again.",
+        });
+        return;
+      }
+
+      if (await repo.findUserByEmail(input.email)) {
+        res.status(409).json({ error: "An account with this email already exists." });
+        return;
+      }
+
+      let created: { headers: Headers; response: unknown };
+      try {
+        created = await auth.api.signUpEmail({
+          body: { email: input.email, password: input.password, name: input.name },
+          returnHeaders: true,
+        });
+      } catch (err) {
+        const { status, message } = errorStatus(err);
+        res.status(status === 401 ? 409 : status).json({ error: message });
+        return;
+      }
+
+      const user = (created.response as { user: BetterAuthUser }).user;
+      await repo.createBrokerUser({
+        id: user.id,
+        name: input.name,
+        email: input.email,
+        phone: input.phone,
+        brokerCompany: input.broker_company ?? input.brokerCompany ?? null,
+      });
+
+      forwardSetCookie(created.headers, res);
+      const token =
+        created.headers.get("set-auth-token") ?? (created.response as { token?: string }).token ?? "";
+      emitActivity(res, { event_type: "auth.signup.succeeded", actor_id: user.id });
+
+      // Re-read so the response carries the broker role just written, rather
+      // than the buyer default Better Auth created the row with.
+      const fresh = (await repo.findUserById(user.id)) ?? null;
+      res.status(201).json({
+        token,
+        user: toSessionUser({ ...user, role: fresh?.role ?? "broker", name: input.name }, []),
+      });
     }),
   );
 
