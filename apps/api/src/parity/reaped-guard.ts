@@ -32,6 +32,7 @@ const FLAG_OF_DOMAIN: Record<string, ModuleFlag> = {
   reports: "REPORTS_MODULE_ENABLED",
   bankReconciliation: "BANK_RECONCILIATION_MODULE_ENABLED",
   reportSources: "REPORT_SOURCES_MODULE_ENABLED",
+  statements: "STATEMENTS_MODULE_ENABLED",
 };
 
 export interface ReapedGap {

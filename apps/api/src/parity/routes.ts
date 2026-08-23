@@ -13,6 +13,7 @@ import { createMessagesModule } from "../modules/messages/index.js";
 import { createReportsModule } from "../modules/reports/index.js";
 import { createBankReconciliationModule } from "../modules/bank-reconciliation/index.js";
 import { createReportSourcesModule } from "../modules/report-sources/index.js";
+import { createStatementsModule } from "../modules/statements/index.js";
 import { createRequestsModule } from "../modules/requests/index.js";
 import { createUploadsModule } from "../modules/uploads/index.js";
 import { createUsersModule } from "../modules/users/index.js";
@@ -197,6 +198,11 @@ export function moduleSurfaces(): ModuleSurface[] {
       name: "reportSources",
       mount: "/",
       router: createReportSourcesModule({ db, requireAuth }).router,
+    },
+    {
+      name: "statements",
+      mount: "/",
+      router: createStatementsModule({ db, requireAuth }).router,
     },
   ];
 }

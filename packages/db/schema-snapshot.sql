@@ -17,8 +17,9 @@
 --   packages/db/migrations/0004_cim.sql
 --   packages/db/migrations/0005_coa_recommendations.sql
 --   packages/db/migrations/0006_bank_reconciliation.sql
+--   packages/db/migrations/0007_statement_extracts.sql
 --
--- source-sha256: 73e4e80fdb5a4ca87db0fa63ec36864808851f19c8c73e379c8a93e1a78aa385
+-- source-sha256: 90e4f4f41845e048867326503c52108bcea13c32f1ea2f7ceb867657125290a0
 --
 -- PostgreSQL database dump
 --
@@ -1595,6 +1596,29 @@ CREATE TABLE public.session (
 );
 
 --
+-- Name: statement_extracts; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.statement_extracts (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    company_id uuid NOT NULL,
+    document_id uuid NOT NULL,
+    statement_type text NOT NULL,
+    upload_id uuid,
+    source_key text DEFAULT 'manual_upload_excel_pdf'::text NOT NULL,
+    period_start date,
+    period_end date,
+    as_of_date date,
+    fiscal_year integer,
+    payload jsonb DEFAULT '{}'::jsonb NOT NULL,
+    extracted_at timestamp with time zone DEFAULT now() NOT NULL,
+    extracted_by uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT statement_extracts_type_check CHECK ((statement_type = ANY (ARRAY['balance_sheet'::text, 'profit_and_loss'::text, 'cash_flow'::text, 'bank_reconciliation'::text, 'tax_return'::text])))
+);
+
+--
 -- Name: tax_return_entries; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2406,6 +2430,13 @@ ALTER TABLE ONLY public.session
 
 ALTER TABLE ONLY public.session
     ADD CONSTRAINT session_token_key UNIQUE (token);
+
+--
+-- Name: statement_extracts statement_extracts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.statement_extracts
+    ADD CONSTRAINT statement_extracts_pkey PRIMARY KEY (id);
 
 --
 -- Name: tax_return_entries tax_return_entries_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -3260,6 +3291,18 @@ CREATE INDEX idx_report_source_records_selected ON public.report_source_records 
 CREATE INDEX idx_requests_company_id ON public.requests USING btree (company_id);
 
 --
+-- Name: idx_statement_extracts_latest; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_statement_extracts_latest ON public.statement_extracts USING btree (company_id, source_key, statement_type, extracted_at DESC);
+
+--
+-- Name: idx_statement_extracts_year; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_statement_extracts_year ON public.statement_extracts USING btree (company_id, fiscal_year);
+
+--
 -- Name: idx_tax_return_entries_company; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3342,6 +3385,12 @@ CREATE INDEX session_user_id_idx ON public.session USING btree (user_id);
 --
 
 CREATE UNIQUE INDEX uq_key_report_versions_company_active ON public.key_report_versions USING btree (company_id) WHERE (is_active = true);
+
+--
+-- Name: uq_statement_extracts_document_type; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_statement_extracts_document_type ON public.statement_extracts USING btree (company_id, document_id, statement_type);
 
 --
 -- Name: verification_identifier_idx; Type: INDEX; Schema: public; Owner: -
@@ -4433,6 +4482,34 @@ ALTER TABLE ONLY public.requests
 
 ALTER TABLE ONLY public.session
     ADD CONSTRAINT session_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.auth_user(id) ON DELETE CASCADE;
+
+--
+-- Name: statement_extracts statement_extracts_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.statement_extracts
+    ADD CONSTRAINT statement_extracts_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: statement_extracts statement_extracts_document_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.statement_extracts
+    ADD CONSTRAINT statement_extracts_document_id_fkey FOREIGN KEY (document_id) REFERENCES public.documents(id) ON DELETE CASCADE;
+
+--
+-- Name: statement_extracts statement_extracts_extracted_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.statement_extracts
+    ADD CONSTRAINT statement_extracts_extracted_by_fkey FOREIGN KEY (extracted_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+--
+-- Name: statement_extracts statement_extracts_upload_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.statement_extracts
+    ADD CONSTRAINT statement_extracts_upload_id_fkey FOREIGN KEY (upload_id) REFERENCES public.uploads(id) ON DELETE SET NULL;
 
 --
 -- Name: tax_return_entries tax_return_entries_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -

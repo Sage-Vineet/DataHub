@@ -549,6 +549,66 @@ export const keyReportFileMappings = pgTable(
 );
 
 /**
+ * What we read out of an uploaded financial statement.
+ *
+ * One row per document per statement type — a single PDF can carry both a
+ * balance sheet and a P&L, and those are two extracts. Re-extracting the same
+ * statement from the same file replaces rather than accumulates.
+ *
+ * Replaces `qb_synced_reports`, whose identity was a jsonb blob the code then
+ * filtered on with `report_params->>'documentId'`. See migration 0007.
+ */
+export const statementExtracts = pgTable(
+  "statement_extracts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => documents.id, { onDelete: "cascade" }),
+    /** balance_sheet | profit_and_loss | cash_flow | bank_reconciliation | tax_return */
+    statementType: text("statement_type").notNull(),
+    uploadId: uuid("upload_id").references(() => uploads.id, { onDelete: "set null" }),
+    /** Same vocabulary as `report_source_records.source_key`. */
+    sourceKey: text("source_key").notNull().default("manual_upload_excel_pdf"),
+    /**
+     * Nullable throughout: extraction genuinely fails to find a period, and a
+     * guessed one is worse than an absent one. A balance sheet is a moment and
+     * carries `asOfDate`; a P&L is a span and carries both ends.
+     */
+    periodStart: date("period_start"),
+    periodEnd: date("period_end"),
+    asOfDate: date("as_of_date"),
+    fiscalYear: integer("fiscal_year"),
+    /** The extracted statement. Shape varies by type and extractor. */
+    payload: jsonb("payload").notNull().default({}),
+    extractedAt: timestamp("extracted_at", { withTimezone: true }).notNull().defaultNow(),
+    extractedBy: uuid("extracted_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uq_statement_extracts_document_type").on(
+      t.companyId,
+      t.documentId,
+      t.statementType,
+    ),
+    index("idx_statement_extracts_latest").on(
+      t.companyId,
+      t.sourceKey,
+      t.statementType,
+      t.extractedAt,
+    ),
+    check(
+      "statement_extracts_type_check",
+      sql`${t.statementType} IN ('balance_sheet', 'profit_and_loss', 'cash_flow', 'bank_reconciliation', 'tax_return')`,
+    ),
+  ],
+);
+
+/**
  * Which set of books a company's reports are read from.
  *
  * One row per source per company, unique on `(company_id, source_key)`, with
