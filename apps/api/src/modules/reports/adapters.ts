@@ -73,12 +73,34 @@ export class DrizzleLedgerDetailPort implements LedgerDetailPort {
         reference: emptyToNull(row.reference),
         journalType: emptyToNull(row.journalType),
         amount: toNumber(row.amount),
-        debit: row.debit === null ? null : toNumber(row.debit),
-        credit: row.credit === null ? null : toNumber(row.credit),
+        ...splitOf(row.debit, row.credit, toNumber(row.amount)),
       });
     }
     return out;
   }
+}
+
+/**
+ * The debit/credit split, or nothing.
+ *
+ * `debit` and `credit` are `DEFAULT 0`, so an extractor that never wrote them
+ * leaves 0 rather than NULL — and a row reporting a 1,000 amount with a zero on
+ * both sides reads as "this transaction was zero either way" rather than as
+ * "nobody recorded which side it fell on". Both zero against a non-zero amount
+ * is therefore treated as absent.
+ *
+ * A genuinely zero-amount row keeps its zeroes: there the split really is
+ * nothing on both sides, and that is a fact rather than a gap.
+ */
+function splitOf(
+  debit: string | null,
+  credit: string | null,
+  amount: number,
+): { debit: number | null; credit: number | null } {
+  const dr = debit === null ? null : toNumber(debit);
+  const cr = credit === null ? null : toNumber(credit);
+  if (amount !== 0 && (dr ?? 0) === 0 && (cr ?? 0) === 0) return { debit: null, credit: null };
+  return { debit: dr, credit: cr };
 }
 
 /** An unpopulated text column arrives as "" as often as null; both mean absent. */

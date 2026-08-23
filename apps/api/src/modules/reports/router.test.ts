@@ -136,6 +136,11 @@ function stub(over: Record<string, unknown> = {}) {
     cashFlow: record("cashFlow", emptyCashFlow),
     monthlyDetail: record("monthlyDetail", emptyMonthlyDetail),
     balanceSheetMonthlyDetail: record("balanceSheetMonthlyDetail", emptyBsMonthlyDetail),
+    filterOptions: record("filterOptions", {
+      source: "general_ledger_entries",
+      rowCount: 0,
+      options: { fiscalYear: [], reportType: ["profit_loss", "balance_sheet"] },
+    }),
     validateBalanceSheet: record("validateBalanceSheet", {
       source: "general_ledger_entries",
       validation: { isValid: true, mismatches: [], missingSheets: [] },
@@ -638,6 +643,31 @@ describe("the balance-sheet validation route", () => {
       const { app } = stub({ validateBalanceSheet: () => Promise.reject(err) });
       await request(app)
         .get(`/manual-gl/validation/balance-sheet?clientId=${COMPANY}`)
+        .expect(status);
+    }
+  });
+});
+
+describe("the filter-options route", () => {
+  it("answers under the envelope, and 400s without a company", async () => {
+    const { app, calls } = stub();
+    await request(app).get("/manual-gl/staging/filter-options").expect(400);
+    const res = await request(app)
+      .get(`/manual-gl/staging/filter-options?clientId=${COMPANY}`)
+      .expect(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.options.reportType).toEqual(["profit_loss", "balance_sheet"]);
+    expect(argsOf(calls, "filterOptions")[1]).toBe(COMPANY);
+  });
+
+  it("maps access and missing-version failures to their statuses", async () => {
+    for (const [err, status] of [
+      [new ForbiddenError("denied"), 403],
+      [new NotFoundError("No key-report version for this company."), 404],
+    ] as const) {
+      const { app } = stub({ filterOptions: () => Promise.reject(err) });
+      await request(app)
+        .get(`/manual-gl/staging/filter-options?clientId=${COMPANY}`)
         .expect(status);
     }
   });

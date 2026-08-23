@@ -521,21 +521,6 @@ router.post("/manual-gl/staging/multi-year", enforceDataSource(REPORT_SOURCE_KEY
   }
 });
 
-router.get("/manual-gl/staging/filter-options", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
-    const filters = parseManualFilterQuery(req.query || {});
-    const payload = await getStageFilterOptions(clientId, filters);
-    return res.json({ success: true, ...payload });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: error.message || "Failed to fetch staging filter options.",
-    });
-  }
-});
-
 // Vendor Analysis: Account -> Vendor -> Account Total, with dynamic fiscal-year columns.
 // === Dataset Versions & Upload Jobs (Snapshot / Dataset Version API) ===
 

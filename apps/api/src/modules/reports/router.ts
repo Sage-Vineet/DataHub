@@ -242,6 +242,11 @@ export function createReportsRouter(deps: ReportsRouterDeps): Router {
     res.json({ success: true, ...payload });
   }));
 
+  router.get("/manual-gl/staging/filter-options", handle(async (req, res) => {
+    const payload = await service.filterOptions(req.user!, companyOf(req));
+    res.json({ success: true, ...payload });
+  }));
+
   router.get("/manual-gl/validation/balance-sheet", handle(async (req, res) => {
     const payload = await service.validateBalanceSheet(req.user!, companyOf(req));
     res.json({ success: true, ...payload });

@@ -37,6 +37,7 @@
   "GET /key-reports/versions/:p/chart-of-accounts",
   "GET /key-reports/versions/:p/chart-of-accounts/history",
   "GET /key-reports/versions/:p/reports/financial-statements",
+  "GET /manual-gl/staging/filter-options",
   "GET /manual-gl/validation/balance-sheet",
   "GET /message-groups/:p/members",
   "GET /message-groups/:p/messages",

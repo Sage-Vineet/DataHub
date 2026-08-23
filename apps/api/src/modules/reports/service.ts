@@ -20,6 +20,10 @@ import {
   type ProfitLossSummaryPayload,
 } from "./profit-loss-view.js";
 import {
+  buildFilterOptions,
+  type FilterOptionsPayload,
+} from "./filter-options-view.js";
+import {
   validateBalanceSheet,
   type ValidationPayload,
 } from "./balance-sheet-validation.js";
@@ -226,6 +230,11 @@ export class ReportsService {
    */
   async validateBalanceSheet(user: SessionUser, companyId: string): Promise<ValidationPayload> {
     return validateBalanceSheet(await this.activeEngagement(user, companyId));
+  }
+
+  /** What the report filters can offer, drawn from the ledger itself. */
+  async filterOptions(user: SessionUser, companyId: string): Promise<FilterOptionsPayload> {
+    return buildFilterOptions(await this.activeEngagement(user, companyId));
   }
 
   /** The engagement behind a company's active key-report version. */
