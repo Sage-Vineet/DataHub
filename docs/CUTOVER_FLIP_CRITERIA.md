@@ -1,7 +1,11 @@
 # Cutover flip criteria
 
-> Status: current as of the `staging-parity-harness` change
-> Tool: `pnpm --filter @datahub/api parity` · Spec: `openspec/changes/staging-parity-harness/`
+> Status: corrected 2026-08-22. Much of what follows had described the harness as
+> designed rather than as built — the target refusals and the coverage number were
+> written but never wired into the CLI, and this document asserted both were live.
+> They are wired now, and the identifiers below have been checked against the code.
+> Tool: `pnpm --filter @datahub/parity parity -- --config <path>`
+> Spec: `openspec/changes/staging-parity-harness/`
 
 Two decisions get made per domain, and they are **not the same decision**:
 
@@ -17,14 +21,18 @@ second.
 - [ ] Parity run against a **marked staging target** seeded from a production
       snapshot (the harness refuses any other target).
 - [ ] **All compared endpoints pass.**
-- [ ] **Coverage read, not just the verdict.** The report states `compared N of M`.
-      If N < M, the run sampled the surface; the skipped list says why each one was
-      missed and each reason has a different fix:
-      - `mutation-not-permitted` → re-run with `PARITY_ALLOW_MUTATION=true`
-      - `no-fixture` → add a fixture with real ids from the snapshot
-      - `auth-required` → configure `PARITY_SESSION_TOKEN` for a seeded user
-      - `request-failed` → the environment, not the code — fix and re-run
-      - `additive-endpoint` → module-only by design; nothing to compare
+- [ ] **Coverage read, not just the verdict.** The report prints
+      `Coverage: N of M comparable endpoints exercised` above the verdict, and lists
+      each uncovered route. If N < M the run sampled the surface. The fixes:
+      - `uncovered: METHOD /path` → no declared scenario exercises it. Add one in
+        `tools/parity/src/scenarios/`, or accept the gap in writing.
+      - a write-path gap → re-run with `--allow-mutating` (which also requires
+        `PARITY_DATABASE_URL`, so the staging marker can be checked first).
+      - a fixture gap → add real ids from the snapshot to `fixtures` in the config.
+      - `also exercised: … (module-only endpoint)` → additive by design, not a gap.
+      - `NO MATCHING ROUTE: …` → a stale or mistyped scenario. This **fails** the
+        run, because a scenario that matched nothing was never compared and must
+        not be counted as a pass.
 - [ ] **Semantic invariants declared** for endpoints where shape equality is weak
       evidence. Two lists of different lengths have identical shapes; only an
       invariant catches that.
@@ -44,9 +52,16 @@ Everything above, plus:
       gaps are individually justified in writing. Deleting the handler behind an
       endpoint parity never exercised is the specific mistake this document exists
       to prevent.
-- [ ] The machine-readable report (`PARITY_JSON_OUT`) is attached to the cutover
-      change, so the evidence the decision rested on is recoverable later.
+- [ ] The machine-readable report (`--json`) is attached to the cutover change, so
+      the evidence the decision rested on is recoverable later.
 - [ ] The deletion is a **separate, revertable commit**.
+
+## Required environment
+
+| Variable | Why |
+|---|---|
+| `PARITY_PRODUCTION_HOSTS` | Comma-separated hosts that must never be a target. **Required**: with nothing to check against, the run is refused rather than assumed safe. |
+| `PARITY_DATABASE_URL` | The target database, read to confirm the `staging_marker` row the seed writes. Required for `--allow-mutating`; without it, mutating runs are refused. |
 
 ## What the harness does not tell you
 
@@ -66,8 +81,12 @@ Everything above, plus:
 |---|---|
 | 0 | every compared endpoint agreed — read the coverage line before acting |
 | 1 | at least one endpoint diverged |
-| 2 | misconfigured (missing `DATABASE_URL` or origins) |
-| 3 | **refused to run** — production target, or no staging marker |
+| 2 | misconfigured — bad or missing `--config`, unknown argument, control and candidate URLs identical |
+| 3 | **refused to run** — production target, no staging marker, or a "clean" run that compared nothing |
+
+Code 3 also covers a clean run in which no comparable endpoint was exercised. That
+combination — nothing compared, nothing disagreed — is reported as a refusal rather
+than a pass, because it is indistinguishable from success in every other respect.
 
 3 is deliberately distinct from 1: "the harness declined to point at this database"
 is not a parity failure, and confusing them sends someone hunting for a divergence

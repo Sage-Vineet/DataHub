@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RequestHandler, Router } from "express";
@@ -25,6 +25,22 @@ import { createUsersModule } from "../modules/users/index.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BACKEND = resolve(HERE, "../../../../backend/src");
+
+/**
+ * The frozen legacy surface.
+ *
+ * `legacyRoutes()` used to scan `backend/src` on every call, which made the
+ * instrument that measures the cutover depend on the code the cutover deletes:
+ * removing `backend/` would not have failed loudly, it would have quietly
+ * derived an EMPTY legacy surface — and an empty surface makes every module
+ * route "additive", so nothing is left to compare and parity passes by having
+ * nothing to do.
+ *
+ * So the surface is committed instead. `legacy-routes.test.ts` re-derives it
+ * from source and fails on drift for as long as `backend/src` is present, which
+ * keeps the fixture honest while legacy exists and lets it outlive it.
+ */
+const LEGACY_ROUTES_PATH = resolve(HERE, "legacy-routes.json");
 
 /** `/companies/:companyId/folders` → `/companies/:p/folders` so param names don't matter. */
 export function normalize(path: string): string {
@@ -67,8 +83,21 @@ function legacyMounts(): Map<string, string> {
   return mounts;
 }
 
-/** Every path the legacy backend serves, as `METHOD /normalized/path`. */
+/** Is the legacy tree still present? False once `backend/` is reaped. */
+export function legacySourceAvailable(): boolean {
+  return existsSync(join(BACKEND, "app.js"));
+}
+
+/** Every path the legacy backend serves, read from the committed fixture. */
 export function legacyRoutes(): Set<string> {
+  return new Set(JSON.parse(readFileSync(LEGACY_ROUTES_PATH, "utf8")) as string[]);
+}
+
+/**
+ * Re-derive the surface by scanning `backend/src`. Used to generate the fixture
+ * and, by the drift test, to prove it still matches. Throws once legacy is gone.
+ */
+export function deriveLegacyRoutesFromSource(): Set<string> {
   const mounts = legacyMounts();
   const routes = new Set<string>();
   for (const file of jsFilesUnder(join(BACKEND, "routes"))) {

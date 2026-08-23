@@ -526,6 +526,9 @@ importers:
       '@types/node':
         specifier: ^22.10.2
         version: 22.20.1
+      '@types/pg':
+        specifier: ^8.11.10
+        version: 8.21.0
       '@vitest/coverage-v8':
         specifier: ^2.1.9
         version: 2.1.9(vitest@2.1.9(@types/node@22.20.1)(jsdom@25.0.1))
@@ -535,6 +538,9 @@ importers:
       express:
         specifier: ^4.21.2
         version: 4.22.2
+      pg:
+        specifier: ^8.13.1
+        version: 8.22.0
       tsx:
         specifier: ^4.19.2
         version: 4.23.11
