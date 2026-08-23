@@ -5,7 +5,12 @@ import type {
   SessionUser,
 } from "@datahub/contracts";
 import { canAccessCompany } from "../../shared/access.js";
-import { ForbiddenError, HttpError, NotFoundError } from "../../shared/errors.js";
+import { BadRequestError, ForbiddenError, HttpError, NotFoundError } from "../../shared/errors.js";
+import type {
+  ExtractedDataPage,
+  ExtractedDataQuery,
+  ExtractedDataReader,
+} from "./extracted-data.js";
 import { inferMappingYear } from "./mapping-year.js";
 import {
   REPORT_CATEGORIES,
@@ -80,6 +85,15 @@ export interface ReportsServiceDeps {
   mappings: MappingsRepository;
   syncLogs: SyncLogsRepository;
   preferences: PreferencesRepository;
+  /**
+   * The raw rows extraction stored, read a page at a time.
+   *
+   * Optional because it needs a database and every other dependency here is a
+   * port with an in-memory double — the service is constructed without it in
+   * unit tests, and the route that uses it says so rather than failing at a
+   * null.
+   */
+  extractedData?: ExtractedDataReader;
 }
 
 export class ReportsService {
@@ -90,6 +104,7 @@ export class ReportsService {
   private readonly mappings: MappingsRepository;
   private readonly syncLogs: SyncLogsRepository;
   private readonly preferences: PreferencesRepository;
+  private readonly extracted: ExtractedDataReader | undefined;
   constructor(deps: ReportsServiceDeps) {
     this.repo = deps.repo;
     this.syncPort = deps.sync;
@@ -98,6 +113,7 @@ export class ReportsService {
     this.mappings = deps.mappings;
     this.syncLogs = deps.syncLogs;
     this.preferences = deps.preferences;
+    this.extracted = deps.extractedData;
   }
 
   /**
@@ -411,6 +427,27 @@ export class ReportsService {
 
   async get(user: SessionUser, id: string): Promise<ReportVersionResponse> {
     return toResponse(await this.requireAccessible(user, id));
+  }
+
+  /**
+   * The raw rows extraction stored for a version.
+   *
+   * The access check comes first and separately: the reader is handed a
+   * version id it is entitled to read, and does not decide anything about
+   * access itself. That keeps the "which table" decision — the only part that
+   * takes a value off the query string — away from the part that decides who
+   * may see it.
+   */
+  async extractedData(
+    user: SessionUser,
+    versionId: string,
+    query: ExtractedDataQuery,
+  ): Promise<ExtractedDataPage> {
+    await this.requireAccessible(user, versionId);
+    if (!this.extracted) {
+      throw new BadRequestError("Extracted data is not available in this configuration.");
+    }
+    return this.extracted.read(versionId, query);
   }
 
   async create(user: SessionUser, input: ReportVersionCreate): Promise<ReportVersionResponse> {

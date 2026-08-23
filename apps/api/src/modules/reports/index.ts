@@ -12,6 +12,7 @@ import {
   DrizzleSyncLogsRepository,
 } from "./repository.drizzle.js";
 import { createReportsRouter } from "./router.js";
+import { ExtractedDataReader } from "./extracted-data.js";
 import { ReportsService } from "./service.js";
 
 export interface ReportsModule {
@@ -34,11 +35,21 @@ export function createReportsModule(opts: CreateReportsModuleOptions): ReportsMo
     mappings: new DrizzleMappingsRepository(opts.db),
     syncLogs: new DrizzleSyncLogsRepository(opts.db),
     preferences: new DrizzlePreferencesRepository(opts.db),
+    extractedData: new ExtractedDataReader(opts.db),
   });
   return { router: createReportsRouter({ service, requireAuth: opts.requireAuth }), service };
 }
 
 export { ReportsService } from "./service.js";
+export {
+  EXTRACTED_DATA_TYPES,
+  ExtractedDataReader,
+  isExtractedDataType,
+  toLikePattern,
+  toPage,
+  toPageSize,
+} from "./extracted-data.js";
+export type { ExtractedDataPage, ExtractedDataQuery, ExtractedDataType } from "./extracted-data.js";
 export {
   DrizzleMappingsRepository,
   DrizzlePreferencesRepository,

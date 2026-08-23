@@ -459,3 +459,185 @@ describe("key-report mappings (real Postgres)", () => {
       .expect(404);
   });
 });
+
+/**
+ * The raw rows behind a version, against the real tables.
+ *
+ * Paging and searching are where a caller's input reaches a query, and they
+ * are also where an off-by-one silently drops or repeats rows between pages —
+ * which nobody notices, because both pages look full.
+ */
+describe("extracted data (real Postgres)", () => {
+  let versionId: string;
+  let documentId: string;
+
+  const seedPl = async (rows: Array<{ name: string; year: number; sort: number }>) => {
+    for (const row of rows) {
+      await db.insert(schema.profitLossEntries).values({
+        versionId,
+        companyId,
+        sourceFileId: documentId,
+        fiscalYear: row.year,
+        accountName: row.name,
+        amount: "100.00",
+        sortOrder: row.sort,
+      });
+    }
+  };
+
+  beforeEach(async () => {
+    const [version] = await db
+      .insert(schema.keyReportVersions)
+      .values({ companyId, versionNumber: 1 })
+      .returning();
+    versionId = version!.id;
+
+    const [folder] = await db
+      .insert(schema.folders)
+      .values({ companyId, name: "Financials", createdBy: BROKER.id })
+      .returning();
+    const [document] = await db
+      .insert(schema.documents)
+      .values({
+        companyId,
+        folderId: folder!.id,
+        name: "PL.pdf",
+        fileUrl: "/uploads/PL.pdf",
+        size: "1",
+        ext: "pdf",
+        status: "under-review" as never,
+        uploadedBy: BROKER.id,
+      })
+      .returning();
+    documentId = document!.id;
+  });
+
+  const read = (query: string) =>
+    request(app).get(`/key-reports/versions/${versionId}/extracted-data?${query}`);
+
+  it("reads a page and reports how many match", async () => {
+    await seedPl([
+      { name: "Sales", year: 2024, sort: 1 },
+      { name: "Rent", year: 2024, sort: 2 },
+      { name: "Wages", year: 2024, sort: 3 },
+    ]);
+
+    const res = await read("dataType=profit_loss&pageSize=2").expect(200);
+    expect(res.body.rows).toHaveLength(2);
+    // How many match the filter, not how many are on this page — "showing 2 of
+    // 3" is about the question asked.
+    expect(res.body.total).toBe(3);
+    expect(res.body.totalPages).toBe(2);
+  });
+
+  it("does not drop or repeat a row across a page boundary", async () => {
+    // Sort orders repeat, and a boundary inside a group of equal keys drops or
+    // repeats rows with nothing to indicate it — both pages look full.
+    await seedPl([
+      { name: "A", year: 2024, sort: 1 },
+      { name: "B", year: 2024, sort: 1 },
+      { name: "C", year: 2024, sort: 1 },
+      { name: "D", year: 2024, sort: 1 },
+    ]);
+
+    const first = await read("dataType=profit_loss&pageSize=2&page=1").expect(200);
+    const second = await read("dataType=profit_loss&pageSize=2&page=2").expect(200);
+    const names = [...first.body.rows, ...second.body.rows].map(
+      (r: { accountName: string }) => r.accountName,
+    );
+    expect(new Set(names).size).toBe(4);
+  });
+
+  it("narrows to a fiscal year", async () => {
+    await seedPl([
+      { name: "Sales", year: 2023, sort: 1 },
+      { name: "Sales", year: 2024, sort: 1 },
+    ]);
+    const res = await read("dataType=profit_loss&year=2024").expect(200);
+    expect(res.body.total).toBe(1);
+    expect(res.body.rows[0].fiscalYear).toBe(2024);
+  });
+
+  it("narrows a bank statement by the MONTH it covers, which is a date", async () => {
+    // The column is a date, and comparing it to an integer year matches
+    // nothing — which reads as a year with no transactions rather than as a
+    // question asked wrongly.
+    for (const month of ["2023-06-01", "2024-06-01"]) {
+      await db.insert(schema.bankStatementEntries).values({
+        versionId,
+        companyId,
+        sourceFileId: documentId,
+        statementDate: month,
+        statementMonth: month,
+        bankAccount: "Current",
+        transactionDate: month,
+        amount: "10.00",
+      });
+    }
+    const res = await read("dataType=bank_statement&year=2024").expect(200);
+    expect(res.body.total).toBe(1);
+  });
+
+  it("searches across the columns a person would search", async () => {
+    await seedPl([
+      { name: "Rent — Office", year: 2024, sort: 1 },
+      { name: "Wages", year: 2024, sort: 2 },
+    ]);
+    const res = await read("dataType=profit_loss&search=rent").expect(200);
+    expect(res.body.total).toBe(1);
+    expect(res.body.rows[0].accountName).toBe("Rent — Office");
+  });
+
+  it("treats a wildcard in the search as a character, not as a wildcard", async () => {
+    // Unescaped, searching for "50%" matches every account starting "50".
+    await seedPl([
+      { name: "50% Owner Draw", year: 2024, sort: 1 },
+      { name: "5000 Cost of Sales", year: 2024, sort: 2 },
+    ]);
+    const res = await read("dataType=profit_loss&search=50%25").expect(200);
+    expect(res.body.total).toBe(1);
+    expect(res.body.rows[0].accountName).toBe("50% Owner Draw");
+  });
+
+  it("takes a search term with a comma literally", async () => {
+    // Legacy joined its filter with commas, so a comma changed the filter's
+    // structure rather than what it searched for.
+    await seedPl([{ name: "Smith, J", year: 2024, sort: 1 }]);
+    const res = await read("dataType=profit_loss&search=Smith%2C%20J").expect(200);
+    expect(res.body.total).toBe(1);
+  });
+
+  it("keeps one version's rows off another's page", async () => {
+    const [other] = await db
+      .insert(schema.keyReportVersions)
+      .values({ companyId, versionNumber: 2 })
+      .returning();
+    await seedPl([{ name: "Ours", year: 2024, sort: 1 }]);
+    await db.insert(schema.profitLossEntries).values({
+      versionId: other!.id,
+      companyId,
+      sourceFileId: documentId,
+      fiscalYear: 2024,
+      accountName: "Theirs",
+      amount: "1.00",
+    });
+
+    const res = await read("dataType=profit_loss").expect(200);
+    expect(res.body.rows.map((r: { accountName: string }) => r.accountName)).toEqual(["Ours"]);
+  });
+
+  it("400s an unknown data type rather than reaching a query", async () => {
+    await read("dataType=users").expect(400);
+    await read("").expect(400);
+  });
+
+  it("answers an empty page rather than failing when there is nothing", async () => {
+    const res = await read("dataType=tax_return").expect(200);
+    expect(res.body).toMatchObject({ rows: [], total: 0, totalPages: 1 });
+  });
+
+  it("403s a version the caller cannot reach", async () => {
+    current = { ...current, company_ids: [] };
+    await read("dataType=profit_loss").expect(403);
+  });
+});

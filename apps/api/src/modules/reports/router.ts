@@ -3,6 +3,7 @@ import type { Request, RequestHandler, Response, Router } from "express";
 import helmet from "helmet";
 import { pinoHttp } from "pino-http";
 import { reports as contracts } from "@datahub/contracts";
+import { toPage, toPageSize } from "./extracted-data.js";
 import { HttpError } from "../../shared/errors.js";
 import { withCommonMiddleware } from "../../shared/router.js";
 import type { ReportsService } from "./service.js";
@@ -160,6 +161,26 @@ export function createReportsRouter(deps: ReportsRouterDeps): Router {
       syncLogs: null,
       validationResults: null,
     });
+  }));
+
+  /**
+   * The raw rows behind a version, a page at a time.
+   *
+   * So somebody can check a figure against the file it came from. `dataType`
+   * selects a table, which is why it is validated against a closed set rather
+   * than passed through — an unknown value is a 400, not something that
+   * reaches a query builder.
+   */
+  router.get("/key-reports/versions/:versionId/extracted-data", handle(async (req, res) => {
+    const year = Number.parseInt(String(req.query.year ?? ""), 10);
+    const page = await service.extractedData(req.user!, req.params.versionId!, {
+      dataType: String(req.query.dataType ?? ""),
+      ...(Number.isInteger(year) ? { year } : {}),
+      ...(req.query.page !== undefined ? { page: toPage(req.query.page) } : {}),
+      ...(req.query.pageSize !== undefined ? { pageSize: toPageSize(req.query.pageSize) } : {}),
+      ...(typeof req.query.search === "string" ? { search: req.query.search } : {}),
+    });
+    res.json({ success: true, ...page });
   }));
 
   router.put("/key-reports/versions/:versionId", handle(async (req, res) => {

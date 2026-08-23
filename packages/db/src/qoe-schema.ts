@@ -200,6 +200,22 @@ export const generalLedgerEntries = pgTable(
     /** Which row of the source file this came from, for an error message. */
     rowNumber: integer("row_number"),
     /**
+     * The QuickBooks general-ledger export's own columns.
+     *
+     * A GL report from QuickBooks names things differently from a hand-built
+     * ledger: the account is a "distribution account", the counterparty a
+     * "transaction name", and the other side of the entry a "split account".
+     * They were in the table and not in the model, so the only way to read
+     * them was raw SQL — which is how a column rename becomes a runtime error
+     * instead of a compile-time one.
+     */
+    accountSection: text("account_section"),
+    distributionAccount: text("distribution_account"),
+    transactionNum: text("transaction_num"),
+    transactionName: text("transaction_name"),
+    splitAccount: text("split_account"),
+    runningBalance: numeric("running_balance", { precision: 18, scale: 2 }),
+    /**
      * What makes re-importing a file a no-op.
      *
      * `idx_general_ledger_entries_hash` is unique over
@@ -286,4 +302,126 @@ export const qoeAddbacks = pgTable(
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },
   (t) => [index("idx_qoe_addbacks_scope").on(t.companyId, t.versionId, t.deletedAt)],
+);
+
+/**
+ * A line off an uploaded profit-and-loss statement, filed against a version.
+ *
+ * The sibling of `balanceSheetEntries`, and modelled for the same reason: the
+ * Key Reports page reads these back page by page, and reaching them through
+ * raw SQL is how a column rename becomes a runtime error rather than a
+ * compile-time one.
+ *
+ * `isTotal` marks a subtotal the extractor produced. Feeding one back in as an
+ * account double-counts everything beneath it, which is why it is a column
+ * rather than something inferred from the name.
+ */
+export const profitLossEntries = pgTable(
+  "profit_loss_entries",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    versionId: uuid("version_id").notNull(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    sourceFileId: uuid("source_file_id").notNull(),
+    fiscalYear: integer("fiscal_year").notNull(),
+    accountName: text("account_name").notNull(),
+    accountNumber: text("account_number"),
+    accountType: text("account_type"),
+    category: text("category"),
+    subCategory: text("sub_category"),
+    amount: numeric("amount", { precision: 18, scale: 2 }).notNull(),
+    hierarchyLevel: integer("hierarchy_level"),
+    parentAccountId: text("parent_account_id"),
+    sortOrder: integer("sort_order"),
+    isTotal: boolean("is_total"),
+    /**
+     * What makes re-extracting the same file a no-op.
+     *
+     * A partial unique index over `(version_id, source_file_id, row_hash)`
+     * where the hash is not null, so a row without one is exempt rather than
+     * colliding with every other row that also lacks one.
+     */
+    rowHash: text("row_hash"),
+    extractedAt: timestamp("extracted_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("idx_profit_loss_entries_version_year").on(t.versionId, t.fiscalYear),
+    index("idx_profit_loss_entries_account").on(t.versionId, t.accountName, t.accountNumber),
+  ],
+);
+
+/** A field read off an uploaded tax return, filed against a version. */
+export const taxReturnEntries = pgTable(
+  "tax_return_entries",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    versionId: uuid("version_id").notNull(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    sourceFileId: uuid("source_file_id").notNull(),
+    taxYear: integer("tax_year").notNull(),
+    formType: text("form_type"),
+    fieldName: text("field_name").notNull(),
+    fieldLabel: text("field_label"),
+    /**
+     * Both the text and the number, because a tax return field is often
+     * neither cleanly: "See attached" and "0" are different answers, and
+     * storing only the parsed amount turns the first into the second.
+     */
+    fieldValue: text("field_value"),
+    fieldAmount: numeric("field_amount", { precision: 18, scale: 2 }),
+    lineNumber: text("line_number"),
+    schedule: text("schedule"),
+    section: text("section"),
+    extractedAt: timestamp("extracted_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("idx_tax_return_entries_version_year").on(t.versionId, t.taxYear),
+    index("idx_tax_return_entries_field").on(t.versionId, t.fieldName),
+  ],
+);
+
+/** A transaction read off an uploaded bank statement, filed against a version. */
+export const bankStatementEntries = pgTable(
+  "bank_statement_entries",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    versionId: uuid("version_id").notNull(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    sourceFileId: uuid("source_file_id").notNull(),
+    statementDate: date("statement_date").notNull(),
+    /**
+     * The month the statement covers, as its first day.
+     *
+     * Distinct from `statementDate`, which is the date printed on it. A
+     * statement dated the 3rd of February usually covers January, and filing
+     * it under February puts a month of transactions in the wrong period.
+     */
+    statementMonth: date("statement_month").notNull(),
+    bankAccount: text("bank_account").notNull(),
+    bankName: text("bank_name"),
+    accountType: text("account_type"),
+    transactionDate: date("transaction_date").notNull(),
+    description: text("description"),
+    reference: text("reference"),
+    amount: numeric("amount", { precision: 18, scale: 2 }).notNull(),
+    transactionType: text("transaction_type"),
+    runningBalance: numeric("running_balance", { precision: 18, scale: 2 }),
+    extractedAt: timestamp("extracted_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("idx_bank_statement_entries_version_month").on(t.versionId, t.statementMonth),
+    index("idx_bank_statement_entries_date").on(t.versionId, t.transactionDate),
+  ],
 );

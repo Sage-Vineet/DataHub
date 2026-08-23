@@ -89,23 +89,6 @@ router.post("/key-reports/versions/:versionId/sync", async (req, res) => {
   }
 });
 
-router.get("/key-reports/versions/:versionId/extracted-data", async (req, res) => {
-  try {
-    const version = await loadVersionWithAccess(req, res);
-    if (!version) return;
-    const { dataType, year, page, pageSize, search } = req.query;
-    const result = await keyReportService.getExtractedData(version.id, {
-      dataType,
-      year,
-      page,
-      pageSize,
-      search,
-    });
-    return res.json({ success: true, ...result });
-  } catch (error) {
-    return handleError(res, error, "GET extracted-data");
-  }
-});
 
 // ---- Chart of Accounts -----------------------------------------------------
 
