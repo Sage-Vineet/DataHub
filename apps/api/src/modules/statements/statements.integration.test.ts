@@ -38,6 +38,23 @@ let service: StatementsService;
 let current: SessionUser;
 let companyId: string;
 let folderId: string;
+let repo: DrizzleStatementsRepository;
+
+/**
+ * A model that reads every document as the same balance sheet.
+ *
+ * What is under test here is the plumbing — which documents are found, what is
+ * stored against them, what the run says — not the extraction, which has its
+ * own tests over a fake.
+ */
+const reader = {
+  ask: () => Promise.reject(new Error("not used")),
+  askForJson: <T,>(): Promise<T> =>
+    Promise.resolve({
+      asOfDate: "2025-12-31",
+      rows: [{ name: "Total Assets", amount: 100_000 }],
+    } as T),
+};
 
 beforeEach(async () => {
   client = await createSchemaDb();
@@ -64,9 +81,10 @@ beforeEach(async () => {
     next();
   };
   app = express();
-  const module = createStatementsModule({ db, requireAuth });
+  const module = createStatementsModule({ db, requireAuth, reader });
   app.use("/", module.router);
   service = module.service;
+  repo = new DrizzleStatementsRepository(db);
 });
 
 afterEach(async () => {
@@ -74,12 +92,27 @@ afterEach(async () => {
 });
 
 async function addDocument(name: string): Promise<string> {
+  // With the bytes behind it: a document whose upload is missing is a document
+  // extraction cannot read, and every sync test would fail on that rather than
+  // on what it is about.
+  const [upload] = await db
+    .insert(schema.uploads)
+    .values({
+      fileName: name,
+      contentType: "application/pdf",
+      sizeBytes: 6,
+      data: Buffer.from("a file"),
+      uploadedBy: BROKER.id,
+    })
+    .returning();
+
   const [document] = await db
     .insert(schema.documents)
     .values({
       name,
       companyId,
       folderId,
+      uploadId: upload!.id,
       fileUrl: `/uploads/${name}`,
       size: "1",
       ext: name.split(".").pop() ?? "pdf",
@@ -1086,5 +1119,196 @@ describe("the saved bank reconciliation (real Postgres)", () => {
     await record();
     current = { ...BROKER, company_ids: [] };
     await saved().expect(403);
+  });
+});
+
+describe("syncing a source into statements (real Postgres)", () => {
+  /** Link a document to a version under a category, as the page does. */
+  const linkDocument = async (
+    documentId: string,
+    category: string,
+    versionId: string,
+  ): Promise<void> => {
+    await db.insert(schema.keyReportFileMappings).values({
+      versionId,
+      companyId,
+      reportCategory: category,
+      documentId,
+      fileName: "linked.pdf",
+    });
+  };
+
+  let versionNumber = 0;
+  const addVersion = async (): Promise<string> => {
+    const [version] = await db
+      .insert(schema.keyReportVersions)
+      .values({ companyId, versionNumber: (versionNumber += 1) })
+      .returning();
+    return version!.id;
+  };
+
+  it("reads every linked document and files it under the source", async () => {
+    const versionId = await addVersion();
+    const balanceSheet = await addDocument("Balance Sheet 2025.pdf");
+    const profitLoss = await addDocument("Profit and Loss 2025.pdf");
+    await linkDocument(balanceSheet, "balance_sheet", versionId);
+    await linkDocument(profitLoss, "profit_loss", versionId);
+
+    const res = await request(app)
+      .post("/manual-report-uploads/sync-source")
+      .set("X-Client-Id", companyId)
+      .send({})
+      .expect(200);
+
+    expect(res.body.success).toBe(true);
+    expect(res.body.processed).toHaveLength(2);
+    expect(res.body.failed).toEqual([]);
+
+    const stored = await repo.latest(companyId, "balance_sheet", {
+      sourceKey: "manual_upload_excel_pdf",
+    });
+    expect(stored?.documentId).toBe(balanceSheet);
+    expect(stored?.fiscalYear).toBe(2025);
+    expect(stored?.payload).toEqual({ rows: [{ name: "Total Assets", amount: 100_000 }] });
+  });
+
+  it("gives the dashboard something to show, which is the point of it", async () => {
+    // Until this runs, a company that uploaded a year of statements sees an
+    // empty dashboard with nothing to explain it.
+    const versionId = await addVersion();
+    await linkDocument(await addDocument("Balance Sheet 2025.pdf"), "balance_sheet", versionId);
+
+    const before = await request(app)
+      .get("/manual-report-uploads/manual-upload-dashboard")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(before.body.years).toEqual(["All Files"]);
+
+    await request(app)
+      .post("/manual-report-uploads/sync-source")
+      .set("X-Client-Id", companyId)
+      .send({})
+      .expect(200);
+
+    const after = await request(app)
+      .get("/manual-report-uploads/manual-upload-dashboard")
+      .set("X-Client-Id", companyId)
+      .expect(200);
+    expect(after.body.years).toEqual(["All Files", "2025"]);
+  });
+
+  it("files a QMS sync under the QMS source, not the manual one", async () => {
+    const versionId = await addVersion();
+    await linkDocument(await addDocument("QMS Balance Sheet.pdf"), "balance_sheet", versionId);
+
+    await request(app)
+      .post("/manual-report-uploads/sync-qms-source")
+      .set("X-Client-Id", companyId)
+      .send({})
+      .expect(200);
+
+    expect(
+      await repo.latest(companyId, "balance_sheet", { sourceKey: "quickbooks_manual" }),
+    ).not.toBeNull();
+    expect(
+      await repo.latest(companyId, "balance_sheet", { sourceKey: "manual_upload_excel_pdf" }),
+    ).toBeNull();
+  });
+
+  it("reads a document linked to two versions once", async () => {
+    const documentId = await addDocument("Balance Sheet 2025.pdf");
+    await linkDocument(documentId, "balance_sheet", await addVersion());
+    await linkDocument(documentId, "balance_sheet", await addVersion());
+
+    const res = await request(app)
+      .post("/manual-report-uploads/sync-source")
+      .set("X-Client-Id", companyId)
+      .send({})
+      .expect(200);
+    expect(res.body.processed).toHaveLength(1);
+  });
+
+  it("parses only the documents it was given", async () => {
+    const versionId = await addVersion();
+    await linkDocument(await addDocument("Ignore me.pdf"), "balance_sheet", versionId);
+    const chosen = await addDocument("Chosen.pdf");
+
+    const res = await request(app)
+      .post("/manual-report-uploads/qms-parse-documents")
+      .set("X-Client-Id", companyId)
+      .send({ documents: [{ documentId: chosen, statementType: "profit_and_loss" }] })
+      .expect(200);
+
+    expect(res.body.processed).toHaveLength(1);
+    expect(res.body.processed[0].documentId).toBe(chosen);
+  });
+
+  it("400s a parse with no documents", async () => {
+    await request(app)
+      .post("/manual-report-uploads/qms-parse-documents")
+      .set("X-Client-Id", companyId)
+      .send({})
+      .expect(400);
+  });
+
+  it("refuses a second sync of the same source while one is running", async () => {
+    const versionId = await addVersion();
+    await linkDocument(await addDocument("Balance Sheet.pdf"), "balance_sheet", versionId);
+    await db.insert(schema.syncRuns).values({
+      companyId,
+      sourceKey: "manual_upload_excel_pdf",
+      kind: "documents",
+      status: "running",
+      totalFiles: 1,
+      heartbeatAt: new Date(),
+    });
+
+    await request(app)
+      .post("/manual-report-uploads/sync-source")
+      .set("X-Client-Id", companyId)
+      .send({})
+      .expect(409);
+  });
+
+  it("does not read another company's linked documents", async () => {
+    // The mapping carries a company and so does the document. Both are
+    // demanded, because a mismatch between them is the shape a cross-company
+    // read takes.
+    const otherCompany = randomUUID();
+    await db.insert(schema.companies).values({ id: otherCompany, name: "Beta", industry: "" });
+    const [otherVersion] = await db
+      .insert(schema.keyReportVersions)
+      .values({ companyId: otherCompany, versionNumber: 1 })
+      .returning();
+    const [otherFolder] = await db
+      .insert(schema.folders)
+      .values({ companyId: otherCompany, name: "Financials", createdBy: BROKER.id })
+      .returning();
+    const [otherDocument] = await db
+      .insert(schema.documents)
+      .values({
+        name: "Theirs.pdf",
+        companyId: otherCompany,
+        folderId: otherFolder!.id,
+        fileUrl: "/uploads/theirs.pdf",
+        size: "1",
+        ext: "pdf",
+        status: "under-review" as never,
+        uploadedBy: BROKER.id,
+      })
+      .returning();
+    await db.insert(schema.keyReportFileMappings).values({
+      versionId: otherVersion!.id,
+      companyId: otherCompany,
+      reportCategory: "balance_sheet",
+      documentId: otherDocument!.id,
+    });
+
+    const res = await request(app)
+      .post("/manual-report-uploads/sync-source")
+      .set("X-Client-Id", companyId)
+      .send({})
+      .expect(200);
+    expect(res.body.processed).toEqual([]);
   });
 });

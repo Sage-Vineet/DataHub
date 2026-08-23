@@ -6,7 +6,6 @@ const { timingMiddleware } = require("./middleware/timing");
 
 // Routes
 const { quickBooksAuth } = require("./middleware/quickbooksAuth");
-const manualReportUploadRoutes = require("./routes/manualReportUploads");
 const keyReportRoutes = require("./routes/keyReports");
 const tokenRoutes = require("./routes/quickbooks/token");
 const profitAndLossRoutes = require("./routes/quickbooks/profit_and_loss/profitAndLoss");
@@ -95,7 +94,6 @@ app.get("/health", (req, res) => res.json({ ok: true }));
 
 // Standard Routes
 app.use("/", tokenRoutes);
-app.use("/", manualReportUploadRoutes);
 app.use("/", keyReportRoutes);
 
 // QuickBooks & Financial Routes (with consolidated auth)

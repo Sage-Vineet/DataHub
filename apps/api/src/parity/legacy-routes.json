@@ -5,8 +5,5 @@
   "POST /api/auth/transfer-confirm",
   "POST /customers",
   "POST /key-reports/versions/:p/sync",
-  "POST /manual-report-uploads/qms-parse-documents",
-  "POST /manual-report-uploads/sync-qms-source",
-  "POST /manual-report-uploads/sync-source",
   "PUT /api/invoices/:p"
 ]

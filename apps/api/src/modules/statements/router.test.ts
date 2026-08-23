@@ -9,6 +9,7 @@ import type { BankStatementsService } from "./bank-statements.js";
 import type { TaxReturnService } from "./tax-return.js";
 import { createStatementsRouter } from "./router.js";
 import type { StatementsService } from "./service.js";
+import type { SourceSyncService } from "./source-sync.js";
 
 /**
  * The statements HTTP contract.
@@ -138,6 +139,25 @@ function stub(over: Record<string, unknown> = {}) {
           ...(over.bankStatements as object | undefined),
         } as unknown as BankStatementsService);
 
+  const sourceSync =
+    over.sourceSync === null
+      ? undefined
+      : ({
+          syncSource: record("syncSource", {
+            runId: "run-1",
+            processed: [{ documentId: DOCUMENT, statementType: "balance_sheet" }],
+            failed: [],
+            skipped: 0,
+          }),
+          parseDocuments: record("parseDocuments", {
+            runId: "run-2",
+            processed: [{ documentId: DOCUMENT, statementType: "profit_and_loss" }],
+            failed: [],
+            skipped: 0,
+          }),
+          ...(over.sourceSync as object | undefined),
+        } as unknown as SourceSyncService);
+
   const app = express();
   app.use(
     createStatementsRouter({
@@ -147,6 +167,7 @@ function stub(over: Record<string, unknown> = {}) {
       taxComparison,
       ...(bankStatements ? { bankStatements } : {}),
       ...(taxReturn ? { taxReturn } : {}),
+      ...(sourceSync ? { sourceSync } : {}),
       requireAuth: authAs("caller-1"),
     }),
   );
@@ -345,16 +366,86 @@ describe("the source tree", () => {
   });
 });
 
+describe("syncing a source", () => {
+  const post = (app: express.Express, path: string, body: Record<string, unknown> = {}) =>
+    request(app).post(path).set("x-client-id", COMPANY).send(body);
+
+  it("pins the manual source on one path and QMS on the other", async () => {
+    // The page has two independent buttons. Making the source a query
+    // parameter is how you end up syncing the one nobody pressed.
+    const { app, calls } = stub();
+    await post(app, "/manual-report-uploads/sync-source").expect(200);
+    expect(argsOf(calls, "syncSource")[2]).toBe("manual_upload_excel_pdf");
+
+    const { app: qms, calls: qmsCalls } = stub();
+    await post(qms, "/manual-report-uploads/sync-qms-source").expect(200);
+    expect(argsOf(qmsCalls, "syncSource")[2]).toBe("quickbooks_manual");
+  });
+
+  it("reports what it read and what it could not", async () => {
+    const { app } = stub();
+    const res = await post(app, "/manual-report-uploads/sync-source").expect(200);
+    expect(res.body).toMatchObject({ success: true, runId: "run-1", skipped: 0 });
+    expect(res.body.processed).toHaveLength(1);
+  });
+
+  it("passes a version and a refresh through", async () => {
+    const { app, calls } = stub();
+    await post(app, "/manual-report-uploads/sync-source", {
+      versionId: VERSION,
+      force: true,
+    }).expect(200);
+    expect(argsOf(calls, "syncSource")[3]).toEqual({ versionId: VERSION, force: true });
+  });
+
+  it("takes them from the query string too", async () => {
+    const { app, calls } = stub();
+    await post(app, `/manual-report-uploads/sync-source?versionId=${VERSION}&force=true`).expect(
+      200,
+    );
+    expect(argsOf(calls, "syncSource")[3]).toEqual({ versionId: VERSION, force: true });
+  });
+
+  it("parses the documents it was given", async () => {
+    const { app, calls } = stub();
+    const res = await post(app, "/manual-report-uploads/qms-parse-documents", {
+      documents: [{ documentId: DOCUMENT, statementType: "profit_and_loss" }],
+      clearFirst: true,
+    }).expect(200);
+
+    expect(res.body.runId).toBe("run-2");
+    expect(argsOf(calls, "parseDocuments")[4]).toEqual({ clearFirst: true });
+  });
+
+  it("400s a parse with no documents list", async () => {
+    const { app, calls } = stub();
+    await post(app, "/manual-report-uploads/qms-parse-documents", {}).expect(400);
+    expect(calls.filter((c) => c.method === "parseDocuments")).toEqual([]);
+  });
+
+  it("503s rather than 500s where no model is configured", async () => {
+    // A deployment fact rather than a fault, and the difference tells whoever
+    // reads the log where to go.
+    const { app } = stub({ sourceSync: null });
+    const res = await post(app, "/manual-report-uploads/sync-source").expect(503);
+    expect(res.body.error).toMatch(/not configured/);
+    await post(app, "/manual-report-uploads/qms-parse-documents", {
+      documents: [{ documentId: DOCUMENT, statementType: "balance_sheet" }],
+    }).expect(503);
+  });
+});
+
 describe("paths this router does not own", () => {
   it("leaves them for the proxy", async () => {
     // An unmatched path has to reach the proxy untouched, which is what
     // 404-from-this-router means in isolation.
     //
-    // `qms-dashboard` and `tax-data` were both listed here and no longer are:
-    // this router serves them now, and leaving the assertions would have
-    // pinned the routes as absent rather than noticing they had arrived.
+    // `qms-dashboard`, `tax-data` and the sync routes were all listed here and
+    // no longer are: this router serves them now, and leaving the assertions
+    // would have pinned the routes as absent rather than noticing they had
+    // arrived.
     const { app } = stub();
-    await request(app).post("/manual-report-uploads/sync-source").expect(404);
+    await request(app).post("/key-reports/versions/abc/sync").expect(404);
   });
 });
 

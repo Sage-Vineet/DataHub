@@ -165,6 +165,15 @@ export interface SourceTreeEntry {
   }>;
 }
 
+/** An uploaded file, and what kind of statement it is filed as. */
+export interface LinkedDocument {
+  documentId: string;
+  name: string | null;
+  folderName: string | null;
+  /** A `key_report_file_mappings.report_category`, not a statement type. */
+  category: string;
+}
+
 export interface StatementsRepository {
   list(companyId: string, filter: ListFilter): Promise<StatementExtract[]>;
   /** Most recently extracted of one type, or null. */
@@ -191,6 +200,24 @@ export interface StatementsRepository {
    * latest one this company happens to have".
    */
   documentsForVersion(versionId: string, category: string): Promise<string[]>;
+  /**
+   * Every uploaded file this company has filed under a report category.
+   *
+   * What a source sync reads. The mapping already records which file is the
+   * balance sheet and which is the P&L, so the type comes from the link rather
+   * than from a folder name — renaming a folder should not silently stop its
+   * contents being read.
+   *
+   * Deduplicated by document, newest link first: a file relinked to a later
+   * version is one file, and reading it twice would extract it twice and leave
+   * the page choosing between two identical statements.
+   */
+  linkedDocuments(
+    companyId: string,
+    filter: { versionId?: string },
+  ): Promise<LinkedDocument[]>;
+  /** Remove every extract a source holds for a company. Returns how many. */
+  deleteForSource(companyId: string, sourceKey: string): Promise<number>;
 }
 
 /**

@@ -12,6 +12,7 @@ import type { BankStatementsService } from "./bank-statements.js";
 import type { StatementTransactionsService } from "./statement-transactions.js";
 import { toTaxReturnRows, type TaxReturnService } from "./tax-return.js";
 import type { StatementsService } from "./service.js";
+import type { SourceSyncService } from "./source-sync.js";
 
 export interface StatementsRouterDeps {
   service: StatementsService;
@@ -22,6 +23,8 @@ export interface StatementsRouterDeps {
   taxReturn?: TaxReturnService;
   bankStatements?: BankStatementsService;
   statementTransactions?: StatementTransactionsService;
+  /** Absent where no model is configured; the sync routes say so. */
+  sourceSync?: SourceSyncService;
   requireAuth: RequestHandler;
 }
 
@@ -45,6 +48,7 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
     taxReturn,
     bankStatements,
     statementTransactions,
+    sourceSync,
     requireAuth,
   } = deps;
   const router = express.Router();
@@ -82,6 +86,20 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
 
   const str = (value: unknown): string | undefined =>
     typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+
+  /**
+   * The sync service, or a 503 saying why not.
+   *
+   * A 503 rather than a 500: no model is configured on this server, which is a
+   * deployment fact rather than a fault, and the difference tells whoever is
+   * reading the log where to go.
+   */
+  const requireSync = (): SourceSyncService => {
+    if (!sourceSync) {
+      throw new HttpError(503, "Statement extraction is not configured on this server.");
+    }
+    return sourceSync;
+  };
 
   const asView = (extract: StatementExtract) => ({
     success: true,
@@ -457,6 +475,56 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
    * connection, and a 404 there reads as an error rather than as "nothing
    * saved yet".
    */
+  /**
+   * Read a source's uploaded files into statements.
+   *
+   * The writer behind every manual-upload page: until this has run, a company
+   * that uploaded a year of statements sees an empty dashboard with nothing to
+   * explain it.
+   *
+   * Two paths for two sources, pinned the same way `reports/*` and
+   * `qms-reports/*` are — the page has two independent buttons, and making the
+   * source a query parameter is how you end up syncing the wrong one.
+   */
+  const syncSource = (sourceKey: string): RequestHandler =>
+    handle(async (req, res) => {
+      const sync = requireSync();
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const result = await sync.syncSource(req.user!, companyOf(req), sourceKey, {
+        ...(str(body.versionId) ?? str(req.query.versionId)
+          ? { versionId: (str(body.versionId) ?? str(req.query.versionId))! }
+          : {}),
+        ...(body.force === true || req.query.force === "true" ? { force: true } : {}),
+      });
+      res.json({ success: true, ...result });
+    });
+
+  router.post("/manual-report-uploads/sync-source", syncSource(MANUAL));
+  router.post("/manual-report-uploads/sync-qms-source", syncSource(QMS));
+
+  /**
+   * Parse the documents a caller named, and nothing else.
+   *
+   * The "Choose Folder" flow. It never re-scans the source, because on a
+   * company with fifty statements that is fifty model calls to read the two
+   * that were just uploaded.
+   */
+  router.post("/manual-report-uploads/qms-parse-documents", handle(async (req, res) => {
+    const sync = requireSync();
+    const body = (req.body ?? {}) as { documents?: unknown; clearFirst?: unknown };
+    if (!Array.isArray(body.documents)) {
+      throw new BadRequestError("documents array is required.");
+    }
+    const result = await sync.parseDocuments(
+      req.user!,
+      companyOf(req),
+      QMS,
+      body.documents as Array<Record<string, unknown>>,
+      { clearFirst: body.clearFirst === true },
+    );
+    res.json({ success: true, ...result });
+  }));
+
   router.get("/qb-bank-activity/saved", handle(async (req, res) => {
     const companyId = companyOf(req);
     // Pulls only. A company's UPLOADED bank statements are also

@@ -1,6 +1,9 @@
 import type { RequestHandler, Router } from "express";
 import type { Db } from "@datahub/db";
 import type { DocumentReader } from "../../shared/gemini.js";
+import { DrizzleSyncRepository } from "../sync/repository.drizzle.js";
+import { SyncService } from "../sync/service.js";
+import { SourceSyncService } from "./source-sync.js";
 import { CashFlowService } from "./cash-flow.js";
 import { DashboardService, TaxComparisonService } from "./dashboard.js";
 import { BankStatementsService } from "./bank-statements.js";
@@ -25,6 +28,7 @@ export interface StatementsModule {
   taxReturn: TaxReturnService | undefined;
   bankStatements: BankStatementsService | undefined;
   statementTransactions: StatementTransactionsService | undefined;
+  sourceSync: SourceSyncService | undefined;
 }
 
 export interface CreateStatementsModuleOptions {
@@ -81,6 +85,18 @@ export function createStatementsModule(
     ? new StatementTransactionsService({ reader: opts.reader })
     : undefined;
 
+  // The writer behind every manual-upload page. Runs against `sync_runs`
+  // through `SyncService`, so the reaping and the refusal of a second
+  // concurrent sync are the same code every other sync uses.
+  const sourceSync = opts.reader
+    ? new SourceSyncService({
+        statements: repo,
+        bytes: new DrizzleDocumentBytesPort(opts.db),
+        reader: opts.reader,
+        runs: new SyncService({ repo: new DrizzleSyncRepository(opts.db) }),
+      })
+    : undefined;
+
   return {
     router: createStatementsRouter({
       service,
@@ -90,6 +106,7 @@ export function createStatementsModule(
       ...(taxReturn ? { taxReturn } : {}),
       ...(bankStatements ? { bankStatements } : {}),
       ...(statementTransactions ? { statementTransactions } : {}),
+      ...(sourceSync ? { sourceSync } : {}),
       requireAuth: opts.requireAuth,
     }),
     service,
@@ -99,6 +116,7 @@ export function createStatementsModule(
     taxReturn,
     bankStatements,
     statementTransactions,
+    sourceSync,
   };
 }
 
@@ -108,6 +126,7 @@ export { InMemoryStatementsRepository } from "./repository.memory.js";
 export { createStatementsRouter } from "./router.js";
 export { CashFlowService, MissingCashFlowInputsError } from "./cash-flow.js";
 export { DashboardService, TaxComparisonService } from "./dashboard.js";
+export { SourceSyncService } from "./source-sync.js";
 export { TaxReturnService, toTaxReturnFigures, toTaxReturnRows } from "./tax-return.js";
 export { BankStatementsService } from "./bank-statements.js";
 export { StatementTransactionsService } from "./statement-transactions.js";

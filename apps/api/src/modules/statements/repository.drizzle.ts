@@ -3,6 +3,7 @@ import { schema, type Db } from "@datahub/db";
 import {
   pullKeyFor,
   type LatestFilter,
+  type LinkedDocument,
   type ListFilter,
   type SaveExtractInput,
   type SourceTreeEntry,
@@ -310,6 +311,60 @@ export class DrizzleStatementsRepository implements StatementsRepository {
       });
     }
     return [...byDocument.values()];
+  }
+
+  async linkedDocuments(
+    companyId: string,
+    filter: { versionId?: string },
+  ): Promise<LinkedDocument[]> {
+    const clauses = [
+      eq(keyReportFileMappings.companyId, companyId),
+      isNotNull(keyReportFileMappings.documentId),
+      // The document as well as the mapping. Both carry a company, and a
+      // mismatch between them is exactly the shape a cross-company read takes.
+      eq(documents.companyId, companyId),
+    ];
+    if (filter.versionId) clauses.push(eq(keyReportFileMappings.versionId, filter.versionId));
+
+    const rows = await this.db
+      .select({
+        documentId: keyReportFileMappings.documentId,
+        name: documents.name,
+        folderName: folders.name,
+        category: keyReportFileMappings.reportCategory,
+      })
+      .from(keyReportFileMappings)
+      .innerJoin(documents, eq(documents.id, keyReportFileMappings.documentId))
+      .leftJoin(folders, eq(folders.id, documents.folderId))
+      .where(and(...clauses))
+      .orderBy(desc(keyReportFileMappings.createdAt));
+
+    // First link wins, which the ordering makes the newest one.
+    const byDocument = new Map<string, LinkedDocument>();
+    for (const row of rows) {
+      const documentId = row.documentId;
+      if (documentId === null || byDocument.has(documentId)) continue;
+      byDocument.set(documentId, {
+        documentId,
+        name: row.name ?? null,
+        folderName: row.folderName ?? null,
+        category: row.category,
+      });
+    }
+    return [...byDocument.values()];
+  }
+
+  async deleteForSource(companyId: string, sourceKey: string): Promise<number> {
+    const rows = await this.db
+      .delete(statementExtracts)
+      .where(
+        and(
+          eq(statementExtracts.companyId, companyId),
+          eq(statementExtracts.sourceKey, sourceKey),
+        ),
+      )
+      .returning({ id: statementExtracts.id });
+    return rows.length;
   }
 
   async documentsForVersion(versionId: string, category: string): Promise<string[]> {

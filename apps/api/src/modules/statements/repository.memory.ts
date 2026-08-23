@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   pullKeyFor,
   type LatestFilter,
+  type LinkedDocument,
   type ListFilter,
   type SaveExtractInput,
   type SourceTreeEntry,
@@ -20,6 +21,7 @@ export class InMemoryStatementsRepository implements StatementsRepository {
   private readonly extracts = new Map<string, StatementExtract>();
   private readonly documentNames = new Map<string, { name: string; folder: string | null }>();
   private readonly versionDocuments = new Map<string, string[]>();
+  private readonly links: Array<LinkedDocument & { versionId: string }> = [];
   private clock = 0;
 
   seedDocument(documentId: string, name: string, folder: string | null = null): void {
@@ -213,5 +215,40 @@ export class InMemoryStatementsRepository implements StatementsRepository {
 
   documentsForVersion(versionId: string, category: string): Promise<string[]> {
     return Promise.resolve(this.versionDocuments.get(`${versionId}:${category}`) ?? []);
+  }
+
+  /** Link a document to a category, as the key-report mapping does. */
+  seedLinkedDocument(document: LinkedDocument, versionId = "v1"): void {
+    this.links.push({ ...document, versionId });
+  }
+
+  linkedDocuments(
+    _companyId: string,
+    filter: { versionId?: string },
+  ): Promise<LinkedDocument[]> {
+    const byDocument = new Map<string, LinkedDocument>();
+    for (const link of this.links) {
+      if (filter.versionId && link.versionId !== filter.versionId) continue;
+      // First link wins, matching the real store's newest-first ordering.
+      if (byDocument.has(link.documentId)) continue;
+      byDocument.set(link.documentId, {
+        documentId: link.documentId,
+        name: link.name,
+        folderName: link.folderName,
+        category: link.category,
+      });
+    }
+    return Promise.resolve([...byDocument.values()]);
+  }
+
+  deleteForSource(companyId: string, sourceKey: string): Promise<number> {
+    let removed = 0;
+    for (const [id, extract] of this.extracts) {
+      if (extract.companyId === companyId && extract.sourceKey === sourceKey) {
+        this.extracts.delete(id);
+        removed += 1;
+      }
+    }
+    return Promise.resolve(removed);
   }
 }
