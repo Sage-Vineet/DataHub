@@ -47,8 +47,66 @@ const SECTION_TO_TYPE: Record<string, "asset" | "liability" | "equity"> = {
   equity: "equity",
 };
 
+
+/** One `balance_sheet_entries` row, as the anchor loader reads it. */
+export interface BalanceSheetRowForAnchor {
+  asOfDate: string | null;
+  accountName: string | null;
+  section: string | null;
+  subSection: string | null;
+  amount: string | number | null;
+  coaId: string | null;
+  hierarchyLevel: number | null;
+  isTotal: boolean | null;
+}
+
+/**
+ * One stored balance-sheet row as an anchor row, or null where it is not one.
+ *
+ * Three rejections, and each keeps a figure out of the roll-forward that would
+ * otherwise be counted:
+ *
+ * A row with no date or no account name is not a position — it is a blank the
+ * statement carries for layout.
+ *
+ * A row whose section is not one of the three is not on the balance sheet at
+ * all; guessing a section for it would put a real amount on an arbitrary side.
+ *
+ * A parent CAPTION is structure, not an account. Extraction filters subtotals
+ * but not headings, so "Bank Accounts" arrives looking like a balance and
+ * would be double-counted against the accounts beneath it (UAT #4).
+ */
+export function toAnchorRow(
+  row: BalanceSheetRowForAnchor,
+  levelsAreMeaningful: boolean,
+): BalanceSheetAnchor["rows"][number] | null {
+  if (!row.asOfDate || !row.accountName) return null;
+
+  const section = SECTION_TO_TYPE[String(row.section ?? "").toLowerCase()];
+  if (!section) return null;
+
+  if (
+    isStatementCaption(
+      { accountName: row.accountName, hierarchyLevel: row.hierarchyLevel, isTotal: row.isTotal },
+      { levelsAreMeaningful },
+    )
+  ) {
+    return null;
+  }
+
+  return {
+    // The chart's id where extraction resolved one, the name otherwise: an
+    // anchor row still has to be matchable against the ledger.
+    accountId: row.coaId ?? row.accountName,
+    accountName: row.accountName,
+    section,
+    group: row.subSection ?? null,
+    amount: toNumber(row.amount),
+  };
+}
+
 /** Fiscal year and month from an `as_of_date`. */
-function periodOf(asOf: string): { fiscalYear: number; month: number } {
+export function periodOf(asOf: string): { fiscalYear: number; month: number } {
   const [year, month] = asOf.split("-");
   return { fiscalYear: Number(year), month: Number(month ?? "12") };
 }
@@ -222,39 +280,16 @@ export async function loadAnchors(db: Db, versionId: string): Promise<BalanceShe
 
     const byDate = new Map<string, BalanceSheetAnchor>();
     for (const row of rows) {
-      if (!row.asOfDate || !row.accountName) continue;
-      const section = SECTION_TO_TYPE[String(row.section ?? "").toLowerCase()];
-      if (!section) continue;
-      // A parent caption is structure, not an account. Extraction filters
-      // subtotals but not headings, so "Bank Accounts" arrives looking like a
-      // balance and would be double-counted against the accounts beneath it
-      // (UAT #4).
-      if (
-        isStatementCaption(
-          {
-            accountName: row.accountName,
-            hierarchyLevel: row.hierarchyLevel,
-            isTotal: row.isTotal,
-          },
-          { levelsAreMeaningful },
-        )
-      ) {
-        continue;
-      }
+      const anchorRow = toAnchorRow(row, levelsAreMeaningful);
+      if (!anchorRow) continue;
 
-      let anchor = byDate.get(row.asOfDate);
+      let anchor = byDate.get(row.asOfDate!);
       if (!anchor) {
-        const { fiscalYear, month } = periodOf(row.asOfDate);
+        const { fiscalYear, month } = periodOf(row.asOfDate!);
         anchor = { kind: "starting", fiscalYear, month, rows: [] };
-        byDate.set(row.asOfDate, anchor);
+        byDate.set(row.asOfDate!, anchor);
       }
-      anchor.rows.push({
-        accountId: row.coaId ?? row.accountName,
-        accountName: row.accountName,
-        section,
-        group: row.subSection ?? null,
-        amount: toNumber(row.amount),
-      });
+      anchor.rows.push(anchorRow);
     }
 
     const anchors = [...byDate.entries()]
