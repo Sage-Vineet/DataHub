@@ -91,7 +91,11 @@ export class DataRoomStore {
       name: doc.name,
       uploadId: doc.uploadId ?? null,
       currentVersionId: null,
-      versionCount: 0,
+      // 1, matching `documents.version_count`'s column default: a stored
+      // document IS its first version, and the version rows only start
+      // appearing when it is re-uploaded. Seeded as 0 the fake reported a
+      // count the real store never returns.
+      versionCount: 1,
       sizeBytes: doc.sizeBytes ?? 0,
       ext: doc.ext ?? "",
     };
