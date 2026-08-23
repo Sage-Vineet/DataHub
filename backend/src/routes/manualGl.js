@@ -371,76 +371,11 @@ async function handleGetLatestReport(req, res, statementType) {
   });
 }
 
-router.get("/manual-gl/uploads", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) {
-      return res.status(400).json({ error: "Missing clientId." });
-    }
-
-    const uploads = await listManualGlUploads(clientId);
-    return res.json({ uploads });
-  } catch (error) {
-    return res.status(500).json({ error: error.message || "Failed to load manual GL uploads." });
-  }
-});
-
-router.post("/manual-gl/uploads", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    return await handleCreateUpload(req, res);
-  } catch (error) {
-    return res.status(500).json({ error: error.message || "Failed to save manual GL upload." });
-  }
-});
-
-router.post("/manual-gl/upload", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res, next) => {
-  try {
-    return await uploadController(req, res);
-  } catch (error) {
-    return next(error);
-  }
-});
-
-router.post("/manual-gl/continue", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res, next) => {
-  try {
-    return await continueController(req, res);
-  } catch (error) {
-    return next(error);
-  }
-});
-
 router.post("/upload-gl", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     return await handleCreateUpload(req, res);
   } catch (error) {
     return res.status(500).json({ error: error.message || "Failed to save manual GL upload." });
-  }
-});
-
-router.post("/manual-gl/reports/generate", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) return res.status(400).json({ error: "Missing clientId." });
-
-    const { uploadId, mapping = {} } = req.body || {};
-    if (!uploadId) return res.status(400).json({ error: "uploadId is required." });
-
-    const result = await generateManualGlReports({
-      companyId: clientId,
-      uploadId,
-      mapping,
-    });
-    return res.json({ success: true, ...result });
-  } catch (error) {
-    return res.status(500).json({ success: false, error: error.message || "Failed to generate reports." });
-  }
-});
-
-router.get("/manual-gl/reports/:statementType/latest", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    return await handleGetLatestReport(req, res, req.params.statementType);
-  } catch (error) {
-    return res.status(500).json({ success: false, error: error.message || "Failed to fetch report." });
   }
 });
 
@@ -639,14 +574,6 @@ router.post("/save-mapping", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), as
     return await handleSaveMapping(req, res);
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || "Failed to save mapping." });
-  }
-});
-
-router.post("/manual-gl/process-gl", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
-  try {
-    return await handleProcessGl(req, res);
-  } catch (error) {
-    return res.status(500).json({ success: false, error: error.message || "Failed to process GL." });
   }
 });
 

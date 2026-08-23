@@ -704,41 +704,9 @@ function buildEbitdaAdjustmentScopeParams(options = {}) {
 
 
 
-export function listManualGlUploads(options = {}) {
-  const clientId = options.clientId ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
-  return request(`/manual-gl/uploads${query}`, options).then((payload) => payload?.uploads || []);
-}
 
-export function createManualGlUpload(payload, options = {}) {
-  const clientId = options.clientId ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
-  return request(`/manual-gl/uploads${query}`, {
-    method: "POST",
-    body: payload,
-    ...options,
-  }).then((data) => data?.upload || data);
-}
 
-export function uploadManualReport(payload, options = {}) {
-  const clientId = options.clientId ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
-  return request(`/manual-gl/upload${query}`, {
-    method: "POST",
-    body: payload,
-    ...options,
-  });
-}
 
-export function continueManualReportProcessing(payload, options = {}) {
-  const clientId = options.clientId ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
-  return request(`/manual-gl/continue${query}`, {
-    method: "POST",
-    body: payload,
-    ...options,
-  });
-}
 
 export function uploadGl(payload, options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
@@ -750,15 +718,6 @@ export function uploadGl(payload, options = {}) {
   }).then((data) => data?.upload || data);
 }
 
-export function generateManualGlReports(payload, options = {}) {
-  const clientId = options.clientId ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
-  return request(`/manual-gl/reports/generate${query}`, {
-    method: "POST",
-    body: payload,
-    ...options,
-  });
-}
 
 export function getManualGlColumns(uploadId, options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
@@ -786,15 +745,6 @@ export function saveGlMapping(payload, options = {}) {
   });
 }
 
-export function processManualGl(payload, options = {}) {
-  const clientId = options.clientId ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
-  return request(`/manual-gl/process-gl${query}`, {
-    method: "POST",
-    body: payload,
-    ...options,
-  });
-}
 
 export function processGl(payload, options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
@@ -806,11 +756,6 @@ export function processGl(payload, options = {}) {
   });
 }
 
-export function getLatestManualGlReport(statementType, options = {}) {
-  const clientId = options.clientId ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
-  return request(`/manual-gl/reports/${encodeURIComponent(statementType)}/latest${query}`, options);
-}
 
 export function getManualGlProfitLoss(options = {}) {
   const { params = {}, ...requestOptions } = options || {};
