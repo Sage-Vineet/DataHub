@@ -1,3 +1,5 @@
+import type { EngagementData } from "../../shared/engagement.drizzle.js";
+
 import type { ReportVersionStatus } from "@datahub/contracts";
 
 export interface VersionRecord {
@@ -40,6 +42,17 @@ export interface ReportsRepository {
 }
 
 /** The seam for the (not-yet-migrated) GL sync/computation engine (design D5). */
+/**
+ * The engagement behind a version — accounts, ledger and balance-sheet anchors.
+ *
+ * A port rather than a direct call so the service can be tested with a fixture
+ * engagement instead of a database, and so the module never reaches into the
+ * tables another domain owns.
+ */
+export interface EngagementPort {
+  load(versionId: string): Promise<EngagementData | null>;
+}
+
 export interface ReportSyncPort {
   sync(versionId: string): Promise<never>;
 }

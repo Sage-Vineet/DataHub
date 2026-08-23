@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { reports as contracts, type SessionUser } from "@datahub/contracts";
 import { ForbiddenError, NotFoundError } from "../../shared/errors.js";
 import { LegacyReportSyncPort } from "./adapters.js";
-import { InMemoryReportsRepository } from "./repository.memory.js";
+import { InMemoryEngagementPort, InMemoryReportsRepository } from "./repository.memory.js";
 import { ReportsService } from "./service.js";
 
 const COMPANY = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
@@ -11,7 +11,8 @@ const OTHER = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 
 function make() {
   const repo = new InMemoryReportsRepository();
-  return { repo, service: new ReportsService({ repo, sync: new LegacyReportSyncPort() }) };
+  const engagement = new InMemoryEngagementPort();
+  return { repo, engagement, service: new ReportsService({ repo, sync: new LegacyReportSyncPort(), engagement }) };
 }
 const session = (over: Partial<SessionUser> = {}): SessionUser => ({
   id: randomUUID(), name: "U", email: "u@x.com", role: "broker", company_id: null, status: "active", company_ids: [COMPANY], ...over,

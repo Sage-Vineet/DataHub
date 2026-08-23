@@ -6,19 +6,44 @@ import type {
 } from "@datahub/contracts";
 import { canAccessCompany } from "../../shared/access.js";
 import { ForbiddenError, NotFoundError } from "../../shared/errors.js";
-import type { ReportSyncPort, ReportsRepository, VersionRecord } from "./ports.js";
+import type { EngagementPort, ReportSyncPort, ReportsRepository, VersionRecord } from "./ports.js";
+import { buildStatements, type BuildStatementsOptions, type FinancialStatements } from "./statements.js";
 
 export interface ReportsServiceDeps {
   repo: ReportsRepository;
   sync: ReportSyncPort;
+  engagement: EngagementPort;
 }
 
 export class ReportsService {
   private readonly repo: ReportsRepository;
   private readonly syncPort: ReportSyncPort;
+  private readonly engagement: EngagementPort;
   constructor(deps: ReportsServiceDeps) {
     this.repo = deps.repo;
     this.syncPort = deps.sync;
+    this.engagement = deps.engagement;
+  }
+
+  /**
+   * The balance sheet and cash flow for a version, derived from the ledger.
+   *
+   * Every figure comes from `@datahub/financial-engine`, so the statements
+   * agree with each other by construction — the cash flow is a function of the
+   * balance sheet rather than a third pass over the ledger that can disagree
+   * with it.
+   */
+  async financialStatements(
+    user: SessionUser,
+    versionId: string,
+    options: BuildStatementsOptions = {},
+  ): Promise<FinancialStatements> {
+    await this.requireAccessible(user, versionId);
+
+    const engagement = await this.engagement.load(versionId);
+    if (!engagement) throw new NotFoundError("Report version not found.");
+
+    return buildStatements(engagement, options);
   }
 
   async list(user: SessionUser, companyId: string): Promise<ReportVersionResponse[]> {

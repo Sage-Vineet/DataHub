@@ -144,5 +144,19 @@ export function createReportsRouter(deps: ReportsRouterDeps): Router {
     res.status(204).send();
   }));
 
+  router.get(
+    "/key-reports/versions/:versionId/reports/financial-statements",
+    handle(async (req, res) => {
+      const year = Number.parseInt(String(req.query.year ?? ""), 10);
+      const statements = await service.financialStatements(req.user!, req.params.versionId!, {
+        year: Number.isFinite(year) ? year : undefined,
+        currency: typeof req.query.currency === "string" ? req.query.currency : undefined,
+        companyName: typeof req.query.companyName === "string" ? req.query.companyName : undefined,
+      });
+      // `success` is part of the shape the view checks before reading `reports`.
+      res.json({ success: true, ...statements });
+    }),
+  );
+
   return router;
 }

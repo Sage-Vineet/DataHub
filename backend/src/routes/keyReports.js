@@ -5,7 +5,6 @@ const keyReportService = require("../services/keyReports/keyReportService");
 const fileReferenceService = require("../services/fileReferenceService");
 const userPreferenceService = require("../services/userPreferenceService");
 const chartOfAccountsService = require("../services/chartOfAccountsService");
-const { generateFinancialStatements } = require("../services/keyReports/financialStatementService");
 const { normalizeError, isConnectionError } = require("../utils/dbErrorHandler");
 
 const router = express.Router();
@@ -463,20 +462,4 @@ function parseReportQuery(q = {}) {
 
 // ── COA-mapped Financial Statements (P&L + Balance Sheet, monthly + yearly) ───
 // GET /key-reports/versions/:versionId/reports/financial-statements?year=2024&currency=USD
-router.get("/key-reports/versions/:versionId/reports/financial-statements", async (req, res) => {
-  try {
-    const version = await loadVersionWithAccess(req, res);
-    if (!version) return;
-    const { year, currency, companyName } = req.query;
-    const result = await generateFinancialStatements(version.id, {
-      year: year ? parseInt(String(year), 10) : undefined,
-      currency: currency || "USD",
-      companyName: companyName || "",
-    });
-    return res.json({ success: true, ...result });
-  } catch (error) {
-    return handleError(res, error, "GET reports/financial-statements");
-  }
-});
-
 module.exports = router;

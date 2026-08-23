@@ -33,6 +33,7 @@
   "GET /folders/:p/access",
   "GET /folders/:p/documents",
   "GET /groups/:p/members",
+  "GET /key-reports/versions/:p/reports/financial-statements",
   "GET /message-groups/:p/members",
   "GET /message-groups/:p/messages",
   "GET /message-groups/:p/messages/unread-count",

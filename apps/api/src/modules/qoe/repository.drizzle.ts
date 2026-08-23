@@ -1,8 +1,6 @@
-import { and, asc, eq, isNull, ne, or, sql } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@datahub/db";
 import { schema } from "@datahub/db";
-import { isStatementCaption } from "@datahub/financial-engine";
-import type { Account, BalanceSheetAnchor, GlEntry } from "@datahub/financial-engine";
 import type { EbitdaRole } from "@datahub/contracts";
 import type {
   AddbackRecord,
@@ -10,33 +8,9 @@ import type {
   EngagementData,
   QoeRepository,
 } from "./ports.js";
+import { loadEngagement } from "../../shared/engagement.drizzle.js";
 
-const {
-  chartOfAccounts,
-  generalLedgerEntries,
-  balanceSheetEntries,
-  qoeAddbacks,
-  companies,
-  keyReportVersions,
-} = schema;
-
-/** P&L account types that behave as income. Everything else on the P&L is expense. */
-const INCOME_TYPES = new Set(["income", "revenue", "other_income"]);
-
-/** `balance_sheet_entries.section` uses plurals; the engine uses the singular. */
-const SECTION_TO_TYPE: Record<string, "asset" | "liability" | "equity"> = {
-  assets: "asset",
-  asset: "asset",
-  liabilities: "liability",
-  liability: "liability",
-  equity: "equity",
-};
-
-/** Fiscal year and month from an `as_of_date`. */
-function periodOf(asOf: string): { fiscalYear: number; month: number } {
-  const [year, month] = asOf.split("-");
-  return { fiscalYear: Number(year), month: Number(month ?? "12") };
-}
+const { chartOfAccounts, qoeAddbacks } = schema;
 
 function toNumber(value: unknown): number {
   const n = typeof value === "number" ? value : Number(value ?? 0);
@@ -46,181 +20,13 @@ function toNumber(value: unknown): number {
 export class DrizzleQoeRepository implements QoeRepository {
   constructor(private readonly db: Db) {}
 
-  async loadEngagement(versionId: string): Promise<EngagementData | null> {
-    const [version] = await this.db
-      .select({ id: keyReportVersions.id, companyId: keyReportVersions.companyId })
-      .from(keyReportVersions)
-      .where(eq(keyReportVersions.id, versionId))
-      .limit(1);
-    if (!version) return null;
-
-    const [company] = await this.db
-      .select({
-        name: companies.name,
-        profitMetric: companies.profitMetric,
-        replacement: sql<string | null>`market_rate_replacement_salary`,
-      })
-      .from(companies)
-      .where(eq(companies.id, version.companyId))
-      .limit(1);
-
-    const coaRows = await this.db
-      .select()
-      .from(chartOfAccounts)
-      .where(eq(chartOfAccounts.versionId, versionId));
-
-    const accounts: Account[] = coaRows.map((row) => {
-      const statementType = row.statementType === "profit_loss" ? "profit_loss" : "balance_sheet";
-      return {
-        id: row.id,
-        name: row.accountName,
-        statementType,
-        // Balance-sheet accounts carry a real type too. Returning null here
-        // made every liability and equity account fall back to "asset" in the
-        // roll-forward's balance check, and put the debit/credit split in the
-        // trial balance on the wrong side of the ledger.
-        accountType:
-          statementType === "profit_loss"
-            ? INCOME_TYPES.has(String(row.accountType))
-              ? "income"
-              : "expense"
-            : (SECTION_TO_TYPE[String(row.accountType ?? "").toLowerCase()] ?? null),
-        ebitdaRole: (row.ebitdaRole as EbitdaRole | null) ?? null,
-      };
-    });
-
-    // Only posted transactions: header, beginning-balance and total rows would
-    // double-count the very amounts they summarize.
-    const glRows = await this.db
-      .select({
-        coaId: generalLedgerEntries.coaId,
-        fiscalYear: generalLedgerEntries.fiscalYear,
-        transactionDate: generalLedgerEntries.transactionDate,
-        amount: generalLedgerEntries.amount,
-        vendor: generalLedgerEntries.vendor,
-      })
-      .from(generalLedgerEntries)
-      .where(
-        and(
-          eq(generalLedgerEntries.versionId, versionId),
-          eq(generalLedgerEntries.rowType, "TRANSACTION"),
-        ),
-      );
-
-    const entries: GlEntry[] = [];
-    const years = new Set<number>();
-    for (const row of glRows) {
-      if (!row.coaId) continue;
-      const date = row.transactionDate ? new Date(row.transactionDate) : null;
-      const fiscalYear = row.fiscalYear ?? date?.getUTCFullYear() ?? null;
-      if (!fiscalYear) continue;
-      years.add(fiscalYear);
-      entries.push({
-        accountId: row.coaId,
-        fiscalYear,
-        month: date ? date.getUTCMonth() + 1 : 0,
-        amount: toNumber(row.amount),
-        vendor: row.vendor ?? null,
-      });
-    }
-
-    const anchors = await this.loadAnchors(versionId);
-
-    return {
-      companyId: version.companyId,
-      companyName: company?.name ?? "",
-      profitMetric: company?.profitMetric === "sde" ? "sde" : "adjusted_ebitda",
-      marketRateReplacementSalary: company?.replacement ? toNumber(company.replacement) : null,
-      fiscalYears: [...years].sort((a, b) => a - b),
-      accounts,
-      entries,
-      anchors,
-    };
-  }
-
   /**
-   * Balance-sheet statements usable as roll-forward anchors.
-   *
-   * Subtotal rows (`is_total`) and rows this system previously generated
-   * (`is_generated`) are excluded: feeding a derived figure back in as an
-   * anchor would compound whatever produced it. Statements are returned
-   * earliest-first, so the earliest is rolled from and any later one becomes a
-   * tie-out.
+   * Delegates to the shared engagement read model. The queries are subtle and
+   * two modules need them; one copy keeps the statements they produce
+   * consistent with each other.
    */
-  private async loadAnchors(versionId: string): Promise<BalanceSheetAnchor[]> {
-    const rows = await this.db
-      .select({
-        asOfDate: balanceSheetEntries.asOfDate,
-        accountName: balanceSheetEntries.accountName,
-        section: balanceSheetEntries.section,
-        subSection: balanceSheetEntries.subSection,
-        amount: balanceSheetEntries.amount,
-        coaId: balanceSheetEntries.coaId,
-        hierarchyLevel: balanceSheetEntries.hierarchyLevel,
-        isTotal: balanceSheetEntries.isTotal,
-      })
-      .from(balanceSheetEntries)
-      .where(
-        and(
-          eq(balanceSheetEntries.versionId, versionId),
-          or(isNull(balanceSheetEntries.isTotal), ne(balanceSheetEntries.isTotal, true)),
-          or(isNull(balanceSheetEntries.isGenerated), ne(balanceSheetEntries.isGenerated, true)),
-        ),
-      )
-      .orderBy(asc(balanceSheetEntries.asOfDate), asc(balanceSheetEntries.sortOrder));
-
-    // `hierarchy_level` only tells us anything when it actually varies — the
-    // column defaults to 0, so a statement where nothing set it would otherwise
-    // look like nothing but section headers.
-    const levelsAreMeaningful = new Set(rows.map((r) => r.hierarchyLevel)).size > 1;
-
-    const byDate = new Map<string, BalanceSheetAnchor>();
-    for (const row of rows) {
-      if (!row.asOfDate || !row.accountName) continue;
-      const section = SECTION_TO_TYPE[String(row.section ?? "").toLowerCase()];
-      if (!section) continue;
-      // A parent caption is structure, not an account. Extraction filters
-      // subtotals but not headings, so "Bank Accounts" arrives looking like a
-      // balance and would be double-counted against the accounts beneath it
-      // (UAT #4).
-      if (
-        isStatementCaption(
-          {
-            accountName: row.accountName,
-            hierarchyLevel: row.hierarchyLevel,
-            isTotal: row.isTotal,
-          },
-          { levelsAreMeaningful },
-        )
-      ) {
-        continue;
-      }
-
-      let anchor = byDate.get(row.asOfDate);
-      if (!anchor) {
-        const { fiscalYear, month } = periodOf(row.asOfDate);
-        anchor = { kind: "starting", fiscalYear, month, rows: [] };
-        byDate.set(row.asOfDate, anchor);
-      }
-      anchor.rows.push({
-        accountId: row.coaId ?? row.accountName,
-        accountName: row.accountName,
-        section,
-        group: row.subSection ?? null,
-        amount: toNumber(row.amount),
-      });
-    }
-
-    const anchors = [...byDate.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([, anchor]) => anchor);
-
-    // The earliest statement is the one rolled FROM; anything later states a
-    // closing position and is only used to check against.
-    return anchors.map((anchor, index) => ({
-      ...anchor,
-      kind: index === 0 ? "starting" : "ending",
-    }));
+  async loadEngagement(versionId: string): Promise<EngagementData | null> {
+    return loadEngagement(this.db, versionId);
   }
 
   private static toRecord(row: typeof qoeAddbacks.$inferSelect): AddbackRecord {

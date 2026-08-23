@@ -65,3 +65,25 @@ export class InMemoryReportsRepository implements ReportsRepository {
     return activated;
   }
 }
+
+/**
+ * A stubbed engagement source for service tests.
+ *
+ * The statement arithmetic is tested directly against `buildStatements`; this
+ * only needs to prove the service asks for the right version and handles an
+ * absent one.
+ */
+export class InMemoryEngagementPort {
+  lastVersionId: string | null = null;
+
+  constructor(private readonly engagements = new Map<string, unknown>()) {}
+
+  seed(versionId: string, engagement: unknown): void {
+    this.engagements.set(versionId, engagement);
+  }
+
+  load(versionId: string): Promise<never> {
+    this.lastVersionId = versionId;
+    return Promise.resolve((this.engagements.get(versionId) ?? null) as never);
+  }
+}
