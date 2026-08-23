@@ -109,70 +109,70 @@ async function checkQBAuth(req, res, next) {
   next();
 }
 
-function isQuickBooksRoute(pathname = "") {
-  const normalizedPath = pathname.replace(/^\/companies\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i, "");
-  
-  const qbPaths = [
-    "/balance-sheet",
-    "/balance-sheet-detail",
-    "/all-reports",
-    "/general-ledger",
-    "/profit-and-loss",
-    "/profit-and-loss-detail",
-    "/profit-and-loss-statement",
-    "/customers",
-    "/invoices",
-    "/api/invoices",
-    "/qb-transactions",
-    "/qb-cashflow",
-    "/qb-accounts",
-    "/qb-cashflow-engine",
-    "/qb-general-ledger",
-    "/qb-reconciliation-transactions",
-    "/qb-trial-balance",
-    "/qb-reconciliation-engine",
-    "/bank-transactions",
-    "/bank-vs-books",
-    "/reconciliation-data",
-    "/reconciliation-variance",
-    "/tax-reconciliation",
-    "/refresh-token",
-    "/qb-bank-accounts",
-    "/qb-bank-activity",
-    "/qb-one-bank-activity",
-    "/bank-reconciliation-line-items",
-    "/extract-bank-pdf-records",
-    "/quickbooks-pl",
-    "/tax-data",
-    "/qb-profit-loss-detail",
-    "/qb-balance-sheet",
-    "/qb-financial-reports-for-reconciliation",
-    "/parse-bank-statement",
-    "/api/quickbooks/sync",
-    "/api/quickbooks/sync-status"
-  ];
+const COMPANY_PREFIX = /^\/companies\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
-  return qbPaths.some(p => normalizedPath.startsWith(p) || pathname.startsWith(p));
+/**
+ * Does `router` itself define a handler for this method and path?
+ *
+ * This replaces a hand-maintained list of QuickBooks path prefixes. That list
+ * was the authorization boundary for fifteen routers mounted at "/", and it
+ * FAILED OPEN: `quickBooksAuth` called `next()` for anything not on it, and
+ * these routers carry no other gate, so a path the list forgot reached its
+ * handler unauthenticated. It had forgotten five, including
+ * `PUT /api/customers/:id` — the list held `/customers` and `/api/invoices`
+ * but never `/api/customers`.
+ *
+ * Asking the router what it serves cannot drift from what it serves. A route
+ * added tomorrow is gated the moment it is defined, and the failure mode of a
+ * mistake here is a 401 on a legitimate route rather than an open one.
+ */
+function routerHandles(router, method, path) {
+  const verb = String(method || "").toLowerCase();
+  return (router.stack || []).some((layer) => {
+    if (!layer.route || typeof layer.match !== "function") return false;
+    if (!layer.match(path)) return false;
+    const methods = layer.route.methods || {};
+    // Express dispatches HEAD to a GET handler when no HEAD route exists, so
+    // gating on `methods.head` alone would leave every GET route reachable
+    // unauthenticated by spelling the verb differently.
+    return Boolean(methods[verb] || methods._all || (verb === "head" && methods.get));
+  });
 }
 
-function quickBooksAuth(req, res, next) {
-  if (!isQuickBooksRoute(req.path)) {
-    return next();
+/**
+ * Authenticate a QuickBooks router.
+ *
+ * Takes the router it guards, because these are all mounted at "/" and so see
+ * every request in the app — including ones destined for messages, folders and
+ * requests further down the chain. Those must pass through untouched, which is
+ * why the middleware needs to know which paths belong to the router behind it.
+ */
+function quickBooksAuth(router) {
+  if (!router || !Array.isArray(router.stack)) {
+    throw new TypeError("quickBooksAuth(router) requires the router it guards");
   }
 
-  const prefixRegex = /^\/companies\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
-  const match = req.url.match(prefixRegex);
-  if (match) {
-    req.clientId = match[1];
-    req.url = req.url.replace(prefixRegex, "");
-    if (req.url === "") req.url = "/";
-  }
+  return function quickBooksAuthMiddleware(req, res, next) {
+    const match = req.url.match(COMPANY_PREFIX);
+    const path = req.path.replace(COMPANY_PREFIX, "") || "/";
 
-  return requireAuth(req, res, () => checkQBAuth(req, res, next));
+    if (!routerHandles(router, req.method, path)) {
+      return next();
+    }
+
+    if (match) {
+      req.clientId = match[1];
+      const rewritten = req.url.replace(COMPANY_PREFIX, "");
+      // "" for a bare company URL, "?x=1" when only a query survives.
+      req.url = rewritten.startsWith("/") ? rewritten : `/${rewritten}`;
+    }
+
+    return requireAuth(req, res, () => checkQBAuth(req, res, next));
+  };
 }
 
 module.exports = {
   quickBooksAuth,
   checkQBAuth,
-  isQuickBooksRoute
+  routerHandles
 };

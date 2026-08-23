@@ -154,7 +154,7 @@ const financialRoutes = [
 ];
 
 financialRoutes.forEach(route => {
-  app.use("/", quickBooksAuth, route);
+  app.use("/", quickBooksAuth(route), route);
 });
 
 // Non-QuickBooks Routes
