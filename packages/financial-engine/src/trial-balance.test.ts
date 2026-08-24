@@ -200,3 +200,86 @@ describe("cost of sales sits on the debit side", () => {
     expect(built.entries[0]!.balances).toBe(true);
   });
 });
+
+describe("which periods a trial balance covers", () => {
+  it("derives the years from the ledger when none are named", () => {
+    // The screen that opens on "everything" names none. Deriving them is what
+    // stops it answering an empty trial balance for a company with a ledger.
+    const derived = buildTrialBalance({
+      accounts,
+      entries,
+      anchors: [anchor("starting"), anchor("ending")],
+    });
+    expect(derived.entries.map((e) => e.period)).toEqual(
+      result.entries.map((e) => e.period),
+    );
+  });
+
+  it("derives them in order, whatever order the ledger is in", () => {
+    // Periods out of order put 2023 after 2025 on the page, and every opening
+    // balance is then the wrong period's closing.
+    const shuffled = [...entries].reverse();
+    const derived = buildTrialBalance({
+      accounts,
+      entries: shuffled,
+      anchors: [anchor("starting"), anchor("ending")],
+    });
+    const periods = derived.entries.map((e) => e.period);
+    expect(periods).toEqual([...periods].sort());
+  });
+
+  it("takes an empty year list as naming none at all", () => {
+    // `fiscalYears: []` is what a cleared filter sends. Read as a selection it
+    // would answer nothing; read as "unset" it answers everything, which is
+    // what the cleared filter means.
+    const cleared = buildTrialBalance({
+      accounts,
+      entries,
+      anchors: [anchor("starting"), anchor("ending")],
+      fiscalYears: [],
+    });
+    expect(cleared.entries.length).toBe(result.entries.length);
+  });
+});
+
+describe("a trial balance month by month", () => {
+  it("carries each month's closing into the next month's opening", () => {
+    /**
+     * The same rule the annual view has, applied within a year. The prior
+     * period is the PREVIOUS MONTH rather than the previous December — reading
+     * the year's opening into every month would show twelve months all opening
+     * where January did, and the ledger movement on top would then double-count.
+     */
+    const monthly = buildTrialBalance({
+      accounts,
+      entries,
+      anchors: [anchor("starting"), anchor("ending")],
+      fiscalYears: [2024],
+      aggregation: "monthly",
+    });
+
+    expect(monthly.entries.length).toBeGreaterThan(1);
+
+    const bsAccount = accounts.find((a) => a.statementType === "balance_sheet")!;
+    for (let i = 1; i < monthly.entries.length; i += 1) {
+      const previous = monthly.entries[i - 1]!.rows.find((r) => r.accountId === bsAccount.id);
+      const current = monthly.entries[i]!.rows.find((r) => r.accountId === bsAccount.id);
+      if (!previous || !current) continue;
+      expect(current.openingBalance).toBeCloseTo(previous.closingBalance, 2);
+    }
+  });
+
+  it("opens the first month on the engagement's own opening balance", () => {
+    // There is no previous month to carry from, and zero would report the
+    // company as starting the year with nothing.
+    const monthly = buildTrialBalance({
+      accounts,
+      entries,
+      anchors: [anchor("starting"), anchor("ending")],
+      fiscalYears: [2023],
+      aggregation: "monthly",
+    });
+    const first = monthly.entries[0]!;
+    expect(first.rows.some((r) => r.openingBalance !== 0)).toBe(true);
+  });
+});

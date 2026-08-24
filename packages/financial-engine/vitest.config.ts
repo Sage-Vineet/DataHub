@@ -32,6 +32,11 @@ export default mergeConfig(
           // runtime behaviour a test could assert.
           "src/fixture.ts",
           "src/index.ts",
+          // Interfaces and nothing else. v8 scores a type-only module 0%
+          // because there is no runtime code to execute, which describes
+          // nothing that could be tested — the same reason `apps/api` excludes
+          // its `ports.ts` files.
+          "src/types.ts",
         ],
         thresholds: {
           statements: 95,
