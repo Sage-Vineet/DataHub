@@ -152,18 +152,42 @@ export function deriveLegacyRoutesFromSource(): Set<string> {
 
 interface RouteLayer {
   route?: { path: string; methods: Record<string, boolean> };
+  /** A layer that is itself a router — `router.use(sub)`. */
+  handle?: { stack?: RouteLayer[] };
+  name?: string;
 }
 
-/** Walk an Express router's stack for the paths it actually registered. */
+/**
+ * Walk an Express router's stack for the paths it actually registered.
+ *
+ * Recurses into mounted sub-routers. It did not, and a route on one was
+ * invisible: the QuickBooks OAuth callback sits on a sub-router registered
+ * before the common middleware — because `withCommonMiddleware` wraps the
+ * router's own verbs, so anything added afterwards gets `requireAuth`, and
+ * Intuit's redirect carries no session. This walker reported that route as
+ * unclaimed, which is the same answer it would give for a route that was never
+ * written. Anything reading this — the contract guard, the generated surface,
+ * the parity coverage number — would have understated the gateway by however
+ * many routes live on a sub-router.
+ *
+ * Only sub-routers mounted at the router's own root are followed, which is
+ * every case here. A prefixed `use` would need its prefix, and Express does not
+ * keep it in a form worth reconstructing from a regexp.
+ */
 export function routerRoutes(router: Router, mount: string): string[] {
-  const stack = (router as unknown as { stack: RouteLayer[] }).stack;
   const out: string[] = [];
-  for (const layer of stack) {
-    if (!layer.route) continue;
-    for (const [method, on] of Object.entries(layer.route.methods)) {
-      if (on) out.push(`${method.toUpperCase()} ${joinPath(mount, layer.route.path)}`);
+  const walk = (stack: RouteLayer[] | undefined): void => {
+    for (const layer of stack ?? []) {
+      if (layer.route) {
+        for (const [method, on] of Object.entries(layer.route.methods)) {
+          if (on) out.push(`${method.toUpperCase()} ${joinPath(mount, layer.route.path)}`);
+        }
+        continue;
+      }
+      if (layer.name === "router") walk(layer.handle?.stack);
     }
-  }
+  };
+  walk((router as unknown as { stack: RouteLayer[] }).stack);
   return out;
 }
 

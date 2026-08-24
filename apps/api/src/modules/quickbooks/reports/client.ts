@@ -59,6 +59,9 @@ export const QB_ENTITY_NAMES = {
   purchases: "Purchase",
   transfers: "Transfer",
   journal_entries: "JournalEntry",
+  // Not a transaction: the realm's own name, which the connections page shows
+  // so somebody can tell WHICH set of books they attached.
+  company_info: "CompanyInfo",
 } as const;
 
 export type QbEntityType = keyof typeof QB_ENTITY_NAMES;

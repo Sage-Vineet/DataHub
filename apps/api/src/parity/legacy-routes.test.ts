@@ -55,13 +55,25 @@ describe("the committed legacy surface", () => {
     // and it is set well below the current total rather than just under it. If
     // it ever fails, the question is which fixture lost entries, not what number
     // would make it pass.
+    //
+    // `legacyRoutes()` is now EMPTY, and that is the finished state rather
+    // than the truncation this guards against: every route it used to hold is
+    // in `reapedRoutes()`, so the contract total is unchanged. The floor moved
+    // onto the reaped set for exactly that reason.
     expect(contractRoutes().size).toBeGreaterThan(150);
-    expect(legacyRoutes().size).toBeGreaterThan(0);
-    expect(reapedRoutes().size).toBeGreaterThan(0);
+    expect(reapedRoutes().size).toBeGreaterThan(150);
   });
 
-  it.skipIf(!legacySourceAvailable())("derives a non-empty surface while legacy exists", () => {
-    expect(deriveLegacyRoutesFromSource().size).toBeGreaterThan(0);
+  it.skipIf(!legacySourceAvailable())("derives nothing, because legacy serves nothing", () => {
+    // This asserted the opposite — a non-empty derivation — as a guard against
+    // a broken parser reading an intact `backend/` as empty and reporting a
+    // clean run having compared nothing.
+    //
+    // It is empty now because it is finished: `backend/src/app.js` mounts no
+    // routers. The guard still has to hold while the directory is here, so it
+    // moved onto the fixture agreeing with the derivation (asserted above) and
+    // onto the reaped floor, which a truncated parse cannot satisfy.
+    expect(deriveLegacyRoutesFromSource().size).toBe(0);
   });
 
   it("holds normalized METHOD /path keys", () => {

@@ -271,8 +271,31 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
           ...(process.env.QUICKBOOKS_API_BASE_URL
             ? { quickBooksBaseUrl: process.env.QUICKBOOKS_API_BASE_URL }
             : {}),
+          // All three or none: an OAuth redirect built from a partial set
+          // reaches Intuit and comes back as its error page, with no way into
+          // this application from there.
+          ...(process.env.QB_CLIENT_ID &&
+          process.env.QB_CLIENT_SECRET &&
+          process.env.QB_REDIRECT_URI
+            ? {
+                oauth: {
+                  clientId: process.env.QB_CLIENT_ID,
+                  clientSecret: process.env.QB_CLIENT_SECRET,
+                  redirectUri: process.env.QB_REDIRECT_URI,
+                  ...(process.env.QB_AUTHORIZE_URL
+                    ? { authorizeUrl: process.env.QB_AUTHORIZE_URL }
+                    : {}),
+                },
+              }
+            : {}),
+          ...(process.env.FRONTEND_URL ? { frontendUrl: process.env.FRONTEND_URL } : {}),
         }).router,
       });
+      if (!process.env.QB_CLIENT_ID) {
+        console.warn(
+          "[gateway] QB_CLIENT_ID is not set — the QuickBooks OAuth routes will answer 503",
+        );
+      }
     }
 
     if (flags.STATEMENTS_MODULE_ENABLED) {

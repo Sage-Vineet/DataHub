@@ -10,6 +10,8 @@ import type { QuickBooksReportsService } from "./reports/service.js";
 import type { QuickBooksSyncStatusService } from "./reports/status.js";
 import type { QuickBooksSyncService } from "./reports/sync.js";
 import { ComplexInvoiceUpdateError, type QuickBooksWritesService } from "./reports/writes.js";
+import { RealmAlreadyLinkedError, type QuickBooksOAuthService } from "./oauth.js";
+import { DEFAULT_REDIRECT } from "./oauth-state.js";
 import {
   requireIsoDate,
   toAccountingMethod,
@@ -24,30 +26,54 @@ export interface QuickBooksRouterDeps {
   sync: QuickBooksSyncService;
   bankActivity: QuickBooksBankActivityService;
   writes: QuickBooksWritesService;
+  /** Absent where OAuth is not configured; the routes say so rather than 500ing. */
+  oauth?: QuickBooksOAuthService;
+  /** Where the SPA lives, for the callback's redirect back into it. */
+  frontendUrl?: string;
   entities: QuickBooksEntitiesService;
   requireAuth: RequestHandler;
 }
 
 /**
- * The QuickBooks connection's state.
+ * The QuickBooks connection's state, and the OAuth dance that creates it.
  *
- * `/api/auth/quickbooks`, `/api/auth/callback` and `/refresh-token` are NOT
- * here. They are the OAuth dance, they need real Intuit credentials and a
- * browser redirect to exercise, and porting an auth flow that cannot be tested
- * against the thing it talks to is how a migration ships a subtly broken one.
+ * `/api/auth/callback` is the odd one: Intuit redirects a BROWSER to it, so it
+ * carries no session and cannot sit behind `requireAuth`. It is registered on
+ * its own router mounted first, and everything it acts on comes out of a
+ * signed state — see `oauth-state.ts` for what that replaces.
  * They stay on legacy and reach it through the proxy, which is what
  * `withCommonMiddleware` leaves possible.
  */
 export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
-  const { service, reports, syncStatus, sync, bankActivity, writes, entities, requireAuth } =
+  const { service, reports, syncStatus, sync, bankActivity, writes, oauth, entities, requireAuth } =
     deps;
   const router = express.Router();
+  // Registered BEFORE the common middleware, because `withCommonMiddleware`
+  // wraps the router's own verbs: anything added afterwards gets `requireAuth`,
+  // and Intuit's redirect has no session to authenticate.
+  const publicRouter = express.Router();
+  withCommonMiddleware(publicRouter, [helmet(), pinoHttp(), express.json()]);
+  router.use(publicRouter);
+
   withCommonMiddleware(router, [helmet(), pinoHttp(), express.json(), requireAuth]);
 
   const handle =
     (fn: (req: Request, res: Response) => Promise<void>): RequestHandler =>
     (req, res, next) =>
       fn(req, res).catch((err: unknown) => {
+        if (err instanceof RealmAlreadyLinkedError) {
+          // The page turns this into "that QuickBooks company is already
+          // connected to <client> — move it?", so it needs to name which.
+          res.status(err.status).json({
+            success: false,
+            code: "QB_REALM_ALREADY_LINKED",
+            message: err.message,
+            realmId: err.realmId,
+            linkedCompanyId: err.linkedCompanyId,
+            requiresConfirmation: true,
+          });
+          return;
+        }
         if (err instanceof ComplexInvoiceUpdateError) {
           // `redirectToQuickBooks` is what the page turns into a link. Telling
           // somebody "not allowed" without telling them where it IS allowed
@@ -384,6 +410,87 @@ export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
 
   router.get("/api/quickbooks/sync-status", handle(async (req, res) => {
     res.json({ success: true, ...(await syncStatus.status(req.user!, companyOf(req))) });
+  }));
+
+
+  /**
+   * The OAuth dance.
+   *
+   * Three of these four are the round trip: send the browser to Intuit, take
+   * it back, renew what it produced. The callback is necessarily
+   * UNAUTHENTICATED — Intuit redirects a browser to it carrying no session —
+   * so which company gets the connection is decided by the signed state rather
+   * than by anything in the request. See `oauth-state.ts`.
+   */
+  const requireOAuth = (): QuickBooksOAuthService => {
+    if (!oauth) {
+      throw new HttpError(
+        503,
+        "QuickBooks OAuth is not configured on this server. " +
+          "Set QB_CLIENT_ID, QB_CLIENT_SECRET and QB_REDIRECT_URI.",
+      );
+    }
+    return oauth;
+  };
+
+  /** Back into the SPA, which routes on the hash. */
+  const backToApp = (path: string, query: string): string => {
+    const base = (deps.frontendUrl ?? "").replace(/\/$/, "");
+    return `${base}/#${path}${query}`;
+  };
+
+  /**
+   * Intuit's redirect back.
+   *
+   * Answers with a REDIRECT rather than JSON in every outcome, success or
+   * failure: a browser is sitting on this URL, and a JSON error body leaves
+   * somebody looking at raw text with no way back into the application.
+   */
+  publicRouter.get("/api/auth/callback", async (req, res) => {
+    const service = oauth;
+    if (!service) {
+      res.redirect(backToApp(DEFAULT_REDIRECT, "?qbStatus=error&qbMessage=Not+configured"));
+      return;
+    }
+    try {
+      const done = await service.completeCallback({
+        code: req.query.code,
+        realmId: req.query.realmId,
+        state: req.query.state,
+        confirmTransfer: req.query.confirmTransfer === "true",
+      });
+      res.redirect(backToApp(done.redirect, "?qbStatus=connected"));
+    } catch (err) {
+      // The message is the user's only explanation, and it has already been
+      // written for a person by the service — a realm linked elsewhere, a
+      // stale attempt, a refused authorization.
+      const message = err instanceof Error ? err.message : "Could not connect QuickBooks.";
+      res.redirect(
+        backToApp(DEFAULT_REDIRECT, `?qbStatus=error&qbMessage=${encodeURIComponent(message)}`),
+      );
+    }
+  });
+
+  router.get("/api/auth/quickbooks", handle(async (req, res) => {
+    const started = requireOAuth().startAuthorization(req.user!, companyOf(req), {
+      redirect: req.query.redirect,
+    });
+    res.redirect(started.authorizeUrl);
+  }));
+
+  router.get("/refresh-token", handle(async (req, res) => {
+    const refreshed = await requireOAuth().refresh(req.user!, companyOf(req));
+    res.json({ success: true, ...refreshed });
+  }));
+
+  router.post("/api/auth/transfer-confirm", handle(async (req, res) => {
+    const body = (req.body ?? {}) as { realmId?: unknown };
+    const moved = await requireOAuth().transfer(
+      req.user!,
+      companyOf(req),
+      String(body.realmId ?? ""),
+    );
+    res.json({ success: true, ...moved });
   }));
 
   return router;

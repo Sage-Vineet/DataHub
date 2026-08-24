@@ -12,6 +12,8 @@ import { QuickBooksSyncStatusService } from "./reports/status.js";
 import { QuickBooksSyncService } from "./reports/sync.js";
 import { QuickBooksBankActivityService } from "./reports/bank-activity.js";
 import { QuickBooksWritesService } from "./reports/writes.js";
+import { QuickBooksOAuthClient } from "./oauth-client.js";
+import { QuickBooksOAuthService } from "./oauth.js";
 import { DrizzleQuickBooksRepository } from "./repository.drizzle.js";
 import { createQuickBooksRouter } from "./router.js";
 import { QuickBooksService } from "./service.js";
@@ -24,6 +26,7 @@ export interface QuickBooksModule {
   sync: QuickBooksSyncService;
   bankActivity: QuickBooksBankActivityService;
   writes: QuickBooksWritesService;
+  oauth: QuickBooksOAuthService | undefined;
   entities: QuickBooksEntitiesService;
 }
 
@@ -42,6 +45,22 @@ export interface CreateQuickBooksModuleOptions {
   quickBooksBaseUrl?: string;
   /** Injected in tests, so nothing here needs a network. */
   fetcher?: ReportFetcher;
+  /**
+   * Intuit application credentials.
+   *
+   * Absent where OAuth is not configured: the four OAuth routes then answer
+   * 503 naming the variables, rather than redirecting a browser to Intuit with
+   * an empty client id — which Intuit answers with its own error page and no
+   * way back.
+   */
+  oauth?: {
+    clientId: string;
+    clientSecret: string;
+    redirectUri: string;
+    authorizeUrl?: string;
+  };
+  /** Where the SPA lives, for the callback's redirect back into it. */
+  frontendUrl?: string;
 }
 
 /** Drizzle repo + service + router. */
@@ -92,6 +111,23 @@ export function createQuickBooksModule(
   // The only two writes the module makes. Same client, same connection.
   const writes = new QuickBooksWritesService({ connections: repo, fetcher });
 
+  // The OAuth dance. Its state is signed with the same application secret
+  // everything else here seals with, so one rotated secret invalidates
+  // in-flight authorizations along with the tokens — which is the behaviour
+  // somebody rotating it expects.
+  const oauth = opts.oauth
+    ? new QuickBooksOAuthService({
+        connections: repo,
+        exchange: new QuickBooksOAuthClient(),
+        fetcher,
+        config: {
+          ...opts.oauth,
+          secret: opts.secret,
+          environment: opts.quickBooksBaseUrl?.includes("sandbox") ? "sandbox" : "production",
+        },
+      })
+    : undefined;
+
   const entities = new QuickBooksEntitiesService({ statements, connections: repo, fetcher });
 
   return {
@@ -102,6 +138,8 @@ export function createQuickBooksModule(
       sync,
       bankActivity,
       writes,
+      ...(oauth ? { oauth } : {}),
+      ...(opts.frontendUrl ? { frontendUrl: opts.frontendUrl } : {}),
       entities,
       requireAuth: opts.requireAuth,
     }),
@@ -111,6 +149,7 @@ export function createQuickBooksModule(
     sync,
     bankActivity,
     writes,
+    oauth,
     entities,
   };
 }
@@ -131,6 +170,14 @@ export { QuickBooksSyncStatusService } from "./reports/status.js";
 export { QuickBooksSyncService, buildSyncPlan, SYNC_REPORT_TYPES } from "./reports/sync.js";
 export { QuickBooksBankActivityService } from "./reports/bank-activity.js";
 export { QuickBooksWritesService, ComplexInvoiceUpdateError } from "./reports/writes.js";
+export { QuickBooksOAuthService, RealmAlreadyLinkedError } from "./oauth.js";
+export { QuickBooksOAuthClient } from "./oauth-client.js";
+export {
+  buildAuthorizeUrl,
+  readOAuthState,
+  safeRedirect,
+  signOAuthState,
+} from "./oauth-state.js";
 export { QuickBooksEntitiesService } from "./reports/entities.js";
 export type { QuickBooksSyncStatus } from "./reports/status.js";
 export type { ConnectionRecord, QuickBooksRepository } from "./ports.js";

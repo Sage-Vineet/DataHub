@@ -230,7 +230,9 @@
       "compare": [],
       "additive": [
         "GET /all-reports",
+        "GET /api/auth/callback",
         "GET /api/auth/disconnect",
+        "GET /api/auth/quickbooks",
         "GET /api/auth/status",
         "GET /api/quickbooks/sync-status",
         "GET /balance-sheet",
@@ -245,6 +247,8 @@
         "GET /qb-general-ledger",
         "GET /qb-one-bank-activity",
         "GET /quickbooks-pl",
+        "GET /refresh-token",
+        "POST /api/auth/transfer-confirm",
         "POST /api/quickbooks/sync",
         "POST /customers",
         "PUT /api/invoices/:p"
@@ -278,10 +282,5 @@
       ]
     }
   },
-  "backlog": [
-    "GET /api/auth/callback",
-    "GET /api/auth/quickbooks",
-    "GET /refresh-token",
-    "POST /api/auth/transfer-confirm"
-  ]
+  "backlog": []
 }

@@ -10,6 +10,7 @@ import type { QuickBooksSyncStatusService } from "./reports/status.js";
 import type { QuickBooksSyncService } from "./reports/sync.js";
 import type { QuickBooksBankActivityService } from "./reports/bank-activity.js";
 import { ComplexInvoiceUpdateError, type QuickBooksWritesService } from "./reports/writes.js";
+import { RealmAlreadyLinkedError, type QuickBooksOAuthService } from "./oauth.js";
 import { createQuickBooksRouter } from "./router.js";
 import type { QuickBooksService } from "./service.js";
 
@@ -102,6 +103,25 @@ function stub(over: Record<string, unknown> = {}) {
     ...(over.writes as object | undefined),
   } as unknown as QuickBooksWritesService;
 
+  const oauth =
+    over.oauth === null
+      ? undefined
+      : ({
+          startAuthorization: (...args: unknown[]) => {
+            calls.push({ method: "startAuthorization", args });
+            return { authorizeUrl: "https://intuit.test/authorize" };
+          },
+          completeCallback: record("completeCallback", {
+            redirect: "/broker/companies",
+            companyId: COMPANY,
+            realmId: "4620816365000000000",
+            realmCompanyName: "Acme Books",
+          }),
+          refresh: record("refresh", { expiresAt: "2026-08-24T13:00:00.000Z" }),
+          transfer: record("transfer", { movedFrom: null }),
+          ...(over.oauth as object | undefined),
+        } as unknown as QuickBooksOAuthService);
+
   const entities = {
     list: record("list", SERVED),
     invoiceByDocNumber: record("invoiceByDocNumber", { ...SERVED, data: { Id: "42" } }),
@@ -117,8 +137,14 @@ function stub(over: Record<string, unknown> = {}) {
       sync,
       bankActivity,
       writes,
+      ...(oauth ? { oauth } : {}),
+      frontendUrl: "https://app.test",
       entities,
-      requireAuth: authAs("caller-1"),
+      requireAuth: over.noAuth
+        ? ((_req, _res, next) => {
+            next();
+          })
+        : authAs("caller-1"),
     }),
   );
   return { app, calls };
@@ -503,11 +529,93 @@ describe("naming the company", () => {
 
 describe("paths this router does not own", () => {
   it("leaves them for the proxy", async () => {
-    // The OAuth dance stays on legacy until it can be exercised against a
-    // sandbox realm. An unmatched path has to reach the proxy untouched.
+    // An unmatched path has to reach the proxy untouched, which is what
+    // 404-from-this-router means in isolation.
+    //
+    // The OAuth dance was listed here and no longer is: this router serves it,
+    // and leaving the assertions would have pinned the routes as absent rather
+    // than noticing they had arrived.
     const { app } = stub();
-    await get(app, "/api/auth/quickbooks").expect(404);
-    await get(app, "/api/auth/callback").expect(404);
-    await get(app, "/refresh-token").expect(404);
+    await get(app, "/api/auth/nothing-here").expect(404);
+  });
+});
+
+describe("the OAuth dance", () => {
+  it("sends the browser to Intuit", async () => {
+    const { app } = stub();
+    const res = await get(app, "/api/auth/quickbooks").expect(302);
+    expect(res.headers.location).toBe("https://intuit.test/authorize");
+  });
+
+  it("renews a token", async () => {
+    const { app, calls } = stub();
+    const res = await get(app, "/refresh-token").expect(200);
+    expect(res.body.success).toBe(true);
+    expect(argsOf(calls, "refresh")[1]).toBe(COMPANY);
+  });
+
+  it("moves a realm to this company", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .post("/api/auth/transfer-confirm")
+      .set("x-client-id", COMPANY)
+      .send({ realmId: "4620816365000000000" })
+      .expect(200);
+    expect(argsOf(calls, "transfer")[2]).toBe("4620816365000000000");
+  });
+
+  it("names the client a realm is already attached to", async () => {
+    // The page turns this into "already connected to <client> — move it?", so
+    // it has to say which.
+    const { app } = stub({
+      oauth: {
+        transfer: () =>
+          Promise.reject(new RealmAlreadyLinkedError("4620816365000000000", "other-company")),
+      },
+    });
+    const res = await request(app)
+      .post("/api/auth/transfer-confirm")
+      .set("x-client-id", COMPANY)
+      .send({ realmId: "4620816365000000000" })
+      .expect(409);
+
+    expect(res.body).toMatchObject({
+      code: "QB_REALM_ALREADY_LINKED",
+      linkedCompanyId: "other-company",
+      requiresConfirmation: true,
+    });
+  });
+
+  it("answers the callback with a REDIRECT, whatever happened", async () => {
+    // A browser is sitting on this URL. A JSON error body leaves somebody
+    // looking at raw text with no way back into the application.
+    const { app } = stub();
+    const ok = await request(app)
+      .get("/api/auth/callback?code=c&realmId=r&state=s")
+      .expect(302);
+    expect(ok.headers.location).toContain("qbStatus=connected");
+
+    const { app: failing } = stub({
+      oauth: { completeCallback: () => Promise.reject(new Error("That attempt has expired.")) },
+    });
+    const bad = await request(failing)
+      .get("/api/auth/callback?code=c&realmId=r&state=stale")
+      .expect(302);
+    expect(bad.headers.location).toContain("qbStatus=error");
+    expect(bad.headers.location).toContain(encodeURIComponent("That attempt has expired."));
+  });
+
+  it("does not require a session on the callback", async () => {
+    // Intuit redirects a browser here carrying none.
+    const { app } = stub({ noAuth: true });
+    await request(app).get("/api/auth/callback?code=c&realmId=r&state=s").expect(302);
+  });
+
+  it("503s the dance where OAuth is not configured", async () => {
+    const { app } = stub({ oauth: null });
+    await get(app, "/api/auth/quickbooks").expect(503);
+    await get(app, "/refresh-token").expect(503);
+    const res = await request(app).get("/api/auth/callback?code=c").expect(302);
+    expect(res.headers.location).toContain("Not+configured");
   });
 });

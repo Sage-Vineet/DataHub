@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { contractRoutes, moduleSurfaces, routerRoutes } from "./parity/routes.js";
+import { contractRoutes, legacyRoutes, moduleSurfaces, routerRoutes } from "./parity/routes.js";
 import { buildRouteSurface, SURFACE_PATH } from "./parity/route-surface.js";
 
 /**
@@ -83,21 +83,27 @@ describe("route contract — new modules answer on the legacy paths", () => {
     }
   });
 
-  it("no module claims the QuickBooks OAuth dance", () => {
+  it("this gateway owns the QuickBooks OAuth dance", () => {
     /**
-     * The dance itself, not everything under `/api/auth/`.
+     * This assertion used to read the other way: no module may claim these.
      *
-     * This used to forbid the whole prefix, which was right while nothing
-     * there had moved. `/api/auth/status` and `/api/auth/disconnect` have since
-     * been ported deliberately: they are connection STATE, answerable and
-     * testable without Intuit.
-     *
-     * These four are not. They redirect to Intuit, receive its callback,
+     * The reasoning was that they redirect to Intuit, receive its callback,
      * exchange and refresh tokens, and hand a realm from one company to
-     * another. Exercising any of them needs real credentials and a browser
-     * round trip, and porting an auth flow that cannot be tested against the
-     * thing it talks to is how a migration ships a subtly broken one. They
-     * stay on legacy until they can be run against a sandbox realm.
+     * another — none of which can be exercised without real credentials and a
+     * browser round trip, and porting an auth flow you cannot test against the
+     * thing it talks to is how a migration ships a subtly broken one.
+     *
+     * What answered that was putting a port in front of Intuit
+     * (`OAuthTokenExchange`) so everything except the two HTTP calls is
+     * testable without it, and moving the security property into
+     * `oauth-state.ts`, which is pure and covered. The version this replaces
+     * decided which company got a connection by reading an unsigned query
+     * parameter at an unauthenticated callback; leaving it on legacy to avoid
+     * an untestable port was preserving that.
+     *
+     * Kept, inverted, rather than deleted: this is the last route group to
+     * move, and an assertion that the gateway owns it is what stops a revert
+     * quietly handing the dance back to a backend that no longer exists.
      */
     const DANCE = [
       "GET /refresh-token",
@@ -105,12 +111,11 @@ describe("route contract — new modules answer on the legacy paths", () => {
       "GET /api/auth/callback",
       "POST /api/auth/transfer-confirm",
     ];
-    // If one of these leaves legacy without being ported, this list is stale.
-    for (const route of DANCE) {
-      expect(legacy, `${route} is no longer in legacy — revisit this list`).toContain(route);
-    }
     const claimed = new Set(MODULES.flatMap((m) => routerRoutes(m.router, m.mount)));
-    expect(DANCE.filter((r) => claimed.has(r))).toEqual([]);
+    expect(DANCE.filter((r) => !claimed.has(r))).toEqual([]);
+    // `legacy` above is the CONTRACT surface — legacy ∪ reaped — so it holds
+    // these by design. What has to be empty is legacy itself.
+    expect(DANCE.filter((r) => legacyRoutes().has(r))).toEqual([]);
   });
 });
 

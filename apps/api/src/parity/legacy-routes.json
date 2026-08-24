@@ -1,6 +1,1 @@
-[
-  "GET /api/auth/callback",
-  "GET /api/auth/quickbooks",
-  "GET /refresh-token",
-  "POST /api/auth/transfer-confirm"
-]
+[]
