@@ -227,3 +227,100 @@ describe("period selection", () => {
     expect(total).toBeCloseTo(347403.35, 1);
   });
 });
+
+describe("add-backs a broker has grouped together", () => {
+  /**
+   * Grouping is presentational — several add-backs shown under one heading
+   * with a subtotal — but the subtotal is what a reader checks, so it has to
+   * be the sum of what is under it and nothing else.
+   */
+  const manual = (id: string, name: string, amount: number, over: Partial<Addback> = {}): Addback => ({
+    id,
+    kind: "manual_adjustment",
+    dataSource: "company_financials",
+    typeKey: "personal_expense",
+    name,
+    granularity: "detail",
+    explanation: "Owner's personal spending.",
+    values: { "2024": amount },
+    ...over,
+  });
+
+  it("subtotals a group to the items inside it, under the label it was given", () => {
+    const result = bridge({
+      selectedYears: [2024],
+      addbacks: [
+        manual("ab-1", "Country club", 5_000, { groupId: "g-1", groupLabel: "Owner perks" }),
+        manual("ab-2", "Season tickets", 3_000, { groupId: "g-1", groupLabel: "Owner perks" }),
+      ],
+    });
+
+    const group = result.addbackGroups.find((g) => g.id === "g-1")!;
+    expect(group.label).toBe("Owner perks");
+    expect(group.items.map((i) => i.label).sort()).toEqual(["Country club", "Season tickets"]);
+    expect(group.subtotals["2024"]).toBeCloseTo(8_000, 2);
+  });
+
+  it("keeps ungrouped add-backs out of any group, and gives them no label", () => {
+    // The ungrouped bucket is not a group somebody made; labelling it would
+    // put a heading on the page that nobody chose.
+    const result = bridge({
+      selectedYears: [2024],
+      addbacks: [
+        manual("ab-1", "Country club", 5_000, { groupId: "g-1", groupLabel: "Owner perks" }),
+        manual("ab-2", "One-off legal fee", 2_000),
+      ],
+    });
+
+    const ungrouped = result.addbackGroups.find((g) => g.id === null)!;
+    expect(ungrouped.label).toBeNull();
+    expect(ungrouped.items.map((i) => i.label)).toEqual(["One-off legal fee"]);
+  });
+});
+
+describe("the market-rate salary, month by month", () => {
+  const ownerComp: Addback = {
+    id: "oc-1",
+    kind: "manual_adjustment",
+    dataSource: "company_financials",
+    typeKey: "officer_compensation",
+    name: "Owner compensation",
+    granularity: "detail",
+    values: { "2024": 250_000 },
+    explanation: "Owner salary per payroll register.",
+  };
+
+  it("spreads the replacement salary across the months in view", () => {
+    /**
+     * SDE adds the owner's whole compensation back; Adjusted EBITDA subtracts
+     * what a hired replacement would cost. Annually that is one figure.
+     * Monthly it has to be divided, or every month carries the full year's
+     * salary and the metric collapses.
+     *
+     * Divided by the months ACTUALLY in view rather than by twelve, so the two
+     * aggregations of the same year agree — which is the assertion, because a
+     * reader switching the toggle is entitled to the same answer.
+     */
+    const annual = bridge({
+      selectedYears: [2024],
+      addbacks: [ownerComp],
+      metric: "adjusted_ebitda",
+      marketRateReplacementSalary: 120_000,
+    });
+    const monthly = bridge({
+      selectedYears: [2024],
+      aggregation: "monthly",
+      addbacks: [ownerComp],
+      metric: "adjusted_ebitda",
+      marketRateReplacementSalary: 120_000,
+    });
+
+    expect(annual.ownerCompensation!.amounts["2024"]).toBeCloseTo(130_000, 2);
+
+    const monthlyOwnerComp = Object.values(monthly.ownerCompensation!.amounts).reduce(
+      (a, b) => a + b,
+      0,
+    );
+    expect(monthlyOwnerComp).toBeCloseTo(130_000, 1);
+  });
+});

@@ -172,3 +172,65 @@ describe("classifying the real engagement's chart of accounts", () => {
     expect(total).toBe(plCount);
   });
 });
+
+describe("what the report does with an account it is unsure about", () => {
+  /**
+   * Three registers, and the difference between them is what a person has to
+   * do next: applied is acted on, suggested is reviewed, unclassified is
+   * ignored. Collapsing any two of them either moves EBITDA without a decision
+   * or buries a real add-back in a list nobody reads.
+   */
+  const account = (over: Partial<Account>): Account => ({
+    id: "a-1",
+    name: "Interest",
+    statementType: "profit_loss",
+    accountType: "expense",
+    ...over,
+  });
+
+  it("suggests rather than applies a name it is only half sure of", () => {
+    // A bare "Interest" account is real, and broad enough to be a bank fee.
+    // Applied, it moves EBITDA on a guess; unclassified, a genuine interest
+    // cost is silently left out of the bridge.
+    const report = classifyAccounts([account({ name: "Interest" })]);
+    expect(report.applied).toEqual([]);
+    expect(report.unclassified).toEqual([]);
+    expect(report.suggested).toHaveLength(1);
+    expect(report.suggested[0]).toMatchObject({
+      role: "interest_expense",
+      confidence: "low",
+    });
+    expect(report.suggested[0]!.reason).toMatch(/confirm/i);
+  });
+
+  it("says plainly why it skipped a balance-sheet account", () => {
+    // Asked about one directly — which the review screen does, by id — the
+    // answer has to be a reason rather than a null nobody can interpret.
+    const result = classifyAccount(
+      account({ name: "Accounts Receivable", statementType: "balance_sheet", accountType: "asset" }),
+    );
+    expect(result).toMatchObject({
+      role: null,
+      confidence: "high",
+      rule: "skip.not-profit-loss",
+    });
+    expect(result.reason).toMatch(/balance-sheet/i);
+  });
+
+  it("leaves balance-sheet accounts out of the report altogether", () => {
+    // The bridge classifies P&L accounts. A balance-sheet account in the
+    // unclassified list reads as work outstanding, and there is none.
+    const report = classifyAccounts([
+      account({ id: "bs", name: "Cash", statementType: "balance_sheet", accountType: "asset" }),
+      account({ id: "pl", name: "Depreciation" }),
+    ]);
+    const seen = [...report.applied, ...report.suggested, ...report.unclassified];
+    expect(seen.map((c) => c.accountId)).toEqual(["pl"]);
+  });
+
+  it("reports an account carrying no type at all rather than dropping it", () => {
+    const report = classifyAccounts([account({ name: "Sundry", accountType: null })]);
+    expect(report.unclassified).toHaveLength(1);
+    expect(report.unclassified[0]!.accountType).toBeNull();
+  });
+});
