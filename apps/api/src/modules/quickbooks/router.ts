@@ -9,6 +9,7 @@ import type { QuickBooksEntitiesService } from "./reports/entities.js";
 import type { QuickBooksReportsService } from "./reports/service.js";
 import type { QuickBooksSyncStatusService } from "./reports/status.js";
 import type { QuickBooksSyncService } from "./reports/sync.js";
+import { ComplexInvoiceUpdateError, type QuickBooksWritesService } from "./reports/writes.js";
 import {
   requireIsoDate,
   toAccountingMethod,
@@ -22,6 +23,7 @@ export interface QuickBooksRouterDeps {
   syncStatus: QuickBooksSyncStatusService;
   sync: QuickBooksSyncService;
   bankActivity: QuickBooksBankActivityService;
+  writes: QuickBooksWritesService;
   entities: QuickBooksEntitiesService;
   requireAuth: RequestHandler;
 }
@@ -37,7 +39,8 @@ export interface QuickBooksRouterDeps {
  * `withCommonMiddleware` leaves possible.
  */
 export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
-  const { service, reports, syncStatus, sync, bankActivity, entities, requireAuth } = deps;
+  const { service, reports, syncStatus, sync, bankActivity, writes, entities, requireAuth } =
+    deps;
   const router = express.Router();
   withCommonMiddleware(router, [helmet(), pinoHttp(), express.json(), requireAuth]);
 
@@ -45,6 +48,18 @@ export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
     (fn: (req: Request, res: Response) => Promise<void>): RequestHandler =>
     (req, res, next) =>
       fn(req, res).catch((err: unknown) => {
+        if (err instanceof ComplexInvoiceUpdateError) {
+          // `redirectToQuickBooks` is what the page turns into a link. Telling
+          // somebody "not allowed" without telling them where it IS allowed
+          // leaves them stuck on a form they cannot submit.
+          res.status(err.status).json({
+            success: false,
+            message: err.message,
+            fields: err.fields,
+            redirectToQuickBooks: true,
+          });
+          return;
+        }
         if (err instanceof QuickBooksAuthError) {
           // 401, not 500: the fix is "reconnect QuickBooks", and a 500 sends
           // somebody looking for a fault in the report instead.
@@ -166,6 +181,36 @@ export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
    * with genuinely no invoices called Intuit on every page load and one whose
    * list was stale never refetched at all.
    */
+  /**
+   * The two routes that WRITE into a company's own accounting system.
+   *
+   * Everything else in this router reads. These are narrow on purpose — see
+   * `reports/writes.ts` — and they are the only place the module can change
+   * anything at Intuit.
+   */
+  router.post("/customers", handle(async (req, res) => {
+    const created = await writes.createCustomer(
+      req.user!,
+      companyOf(req),
+      (req.body ?? {}) as Record<string, unknown>,
+    );
+    res.json({ success: true, message: "Customer created successfully", ...created });
+  }));
+
+  router.put("/api/invoices/:id", handle(async (req, res) => {
+    const result = await writes.updateInvoice(
+      req.user!,
+      companyOf(req),
+      String(req.params.id ?? ""),
+      (req.body ?? {}) as Record<string, unknown>,
+    );
+    res.json({
+      success: true,
+      ...(result.changed ? {} : { message: "No actionable fields were parsed for update." }),
+      data: result.invoice,
+    });
+  }));
+
   router.get("/customers", handle(async (req, res) => {
     const served = await entities.list(req.user!, companyOf(req), "customers");
     res.json({ success: true, ...served });

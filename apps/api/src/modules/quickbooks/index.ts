@@ -11,6 +11,7 @@ import { QuickBooksReportsService } from "./reports/service.js";
 import { QuickBooksSyncStatusService } from "./reports/status.js";
 import { QuickBooksSyncService } from "./reports/sync.js";
 import { QuickBooksBankActivityService } from "./reports/bank-activity.js";
+import { QuickBooksWritesService } from "./reports/writes.js";
 import { DrizzleQuickBooksRepository } from "./repository.drizzle.js";
 import { createQuickBooksRouter } from "./router.js";
 import { QuickBooksService } from "./service.js";
@@ -22,6 +23,7 @@ export interface QuickBooksModule {
   syncStatus: QuickBooksSyncStatusService;
   sync: QuickBooksSyncService;
   bankActivity: QuickBooksBankActivityService;
+  writes: QuickBooksWritesService;
   entities: QuickBooksEntitiesService;
 }
 
@@ -87,6 +89,9 @@ export function createQuickBooksModule(
     statements,
   });
 
+  // The only two writes the module makes. Same client, same connection.
+  const writes = new QuickBooksWritesService({ connections: repo, fetcher });
+
   const entities = new QuickBooksEntitiesService({ statements, connections: repo, fetcher });
 
   return {
@@ -96,6 +101,7 @@ export function createQuickBooksModule(
       syncStatus,
       sync,
       bankActivity,
+      writes,
       entities,
       requireAuth: opts.requireAuth,
     }),
@@ -104,6 +110,7 @@ export function createQuickBooksModule(
     syncStatus,
     sync,
     bankActivity,
+    writes,
     entities,
   };
 }
@@ -123,6 +130,7 @@ export { QuickBooksReportsService, QUICKBOOKS_SOURCE_KEY } from "./reports/servi
 export { QuickBooksSyncStatusService } from "./reports/status.js";
 export { QuickBooksSyncService, buildSyncPlan, SYNC_REPORT_TYPES } from "./reports/sync.js";
 export { QuickBooksBankActivityService } from "./reports/bank-activity.js";
+export { QuickBooksWritesService, ComplexInvoiceUpdateError } from "./reports/writes.js";
 export { QuickBooksEntitiesService } from "./reports/entities.js";
 export type { QuickBooksSyncStatus } from "./reports/status.js";
 export type { ConnectionRecord, QuickBooksRepository } from "./ports.js";

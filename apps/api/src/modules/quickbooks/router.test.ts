@@ -9,6 +9,7 @@ import type { QuickBooksReportsService } from "./reports/service.js";
 import type { QuickBooksSyncStatusService } from "./reports/status.js";
 import type { QuickBooksSyncService } from "./reports/sync.js";
 import type { QuickBooksBankActivityService } from "./reports/bank-activity.js";
+import { ComplexInvoiceUpdateError, type QuickBooksWritesService } from "./reports/writes.js";
 import { createQuickBooksRouter } from "./router.js";
 import type { QuickBooksService } from "./service.js";
 
@@ -95,6 +96,12 @@ function stub(over: Record<string, unknown> = {}) {
     ...(over.bankActivity as object | undefined),
   } as unknown as QuickBooksBankActivityService;
 
+  const writes = {
+    createCustomer: record("createCustomer", { customer: { Id: "7" } }),
+    updateInvoice: record("updateInvoice", { invoice: { Id: "42" }, changed: true }),
+    ...(over.writes as object | undefined),
+  } as unknown as QuickBooksWritesService;
+
   const entities = {
     list: record("list", SERVED),
     invoiceByDocNumber: record("invoiceByDocNumber", { ...SERVED, data: { Id: "42" } }),
@@ -109,6 +116,7 @@ function stub(over: Record<string, unknown> = {}) {
       syncStatus,
       sync,
       bankActivity,
+      writes,
       entities,
       requireAuth: authAs("caller-1"),
     }),
@@ -409,6 +417,67 @@ describe("the bank activity ladder", () => {
     const { app, calls } = stub();
     await get(app, `/qb-one-bank-activity?${RANGE}`).expect(200);
     expect(argsOf(calls, "oneLadder")[2]).toBe("");
+  });
+});
+
+describe("the two writes", () => {
+  it("creates a customer under the envelope the page reads", async () => {
+    const { app, calls } = stub();
+    const res = await request(app)
+      .post("/customers")
+      .set("x-client-id", COMPANY)
+      .send({ name: "Acme Ltd" })
+      .expect(200);
+
+    expect(res.body).toMatchObject({ success: true, customer: { Id: "7" } });
+    expect(argsOf(calls, "createCustomer")[2]).toMatchObject({ name: "Acme Ltd" });
+  });
+
+  it("updates an invoice, naming the one in the path", async () => {
+    const { app, calls } = stub();
+    const res = await request(app)
+      .put("/api/invoices/42")
+      .set("x-client-id", COMPANY)
+      .send({ invoiceNumber: "INV-9" })
+      .expect(200);
+
+    expect(res.body).toMatchObject({ success: true, data: { Id: "42" } });
+    expect(argsOf(calls, "updateInvoice")[2]).toBe("42");
+  });
+
+  it("says so when there was nothing to change", async () => {
+    const { app } = stub({
+      writes: { updateInvoice: () => Promise.resolve({ invoice: { Id: "42" }, changed: false }) },
+    });
+    const res = await request(app)
+      .put("/api/invoices/42")
+      .set("x-client-id", COMPANY)
+      .send({})
+      .expect(200);
+    expect(res.body.message).toMatch(/No actionable fields/);
+  });
+
+  it("sends a restructuring attempt to QuickBooks itself", async () => {
+    // Telling somebody "not allowed" without telling them where it IS allowed
+    // leaves them stuck on a form they cannot submit.
+    const { app } = stub({
+      writes: {
+        updateInvoice: () => Promise.reject(new ComplexInvoiceUpdateError(["amount"])),
+      },
+    });
+    const res = await request(app)
+      .put("/api/invoices/42")
+      .set("x-client-id", COMPANY)
+      .send({ amount: 100 })
+      .expect(400);
+
+    expect(res.body).toMatchObject({ redirectToQuickBooks: true, fields: ["amount"] });
+  });
+
+  it("takes a create with no body at all, for the service to refuse", async () => {
+    const { app, calls } = stub();
+    await request(app).post("/customers").set("x-client-id", COMPANY).expect(200);
+    expect(argsOf(calls, "createCustomer")[2]).toEqual({});
   });
 });
 

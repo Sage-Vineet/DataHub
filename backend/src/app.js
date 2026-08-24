@@ -9,8 +9,6 @@ const { quickBooksAuth } = require("./middleware/quickbooksAuth");
 const keyReportRoutes = require("./routes/keyReports");
 const tokenRoutes = require("./routes/quickbooks/token");
 const profitAndLossRoutes = require("./routes/quickbooks/profit_and_loss/profitAndLoss");
-const customerFinanceRoutes = require("./routes/quickbooks/customers/customers");
-const invoiceFinanceRoutes = require("./routes/quickbooks/invoices/invoices");
 const geminipdf = require("./routes/quickbooks/tax_reconciliation/geminiPdf");
 const bankVsBooksRoutes = require("./routes/quickbooks/reconciliation/bankVsBooks");
 
@@ -99,8 +97,6 @@ app.use("/", keyReportRoutes);
 // QuickBooks & Financial Routes (with consolidated auth)
 const financialRoutes = [
   profitAndLossRoutes,
-  customerFinanceRoutes,
-  invoiceFinanceRoutes,
   geminipdf,
   bankVsBooksRoutes,
 ];

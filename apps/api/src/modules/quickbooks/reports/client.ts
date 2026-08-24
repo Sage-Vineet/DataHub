@@ -272,6 +272,90 @@ export class QuickBooksReportClient {
       params: { query, startposition: String(start), maxresults: String(max) },
     };
   }
+
+  /**
+   * Create or update one entity.
+   *
+   * A JSON POST to the entity's own endpoint. Intuit reads `Id` + `SyncToken`
+   * as "update this one" and their absence as "create a new one", which is why
+   * there is no separate update call.
+   */
+  async mutateEntity(input: MutateEntityInput): Promise<FetchedReport> {
+    const entity = QB_ENTITY_NAMES[input.entityType].toLowerCase();
+    const url = new URL(
+      `/v3/company/${encodeURIComponent(input.realmId)}/${entity}`,
+      this.baseUrl,
+    );
+    url.searchParams.set("minorversion", String(this.minorVersion));
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, this.timeoutMs);
+
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url.toString(), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${input.accessToken}`,
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(input.payload),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (response.status === 401 || response.status === 403) {
+      throw new QuickBooksAuthError(
+        `QuickBooks rejected the access token (${response.status}). The connection needs reconnecting.`,
+      );
+    }
+
+    const body = await response.text();
+    if (!response.ok) {
+      throw new QuickBooksRequestError(
+        response.status,
+        `QuickBooks answered ${response.status} writing ${entity}: ${body.slice(0, 500) || "(no body)"}`,
+      );
+    }
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(body) as unknown;
+    } catch {
+      throw new QuickBooksRequestError(
+        response.status,
+        `QuickBooks answered a ${entity} write with something that is not JSON.`,
+      );
+    }
+    if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+      throw new QuickBooksRequestError(
+        response.status,
+        `QuickBooks answered a ${entity} write with something that is not a result.`,
+      );
+    }
+
+    return { payload: payload as Record<string, unknown>, params: {} };
+  }
+}
+
+/**
+ * Write one entity back to QuickBooks.
+ *
+ * The same endpoint creates and updates: an update is a POST carrying `Id`
+ * and `SyncToken`, and Intuit decides which it is from their presence. There
+ * is no PUT.
+ */
+export interface MutateEntityInput {
+  realmId: string;
+  accessToken: string;
+  entityType: QbEntityType;
+  /** The entity as Intuit's own schema names it — `DisplayName`, not `name`. */
+  payload: Record<string, unknown>;
 }
 
 /**
@@ -319,4 +403,11 @@ export interface QueryEntityInput {
 export interface ReportFetcher {
   fetchReport(input: FetchReportInput): Promise<FetchedReport>;
   queryEntity(input: QueryEntityInput): Promise<FetchedReport>;
+  /**
+   * Create or update one entity.
+   *
+   * Optional on the port: every read path works without it, and a client that
+   * cannot write should not have to pretend it can.
+   */
+  mutateEntity?(input: MutateEntityInput): Promise<FetchedReport>;
 }
