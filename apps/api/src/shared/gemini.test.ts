@@ -279,3 +279,59 @@ describe("not waiting forever", () => {
     clear.mockRestore();
   });
 });
+
+describe("what it does when nothing is configured but the key", () => {
+  it("stands itself up on Google's own host, with real waiting and real fetch", () => {
+    // Constructed, not called: this is the shape production builds, and the
+    // defaults are only exercised when nothing overrides them. A failure here
+    // would be a client that works in every test and points nowhere in
+    // production.
+    expect(() => new GeminiClient({ apiKey: "key-1" })).not.toThrow();
+  });
+
+  it("makes one attempt even when told to make none", () => {
+    // `maxAttempts` is clamped at construction. Without the clamp a
+    // misconfigured zero would fall out of the retry loop having called
+    // nothing, and throw `undefined` — an error with no message, no stack and
+    // no cause.
+    const { impl, calls } = stubFetch({ status: 429, text: () => Promise.resolve("slow down") });
+    const asked = client(impl, { maxAttempts: 0 }).ask(ASK);
+
+    return expect(asked)
+      .rejects.toBeInstanceOf(GeminiRequestError)
+      .then(() => {
+        expect(calls).toHaveLength(1);
+      });
+  });
+});
+
+describe("an answer whose parts are not all text", () => {
+  it("takes the text and steps over the rest", () => {
+    // Gemini may return a part carrying inline data alongside the text one.
+    // Reading it as text would put "[object Object]" or "undefined" into the
+    // middle of an answer that then fails to parse for a reason nothing names.
+    const { impl } = stubFetch({
+      json: () =>
+        Promise.resolve({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  { inline_data: { mime_type: "image/png", data: "iVBOR" } },
+                  { text: "the answer" },
+                ],
+              },
+            },
+          ],
+        }),
+    });
+    return expect(client(impl).ask(ASK)).resolves.toBe("the answer");
+  });
+
+  it("reads a candidate carrying no content at all as nothing to read", () => {
+    const { impl } = stubFetch({
+      json: () => Promise.resolve({ candidates: [{}, { content: { parts: [{ text: "x" }] } }] }),
+    });
+    return expect(client(impl).ask(ASK)).resolves.toBe("x");
+  });
+});

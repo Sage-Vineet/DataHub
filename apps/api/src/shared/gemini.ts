@@ -170,6 +170,11 @@ export class GeminiClient {
         await this.sleep(1000 * 2 ** (attempt - 1));
       }
     }
+    // Unreachable: `maxAttempts` is clamped to at least 1 at construction, so
+    // the loop either returns or throws. Present because TypeScript cannot see
+    // that, and throwing `lastError` rather than a fresh error means that if it
+    // ever DID become reachable, the cause travels rather than being replaced
+    // by something that explains nothing.
     throw lastError;
   }
 
