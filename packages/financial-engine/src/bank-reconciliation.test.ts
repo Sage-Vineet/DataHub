@@ -209,6 +209,24 @@ describe("data it was handed badly", () => {
     expect(result.rows[0]!.bankNarration).toBeNull();
   });
 
+  it("keeps a nameless book line nameless, matched or not", () => {
+    // `name` is nullable on a ledger line, and both the matched row and the
+    // books-only row read it. An empty string renders as a blank cell that
+    // looks like a rendering fault; null renders as "—", which reads as a line
+    // the export did not name.
+    const matched = reconcileBankToBooks({
+      bank: [{ date: "2024-01-15", amount: -500, narration: "Rent" }],
+      books: [{ date: "2024-01-15", amount: -500, name: null }],
+    });
+    expect(matched.rows[0]).toMatchObject({ outcome: "matched", bookName: null });
+
+    const booksOnly = reconcileBankToBooks({
+      bank: [],
+      books: [{ date: "2024-01-15", amount: -500, name: null }],
+    });
+    expect(booksOnly.rows[0]).toMatchObject({ outcome: "books_only", bookName: null });
+  });
+
   it("reconciles nothing against nothing without complaint", () => {
     const result = reconcileBankToBooks({ bank: [], books: [] });
     expect(result.rows).toEqual([]);

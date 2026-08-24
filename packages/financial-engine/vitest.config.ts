@@ -39,10 +39,14 @@ export default mergeConfig(
           "src/types.ts",
         ],
         thresholds: {
-          statements: 95,
-          lines: 95,
-          functions: 90,
-          branches: 80,
+          // The suite reaches 99.7 / 99.4 / 95.3. Each gate sits under that so
+          // it fails on a real regression rather than on a hundredth of a
+          // point, which trains people to move the number instead of looking
+          // at what changed.
+          statements: 99,
+          lines: 99,
+          functions: 95,
+          branches: 95,
         },
       },
     },

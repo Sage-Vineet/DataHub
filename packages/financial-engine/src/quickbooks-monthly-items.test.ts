@@ -49,6 +49,20 @@ describe("reading a column title as a month", () => {
       expect(monthKeyOf(title)).toBeNull();
     }
   });
+
+  it("refuses a three-letter word that is not a month", () => {
+    // The shape matches — three letters and a year — so only the lookup can
+    // reject it. Without that check "Sum 2024" would parse as a month key of
+    // `2024-undefined` and take a column's figures with it.
+    for (const title of ["Sum 2024", "Net 2024", "Qtr 2024", "Zzz 2024"]) {
+      expect(monthKeyOf(title)).toBeNull();
+    }
+  });
+
+  it("reads a title whatever case it is written in", () => {
+    expect(monthKeyOf("JAN 2024")).toBe("2024-01");
+    expect(monthKeyOf("jan 2024")).toBe("2024-01");
+  });
 });
 
 describe("which section a heading is", () => {
@@ -214,5 +228,34 @@ describe("a report with nothing usable", () => {
 
   it("copes with no report at all", () => {
     expect(readMonthlyLineItems(null).plIncomeItems).toEqual([]);
+  });
+});
+
+describe("finding the month columns in a report", () => {
+  it("answers no months for a report with no columns at all", () => {
+    expect(readMonthlyLineItems({ Rows: { Row: [] } }).plIncomeItems).toEqual([]);
+    expect(Object.keys(readMonthlyLineItems(null).plTotalIncome)).toEqual([]);
+  });
+
+  it("ignores a column whose title is not a string", () => {
+    // QuickBooks types these loosely, and a number where a title should be
+    // must not reach the parser as one.
+    const items = readMonthlyLineItems({
+      Columns: { Column: [{ ColTitle: 2024 }, { ColTitle: "Feb 2024" }] },
+      Rows: {
+        Row: [
+          {
+            type: "Section",
+            Header: { ColData: [{ value: "Income" }] },
+            Rows: {
+              Row: [
+                { type: "Data", ColData: [{ value: "Sales" }, { value: "1" }, { value: "2" }] },
+              ],
+            },
+          },
+        ],
+      },
+    });
+    expect(Object.keys(items.plTotalIncome)).toEqual(["2024-02"]);
   });
 });

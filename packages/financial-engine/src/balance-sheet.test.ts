@@ -320,3 +320,70 @@ describe("which years a balance sheet rolls through", () => {
     expect(roll({ fiscalYears: [] }).periods.length).toBe(roll().periods.length);
   });
 });
+
+describe("an account the statement barely describes", () => {
+  it("keeps a statement row that names no sub-heading", () => {
+    /**
+     * The statement is the source for which sub-heading an account presents
+     * under, and a row that names none still has a balance. Dropping it loses
+     * that balance and the sheet stops balancing by exactly its amount — the
+     * kind of break that looks like an arithmetic fault and is really a
+     * missing row.
+     */
+    const rolled = rollForwardBalanceSheet({
+      accounts: [],
+      entries: [],
+      anchors: [
+        {
+          kind: "starting",
+          fiscalYear: 2023,
+          month: 12,
+          rows: [
+            { accountId: "unheaded", accountName: "Suspense", section: "asset", group: null, amount: 1_000 },
+            { accountId: "eq", accountName: "Owner Capital", section: "equity", group: "Equity", amount: 1_000 },
+          ],
+        },
+      ],
+      fiscalYears: [2024],
+    });
+
+    const line = rolled.lines.find((l) => l.accountId === "unheaded");
+    expect(line).toBeDefined();
+    // A heading is DERIVED for it rather than left blank, and marked
+    // uncertain — a line with no heading has nowhere to render, and one
+    // presented under a derived heading without the flag looks as settled as
+    // the ones the statement named.
+    expect(line!.group).toBe("Other Current Assets");
+    expect(line!.groupCertain).toBe(false);
+  });
+
+  it("files an account carrying no type at all under assets", () => {
+    // Every line has to sit in one of the three sections — there is no fourth
+    // place to put it, and a line with no section renders nowhere while its
+    // balance still counts towards the check that the sheet balances.
+    const rolled = rollForwardBalanceSheet({
+      accounts: [
+        {
+          id: "untyped",
+          name: "Sundry",
+          statementType: "balance_sheet",
+          accountType: null,
+        },
+      ],
+      entries: [{ accountId: "untyped", fiscalYear: 2024, month: 1, amount: 50 }],
+      anchors: [
+        {
+          kind: "starting",
+          fiscalYear: 2023,
+          month: 12,
+          rows: [
+            { accountId: "untyped", accountName: "Sundry", section: "asset", group: null, amount: 0 },
+          ],
+        },
+      ],
+      fiscalYears: [2024],
+    });
+
+    expect(rolled.lines.find((l) => l.accountId === "untyped")?.section).toBe("asset");
+  });
+});

@@ -282,3 +282,24 @@ describe("the ladder", () => {
     });
   });
 });
+
+describe("the months a date range covers", () => {
+  it("takes the months out of two ISO dates", () => {
+    expect(monthsInRange("2024-01-01", "2024-03-31")).toEqual(["2024-01", "2024-02", "2024-03"]);
+  });
+
+  it("answers nothing for a range it cannot read", () => {
+    // A ladder built over an unreadable range would have no columns, and every
+    // balance would land nowhere — a grid that renders empty for an account
+    // with a year of statements.
+    for (const [start, end] of [
+      ["", "2024-03-31"],
+      ["2024-01-01", ""],
+      ["not a date", "also not"],
+      [null as unknown as string, null as unknown as string],
+      ["2024", "2024-03"],
+    ]) {
+      expect(monthsInRange(start, end)).toEqual([]);
+    }
+  });
+});
