@@ -90,7 +90,9 @@ const refOf = (extract: StatementExtract): DashboardStatementRef => ({
  * file it corrects, and extraction time is the only ordering that says so —
  * the period is the same for both.
  */
-function latestPerYear(extracts: readonly StatementExtract[]): Map<number, StatementExtract> {
+export function latestPerYear(
+  extracts: readonly StatementExtract[],
+): Map<number, StatementExtract> {
   const byYear = new Map<number, StatementExtract>();
   for (const extract of extracts) {
     if (extract.fiscalYear === null) continue;
@@ -102,7 +104,7 @@ function latestPerYear(extracts: readonly StatementExtract[]): Map<number, State
   return byYear;
 }
 
-const newest = (extracts: readonly StatementExtract[]): StatementExtract | null =>
+export const newest = (extracts: readonly StatementExtract[]): StatementExtract | null =>
   [...extracts].sort((a, b) => (b.extractedAt ?? "").localeCompare(a.extractedAt ?? ""))[0] ?? null;
 
 export class DashboardService {

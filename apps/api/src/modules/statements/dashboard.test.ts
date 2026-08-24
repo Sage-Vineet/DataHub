@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { SessionUser } from "@datahub/contracts";
 import { BadRequestError, ForbiddenError } from "../../shared/errors.js";
-import { DashboardService, TaxComparisonService } from "./dashboard.js";
+import { DashboardService, TaxComparisonService, latestPerYear, newest } from "./dashboard.js";
+import type { StatementExtract } from "./ports.js";
 import { InMemoryStatementsRepository } from "./repository.memory.js";
 
 /**
@@ -65,6 +66,74 @@ const save = (
     extractedBy: null,
   });
 };
+
+describe("which extract a year means", () => {
+  /**
+   * Tested directly rather than through the dashboard.
+   *
+   * The repository hands these back newest-first, so going through it the
+   * comparison never has to decide anything — the first one seen for a year
+   * simply wins. That makes the rule true by accident of the query's ORDER BY,
+   * and a repository that stopped sorting would silently change which figures
+   * a card shows with every test still passing.
+   */
+  const extract = (over: Partial<StatementExtract>): StatementExtract =>
+    ({
+      id: "e-1",
+      fiscalYear: 2025,
+      extractedAt: "2026-01-01T00:00:00.000Z",
+      ...over,
+    }) as StatementExtract;
+
+  it("keeps the most recently extracted, whichever order they arrive in", () => {
+    const older = extract({ id: "older", extractedAt: "2026-01-01T00:00:00.000Z" });
+    const newer = extract({ id: "newer", extractedAt: "2026-06-01T00:00:00.000Z" });
+
+    expect(latestPerYear([older, newer]).get(2025)?.id).toBe("newer");
+    expect(latestPerYear([newer, older]).get(2025)?.id).toBe("newer");
+  });
+
+  it("does not let a re-extraction of an old file take a correction's place", () => {
+    // The dangerous direction, and the one the ordering above hides: a backfill
+    // re-reading last year's uploads must not displace this year's correction.
+    const correction = extract({ id: "correction", extractedAt: "2026-06-01T00:00:00.000Z" });
+    const backfilled = extract({ id: "backfilled", extractedAt: "2026-02-01T00:00:00.000Z" });
+
+    expect(latestPerYear([correction, backfilled]).get(2025)?.id).toBe("correction");
+  });
+
+  it("keeps years apart", () => {
+    const a = extract({ id: "a", fiscalYear: 2024 });
+    const b = extract({ id: "b", fiscalYear: 2025 });
+    expect([...latestPerYear([a, b]).keys()].sort()).toEqual([2024, 2025]);
+  });
+
+  it("files nothing under a year it does not have", () => {
+    expect(latestPerYear([extract({ fiscalYear: null })]).size).toBe(0);
+  });
+
+  it("treats an extract with no time as the oldest there is", () => {
+    // `extracted_at` is nullable, and a null sorting as newest would let a row
+    // that never recorded when it was read win over one that did.
+    const timed = extract({ id: "timed", extractedAt: "2026-01-01T00:00:00.000Z" });
+    const untimed = extract({ id: "untimed", extractedAt: null });
+
+    expect(latestPerYear([untimed, timed]).get(2025)?.id).toBe("timed");
+    expect(latestPerYear([timed, untimed]).get(2025)?.id).toBe("timed");
+  });
+
+  it("answers nothing for nothing", () => {
+    expect(newest([])).toBeNull();
+    expect(latestPerYear([]).size).toBe(0);
+  });
+
+  it("picks the newest of several regardless of order", () => {
+    const a = extract({ id: "a", extractedAt: "2026-01-01T00:00:00.000Z" });
+    const b = extract({ id: "b", extractedAt: "2026-06-01T00:00:00.000Z" });
+    expect(newest([a, b])?.id).toBe("b");
+    expect(newest([b, a])?.id).toBe("b");
+  });
+});
 
 describe("the dashboard's years", () => {
   it("opens on All Files, then each year newest first", async () => {

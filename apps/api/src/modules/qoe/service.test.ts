@@ -135,6 +135,39 @@ describe("QoeService — an add-back that is not there", () => {
     await expect(service.saveCommentary(user, missing, "x")).rejects.toMatchObject({ status: 404 });
   });
 
+  it("404s a commentary save whose add-back went between the read and the write", async () => {
+    /**
+     * Two round trips: the record is read to check the engagement, then the
+     * commentary is written. A delete landing between them makes the write
+     * affect nothing, and returning the unsaved text would show the author
+     * their words persisted when nothing was stored.
+     */
+    const { repo, service, user } = make();
+    const created = await service.createAddback(user, {
+      companyId: COMPANY,
+      versionId: VERSION,
+      kind: "manual_adjustment" as const,
+      dataSource: "company_financials" as const,
+      typeKey: "personal_expense",
+      name: "Owner's vehicle",
+      linkedAccountId: null,
+      vendorScope: [],
+      granularity: "detail" as const,
+      values: { "2024": 12000 },
+      recastNormalizedValue: null,
+      groupId: null,
+      groupLabel: null,
+      explanation: null,
+      commentary: null,
+      createdBy: USER,
+    });
+    repo.updateCommentary = () => Promise.resolve(null);
+
+    await expect(service.saveCommentary(user, created.id, "Edited.")).rejects.toMatchObject({
+      status: 404,
+    });
+  });
+
   it("removes one that is there", async () => {
     const { repo, service, user } = make();
     const created = await service.createAddback(user, {

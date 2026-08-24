@@ -593,6 +593,20 @@ describe("rejecting a recommendation", () => {
     expect(repo.all()[0]!.rejection_reason).toBeNull();
   });
 
+  it("stores no reason when the caller gives none at all", async () => {
+    // The route makes the reason optional, so this is the ordinary path from a
+    // reviewer who clicked reject without typing anything.
+    const { repo, service } = build(
+      {
+        coa: { rows: [leaf()] },
+        recommendations: [{ id: "reco-1", account_id: "acc-1", status: "pending" }],
+      },
+      [],
+    );
+    await service.rejectRecommendation("reco-1", "user-1");
+    expect(repo.all()[0]).toMatchObject({ status: "rejected", rejection_reason: null });
+  });
+
   it("is the same operation as the legacy ignore alias", async () => {
     const { service } = build(
       {

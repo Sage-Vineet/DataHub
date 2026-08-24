@@ -14,7 +14,10 @@ import type {
 
 class FakeStats implements CompanyStatsPort {
   seed = new Map<string, CompanyStats>();
+  /** Every id set it was asked about, so "asked for nothing" is observable. */
+  asked: string[][] = [];
   async countsFor(ids: readonly string[]) {
+    this.asked.push([...ids]);
     const m = new Map<string, CompanyStats>();
     for (const id of ids) m.set(id, this.seed.get(id) ?? { total: 0, pending: 0, completed: 0 });
     return m;
@@ -90,6 +93,23 @@ describe("CompaniesService — list scoping", () => {
 
     const noneClient = await service.list(user({ role: "buyer", company_ids: [] }));
     expect(noneClient).toEqual([]);
+  });
+
+  it("answers an empty list without asking for stats on nothing", async () => {
+    // An admin on a database with no companies. `countsFor([])` would be a
+    // query with an empty IN list, which some drivers answer and some refuse.
+    const { stats, service } = makeService();
+    expect(await service.list(user({ role: "admin" }))).toEqual([]);
+    expect(stats.asked).toEqual([]);
+  });
+
+  it("counts a user's primary company as well as their memberships", async () => {
+    // `company_id` and `company_ids` are separate columns and a client
+    // frequently has only the first — a buyer invited to one deal.
+    const { repo, service } = makeService();
+    const only = repo.seed(record({ name: "Primary" }));
+    const seen = await service.list(user({ role: "buyer", company_id: only.id, company_ids: [] }));
+    expect(seen.map((c) => c.id)).toEqual([only.id]);
   });
 
   it("attaches request-count stats", async () => {
