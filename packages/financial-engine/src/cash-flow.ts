@@ -1,7 +1,7 @@
 import type { BalanceSheetGroup } from "./balance-sheet-hierarchy.js";
 import type { BalanceSheetResult } from "./balance-sheet.js";
 import type { IncomeStatement } from "./income-statement.js";
-import { emptyAmounts, periodKey } from "./periods.js";
+import { amountAt, emptyAmounts, periodKey } from "./periods.js";
 import type { Period } from "./types.js";
 
 /**
@@ -155,7 +155,7 @@ export function buildCashFlow(input: CashFlowInput): CashFlowStatement {
       // Cash is what the statement explains, not a line within it.
       keys.forEach((key, i) => {
         openingCash[key]! += priorBalance(line, line.accountId, i);
-        closingCash[key]! += line.balances[key] ?? 0;
+        closingCash[key]! += amountAt(line.balances, key);
       });
       continue;
     }
@@ -167,7 +167,7 @@ export function buildCashFlow(input: CashFlowInput): CashFlowStatement {
 
     const amounts: Record<string, number> = {};
     keys.forEach((key, i) => {
-      const movement = (line.balances[key] ?? 0) - priorBalance(line, line.accountId, i);
+      const movement = amountAt(line.balances, key) - priorBalance(line, line.accountId, i);
       const effect = round2(sign * movement);
       amounts[key] = effect;
       const bucket = section === "operating" ? operating : section === "investing" ? investing : financing;
@@ -210,7 +210,8 @@ export function buildCashFlow(input: CashFlowInput): CashFlowStatement {
     (k) => balanceSheet.netIncome[k] !== undefined || balanceSheet.retainedEarnings[k] !== undefined,
   );
   if (tracksDerivedEquity) keys.forEach((key, i) => {
-    const derivedNow = (balanceSheet.retainedEarnings[key] ?? 0) + (balanceSheet.netIncome[key] ?? 0);
+    const derivedNow =
+      amountAt(balanceSheet.retainedEarnings, key) + amountAt(balanceSheet.netIncome, key);
     const priorKey = i === 0 ? null : keys[i - 1]!;
     const derivedPrior =
       priorKey === null
@@ -223,7 +224,7 @@ export function buildCashFlow(input: CashFlowInput): CashFlowStatement {
     financing[key] = round2(financing[key]! + amount);
   });
 
-  if (keys.some((k) => Math.abs(distributions[k] ?? 0) > 0.005)) {
+  if (keys.some((k) => Math.abs(amountAt(distributions, k)) > 0.005)) {
     lines.push({
       accountId: "__retained_earnings_activity__",
       accountName: "Distributions and other equity movements",

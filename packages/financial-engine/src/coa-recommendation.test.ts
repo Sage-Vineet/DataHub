@@ -696,3 +696,173 @@ describe("no second COA engine was introduced", () => {
     expect(/\bimport\s/.test(source)).toBe(false);
   });
 });
+
+describe("what the model can send that is not a recommendation", () => {
+  /**
+   * The prompt asks for a shape; a model answers with whatever it answers.
+   * Every rejection below is a proposal that would otherwise reach a reviewer
+   * looking legitimate — and a reviewer approving a malformed move applies it
+   * to the chart of accounts, which every statement in the product reads.
+   *
+   * Rejecting is deliberately preferred to repairing. Quietly compacting a
+   * blank level or downgrading a bad reclassification changes what the model
+   * said, and the reviewer then approves something nobody proposed.
+   */
+  it("refuses a confidence band it does not recognise", () => {
+    for (const confidence of ["", "  ", "VERY HIGH", "probably", null, undefined]) {
+      expect(
+        normalizeProposal(proposal({ confidence } as never), account(), PL_SECTIONS),
+      ).toBeNull();
+    }
+  });
+
+  it("takes a band whatever case it arrives in", () => {
+    expect(
+      normalizeProposal(proposal({ confidence: " high " } as never), account(), PL_SECTIONS),
+    ).not.toBeNull();
+  });
+
+  it("refuses a hierarchy that is not a list", () => {
+    for (const recommendedHierarchy of [undefined, null, "Net Income > Other Income", {}, 7]) {
+      expect(
+        normalizeProposal(
+          proposal({ recommendedHierarchy } as never),
+          account(),
+          PL_SECTIONS,
+        ),
+      ).toBeNull();
+    }
+  });
+
+  it("refuses a path with a blank level rather than compacting it", () => {
+    expect(
+      normalizeProposal(
+        proposal({
+          recommendedHierarchy: ["Net Income", "  ", "Other Income", "Interest Income"],
+        }),
+        account(),
+        PL_SECTIONS,
+      ),
+    ).toBeNull();
+  });
+
+  it("refuses a path too shallow to mean anything, or deeper than the chart allows", () => {
+    // Two levels is the minimum for "this account, under that parent".
+    expect(
+      normalizeProposal(
+        proposal({ recommendedHierarchy: ["Interest Income"] }),
+        account(),
+        PL_SECTIONS,
+      ),
+    ).toBeNull();
+
+    const tooDeep = Array.from({ length: 20 }, (_, i) => `Level ${i + 1}`);
+    expect(
+      normalizeProposal(
+        proposal({ recommendedHierarchy: [...tooDeep, "Interest Income"] }),
+        account(),
+        PL_SECTIONS,
+      ),
+    ).toBeNull();
+  });
+
+  it("refuses a path that does not end at the account it is about", () => {
+    // A recommendation is never allowed to rename an account or swallow it
+    // into another — the move would silently retarget every entry posted to it.
+    expect(
+      normalizeProposal(
+        proposal({
+          recommendedHierarchy: ["Net Income", "Pretax Income", "Other Income", "Bank Interest"],
+        }),
+        account(),
+        PL_SECTIONS,
+      ),
+    ).toBeNull();
+  });
+
+  it("refuses to put an account inside itself", () => {
+    expect(
+      normalizeProposal(
+        proposal({
+          recommendedHierarchy: ["Net Income", "Interest Income", "Interest Income"],
+        }),
+        account(),
+        PL_SECTIONS,
+      ),
+    ).toBeNull();
+  });
+
+  it("refuses a reclassification with no usable target type", () => {
+    // Never downgraded to a plain move: that would apply a P&L path to a
+    // balance-sheet account and the statement would stop balancing.
+    for (const recommendedAccountType of [null, "", "  ", "profit", "asset-ish"]) {
+      expect(
+        normalizeProposal(
+          proposal({
+            kind: "RECLASSIFY",
+            recommendedAccountType,
+            recommendedHierarchy: ["Net Income", "Pretax Income", "Other Income", "Interest Income"],
+          } as never),
+          account(),
+          PL_SECTIONS,
+        ),
+      ).toBeNull();
+    }
+  });
+
+  it("refuses a reclassification to the type the account already has", () => {
+    expect(
+      normalizeProposal(
+        proposal({
+          kind: "RECLASSIFY",
+          recommendedAccountType: "income",
+          recommendedHierarchy: ["Net Income", "Pretax Income", "Other Income", "Interest Income"],
+        } as never),
+        account({ accountType: "income" }),
+        PL_SECTIONS,
+      ),
+    ).toBeNull();
+  });
+
+  it("refuses a statement type it does not recognise", () => {
+    expect(
+      normalizeProposal(
+        proposal({
+          kind: "RECLASSIFY",
+          recommendedAccountType: "expense",
+          recommendedStatementType: "cash_flow",
+          recommendedHierarchy: ["Net Income", "Operating Expenses", "Interest Income"],
+        } as never),
+        account(),
+        PL_SECTIONS,
+      ),
+    ).toBeNull();
+  });
+
+  it("treats an unrecognised kind as a plain hierarchy move", () => {
+    // The safe reading: a move applies a path and nothing else. Guessing
+    // RECLASSIFY from an unknown word would change an account's type on the
+    // strength of a typo.
+    const p = normalizeProposal(
+      proposal({ kind: "RESHUFFLE" } as never),
+      account(),
+      PL_SECTIONS,
+    );
+    expect(p?.kind).toBe("HIERARCHY_MOVE");
+  });
+
+  it("keeps no reason at all rather than an empty one", () => {
+    // The reason is shown verbatim to the reviewer. An empty string renders as
+    // a recommendation nobody justified, where null renders as no note.
+    for (const reason of ["", "   ", null, undefined]) {
+      expect(
+        normalizeProposal(proposal({ reason } as never), account(), PL_SECTIONS)?.reason,
+      ).toBeNull();
+    }
+  });
+
+  it("answers nothing for an absent proposal or an absent account", () => {
+    expect(normalizeProposal(null as never, account(), PL_SECTIONS)).toBeNull();
+    expect(normalizeProposal(proposal(), null as never, PL_SECTIONS)).toBeNull();
+  });
+});

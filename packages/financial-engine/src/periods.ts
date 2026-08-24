@@ -67,6 +67,29 @@ export function emptyAmounts(periods: Period[]): Record<string, number> {
   return Object.fromEntries(periods.map((p) => [periodKey(p.fiscalYear, p.month), 0]));
 }
 
+/**
+ * Add to a period's running total.
+ *
+ * The `?? 0` is the point. Every amounts record is seeded by `emptyAmounts`
+ * for exactly the periods in scope, and callers check the key is one of them
+ * before touching it — so the fallback cannot fire. It exists because
+ * `noUncheckedIndexedAccess` types a `Record` lookup as possibly undefined,
+ * and there is no way to tell the compiler what the seeding guarantees.
+ *
+ * Stated here once rather than at each of the fifteen accumulation sites it
+ * replaces. Fifteen copies of an unreachable fallback is fifteen things a
+ * reader has to satisfy themselves about, and fifteen branches no test can
+ * ever reach — which is worse than one, in both directions.
+ */
+export function addTo(amounts: Record<string, number>, key: string, by: number): void {
+  amounts[key] = (amounts[key] ?? 0) + by;
+}
+
+/** One period's total, or zero — same guarantee, same reason, for reads. */
+export function amountAt(amounts: Record<string, number>, key: string): number {
+  return amounts[key] ?? 0;
+}
+
 export function roundAmounts(amounts: Record<string, number>): Record<string, number> {
   return Object.fromEntries(Object.entries(amounts).map(([k, v]) => [k, round2(v)]));
 }

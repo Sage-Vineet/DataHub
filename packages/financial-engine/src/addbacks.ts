@@ -1,5 +1,5 @@
 import type { IncomeStatement } from "./income-statement.js";
-import { emptyAmounts, periodKey, round2, roundAmounts } from "./periods.js";
+import { amountAt, emptyAmounts, periodKey, round2, roundAmounts } from "./periods.js";
 import type { Addback, DataSource, GlEntry, Period } from "./types.js";
 
 /**
@@ -121,7 +121,7 @@ export function resolveAddback(
       const actual = statement.ledgerByAccount.get(addback.linkedAccountId!) ?? emptyAmounts(periods);
       amounts = emptyAmounts(periods);
       for (const key of Object.keys(amounts)) {
-        amounts[key] = (actual[key] ?? 0) - (addback.recastNormalizedValue ?? 0);
+        amounts[key] = amountAt(actual, key) - (addback.recastNormalizedValue ?? 0);
       }
       break;
     }

@@ -1,4 +1,4 @@
-import { emptyAmounts, periodKeyFor, roundAmounts } from "./periods.js";
+import { addTo, amountAt, emptyAmounts, periodKeyFor, roundAmounts } from "./periods.js";
 import type { Account, Aggregation, GlEntry, Period } from "./types.js";
 
 /**
@@ -85,27 +85,27 @@ export function buildIncomeStatement(
     // The one place a sign is applied.
     const signed = account.accountType === "income" ? entry.amount : -entry.amount;
 
-    if (account.accountType === "income") revenue[key] = (revenue[key] ?? 0) + entry.amount;
-    else expenses[key] = (expenses[key] ?? 0) + entry.amount;
+    if (account.accountType === "income") addTo(revenue, key, entry.amount);
+    else addTo(expenses, key, entry.amount);
 
-    if (account.accountType === "cogs") costOfSales[key] = (costOfSales[key] ?? 0) + entry.amount;
+    if (account.accountType === "cogs") addTo(costOfSales, key, entry.amount);
 
     let signedTotals = byAccount.get(entry.accountId);
     if (!signedTotals) byAccount.set(entry.accountId, (signedTotals = emptyAmounts(periods)));
-    signedTotals[key] = (signedTotals[key] ?? 0) + signed;
+    addTo(signedTotals, key, signed);
 
     let ledgerTotals = ledgerByAccount.get(entry.accountId);
     if (!ledgerTotals) ledgerByAccount.set(entry.accountId, (ledgerTotals = emptyAmounts(periods)));
-    ledgerTotals[key] = (ledgerTotals[key] ?? 0) + entry.amount;
+    addTo(ledgerTotals, key, entry.amount);
   }
 
   if (unclassified.size > 0) throw new UnclassifiedAccountError([...unclassified].sort());
 
   const netIncome = Object.fromEntries(
-    Object.keys(revenue).map((key) => [key, (revenue[key] ?? 0) - (expenses[key] ?? 0)]),
+    Object.keys(revenue).map((key) => [key, amountAt(revenue, key) - amountAt(expenses, key)]),
   );
   const grossProfit = Object.fromEntries(
-    Object.keys(revenue).map((key) => [key, (revenue[key] ?? 0) - (costOfSales[key] ?? 0)]),
+    Object.keys(revenue).map((key) => [key, amountAt(revenue, key) - amountAt(costOfSales, key)]),
   );
 
   return {

@@ -1,4 +1,4 @@
-import { emptyAmounts, periodKeyFor, roundAmounts } from "./periods.js";
+import { addTo, emptyAmounts, periodKeyFor, roundAmounts } from "./periods.js";
 import { UnclassifiedAccountError } from "./income-statement.js";
 import type { Account, AccountType, Aggregation, GlEntry, Period } from "./types.js";
 
@@ -81,7 +81,7 @@ export function buildVendorBreakdown(
         (bucket = { vendorName: name, accounts: new Map(), amounts: { ...template } }),
       );
     }
-    bucket.amounts[key] = (bucket.amounts[key] ?? 0) + signed;
+    addTo(bucket.amounts, key, signed);
 
     let line = bucket.accounts.get(entry.accountId);
     if (!line) {
@@ -96,7 +96,7 @@ export function buildVendorBreakdown(
         }),
       );
     }
-    line.amounts[key] = (line.amounts[key] ?? 0) + signed;
+    addTo(line.amounts, key, signed);
   }
 
   if (unclassified.size > 0) throw new UnclassifiedAccountError([...unclassified].sort());

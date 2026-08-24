@@ -8,7 +8,7 @@ import {
   unflaggedProfitLossAccounts,
 } from "./coa-roles.js";
 import { buildIncomeStatement } from "./income-statement.js";
-import { buildPeriods, emptyAmounts, periodKeyFor, roundAmounts, sumAmounts } from "./periods.js";
+import { addTo, amountAt, buildPeriods, emptyAmounts, periodKeyFor, roundAmounts, sumAmounts } from "./periods.js";
 import type {
   Account,
   Addback,
@@ -146,7 +146,7 @@ export function buildBridge(input: BridgeInput): BridgeResult {
             ? String(period.fiscalYear)
             : `${period.fiscalYear}-${String(period.month).padStart(2, "0")}`;
         const share = marketRateReplacementSalary / (monthsPerYear.get(period.fiscalYear) ?? 1);
-        amounts[key] = (amounts[key] ?? 0) - share;
+        addTo(amounts, key, -share);
       }
     }
 
@@ -169,8 +169,8 @@ export function buildBridge(input: BridgeInput): BridgeResult {
 
   const margin = Object.fromEntries(
     Object.keys(adjusted).map((key) => {
-      const revenue = statement.revenue[key] ?? 0;
-      return [key, revenue === 0 ? 0 : ((adjusted[key] ?? 0) / revenue) * 100];
+      const revenue = amountAt(statement.revenue, key);
+      return [key, revenue === 0 ? 0 : (amountAt(adjusted, key) / revenue) * 100];
     }),
   );
 

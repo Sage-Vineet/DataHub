@@ -26,6 +26,13 @@ export default mergeConfig(
   defineConfig({
     test: {
       coverage: {
+        exclude: [
+          // The anonymized walkthrough engagement, consumed by `apps/api`'s
+          // suite rather than this one, and a re-export barrel. Neither has
+          // runtime behaviour a test could assert.
+          "src/fixture.ts",
+          "src/index.ts",
+        ],
         thresholds: {
           statements: 95,
           lines: 95,

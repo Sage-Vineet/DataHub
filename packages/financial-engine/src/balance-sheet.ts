@@ -1,6 +1,6 @@
 import { assignGroup } from "./balance-sheet-hierarchy.js";
 import { buildIncomeStatement } from "./income-statement.js";
-import { buildPeriods, periodKey, round2 } from "./periods.js";
+import { amountAt, buildPeriods, periodKey, round2 } from "./periods.js";
 import type { Account, GlEntry, Period } from "./types.js";
 
 /**
@@ -288,7 +288,7 @@ export function rollForwardBalanceSheet(input: BalanceSheetInput): BalanceSheetR
 
     const opening = shiftToAnchor(cumulative, statedBalance(primary, account.id));
     const balances: Record<string, number> = {};
-    for (const key of keys) balances[key] = round2(opening + (cumulative[key] ?? 0));
+    for (const key of keys) balances[key] = round2(opening + amountAt(cumulative, key));
 
     const grouping = assignGroup(account);
     lines.push({
@@ -323,7 +323,7 @@ export function rollForwardBalanceSheet(input: BalanceSheetInput): BalanceSheetR
       yearToDate = 0;
     }
     currentYear = period.fiscalYear;
-    yearToDate += income.netIncome[key] ?? 0;
+    yearToDate += amountAt(income.netIncome, key);
     movement += activity.get(reId)?.get(key) ?? 0;
 
     reCumulative[key] = movement;
@@ -338,7 +338,7 @@ export function rollForwardBalanceSheet(input: BalanceSheetInput): BalanceSheetR
       ? statedBalance(primary, reId) + statedBalance(primary, netIncomeId(accounts))
       : statedBalance(primary, reId);
   const openingRe = shiftToAnchor(reCumulative, statedRe);
-  for (const key of keys) retainedEarnings[key] = round2(openingRe + (reCumulative[key] ?? 0));
+  for (const key of keys) retainedEarnings[key] = round2(openingRe + amountAt(reCumulative, key));
 
   // ── balance check per period ──────────────────────────────────────────────
   const checks: PeriodCheck[] = keys.map((key) => {
@@ -346,12 +346,12 @@ export function rollForwardBalanceSheet(input: BalanceSheetInput): BalanceSheetR
     let liabilities = 0;
     let equity = 0;
     for (const line of lines) {
-      const value = line.balances[key] ?? 0;
+      const value = amountAt(line.balances, key);
       if (line.section === "asset") assets += value;
       else if (line.section === "liability") liabilities += value;
       else equity += value;
     }
-    equity += (retainedEarnings[key] ?? 0) + (netIncome[key] ?? 0);
+    equity += amountAt(retainedEarnings, key) + amountAt(netIncome, key);
     const outOfBalance = round2(assets - (liabilities + equity));
     return {
       period: key,
