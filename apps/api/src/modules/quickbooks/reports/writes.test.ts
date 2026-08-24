@@ -132,6 +132,24 @@ describe("building a customer for Intuit", () => {
     });
   });
 
+  it("reads Intuit's own spelling of the phone, address and notes too", () => {
+    // The same both-spellings rule as the name and email above. Only those two
+    // were asserted, so an older client's phone and address were being read on
+    // trust.
+    expect(
+      toCustomerPayload({
+        DisplayName: "Acme",
+        PrimaryPhone: { FreeFormNumber: "+44 20 7946 0000" },
+        BillAddr: { Line1: "1 High Street" },
+        Notes: "Introduced by Kestrel.",
+      }),
+    ).toMatchObject({
+      PrimaryPhone: { FreeFormNumber: "+44 20 7946 0000" },
+      BillAddr: { Line1: "1 High Street" },
+      Notes: "Introduced by Kestrel.",
+    });
+  });
+
   it("refuses a customer with no name", () => {
     // The display name IS the customer in QuickBooks; there is nothing to
     // create without it.
@@ -201,6 +219,20 @@ describe("creating a customer", () => {
   it("says the connection is missing rather than writing nowhere", async () => {
     const { service, connections } = await build();
     await connections.disconnect(COMPANY);
+    await expect(service.createCustomer(USER, COMPANY, { name: "A" })).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+  });
+});
+
+describe("a connection that is half there", () => {
+  it("refuses when the row says connected but holds no access token", async () => {
+    // A connection whose tokens were cleared without the row being marked
+    // disconnected. Passing the guard would send `Bearer undefined` to Intuit
+    // and come back 401, which reads as "reconnect QuickBooks" when the answer
+    // is that this one never had a token.
+    const { service, connections } = await build();
+    connections.tokens = () => Promise.resolve(null);
     await expect(service.createCustomer(USER, COMPANY, { name: "A" })).rejects.toBeInstanceOf(
       NotFoundError,
     );

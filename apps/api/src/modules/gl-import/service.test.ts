@@ -238,4 +238,34 @@ describe("previewing what would be imported", () => {
     repo.seed(UPLOAD, "odd.csv", "Alpha,Beta\n1,2\n");
     await expect(service.preview(USER, COMPANY, UPLOAD)).rejects.toThrow(/not mapped/);
   });
+
+  it("says 'is' for one missing field and 'are' for several", async () => {
+    // The message is what the person mapping the file reads. Getting the verb
+    // wrong is small; reading it out loud in front of a client is not.
+    const { repo, service } = build();
+    repo.seed(UPLOAD, "one.csv", "Date,Account,Memo\n2024-01-15,Sales,Consulting\n");
+    await expect(service.preview(USER, COMPANY, UPLOAD)).rejects.toThrow(/\bis not mapped\./);
+
+    const second = build();
+    second.repo.seed(UPLOAD, "several.csv", "Alpha,Beta\n1,2\n");
+    await expect(second.service.preview(USER, COMPANY, UPLOAD)).rejects.toThrow(
+      /\bare not mapped\./,
+    );
+  });
+
+  it("reports an upload that vanished under it as gone, not as a fault", async () => {
+    /**
+     * The ownership check and the read are two calls. A file deleted between
+     * them — or two repository methods disagreeing — lands here, and the answer
+     * has to be the same 404 the ownership check would have given rather than a
+     * TypeError reading `upload.data`.
+     */
+    const { repo, service } = build();
+    repo.seed();
+    repo.uploads.delete(UPLOAD); // still `owned`, no longer readable
+
+    await expect(
+      service.saveMapping(USER, COMPANY, { uploadId: UPLOAD, mapping: { date: "Date" } }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
 });

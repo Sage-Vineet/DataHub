@@ -78,6 +78,85 @@ describe("MessagesService — groups", () => {
   });
 });
 
+describe("MessagesService — listing groups, and taking somebody out of one", () => {
+  /**
+   * The repository's own suite covers what these read and write. What is only
+   * decided here is who may ask — and that is the reason the service layer
+   * exists over the repository at all.
+   */
+  it("lists a company's groups only to somebody on that company", async () => {
+    const { service } = make();
+    const broker = session();
+    await service.createGroup(
+      broker,
+      COMPANY,
+      contracts.groupCreate.parse({ name: "Deal Team", group_type: "deal_team" }),
+    );
+
+    expect((await service.groupsByCompany(broker, COMPANY)).map((g) => g.name)).toEqual([
+      "Deal Team",
+    ]);
+    await expect(
+      service.groupsByCompany(session({ role: "buyer", company_ids: [OTHER] }), COMPANY),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("lists a person's own groups without asking which company", async () => {
+    // The rail is per-person and spans deals, so there is no company to check
+    // against — membership is the check.
+    const { service } = make();
+    const broker = session();
+    const other = session();
+    const group = await service.createGroup(
+      broker,
+      COMPANY,
+      contracts.groupCreate.parse({ name: "Deal Team", group_type: "deal_team" }),
+    );
+
+    expect((await service.groupsForUser(broker)).map((g) => g.id)).toEqual([group.id]);
+    expect(await service.groupsForUser(other)).toEqual([]);
+  });
+
+  it("lets a broker take somebody out, and stops the removed person reading on", async () => {
+    const { service } = make();
+    const broker = session();
+    const client = session({ role: "buyer", company_ids: [COMPANY] });
+    const group = await service.createGroup(
+      broker,
+      COMPANY,
+      contracts.groupCreate.parse({ name: "Deal Team", group_type: "deal_team" }),
+    );
+    await service.addMember(broker, group.id, client.id);
+    expect(await service.listMembers(broker, group.id)).toContain(client.id);
+
+    await service.removeMember(broker, group.id, client.id);
+
+    expect(await service.listMembers(broker, group.id)).not.toContain(client.id);
+    await expect(service.groupMessages(client, group.id)).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("refuses a client removing anybody, including themselves", async () => {
+    // Membership is the deal team's decision. A client leaving quietly would
+    // stop them receiving anything without anyone on the other side knowing.
+    const { service } = make();
+    const broker = session();
+    const client = session({ role: "buyer", company_ids: [COMPANY] });
+    const group = await service.createGroup(
+      broker,
+      COMPANY,
+      contracts.groupCreate.parse({ name: "Deal Team", group_type: "deal_team" }),
+    );
+    await service.addMember(broker, group.id, client.id);
+
+    await expect(service.removeMember(client, group.id, broker.id)).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
+    await expect(service.removeMember(client, group.id, client.id)).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
+  });
+});
+
 describe("MessagesService — the thread rail's order", () => {
   const co = (id: string, name: string, createdAt: string) => ({
     id,

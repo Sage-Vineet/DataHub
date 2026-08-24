@@ -880,4 +880,55 @@ describe("when the Q&A engine is not configured", () => {
     const { versionId } = await newDeck();
     expect(await service.reviewQueue(broker, versionId)).toEqual([]);
   });
+
+  it("reports no outstanding questions rather than skipping the health panel", async () => {
+    // Zero is honest here — with no Q&A engine there are no questions to be
+    // outstanding — and the rest of the panel is still worth showing.
+    build({ qa: unavailableQa });
+    const { versionId } = await newDeck();
+    const health = await service.health(broker, versionId);
+    expect(health.outstanding_questions).toBe(0);
+    expect(health.unpopulated_blocks).toBeGreaterThan(0);
+  });
+});
+
+describe("a CIM with nothing left to fork from", () => {
+  it("says so rather than creating an empty draft", async () => {
+    // Not reachable through `createDeck`, which always makes v1. It is
+    // reachable through a version deleted underneath a page that still has the
+    // button, and the answer has to name the CIM rather than 500.
+    const { deck } = await newDeck();
+    store.versions.length = 0;
+    await expect(service.createDraftFrom(broker, deck.id)).rejects.toThrow(/no versions to fork/i);
+  });
+
+  it("reports a version whose CIM has gone as not found", async () => {
+    const { versionId } = await newDeck();
+    store.decks.length = 0;
+    await expect(service.getVersion(broker, versionId)).rejects.toThrow(/CIM not found/i);
+  });
+});
+
+describe("a section that has no slides yet", () => {
+  it("renders as an empty section rather than dropping out of the deck", async () => {
+    // An outline entry with nothing under it is a real state: the outline is
+    // created first and populated after. Dropping it would make the section
+    // look like it had never been added.
+    const { versionId } = await newDeck();
+    const detail = await service.getVersion(broker, versionId);
+    const section = detail.sections[0]!;
+    store.slides.length = 0;
+
+    const after = await service.getVersion(broker, versionId);
+    expect(after.sections.map((x) => x.id)).toContain(section.id);
+    expect(after.sections.every((x) => x.slides.length === 0)).toBe(true);
+  });
+
+  it("renders a slide with no blocks the same way", async () => {
+    const { versionId } = await newDeck();
+    store.blocks.length = 0;
+    const after = await service.getVersion(broker, versionId);
+    expect(after.sections.flatMap((x) => x.slides).length).toBeGreaterThan(0);
+    expect(after.sections.flatMap((x) => x.slides).every((sl) => sl.blocks.length === 0)).toBe(true);
+  });
 });

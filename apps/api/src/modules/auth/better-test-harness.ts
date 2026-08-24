@@ -119,7 +119,8 @@ export interface Harness {
   app: Express;
   router: import("express").Router;
   db: Db;
-  emailer: CaptureEmailer;
+  /** Whatever the seed supplied, defaulting to a `CaptureEmailer`. */
+  emailer: Emailer;
   close: () => Promise<void>;
 }
 

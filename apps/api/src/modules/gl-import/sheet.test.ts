@@ -119,6 +119,44 @@ describe("parsing a workbook", () => {
     );
   });
 
+  it("names the file when SheetJS cannot read it at all", () => {
+    // The forgiving case above produces an empty sheet; this one throws inside
+    // the library. Both have to arrive as the same kind of refusal, naming the
+    // file, because the person uploading knows the file and not the library.
+    let caught: unknown;
+    try {
+      parseSheet({
+        data: Buffer.from("id,name\n1,a"),
+        fileName: "ledger.csv",
+        contentType: "text/csv",
+        // A password-protected workbook read as a string is what actually
+        // throws here; an unterminated quote does the same for CSV.
+        sheetName: "Sheet1",
+      });
+      parseSheet({ data: Buffer.alloc(0), fileName: "nothing.xlsx" });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(SheetParseError);
+    expect((caught as Error).message).toContain("nothing.xlsx");
+  });
+
+  it("takes the sheet it is asked for, and the first when that one is not there", () => {
+    // Exports that carry notes after the ledger, and a saved mapping naming a
+    // sheet the next export renamed.
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["Date", "Account"]]), "Ledger");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["Note"]]), "Notes");
+    const data = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
+
+    expect(
+      parseSheet({ data, fileName: "x.xlsx", sheetName: "Notes" }).columns,
+    ).toEqual(["Note"]);
+    expect(
+      parseSheet({ data, fileName: "x.xlsx", sheetName: "Gone" }).columns,
+    ).toEqual(["Date", "Account"]);
+  });
+
   it("accepts headers with no rows under them", () => {
     // A template somebody has not filled in yet is mappable and importable;
     // it just imports nothing.

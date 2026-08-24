@@ -2,7 +2,7 @@ import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@datahub/db";
-import { makeHarness, SECRET, type Harness } from "./better-test-harness.js";
+import { CaptureEmailer, makeHarness, SECRET, type Harness } from "./better-test-harness.js";
 import { issueVerificationGrant } from "./verification-grant.js";
 
 /**
@@ -26,6 +26,9 @@ afterEach(async () => {
 });
 
 const grantFor = (email: string, at = Date.now()) => issueVerificationGrant(email, SECRET, at);
+
+/** The harness's emailer, which is a `CaptureEmailer` unless a seed replaced it. */
+const captured = () => h.emailer as CaptureEmailer;
 
 const signup = (body: Record<string, unknown>) =>
   request(h.app).post("/auth/broker/signup").send(body);
@@ -187,8 +190,8 @@ describe("the OTP endpoints the SPA calls", () => {
       .send({ email: "brand-new@example.com" })
       .expect(200);
 
-    expect(h.emailer.last).toMatchObject({ email: "brand-new@example.com" });
-    expect(h.emailer.last?.otp).toMatch(/^\d{6}$/);
+    expect(captured().last).toMatchObject({ email: "brand-new@example.com" });
+    expect(captured().last?.otp).toMatch(/^\d{6}$/);
   });
 
   it("answers the same whether or not the address is registered", async () => {
@@ -211,7 +214,7 @@ describe("the OTP endpoints the SPA calls", () => {
       .post("/auth/send-verification-otp")
       .send({ email: "dana@example.com" })
       .expect(200);
-    const otp = h.emailer.last?.otp;
+    const otp = captured().last?.otp;
     expect(otp).toBeTruthy();
 
     const verified = await request(h.app)
