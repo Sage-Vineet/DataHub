@@ -57,24 +57,21 @@ fi
 # legacy verifies the HS256 token the bridge mints. Read it from the container
 # rather than assuming the default, because compose takes it from the host
 # environment at create time and it may not be the default any more.
-JWT_SECRET="$(docker exec datahub-demo-legacy-1 printenv JWT_SECRET)"
+JWT_SECRET="$(docker exec datahub-demo-gateway-1 printenv JWT_SECRET)"
 
 $COMPOSE stop gateway web >/dev/null 2>&1 || true
 
 (
   cd apps/api
   NODE_ENV=development PORT="$GATEWAY_PORT" \
-  LEGACY_ORIGIN="http://localhost:4000" \
   DATABASE_URL="postgres://datahub:datahub@localhost:${PG_PORT}/datahub" \
   JWT_SECRET="$JWT_SECRET" \
   BETTER_AUTH_URL="http://localhost:${GATEWAY_PORT}" \
   AUTH_TRUSTED_ORIGINS="http://localhost:${WEB_PORT}" \
-  BETTER_AUTH_ENABLED=true COMPANIES_MODULE_ENABLED=true USERS_MODULE_ENABLED=true \
-  FOLDERS_MODULE_ENABLED=true UPLOADS_MODULE_ENABLED=true REQUESTS_MODULE_ENABLED=true \
-  MESSAGES_MODULE_ENABLED=true REPORTS_MODULE_ENABLED=true QOE_MODULE_ENABLED=true \
+  QOE_MODULE_ENABLED=true \
   DATAROOM_MODULE_ENABLED=true DATAROOM_VERSIONS_ENABLED=true DATAROOM_COMMENTS_ENABLED=true \
   DATAROOM_CHUNKED_UPLOAD_ENABLED=true QA_MODULE_ENABLED=true QA_PRESENTATION_ENABLED=true \
-  QA_NOMINATIONS_ENABLED=true CIM_MODULE_ENABLED=true LEGACY_AUTH_BRIDGE_ENABLED=true \
+  QA_NOMINATIONS_ENABLED=true CIM_MODULE_ENABLED=true \
   setsid nohup pnpm exec tsx --conditions=development src/server.ts \
     > "$RUN_DIR/api.log" 2>&1 < /dev/null &
 )

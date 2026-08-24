@@ -46,8 +46,7 @@ git-ignored `devenv.local.nix`.
 pnpm install                 # installs the whole workspace
 
 # env files (copy the examples):
-#   apps/api/.env.example  -> apps/api/.env      (gateway: LEGACY_ORIGIN, PORT, GATEWAY_ROUTES)
-#   backend/.env.example   -> backend/.env       (DB, QuickBooks, Graph secrets)
+#   apps/api/.env.example  -> apps/api/.env      (PORT, DATABASE_URL, secrets, capability flags)
 #   apps/web/.env.example  -> apps/web/.env.local (VITE_API_BASE_URL -> the gateway)
 
 pnpm dev:legacy              # start the legacy backend (default :4000)
