@@ -100,7 +100,7 @@ export class MessagesService {
         const aAt = a.last_message?.created_at ?? a.company.created_at;
         const bAt = b.last_message?.created_at ?? b.company.created_at;
         if (aAt !== bAt) return bAt.localeCompare(aAt);
-        return (a.company.name ?? "").localeCompare(b.company.name ?? "");
+        return a.company.name.localeCompare(b.company.name);
       });
   }
 
@@ -148,7 +148,7 @@ export class MessagesService {
         const aAt = a.last_message?.created_at ?? "";
         const bAt = b.last_message?.created_at ?? "";
         if (aAt !== bAt) return bAt.localeCompare(aAt); // most recent first
-        return (a.name ?? "").localeCompare(b.name ?? "");
+        return a.name.localeCompare(b.name);
       });
 
     return { company: { id: company.id, name: company.name }, contacts };
@@ -193,7 +193,7 @@ export class MessagesService {
     if (!company) throw new NotFoundError("Company not found");
 
     const members = await this.repo.listMembersForGrouping(companyId);
-    const plan = planCompanyGroups(company.name ?? "", members);
+    const plan = planCompanyGroups(company.name, members);
     const existing = await this.repo.listGroupsByCompany(companyId);
     const created: Array<{ groupId: string; groupType: GroupType }> = [];
 

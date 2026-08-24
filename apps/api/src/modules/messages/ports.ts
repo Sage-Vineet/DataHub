@@ -36,17 +36,26 @@ export interface CreateGroupInput {
   memberIds: string[];
 }
 
-/** A person on the deal who can be messaged, plus the company they were resolved against. */
+/**
+ * A person on the deal who can be messaged, plus the company they were resolved
+ * against.
+ *
+ * `name` and `email` are NOT NULL on `users`, and were typed nullable here.
+ * That is not a harmless widening: it forced `?? ""` at every read, and a
+ * fallback that cannot fire is a branch nobody can test and a reader has to
+ * reason about. `role` stays nullable — that column is.
+ */
 export interface DirectContactRecord {
   id: string;
-  name: string | null;
-  email: string | null;
+  name: string;
+  email: string;
   role: string | null;
 }
 
 export interface CompanyRecord {
   id: string;
-  name: string | null;
+  /** NOT NULL on `companies`. */
+  name: string;
 }
 
 /**
@@ -56,7 +65,8 @@ export interface CompanyRecord {
  */
 export interface ThreadCompanyRecord {
   id: string;
-  name: string | null;
+  /** NOT NULL on `companies`, as on `CompanyRecord`. */
+  name: string;
   industry: string | null;
   logo: string | null;
   contactName: string | null;

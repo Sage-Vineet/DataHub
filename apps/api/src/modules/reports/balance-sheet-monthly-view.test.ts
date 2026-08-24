@@ -238,6 +238,56 @@ describe("choosing the year", () => {
   });
 });
 
+describe("an engagement covering more than one year", () => {
+  /**
+   * Every fixture above is a single year, which leaves the year boundaries
+   * unasserted — and the boundaries are where this view can be wrong in a way
+   * that still looks plausible.
+   *
+   * Two rules: the drill-down for a year shows only that year's postings, and
+   * current-year income resets at each fiscal year start. Carrying income
+   * across the boundary would show January opening with last year's whole
+   * result already earned.
+   */
+  const twoYears: EngagementData = {
+    ...engagement,
+    fiscalYears: [2023, 2024],
+    entries: [
+      { accountId: "sales", fiscalYear: 2023, month: 6, amount: 5000 },
+      { accountId: "cash", fiscalYear: 2023, month: 6, amount: 5000 },
+      ...entries,
+    ],
+  };
+
+  const bothYears: LedgerTransaction[] = [
+    { ...ledger[0]!, id: "prior", fiscalYear: 2023, month: 6, date: "2023-06-15", amount: 5000 },
+    ...ledger,
+  ];
+
+  it("drills into the year asked for and no other", () => {
+    const current = buildBalanceSheetMonthlyDetail(twoYears, bothYears, { fiscalYear: 2024 });
+    expect(cashAccount(current).transactions.map((t) => t.id)).toEqual(["t1", "t2"]);
+
+    const prior = buildBalanceSheetMonthlyDetail(twoYears, bothYears, { fiscalYear: 2023 });
+    expect(cashAccount(prior).transactions.map((t) => t.id)).toEqual(["prior"]);
+  });
+
+  it("carries the prior year's closing position into the new year", () => {
+    // The position is cumulative even though the income that built it is not.
+    const current = buildBalanceSheetMonthlyDetail(twoYears, bothYears, { fiscalYear: 2024 });
+    const cash = cashAccount(current);
+    // January 2024 opens on the position December 2023 closed with, which
+    // includes the 5,000 received in June 2023.
+    expect(cash.monthly[1]).toBeGreaterThan(2000);
+  });
+
+  it("still answers the prior year on its own terms", () => {
+    const prior = buildBalanceSheetMonthlyDetail(twoYears, bothYears, { fiscalYear: 2023 });
+    expect(prior.year).toBe(2023);
+    expect(prior.sections.Assets.total).not.toBe(0);
+  });
+});
+
 describe("months the ledger never reached", () => {
   it("carries the last known position forward rather than showing zero", () => {
     // The roll only produces months with activity. Showing zero in a quiet

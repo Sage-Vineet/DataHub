@@ -313,11 +313,19 @@ describe("MessagesService — auto-created groups", () => {
     await expect(service.autoCreateGroups(session(), COMPANY)).rejects.toThrow(/not found/i);
   });
 
-  it("plans against a company with no name rather than failing", async () => {
-    // A company row with a null name is not an error the deal team should
-    // discover by their rooms failing to appear.
+  it("plans against a company with a blank name rather than failing", async () => {
+    /**
+     * This asserted a NULL name, which `companies.name` being NOT NULL means
+     * the database cannot produce — the port had simply typed it nullable, and
+     * the test followed the type rather than the column.
+     *
+     * The blank name is the reachable version of the same worry: NOT NULL does
+     * not mean non-empty, and a company created through an import with an empty
+     * name is an ordinary accident. The deal team should not discover it by
+     * their rooms failing to appear.
+     */
     const { repo, service } = make();
-    repo.seedCompany({ id: COMPANY, name: null }, []);
+    repo.seedCompany({ id: COMPANY, name: "" }, []);
     await expect(service.autoCreateGroups(session(), COMPANY)).resolves.toBeDefined();
   });
 });
