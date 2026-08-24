@@ -332,8 +332,22 @@ export function createBetterAuthRouter(deps: BetterAuthRouterDeps): Router {
           returnHeaders: true,
         });
       } catch (err) {
+        /**
+         * Better Auth refusing this means the identity already exists, which
+         * the check above missed: it reads `users`, and the two writes are not
+         * in one transaction, so a crash between them leaves an identity with
+         * no `users` row. It answers 401 for some versions of that refusal and
+         * 422 for others; both mean "taken".
+         *
+         * Neither may be forwarded. A 401 tells somebody registering that
+         * their PASSWORD was wrong for an account they do not have, and a 422
+         * shows them a library's own wording for a state they cannot act on.
+         */
         const { status, message } = errorStatus(err);
-        res.status(status === 401 ? 409 : status).json({ error: message });
+        const taken = status === 401 || status === 422;
+        res
+          .status(taken ? 409 : status)
+          .json({ error: taken ? "An account with this email already exists." : message });
         return;
       }
 

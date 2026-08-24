@@ -328,6 +328,78 @@ describe("UsersService — delete with reassignment invariant (D4)", () => {
   });
 });
 
+describe("UsersService — reading one person", () => {
+  /**
+   * `get` answers the profile page, and it is the one read that names a single
+   * user by id rather than filtering a list. Getting it wrong shows one
+   * broker's client to another, which no list-level check would catch.
+   */
+  it("lets anybody read themselves, whatever their role", async () => {
+    const { repo, service } = makeService();
+    const buyerId = randomUUID();
+    repo.seedUser({ id: buyerId, email: "self@x.com", role: "buyer", companyId: COMPANY_A });
+
+    const seen = await service.get(session({ id: buyerId, role: "buyer" }), buyerId);
+    expect(seen.id).toBe(buyerId);
+  });
+
+  it("lets an admin read anybody", async () => {
+    const { repo, service } = makeService();
+    const target = repo.seedUser({ id: randomUUID(), email: "t@x.com", role: "buyer", companyId: COMPANY_B });
+    expect((await service.get(session({ role: "admin" }), target.id)).id).toBe(target.id);
+  });
+
+  it("lets a broker read somebody in a company they share", async () => {
+    const { repo, service } = makeService();
+    const target = repo.seedUser({ id: randomUUID(), email: "t@x.com", role: "buyer", companyId: COMPANY_A });
+    const seen = await service.get(session({ role: "broker", company_ids: [COMPANY_A] }), target.id);
+    expect(seen.id).toBe(target.id);
+  });
+
+  it("refuses a broker reading somebody in a company they do not", async () => {
+    const { repo, service } = makeService();
+    const target = repo.seedUser({ id: randomUUID(), email: "t@x.com", role: "buyer", companyId: COMPANY_B });
+    await expect(
+      service.get(session({ role: "broker", company_ids: [COMPANY_A] }), target.id),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("refuses a buyer reading anybody but themselves", async () => {
+    const { repo, service } = makeService();
+    const target = repo.seedUser({ id: randomUUID(), email: "t@x.com", role: "buyer", companyId: COMPANY_A });
+    await expect(
+      service.get(session({ role: "buyer", company_ids: [COMPANY_A] }), target.id),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("reports a user who is not there as not found, not as forbidden", async () => {
+    // The distinction matters: 403 on a missing id tells a caller the id is
+    // real and they merely cannot see it.
+    const { service } = makeService();
+    await expect(service.get(session({ role: "admin" }), randomUUID())).rejects.toThrow(
+      /not found/i,
+    );
+  });
+
+  it("reads somebody with a company through no company at all", async () => {
+    // A session carrying neither `company_ids` nor `company_id` — which is what
+    // an admin's session looks like.
+    const { repo, service } = makeService();
+    const target = repo.seedUser({ id: randomUUID(), email: "t@x.com", role: "buyer" });
+    const admin = { ...session({ role: "admin" }), company_ids: undefined } as unknown as SessionUser;
+    expect((await service.get(admin, target.id)).id).toBe(target.id);
+  });
+});
+
+describe("UsersService — deleting somebody who is not there", () => {
+  it("says so rather than reporting a permission problem", async () => {
+    const { service } = makeService();
+    await expect(service.delete(session({ role: "admin" }), randomUUID())).rejects.toThrow(
+      /not found/i,
+    );
+  });
+});
+
 describe("UsersService — membership + broker-team", () => {
   it("adds within scope, blocks out of scope, and manages team invites", async () => {
     const { repo, service } = makeService();

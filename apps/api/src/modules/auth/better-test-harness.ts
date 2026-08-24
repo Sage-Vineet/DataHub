@@ -91,6 +91,14 @@ CREATE TABLE folders (
 export const SECRET = "better-auth-integration-secret-value-xyz";
 
 /** A capturing emailer so tests can read the OTP that would have been sent. */
+/** An emailer that refuses, for the failure paths mail dispatch has. */
+export class FailingEmailer implements Emailer {
+  constructor(private readonly reason = "The mail server refused the message.") {}
+  sendOtp(): Promise<{ sent: boolean }> {
+    return Promise.reject(new Error(this.reason));
+  }
+}
+
 export class CaptureEmailer implements Emailer {
   last: { email: string; otp: string } | null = null;
   async sendOtp(email: string, otp: string) {
@@ -120,6 +128,11 @@ export interface HarnessSeed {
   users: SeededUser[];
   /** user_companies links (multi-tenant membership). */
   memberships?: { userId: string; companyId: string }[];
+  /**
+   * Make every dispatch fail, for the paths that exist because mail can.
+   * A mailbox that refuses is the ordinary case here, not an exotic one.
+   */
+  emailer?: Emailer;
 }
 
 /**
@@ -160,7 +173,7 @@ export async function makeHarness(seed: HarnessSeed): Promise<Harness> {
 
   const env = { JWT_SECRET: SECRET, AUTH_LOGIN_RATE_MAX: "5" } as NodeJS.ProcessEnv;
   const config = loadAuthConfig(env);
-  const emailer = new CaptureEmailer();
+  const emailer = seed.emailer ?? new CaptureEmailer();
   const auth = createBetterAuth({
     db,
     emailer,

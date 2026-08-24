@@ -2,7 +2,13 @@ import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { schema } from "@datahub/db";
 import { canAccessCompany } from "./service.js";
-import { CaptureEmailer, makeHarness, sessionCookie, type Harness } from "./better-test-harness.js";
+import {
+  CaptureEmailer,
+  FailingEmailer,
+  makeHarness,
+  sessionCookie,
+  type Harness,
+} from "./better-test-harness.js";
 
 const COMPANY_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const COMPANY_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
@@ -202,5 +208,62 @@ describe("Better Auth module — multi-tenant boundary parity (D6)", () => {
     const client = { ...user, role: "buyer", company_id: COMPANY_A, company_ids: [COMPANY_A] };
     expect(canAccessCompany(client, COMPANY_A)).toBe(true);
     expect(canAccessCompany(client, COMPANY_B)).toBe(false);
+  });
+});
+
+describe("Better Auth module — when the mail server refuses", () => {
+  /**
+   * Mail failing is ordinary, and the two endpoints that send it answer
+   * differently on purpose.
+   *
+   * `forgot-password` must not change its answer, because changing it is how a
+   * stranger learns which addresses are registered — the whole point of the
+   * generic response. `send-otp` may, because the caller is asking for a code
+   * they are waiting on, and a silent success leaves them staring at a form
+   * for a message that is never coming.
+   */
+  let failing: Harness;
+
+  beforeEach(async () => {
+    failing = await makeHarness({
+      users: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          email: "broker@example.com",
+          password: "correct1horse",
+          role: "broker",
+        },
+      ],
+      emailer: new FailingEmailer(),
+    });
+  });
+
+  afterEach(async () => {
+    await failing.close();
+  });
+
+  it("still answers forgot-password generically", async () => {
+    const res = await request(failing.app)
+      .post("/auth/forgot-password")
+      .send({ email: "broker@example.com" });
+    expect(res.status).toBe(200);
+    expect(res.body.message).toBeTruthy();
+  });
+
+  it("tells a caller waiting on a verification code that it did not send", async () => {
+    const res = await request(failing.app)
+      .post("/auth/send-verification-otp")
+      .send({ email: "broker@example.com" });
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.body.error).toBeTruthy();
+  });
+});
+
+describe("Better Auth module — logging out when there is nothing to log out of", () => {
+  it("clears client state and answers 204 rather than failing", async () => {
+    // A browser with a stale cookie, or a second tab that logged out first.
+    // Anything but 204 leaves the SPA believing it still has a session.
+    await request(h.app).post("/auth/logout").expect(204);
+    await request(h.app).post("/auth/logout").set("Cookie", "session_token=nonsense").expect(204);
   });
 });

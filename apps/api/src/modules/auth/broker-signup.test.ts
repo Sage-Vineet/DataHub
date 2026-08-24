@@ -72,6 +72,24 @@ describe("creating a broker account", () => {
     const res = await signup(valid()).expect(409);
     expect(res.body.error).toMatch(/already exists/i);
   });
+
+  it("refuses when only the identity survived a half-finished signup", async () => {
+    /**
+     * The state this covers: an identity exists in Better Auth's own tables
+     * but the `users` row it belongs to does not. The two writes are not in one
+     * transaction, so a crash between them leaves exactly this.
+     *
+     * The duplicate check above looks at `users` and would miss it, and Better
+     * Auth answers its own refusal with a 401 — which, forwarded, would tell
+     * somebody trying to register that their PASSWORD was wrong for an account
+     * they do not have. Hence the 401 -> 409 remapping this asserts.
+     */
+    await signup(valid()).expect(201);
+    await h.db.delete(schema.users).where(eq(schema.users.email, "dana@example.com"));
+
+    const res = await signup(valid()).expect(409);
+    expect(res.body.error).toMatch(/already exists/i);
+  });
 });
 
 describe("the verification grant is the boundary", () => {
