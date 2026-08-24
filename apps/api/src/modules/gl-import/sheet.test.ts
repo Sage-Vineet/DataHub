@@ -119,26 +119,34 @@ describe("parsing a workbook", () => {
     );
   });
 
-  it("names the file when SheetJS cannot read it at all", () => {
-    // The forgiving case above produces an empty sheet; this one throws inside
-    // the library. Both have to arrive as the same kind of refusal, naming the
-    // file, because the person uploading knows the file and not the library.
-    let caught: unknown;
-    try {
-      parseSheet({
-        data: Buffer.from("id,name\n1,a"),
-        fileName: "ledger.csv",
-        contentType: "text/csv",
-        // A password-protected workbook read as a string is what actually
-        // throws here; an unterminated quote does the same for CSV.
-        sheetName: "Sheet1",
-      });
-      parseSheet({ data: Buffer.alloc(0), fileName: "nothing.xlsx" });
-    } catch (err) {
-      caught = err;
+  it("names the file when SheetJS throws reading it", () => {
+    /**
+     * The forgiving case above produces an empty sheet; these throw INSIDE the
+     * library — a truncated archive and an HTML error page saved with a
+     * spreadsheet extension, both of which arrive from real exports.
+     *
+     * SheetJS's own wording ("Unsupported ZIP file") means nothing to the
+     * person who uploaded it, so the refusal has to name the file. They know
+     * the file; they do not know the library.
+     *
+     * Written against inputs verified to throw rather than assumed to: an
+     * earlier version of this test passed on an empty buffer, which SheetJS
+     * reads happily into a sheet with no headers — so it was exercising the
+     * no-headers refusal below while claiming to exercise this one.
+     */
+    for (const [fileName, data] of [
+      ["ledger.xlsx", Buffer.from([0x50, 0x4b, 0x03, 0x04])],
+      ["export.xlsx", Buffer.from("<html><body>Service unavailable</body></html>")],
+    ] as const) {
+      let caught: unknown;
+      try {
+        parseSheet({ data, fileName });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(SheetParseError);
+      expect((caught as Error).message).toContain(fileName);
     }
-    expect(caught).toBeInstanceOf(SheetParseError);
-    expect((caught as Error).message).toContain("nothing.xlsx");
   });
 
   it("takes the sheet it is asked for, and the first when that one is not there", () => {

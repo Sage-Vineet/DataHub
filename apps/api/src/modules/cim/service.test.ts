@@ -845,6 +845,20 @@ describe("a company with no CIM at all", () => {
     ]);
   });
 
+  it("lists a published CIM with the document it produced", async () => {
+    // The list is where somebody goes to find the deck they sent out. Without
+    // the publication on the row there is nothing linking the CIM to the file
+    // in the data room, and the two have to be matched by name and date.
+    const { deck, versionId } = await newDeck();
+    await service.publish(broker, versionId, Buffer.from("%PDF-1.7 fake"), {
+      contentType: "application/pdf",
+      pageCount: 4,
+    });
+
+    const [listed] = await service.listDecks(broker, CO);
+    expect(listed).toMatchObject({ id: deck.id, current_status: "published" });
+  });
+
   it("lists a deck whose version cannot be read as having none", async () => {
     // Not a state the schema produces — `decks.current_version_id` is a foreign
     // key. It is what the row mapping does when the join comes back empty, and
@@ -997,5 +1011,35 @@ describe("naming the questions a CIM raises", () => {
     // The Q&A list shows titles, and "CIM question" on every row is a list
     // nobody can scan.
     expect(store.createdItems.at(-1)?.title).not.toBe("CIM question");
+  });
+});
+
+describe("a deployment with no data room", () => {
+  it("refuses to publish, and says where the deck would have gone", async () => {
+    // Checked before anything is rendered or recorded: a CIM published into
+    // nowhere is a version marked published with no document behind it.
+    build({ dataRoom: unavailableCimDataRoom });
+    const { versionId } = await newDeck();
+
+    await expect(
+      service.publish(broker, versionId, Buffer.from("%PDF-1.7 fake"), {
+        contentType: "application/pdf",
+        pageCount: 4,
+      }),
+    ).rejects.toThrow(/data room is not available/i);
+  });
+
+  it("says so from the port itself if it is ever called anyway", async () => {
+    // The port is a refusal, not a no-op. A no-op would answer an upload id
+    // for a file that was never stored.
+    await expect(
+      unavailableCimDataRoom.publishDocument({
+        companyId: CO,
+        name: "x.pdf",
+        bytes: Buffer.from("x"),
+        contentType: "application/pdf",
+        uploadedBy: broker.id,
+      }),
+    ).rejects.toThrow(/unavailable/i);
   });
 });

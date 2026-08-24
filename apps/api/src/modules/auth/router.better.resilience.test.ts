@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { loadAuthConfig } from "./config.js";
 import { createBetterAuthRouter, type BetterAuthRouterDeps } from "./router.better.js";
 import type { AuthRepository } from "./ports.js";
+import { issueVerificationGrant } from "./verification-grant.js";
 
 /**
  * What the router does when Better Auth itself throws.
@@ -23,6 +24,11 @@ const config = loadAuthConfig({
 function app(over: Partial<Record<string, unknown>> = {}, repoOver: Partial<Record<string, unknown>> = {}) {
   const api = {
     signOut: () => Promise.reject(new Error("no session to sign out of")),
+    signUpEmail: () =>
+      Promise.resolve({
+        headers: new Headers(),
+        response: { user: { id: "33333333-3333-4333-8333-333333333333", email: "new@b.test" } },
+      }),
     requestPasswordResetEmailOTP: () => Promise.reject(new Error("the mail server refused")),
     signInEmail: () => Promise.reject(new Error("nope")),
     ...over,
@@ -38,6 +44,7 @@ function app(over: Partial<Record<string, unknown>> = {}, repoOver: Partial<Reco
       linkUserCompany: () => Promise.resolve(),
       companyHasFolders: () => Promise.resolve(false),
       createDefaultFolders: () => Promise.resolve(),
+      createBrokerUser: () => Promise.resolve(),
       ...repoOver,
     } as unknown as AuthRepository,
     config,
@@ -193,5 +200,73 @@ describe("a signed-in user Better Auth gave no role", () => {
 
     expect(res.status).toBe(200);
     expect(res.status).not.toBe(401);
+  });
+});
+
+describe("registering a broker", () => {
+  const SECRET_TEXT = "an-application-secret-long-enough";
+
+  const signup = (
+    over: Partial<Record<string, unknown>> = {},
+    repoOver: Partial<Record<string, unknown>> = {},
+  ) =>
+    request(app(over, repoOver))
+      .post("/auth/broker/signup")
+      .send({
+        name: "Dana Reed",
+        email: "new@b.test",
+        phone: "+44 20 7946 0000",
+        broker_company: "Kestrel Partners",
+        password: "correct1horse",
+        confirmPassword: "correct1horse",
+        verification_token: issueVerificationGrant("new@b.test", SECRET_TEXT, Date.now()),
+      });
+
+  it("answers the broker role it just wrote, not the row Better Auth created", async () => {
+    // Better Auth creates the row with the buyer default and the broker role is
+    // written after. Answering from the creation response signs somebody in as
+    // a buyer and shows them a client's screens until they reload.
+    const res = await signup(
+      {},
+      {
+        findUserById: () =>
+          Promise.resolve({ id: "33333333-3333-4333-8333-333333333333", role: "broker" }),
+      },
+    ).expect(201);
+    expect(res.body.user.role).toBe("broker");
+  });
+
+  it("assumes broker when the row cannot be re-read", async () => {
+    // The account was created BY the broker signup route. Answering "buyer"
+    // because a read failed would be worse than assuming the thing that is
+    // true by construction.
+    const res = await signup({}, { findUserById: () => Promise.resolve(null) }).expect(201);
+    expect(res.body.user.role).toBe("broker");
+  });
+
+  it("takes the token from the body when there is no header, and empty when neither", async () => {
+    const withBody = await signup({
+      signUpEmail: () =>
+        Promise.resolve({
+          headers: new Headers(),
+          response: {
+            user: { id: "33333333-3333-4333-8333-333333333333", email: "new@b.test" },
+            token: "from-the-body",
+          },
+        }),
+    }).expect(201);
+    expect(withBody.body.token).toBe("from-the-body");
+
+    const withNeither = await signup().expect(201);
+    expect(withNeither.body.token).toBe("");
+  });
+
+  it("passes a failure that is not 'taken' through with its own status", async () => {
+    // A 500 from Better Auth is not "that address is registered", and calling
+    // it 409 would tell somebody to sign in to an account that does not exist.
+    const failure = Object.assign(new Error("the identity store is down"), { statusCode: 503 });
+    const res = await signup({ signUpEmail: () => Promise.reject(failure) });
+    expect(res.status).toBe(503);
+    expect(res.body.error).not.toMatch(/already exists/i);
   });
 });
