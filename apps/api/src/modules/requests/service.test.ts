@@ -257,3 +257,44 @@ describe("RequestsService — what an update writes", () => {
     ).rejects.toBeInstanceOf(NotFoundError);
   });
 });
+
+describe("RequestsService — a request that is not there", () => {
+  /**
+   * Every one of these takes an id from a URL, so a request deleted between a
+   * page loading and a button being pressed lands here. The answer has to be a
+   * 404 rather than a 500 from reading through a null — and, for the delete,
+   * everything hanging off the request has to go with it.
+   */
+  it("404s an update, an approval and a read for an id nobody has", async () => {
+    const { service } = make();
+    const user = session();
+    const missing = randomUUID();
+
+    await expect(
+      service.update(user, missing, contracts.requestUpdate.parse({ title: "Renamed" })),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    await expect(service.approve(user, missing, null)).rejects.toBeInstanceOf(NotFoundError);
+    await expect(service.get(user, missing)).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("takes the reminders, the narrative and the linked documents with it", async () => {
+    // A reminder pointing at a request that is gone is a row nothing can reach
+    // and nothing will ever send.
+    const { repo, service } = make();
+    const user = session();
+    const request = await service.create(user, COMPANY, contracts.requestCreate.parse(base));
+
+    await service.addReminder(user, request.id);
+    await service.updateNarrative(
+      user,
+      request.id,
+      contracts.narrativeUpdate.parse({ content: "We are chasing this." }),
+    );
+
+    await service.delete(user, request.id);
+
+    expect(await repo.getById(request.id)).toBeNull();
+    expect(await repo.listReminders(request.id)).toEqual([]);
+    expect(await repo.getNarrative(request.id)).toBeNull();
+  });
+});

@@ -159,6 +159,17 @@ describe("whose document it reads", () => {
     const { service } = build({ bytes: bytes({}) });
     await expect(service.read(USER, COMPANY)).rejects.toThrow(/Return 2023\.pdf/);
   });
+
+  it("names it by id when the document has no name to give", async () => {
+    // `documents.name` is nullable. `The tax return "" has no file stored
+    // against it` names nothing anybody can go and look at; the id is ugly and
+    // findable, which is the right trade in an error.
+    const { service } = build({
+      documents: documents({ [COMPANY]: [{ id: "doc-ours", name: null }] }),
+      bytes: bytes({}),
+    });
+    await expect(service.read(USER, COMPANY)).rejects.toThrow(/doc-ours/);
+  });
 });
 
 describe("asking the model", () => {
@@ -221,6 +232,35 @@ describe("reading the model's figures", () => {
     const figures = toTaxReturnFigures(MODEL_REPLY);
     expect(figures.reconcilingItems).toEqual([
       { label: "Meals and entertainment", value: 12500 },
+    ]);
+  });
+
+  it("keeps a ragged reconciling list from taking the page down", () => {
+    /**
+     * The model writes this list freely, and every shape below has been seen:
+     * a null in the array, an entry that is a bare string, a label with no
+     * value, a value that is not a number.
+     *
+     * None may throw — an exception here takes the whole tax reconciliation
+     * off the page for one bad row — and none may become a row the reader
+     * cannot act on. A nameless item cannot be matched against anything on the
+     * books, and a zero difference is not a difference.
+     */
+    const figures = toTaxReturnFigures({
+      reconcilingItems: [
+        null,
+        "Meals",
+        { label: "  Meals and entertainment  ", value: "12,500" },
+        { label: "Fines", value: "not a number" },
+        { value: 900 },
+        { label: "Zeroed", value: 0 },
+        { label: "Real", value: 400 },
+      ],
+    });
+
+    expect(figures.reconcilingItems).toEqual([
+      { label: "Meals and entertainment", value: 12500 },
+      { label: "Real", value: 400 },
     ]);
   });
 

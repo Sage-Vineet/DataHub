@@ -146,6 +146,50 @@ describe("reading the statements", () => {
   });
 });
 
+describe("what a stored extract can look like", () => {
+  /**
+   * Two shapes are on file. Today's writer stores `{ statements: [...] }`; an
+   * older one stored the array itself. Reading only the current shape empties
+   * the grid for every company whose statements were extracted before the
+   * change — silently, because an empty grid is what a company with no
+   * statements looks like.
+   */
+  const gridAfterReshaping = async (reshape: (stored: unknown) => unknown) => {
+    // Written by the service, so the row matches on identity exactly as a real
+    // one does, then reshaped in place — which is what an older extraction
+    // left behind.
+    const statements = new InMemoryStatementsRepository();
+    const first = build({ statements });
+    await first.service.grid(USER, COMPANY, OPTIONS);
+
+    const row = (await statements.list(COMPANY, { statementType: "bank_reconciliation" }))[0]!;
+    (row as { payload: unknown }).payload = reshape(row.payload);
+
+    const second = build({ statements });
+    return { grid: await second.service.grid(USER, COMPANY, OPTIONS), asks: second.reader.asks };
+  };
+
+  it("reads today's shape", async () => {
+    const { grid, asks } = await gridAfterReshaping((stored) => stored);
+    expect(asks).toHaveLength(0); // served from the row, not re-read
+    expect(grid.banks).toHaveLength(1);
+  });
+
+  it("reads the older shape, which stored the array itself", async () => {
+    const { grid, asks } = await gridAfterReshaping(
+      (stored) => (stored as { statements: unknown[] }).statements,
+    );
+    expect(asks).toHaveLength(0);
+    expect(grid.banks).toHaveLength(1);
+  });
+
+  it("treats a row it cannot make sense of as holding nothing", async () => {
+    // Rather than throwing, which takes the grid off the page for one bad row.
+    const { grid } = await gridAfterReshaping(() => ({ statements: "not a list" }));
+    expect(grid.banks).toEqual([]);
+  });
+});
+
 describe("when one statement cannot be read", () => {
   it("keeps the rest on the page", async () => {
     // One unreadable statement should not take eleven readable ones off the
