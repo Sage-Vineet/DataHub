@@ -302,6 +302,18 @@ describe("choosing the years", () => {
     expect(payload.monthlyBreakdown).toEqual([]);
   });
 
+  it("answers an empty statement for an engagement with nothing ingested", () => {
+    // A version whose ledger has not been imported yet. The page opens on this
+    // — the P&L tab is there before the data is — and it has to render an
+    // empty statement rather than throw or invent a year.
+    const empty: EngagementData = { ...engagement, fiscalYears: [], entries: [] };
+    const payload = buildProfitLossSummary(empty);
+
+    expect(payload.years).toEqual([]);
+    expect(payload.lines.every((line) => Object.keys(line.valuesByYear).length === 0)).toBe(true);
+    expect(payload.hierarchicalRows.length).toBeGreaterThan(0);
+  });
+
   it("discards a nonsense year rather than treating it as a column", () => {
     const payload = buildProfitLossSummary(engagement, { fiscalYears: [0, -1, 2024] });
     expect(payload.yearCols).toEqual([{ key: "y2024", label: "2024" }]);

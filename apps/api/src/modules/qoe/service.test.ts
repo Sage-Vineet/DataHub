@@ -121,6 +121,30 @@ describe("QoeService — add-backs", () => {
     await service.saveCommentary(user, created.id, "Edited narrative.");
     expect((await repo.getAddback(created.id))!.commentary).toBe("Edited narrative.");
   });
+
+  it("drafts against an add-back nobody explained, with the context left blank", async () => {
+    // `explanation` is optional on the form, and most add-backs raised in a
+    // hurry have none. Passing `null` through to the model as the literal
+    // string "null" is how a draft comes back explaining a reason nobody gave.
+    const repo = new InMemoryQoeRepository();
+    repo.seedEngagement(VERSION, fixtureEngagement(COMPANY));
+    const contexts: unknown[] = [];
+    const service = new QoeService({
+      repo,
+      commentary: {
+        draft: (input: { context?: unknown }) => {
+          contexts.push(input.context);
+          return Promise.resolve("Suggested narrative.");
+        },
+      },
+    });
+    const user = session();
+
+    const created = await service.createAddback(user, { ...manual, explanation: null });
+    await service.draftCommentary(user, created.id);
+
+    expect(contexts).toEqual([""]);
+  });
 });
 
 describe("QoeService — an add-back that is not there", () => {

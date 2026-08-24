@@ -358,6 +358,20 @@ describe("the shape of a mapping", () => {
     expect(result.canAutoProcess).toBe(true);
   });
 
+  it("flags a shakily-matched single amount column", () => {
+    // The one-signed-column shape is checked on its own branch, and it is the
+    // one that matters most: a mis-mapped split amount imports a ledger of
+    // plausible numbers under the wrong sign, and nothing downstream can tell.
+    const result = validateMapping(
+      emptyMapping({ date: "Col1", account_name: "Col2", split_amount: "Zeta" }),
+      { date: 0.9, account_name: 0.9, split_amount: 0.2 },
+    );
+
+    expect(result.missingRequired).toEqual([]);
+    expect(result.lowConfidenceFields).toEqual(["split_amount"]);
+    expect(result.canAutoProcess).toBe(false);
+  });
+
   it("does not report the same field as low-confidence twice", () => {
     const result = validateMapping(emptyMapping({
       date: "Col1",

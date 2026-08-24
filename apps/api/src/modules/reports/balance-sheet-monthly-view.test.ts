@@ -325,6 +325,39 @@ describe("months the ledger never reached", () => {
   });
 });
 
+describe("a category the standard order does not name", () => {
+  it("sorts it after the ones that are, rather than to the front", () => {
+    /**
+     * The section orders are the headings a reader expects to scan in order —
+     * Bank Accounts, then Receivables, then Other Current Assets. A chart with
+     * a heading nobody anticipated ("Inventory", say) has to fall in AFTER
+     * them: putting an unfamiliar heading first pushes the bank balance below
+     * the fold on the page a reader opened to see it.
+     */
+    const withInventory: EngagementData = {
+      ...engagement,
+      accounts: [
+        ...accounts,
+        {
+          id: "stock",
+          name: "Raw Materials",
+          statementType: "balance_sheet",
+          accountType: "asset",
+          group: "Inventory",
+        },
+      ],
+      entries: [...entries, { accountId: "stock", fiscalYear: 2024, month: 1, amount: 750 }],
+    };
+
+    const labels = buildBalanceSheetMonthlyDetail(withInventory, ledger)
+      .sections.Assets.categories.map((c) => c.label);
+
+    expect(labels).toContain("Inventory");
+    expect(labels.indexOf("Inventory")).toBeGreaterThan(labels.indexOf("Bank Accounts"));
+    expect(labels.at(-1)).toBe("Inventory");
+  });
+});
+
 describe("rows the ledger cannot drill into", () => {
   it("gives the derived equity rows an empty drill-down rather than a wrong one", () => {
     // Retained earnings and net income are derived by the roll rather than
