@@ -307,3 +307,45 @@ describe("upload jobs, served from sync runs", () => {
       .expect(404);
   });
 });
+
+describe("how many versions a listing returns", () => {
+  /**
+   * The limit reaches a SQL `LIMIT`, so the clamping is what stands between a
+   * query parameter and the database. Zero or a negative reaches Postgres as
+   * `LIMIT 0` — a listing that is empty for a company that has versions, which
+   * reads as data loss rather than as a bad parameter. An enormous one asks
+   * for the whole table.
+   */
+  it("takes fifty when no limit is asked for", async () => {
+    await finalized();
+    expect(await service.list(current, companyId)).toHaveLength(1);
+  });
+
+  it("floors a zero or negative limit at one rather than returning nothing", async () => {
+    await finalized();
+    await finalized();
+    expect(await service.list(current, companyId, { limit: 0 })).toHaveLength(1);
+    expect(await service.list(current, companyId, { limit: -5 })).toHaveLength(1);
+  });
+
+  it("caps an enormous one rather than asking for the whole table", async () => {
+    await finalized();
+    // The cap is not observable in the rows here — there are not enough — so
+    // what is asserted is that it still ANSWERS, which a rejected `LIMIT` on
+    // some drivers would not.
+    expect(await service.list(current, companyId, { limit: 10_000_000 })).toHaveLength(1);
+  });
+
+  it("ignores a limit that is not a number at all", async () => {
+    await finalized();
+    expect(
+      await service.list(current, companyId, { limit: Number.NaN }),
+    ).toHaveLength(1);
+  });
+
+  it("truncates a fractional limit rather than passing it to SQL", async () => {
+    await finalized();
+    await finalized();
+    expect(await service.list(current, companyId, { limit: 1.9 })).toHaveLength(1);
+  });
+});

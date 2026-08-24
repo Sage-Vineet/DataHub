@@ -7,6 +7,7 @@ import { createSchemaDb, schema, type Db } from "@datahub/db";
 import {
   DrizzleBankStatementDocumentPort,
   DrizzleDocumentBytesPort,
+  DrizzleStatementDocumentPort,
   DrizzleTaxReturnDocumentPort,
 } from "./tax-return.drizzle.js";
 
@@ -269,5 +270,66 @@ describe("loading a document's bytes (real Postgres)", () => {
 
     const port = new DrizzleDocumentBytesPort(db);
     expect((await port.bytesFor(doc))!.mimeType).toBe("text/csv");
+  });
+});
+
+describe("finding the balance sheets behind the bank grid (real Postgres)", () => {
+  /**
+   * `DrizzleStatementDocumentPort` is the generic form of the two ports above,
+   * and the one the bank-activity grid reads its balance sheets through. It
+   * had no test at all — so the company filter it shares with them, which is
+   * the whole reason these ports exist, was unproven on this one.
+   */
+  const port = () =>
+    new DrizzleStatementDocumentPort(db, "balance_sheet", /balance\s*sheet|\bbs\b/i);
+
+  it("lists what a version links, newest first", async () => {
+    const older = await addDocument(ours, ourFolder, "Balance Sheet 2023.pdf");
+    const newer = await addDocument(ours, ourFolder, "Balance Sheet 2024.pdf");
+    const versionId = await linkToVersion(ours, older, "balance_sheet");
+    await db.insert(schema.keyReportFileMappings).values({
+      versionId,
+      companyId: ours,
+      reportCategory: "balance_sheet",
+      documentId: newer,
+    });
+
+    const found = await port().forVersion(ours, versionId);
+    expect(found.map((d) => d.id)).toEqual([newer, older]);
+  });
+
+  it("lists nothing through another company's version", async () => {
+    // The company is filtered on BOTH sides of the join. A mapping row naming
+    // one company and a document belonging to another must reach neither.
+    const ourDoc = await addDocument(ours, ourFolder, "Balance Sheet 2024.pdf");
+    const versionId = await linkToVersion(ours, ourDoc, "balance_sheet");
+
+    expect(await port().forVersion(theirs, versionId)).toEqual([]);
+  });
+
+  it("ignores a document linked under a different category", async () => {
+    const doc = await addDocument(ours, ourFolder, "Balance Sheet 2024.pdf");
+    const versionId = await linkToVersion(ours, doc, "tax_return");
+
+    expect(await port().forVersion(ours, versionId)).toEqual([]);
+  });
+
+  it("falls back to the company's most recent balance-sheet-looking document", async () => {
+    await addDocument(ours, ourFolder, "Engagement Letter.pdf");
+    const sheet = await addDocument(ours, ourFolder, "BS 2024.pdf");
+
+    expect((await port().latest(ours))?.id).toBe(sheet);
+  });
+
+  it("does not reach another company's balance sheet", async () => {
+    await addDocument(theirs, theirFolder, "Balance Sheet 2024.pdf");
+    expect(await port().latest(ours)).toBeNull();
+  });
+
+  it("answers null rather than an unrelated document", async () => {
+    // Handing back whatever was uploaded most recently would put an engagement
+    // letter through the model as a balance sheet.
+    await addDocument(ours, ourFolder, "Engagement Letter.pdf");
+    expect(await port().latest(ours)).toBeNull();
   });
 });
