@@ -28,35 +28,24 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 COMPOSE="docker compose -f docker-compose.demo.yml"
 
-# The migrated domains default to on in docker-compose.demo.yml, and every one
-# of them now HAS to be. They were cutover flags — on served the module, off
-# fell through to legacy — but each of those legacy handlers has since been
-# deleted, so "off" is not a rollback any more, it is a hole.
-#
-# `assertReapedModulesEnabled` refuses to start when one is off, for exactly
-# that reason. Nothing is exported here; the compose defaults are the single
-# place those flags are set, and a second copy would be one to forget.
+# The migrated domains have no flags any more. They were cutover switches — on
+# served the module, off fell through to legacy — and every module mounts
+# unconditionally now, because there is nothing to fall through to.
 
 # LEGACY_MODE=1 turned every module off so the same stack ran entirely on the
 # legacy backend, for a side-by-side.
 #
-# It cannot do that any more, and saying so beats appearing to work. The legacy
-# handlers for the domains above are gone; turning the modules off would serve
-# 404s, not legacy behaviour. Kept as a refusal rather than deleted, because a
-# flag that silently stopped meaning what it says is worse than one that tells
-# you it is over.
+# Kept as a refusal rather than deleted, because a flag that silently stopped
+# meaning what it says is worse than one that tells you it is over. The backend
+# it ran is not in the tree; only an earlier commit has it.
 if [[ "${LEGACY_MODE:-0}" == "1" ]]; then
-  echo "LEGACY_MODE is no longer available: the legacy handlers for the migrated" >&2
-  echo "domains have been deleted, so running without the modules serves 404s" >&2
-  echo "rather than legacy behaviour. Check out a commit before the reap instead." >&2
+  echo "LEGACY_MODE is no longer available: the legacy backend has been deleted," >&2
+  echo "and the flags it switched off no longer exist. Check out a commit before" >&2
+  echo "the reap instead." >&2
   exit 2
 fi
-# The greenfield capabilities have no legacy predecessor at their prefixes, so they
-# default ON — there is nothing to fall back to and nothing they can shadow.
-# Plumbing rather than a capability: legacy verifies HS256 JWTs and the gateway
-# issues Better Auth sessions, so without the bridge every un-migrated route
-# refuses the SPA's own credentials.
-export LEGACY_AUTH_BRIDGE_ENABLED="${LEGACY_AUTH_BRIDGE_ENABLED:-true}"
+# The capability flags. Nothing predates them at their prefixes, so they default
+# ON — there is nothing to fall back to and nothing they can shadow.
 export QOE_MODULE_ENABLED="${QOE_MODULE_ENABLED:-true}"
 export DATAROOM_MODULE_ENABLED="${DATAROOM_MODULE_ENABLED:-true}"
 export DATAROOM_VERSIONS_ENABLED="${DATAROOM_VERSIONS_ENABLED:-true}"
@@ -236,32 +225,36 @@ arch=$(curl -s "$GW/companies/$ACME/folders?includeArchived=true" -b "$JAR" | gr
 check "archived folder hidden by default" 0 "$live"
 check "archived folder shown with ?includeArchived" 1 "$arch"
 
-# QuickBooks OAuth lives under /api/auth/* in legacy. It must keep reaching legacy
-# even with the auth module mounted at /auth.
-# Anonymous on purpose: it proves the route still reaches legacy AND that the
-# auth bridge mints nothing for a caller with no session.
-check "QuickBooks OAuth still reaches legacy" 401 "$(curl -s -o /dev/null -w '%{http_code}' "$GW/api/auth/status")"
+# QuickBooks OAuth lives under /api/auth/*, which is why nothing else mounts
+# there. Anonymous on purpose: 401 proves the route is SERVED and refuses a
+# caller with no session, rather than 404ing because nobody claims the path.
+#
+# This check used to read "QuickBooks OAuth still reaches legacy", and passed
+# for a different reason — the route moved in-process and both answers are 401.
+check "QuickBooks OAuth is served and refuses an anonymous caller" 401 \
+  "$(curl -s -o /dev/null -w '%{http_code}' "$GW/api/auth/status")"
 
-# The legacy auth bridge. Better Auth sessions are opaque rows; legacy verifies
-# HS256 JWTs. Every screen still served by legacy answered 401 to a logged-in
-# user until the gateway started re-signing. These are the screens a booth
-# visitor can actually reach, so they are asserted as themselves rather than as
-# one representative route.
-if [[ "${LEGACY_AUTH_BRIDGE_ENABLED}" == "true" ]]; then
-  for legacy_route in \
-    "reminders:/companies/$ACME/reminders" \
-    "activity:/companies/$ACME/activity" \
-    "chart of accounts:/companies/$ACME/chart-of-accounts" \
-    "report sources:/report-sources/$ACME" \
-    "CIM prep state:/companies/$ACME/workspace-page-state/cim-prep"
-  do
-    label="${legacy_route%%:*}"; path="${legacy_route#*:}"
-    code=$(curl -s -o /dev/null -w '%{http_code}' "$GW$path" -b "$JAR")
-    # 200 or 404 both prove authentication succeeded; 401 is the regression.
-    check "legacy bridge: $label authenticates" "true" \
-      "$([[ "$code" != "401" && "$code" != "403" ]] && echo true || echo "false ($code)")"
-  done
-fi
+# Every screen a booth visitor can reach, authenticated with the session the
+# gateway itself minted.
+#
+# These were the legacy-bridge checks: Better Auth sessions are opaque rows and
+# legacy verified HS256 JWTs, so each of these screens answered 401 to a
+# logged-in user until the gateway started re-signing for them. There is no
+# second engine to re-sign for now — but the screens are the same ones, and a
+# 401 here is still the regression that matters.
+for screen in \
+  "reminders:/companies/$ACME/reminders" \
+  "activity:/companies/$ACME/activity" \
+  "chart of accounts:/companies/$ACME/chart-of-accounts" \
+  "report sources:/report-sources/$ACME" \
+  "CIM prep state:/companies/$ACME/workspace-page-state/cim-prep"
+do
+  label="${screen%%:*}"; path="${screen#*:}"
+  code=$(curl -s -o /dev/null -w '%{http_code}' "$GW$path" -b "$JAR")
+  # 200 or 404 both prove authentication succeeded; 401/403 is the regression.
+  check "$label authenticates" "true" \
+    "$([[ "$code" != "401" && "$code" != "403" ]] && echo true || echo "false ($code)")"
+done
 
 check "SPA is served" 200 "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${WEB_PORT}/")"
 
