@@ -3,9 +3,12 @@ import {
   AddbackValidationError,
   detectDuplicates,
   forDataSource,
+  resolveAddback,
   validateAddback,
 } from "./addbacks.js";
-import type { Addback } from "./types.js";
+import { buildIncomeStatement } from "./income-statement.js";
+import { periodKey } from "./periods.js";
+import type { Account, Addback, GlEntry, Period } from "./types.js";
 
 /**
  * Add-backs, on their own.
@@ -183,5 +186,135 @@ describe("which add-backs belong to a data source", () => {
     ];
     expect(forDataSource(list, "company_financials").map((a) => a.id)).toEqual(["a", "c"]);
     expect(forDataSource(list, "tax_return").map((a) => a.id)).toEqual(["b"]);
+  });
+});
+
+describe("what an add-back is worth, per period", () => {
+  const ACCOUNTS: Account[] = [
+    { id: "meals", name: "Meals", statementType: "profit_loss", accountType: "expense" },
+    { id: "rent", name: "Rent", statementType: "profit_loss", accountType: "expense" },
+  ];
+
+  const ENTRIES: GlEntry[] = [
+    { accountId: "meals", fiscalYear: 2024, month: 1, amount: 300, vendor: "Bistro" },
+    { accountId: "meals", fiscalYear: 2024, month: 2, amount: 200, vendor: "Cafe" },
+    { accountId: "meals", fiscalYear: 2024, month: 3, amount: 100, vendor: null },
+    { accountId: "rent", fiscalYear: 2024, month: 1, amount: 120_000 },
+  ];
+
+  const ANNUAL: Period[] = [{ fiscalYear: 2024, month: null }];
+  const MONTHLY: Period[] = [1, 2, 3].map((month) => ({ fiscalYear: 2024, month }));
+
+  const annualKey = (entry: GlEntry) => periodKey(entry.fiscalYear, null);
+  const monthlyKey = (entry: GlEntry) => periodKey(entry.fiscalYear, entry.month);
+
+  const statementFor = (periods: Period[]) =>
+    buildIncomeStatement(ACCOUNTS, ENTRIES, periods, periods[0]?.month === null ? "annual" : "monthly");
+
+  const resolve = (over: Partial<Addback>, periods = ANNUAL) =>
+    resolveAddback(
+      addback(over),
+      ENTRIES,
+      statementFor(periods),
+      periods,
+      periods === ANNUAL ? annualKey : monthlyKey,
+    ).amounts;
+
+  it("reads the whole account when no vendor is named", () => {
+    expect(
+      resolve({ kind: "pnl_account_vendor", linkedAccountId: "meals" })["2024"],
+    ).toBe(600);
+  });
+
+  it("reads only the named vendors when scope is given", () => {
+    // Scoping is how one account carries two add-backs without double-counting
+    // — the reason `detectDuplicates` exists at all.
+    expect(
+      resolve({ kind: "pnl_account_vendor", linkedAccountId: "meals", vendorScope: ["Bistro"] })[
+        "2024"
+      ],
+    ).toBe(300);
+  });
+
+  it("leaves a vendorless posting out of a scoped add-back", () => {
+    // `vendor` is nullable, and a scoped add-back is a statement about NAMED
+    // vendors. Counting the unattributed row would inflate it by whatever the
+    // ledger failed to attribute.
+    expect(
+      resolve({
+        kind: "pnl_account_vendor",
+        linkedAccountId: "meals",
+        vendorScope: ["Bistro", "Cafe"],
+      })["2024"],
+    ).toBe(500);
+  });
+
+  it("treats an empty scope as the whole account, not as no vendors", () => {
+    // An empty list is what the form sends when nobody picked one, and reading
+    // it as "no vendors match" would zero the add-back silently.
+    expect(
+      resolve({ kind: "pnl_account_vendor", linkedAccountId: "meals", vendorScope: [] })["2024"],
+    ).toBe(600);
+  });
+
+  it("measures a recast as the gap between the books and the post-close figure", () => {
+    // The add-back is what the business would NOT have spent after close.
+    expect(
+      resolve({ kind: "recast", linkedAccountId: "rent", recastNormalizedValue: 90_000 })["2024"],
+    ).toBe(30_000);
+  });
+
+  it("measures a recast on an account with nothing posted as the negative of the figure", () => {
+    // Not a shrug: an account with no ledger movement against a post-close
+    // rent of 90k is a 90k cost the buyer takes on, and the bridge should show
+    // it rather than nothing.
+    expect(
+      resolve({ kind: "recast", linkedAccountId: "unposted", recastNormalizedValue: 90_000 })[
+        "2024"
+      ],
+    ).toBe(-90_000);
+  });
+
+  it("spreads an annual figure across the months it is viewed in", () => {
+    // A manual adjustment is entered once, per year, and the monthly view has
+    // to show something in each column rather than the whole figure in January.
+    const monthly = resolve(
+      { kind: "manual_adjustment", explanation: "Owner travel.", values: { "2024": 300 } },
+      MONTHLY,
+    );
+    expect(monthly["2024-01"]).toBe(100);
+    expect(monthly["2024-02"]).toBe(100);
+    expect(monthly["2024-03"]).toBe(100);
+  });
+
+  it("prefers an exact monthly figure over the annual one", () => {
+    const monthly = resolve(
+      {
+        kind: "manual_adjustment",
+        explanation: "Owner travel.",
+        values: { "2024": 300, "2024-02": 250 },
+      },
+      MONTHLY,
+    );
+    expect(monthly["2024-01"]).toBe(100);
+    expect(monthly["2024-02"]).toBe(250);
+  });
+
+  it("reads an add-back with no amounts at all as zero, not as absent", () => {
+    const amounts = resolve({ kind: "manual_adjustment", explanation: "Pending." });
+    expect(amounts["2024"]).toBe(0);
+  });
+
+  it("smooths a smoothed add-back evenly, whatever period it was posted in", () => {
+    // "Smoothed" says the cost is not really a January cost — a annual licence
+    // paid up front, say — so showing it all in January makes that month look
+    // worse and every other month better.
+    const monthly = resolve(
+      { kind: "pnl_account_vendor", linkedAccountId: "rent", granularity: "smoothed" },
+      MONTHLY,
+    );
+    expect(monthly["2024-01"]).toBe(40_000);
+    expect(monthly["2024-02"]).toBe(40_000);
+    expect(monthly["2024-03"]).toBe(40_000);
   });
 });

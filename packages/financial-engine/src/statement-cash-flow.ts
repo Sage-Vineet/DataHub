@@ -211,10 +211,21 @@ export function leavesOf(nodes: readonly StatementNode[] | null | undefined): St
 const amountOf = (node: StatementNode): number =>
   typeof node.amount === "number" && Number.isFinite(node.amount) ? node.amount : 0;
 
+/**
+ * A statement line's name, trimmed.
+ *
+ * `StatementNode.name` is typed nullable because extraction writes these rows
+ * and a line with no label is a shape a model can produce. Every read of it
+ * wants the same thing — a trimmed string, empty when there is nothing — and
+ * spelling that out at each of the ten sites made ten branches out of one
+ * decision.
+ */
+const nameOf = (node: StatementNode): string => String(node.name ?? "").trim();
+
 const sumMatching = (leaves: readonly StatementNode[], patterns: readonly RegExp[]): number =>
   round2(
     leaves
-      .filter((leaf) => patterns.some((p) => p.test(String(leaf.name ?? "").trim())))
+      .filter((leaf) => patterns.some((p) => p.test(nameOf(leaf))))
       .reduce((total, leaf) => total + amountOf(leaf), 0),
   );
 
@@ -226,7 +237,7 @@ function sumBucket(byBucket: Map<CashFlowBucket, StatementNode[]>, bucket: CashF
 function group(leaves: readonly StatementNode[]): Map<CashFlowBucket, StatementNode[]> {
   const byBucket = new Map<CashFlowBucket, StatementNode[]>();
   for (const leaf of leaves) {
-    const bucket = classifyStatementLine(String(leaf.name ?? ""));
+    const bucket = classifyStatementLine(nameOf(leaf));
     if (!bucket) continue;
     const existing = byBucket.get(bucket);
     if (existing) existing.push(leaf);
@@ -356,8 +367,8 @@ export function buildStatementCashFlow(input: StatementCashFlowInput): Statement
   // it is only added when no depreciation line already absorbed it.
   const combined = incomeLeaves.some(
     (leaf) =>
-      DEPRECIATION.some((p) => p.test(String(leaf.name ?? "").trim())) &&
-      /amortization/i.test(String(leaf.name ?? "")),
+      DEPRECIATION.some((p) => p.test(nameOf(leaf))) &&
+      /amortization/i.test(nameOf(leaf)),
   );
   const amortization = combined ? 0 : sumMatching(incomeLeaves, AMORTIZATION);
 
@@ -469,10 +480,10 @@ export function buildStatementCashFlow(input: StatementCashFlowInput): Statement
   // question a buyer actually asks.
   if (hasPrior) {
     const currentDebt = new Map(
-      (current.get("debt") ?? []).map((leaf) => [String(leaf.name ?? "").trim(), amountOf(leaf)]),
+      (current.get("debt") ?? []).map((leaf) => [nameOf(leaf), amountOf(leaf)]),
     );
     const priorDebt = new Map(
-      (prior.get("debt") ?? []).map((leaf) => [String(leaf.name ?? "").trim(), amountOf(leaf)]),
+      (prior.get("debt") ?? []).map((leaf) => [nameOf(leaf), amountOf(leaf)]),
     );
     for (const name of [...new Set([...currentDebt.keys(), ...priorDebt.keys()])].sort()) {
       const curr = currentDebt.get(name) ?? 0;
@@ -527,15 +538,15 @@ export function buildStatementCashFlow(input: StatementCashFlowInput): Statement
   const cashValidated = Math.abs(difference) <= tolerance;
 
   const classifiedNames = new Set(
-    [...current.values()].flat().map((leaf) => String(leaf.name ?? "").trim()),
+    [...current.values()].flat().map((leaf) => nameOf(leaf)),
   );
   const unclassifiedLines = currentLeaves
-    .filter((leaf) => !classifiedNames.has(String(leaf.name ?? "").trim()))
-    .map((leaf) => ({ name: String(leaf.name ?? "").trim(), amount: amountOf(leaf) }));
+    .filter((leaf) => !classifiedNames.has(nameOf(leaf)))
+    .map((leaf) => ({ name: nameOf(leaf), amount: amountOf(leaf) }));
 
   const ambiguousLines: StatementCashFlowReconciliation["ambiguousLines"] = [];
   for (const leaf of currentLeaves) {
-    const name = String(leaf.name ?? "").trim();
+    const name = nameOf(leaf);
     const buckets = bucketsMatching(name);
     if (buckets.length > 1) {
       ambiguousLines.push({ name, buckets, assigned: classifyStatementLine(name)! });
