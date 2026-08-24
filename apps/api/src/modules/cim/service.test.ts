@@ -297,6 +297,37 @@ describe("the guided Q&A loop", () => {
     // The Q&A module never learns what a CIM is; one field is the whole contract.
     expect(store.createdItems[0]!.externalRef).toBe(gap.block_id);
     expect(store.createdItems[0]!.text).toBe("How would you describe the business?");
+    // And the section it sits in, so the Q&A list groups the way the deck does.
+    expect(store.createdItems[0]!.sectionKey).toBe(gap.section_key);
+  });
+
+  it("titles the question from the block's own label, and falls back", async () => {
+    // The title is what a seller sees in their Q&A list. A block with no
+    // authored label still has to say something there.
+    const { versionId } = await newDeck();
+    const gap = await firstGap(versionId);
+    await service.generate(broker, versionId, {
+      questions: [{ block_id: gap.block_id, text: "How would you describe the business?" }],
+    });
+    expect(store.createdItems[0]!.title).toBe(gap.label);
+  });
+
+  it("carries an assignee through when one is named, and none when not", async () => {
+    // Unassigned is a real state — the deal team assigns as they triage — and
+    // sending an empty assignee would put the question on nobody's list while
+    // looking assigned.
+    const { versionId } = await newDeck();
+    const gaps = await service.gaps(broker, versionId);
+
+    await service.generate(broker, versionId, {
+      questions: [
+        { block_id: gaps[0]!.block_id, text: "q1", assignee_user_id: seller.id },
+        { block_id: gaps[1]!.block_id, text: "q2" },
+      ],
+    });
+
+    expect(store.createdItems[0]!.assigneeUserId).toBe(seller.id);
+    expect(store.createdItems[1]!.assigneeUserId).toBeUndefined();
   });
 
   it("refuses to generate against a block on another CIM", async () => {

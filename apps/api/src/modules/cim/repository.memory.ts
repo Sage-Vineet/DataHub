@@ -55,8 +55,22 @@ export class CimStore {
   }> = [];
   /** Answers the Q&A module would return, seeded by a test. */
   readonly answers: AnswerFixture[] = [];
-  /** Items the CIM asked the Q&A module to create. */
-  readonly createdItems: Array<{ externalRef: string; text: string; itemId: string }> = [];
+  /**
+   * Items the CIM asked the Q&A module to create.
+   *
+   * The WHOLE item, not a subset. A fake that drops fields the port sends can
+   * prove nothing about them, and the service could stop sending them without
+   * a single test failing — which is exactly what had happened to `title`,
+   * `sectionKey` and `assigneeUserId`.
+   */
+  readonly createdItems: Array<{
+    externalRef: string;
+    sectionKey: string;
+    text: string;
+    title: string;
+    assigneeUserId?: string;
+    itemId: string;
+  }> = [];
   readonly publishedDocuments: Array<{ name: string; bytes: Buffer; companyId: string }> = [];
   private clock = 0;
 
@@ -405,11 +419,7 @@ export class MemoryQaPort implements QaPort {
   async createItems(input: Parameters<QaPort["createItems"]>[0]) {
     return input.items.map((item) => {
       const itemId = randomUUID();
-      this.store.createdItems.push({
-        externalRef: item.externalRef,
-        text: item.text,
-        itemId,
-      });
+      this.store.createdItems.push({ ...item, itemId });
       return { itemId, externalRef: item.externalRef };
     });
   }
