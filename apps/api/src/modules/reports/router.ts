@@ -358,6 +358,19 @@ export function createReportsRouter(deps: ReportsRouterDeps): Router {
     res.status(204).send();
   }));
 
+  /**
+   * Build the version's entry tables from the files linked to it.
+   *
+   * The tables this fills are the financial engine's input — the balance sheet
+   * is rolled forward from `balance_sheet_entries` and the chart of accounts is
+   * regenerated from them — so this is the route that turns uploaded files into
+   * every figure the product reports.
+   */
+  router.post("/key-reports/versions/:versionId/sync", handle(async (req, res) => {
+    const result = await service.sync(req.user!, req.params.versionId!);
+    res.json({ success: true, ...(result as Record<string, unknown>) });
+  }));
+
   router.get("/key-reports/versions/:versionId/sync-logs", handle(async (req, res) => {
     const limit = Number.parseInt(String(req.query.limit ?? ""), 10);
     const syncLogs = await service.listSyncLogs(

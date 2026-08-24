@@ -78,16 +78,6 @@ function handleError(res, error, label) {
 
 // ---- Sync ------------------------------------------------------------------
 
-router.post("/key-reports/versions/:versionId/sync", async (req, res) => {
-  try {
-    const version = await loadVersionWithAccess(req, res);
-    if (!version) return;
-    const result = await keyReportService.syncVersion(version.id, req.user?.id);
-    return res.json({ success: true, ...result });
-  } catch (error) {
-    return handleError(res, error, "POST sync");
-  }
-});
 
 
 // ---- Chart of Accounts -----------------------------------------------------

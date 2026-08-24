@@ -114,15 +114,20 @@ describe("reports router — version lifecycle (real Postgres)", () => {
     expect(updated.body.version.versionName).toBe("Renamed");
   });
 
-  it("400s malformed create, 403s cross-tenant, and 501s the deferred sync via fall-through", async () => {
+  it("400s malformed create, 403s cross-tenant, and 503s a sync with no model", async () => {
     const v = (await request(app).post("/key-reports/versions").send({ company_id: companyId })).body;
     expect((await request(app).post("/key-reports/versions").send({})).status).toBe(400);
     current = { ...BROKER, role: "buyer", company_ids: [randomUUID()] };
     expect((await request(app).get(`/key-reports/versions?company_id=${companyId}`)).status).toBe(403);
-    // The sync route is NOT defined here (falls through to legacy in prod); the module
-    // never handles it, so a direct call 404s on this isolated app — proving it's not migrated.
+    // The sync IS the module's now. This harness has no model configured, so
+    // it answers 503 naming the configuration rather than 404ing to legacy.
     current = { ...BROKER, company_ids: [companyId] };
-    expect((await request(app).post(`/key-reports/versions/${v.id}/sync`)).status).toBe(404);
+    // `v.version.id`, not `v.id`: the create answers `{ success, version }`.
+    // While the sync route 404'd, an undefined id here reached nothing and the
+    // assertion passed for the wrong reason.
+    expect((await request(app).post(`/key-reports/versions/${v.version.id}/sync`)).status).toBe(
+      503,
+    );
   });
 });
 

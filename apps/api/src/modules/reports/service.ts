@@ -487,10 +487,16 @@ export class ReportsService {
     await this.repo.delete(id);
   }
 
-  /** The GL sync is not yet migrated — the port reports it's on the legacy engine (D5). */
-  async sync(user: SessionUser, id: string): Promise<never> {
+  /**
+   * Read the version's linked statements into the entry tables.
+   *
+   * The port is still a seam: a deployment with no model configured gets one
+   * that says so, rather than this service knowing whether extraction is
+   * available.
+   */
+  async sync(user: SessionUser, id: string): Promise<unknown> {
     await this.requireAccessible(user, id);
-    return this.syncPort.sync(id);
+    return this.syncPort.sync(user, id);
   }
 
   private requireCompany(user: SessionUser, companyId: string): void {

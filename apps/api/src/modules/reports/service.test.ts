@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { reports as contracts, type SessionUser } from "@datahub/contracts";
 import { ForbiddenError, NotFoundError } from "../../shared/errors.js";
-import { LegacyReportSyncPort } from "./adapters.js";
+import { UnavailableReportSyncPort } from "./adapters.js";
 import {
   InMemoryEngagementPort,
   InMemoryLedgerDetailPort,
@@ -32,7 +32,7 @@ function make() {
     preferences,
     service: new ReportsService({
       repo,
-      sync: new LegacyReportSyncPort(),
+      sync: new UnavailableReportSyncPort(),
       engagement,
       ledger,
       mappings,
@@ -81,11 +81,13 @@ describe("ReportsService — version lifecycle", () => {
     expect(list.filter((v) => v.is_active).map((v) => v.id)).toEqual([b.id]); // a deactivated
   });
 
-  it("denies cross-tenant and 501s the deferred sync", async () => {
+  it("denies cross-tenant, and 503s a sync with no model configured", async () => {
     const { service } = make();
     const v = await service.create(session(), contracts.reportVersionCreate.parse({ company_id: COMPANY }));
     await expect(service.get(session({ role: "buyer", company_ids: [OTHER] }), v.id)).rejects.toBeInstanceOf(ForbiddenError);
-    await expect(service.sync(session(), v.id)).rejects.toMatchObject({ status: 501 });
+    // 503 rather than 501: the sync IS migrated, but reading a statement
+    // needs a model and this harness has none.
+    await expect(service.sync(session(), v.id)).rejects.toMatchObject({ status: 503 });
   });
 });
 

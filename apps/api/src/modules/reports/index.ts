@@ -1,9 +1,17 @@
+import type { DocumentReader } from "../../shared/gemini.js";
+import { DrizzleStatementsRepository } from "../statements/repository.drizzle.js";
+import { DrizzleDocumentBytesPort } from "../statements/tax-return.drizzle.js";
+import { KeyReportSyncService } from "./key-report-sync.js";
+import {
+  DrizzleStatementEntryWriter,
+  DrizzleSyncLogWriter,
+} from "./key-report-sync.drizzle.js";
 import type { RequestHandler, Router } from "express";
 import type { Db } from "@datahub/db";
 import {
   DrizzleEngagementPort,
   DrizzleLedgerDetailPort,
-  LegacyReportSyncPort,
+  UnavailableReportSyncPort,
 } from "./adapters.js";
 import {
   DrizzleMappingsRepository,
@@ -23,13 +31,36 @@ export interface ReportsModule {
 export interface CreateReportsModuleOptions {
   db: Db;
   requireAuth: RequestHandler;
+  /**
+   * Reads a statement out of a document.
+   *
+   * Absent where no model is configured: the sync port then answers 503 naming
+   * the configuration, rather than this module pretending it can extract.
+   */
+  reader?: DocumentReader;
 }
 
-/** Compose the reports module: Drizzle repo + (stub) sync port + service + router. */
+/** Compose the reports module: Drizzle repo + sync port + service + router. */
 export function createReportsModule(opts: CreateReportsModuleOptions): ReportsModule {
+  const repo = new DrizzleReportsRepository(opts.db);
+
+  // The sync reads the version's linked statements into the entry tables the
+  // financial engine runs on. Without a model there is nothing to read them
+  // with, and the port says so rather than this module guessing.
+  const sync = opts.reader
+    ? new KeyReportSyncService({
+        versions: repo,
+        statements: new DrizzleStatementsRepository(opts.db),
+        entries: new DrizzleStatementEntryWriter(opts.db),
+        logs: new DrizzleSyncLogWriter(opts.db),
+        bytes: new DrizzleDocumentBytesPort(opts.db),
+        reader: opts.reader,
+      })
+    : new UnavailableReportSyncPort();
+
   const service = new ReportsService({
-    repo: new DrizzleReportsRepository(opts.db),
-    sync: new LegacyReportSyncPort(),
+    repo,
+    sync,
     engagement: new DrizzleEngagementPort(opts.db),
     ledger: new DrizzleLedgerDetailPort(opts.db),
     mappings: new DrizzleMappingsRepository(opts.db),
@@ -64,10 +95,16 @@ export {
   InMemorySyncLogsRepository,
 } from "./repository.memory.js";
 export {
-  LegacyReportSyncPort,
+  UnavailableReportSyncPort,
   DrizzleEngagementPort,
   DrizzleLedgerDetailPort,
 } from "./adapters.js";
+export { KeyReportSyncService } from "./key-report-sync.js";
+export {
+  DrizzleStatementEntryWriter,
+  DrizzleSyncLogWriter,
+} from "./key-report-sync.drizzle.js";
+export { flattenStatement, splitAccountName } from "./statement-entries.js";
 export { buildStatements, toBalanceSheetStatement, toCashFlowStatement } from "./statements.js";
 export type { FinancialStatements } from "./statements.js";
 export { createReportsRouter } from "./router.js";

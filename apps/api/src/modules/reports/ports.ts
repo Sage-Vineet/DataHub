@@ -1,3 +1,4 @@
+import type { SessionUser } from "@datahub/contracts";
 import type { EngagementData } from "../../shared/engagement.drizzle.js";
 
 import type { ReportVersionStatus } from "@datahub/contracts";
@@ -53,8 +54,15 @@ export interface EngagementPort {
   load(versionId: string): Promise<EngagementData | null>;
 }
 
+/**
+ * Building a version's entry tables from the files linked to it.
+ *
+ * A port rather than the service, so a deployment with no model configured can
+ * supply one that says so — and so the reports service never has to know
+ * whether extraction is available.
+ */
 export interface ReportSyncPort {
-  sync(versionId: string): Promise<never>;
+  sync(user: SessionUser, versionId: string): Promise<unknown>;
 }
 
 /**

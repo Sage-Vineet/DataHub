@@ -938,7 +938,12 @@ export const bankReconciliationAddbackItems = pgTable(
  * a failed sync leaves a trail rather than just an unchanged report.
  */
 export const keyReportSyncLogs = pgTable("key_report_sync_logs", {
-  id: bigint("id", { mode: "number" }).primaryKey(),
+  // `bigserial`, not a bare bigint: the deployed column has
+  // `DEFAULT nextval(...)`, and modelling it without one made `id` required on
+  // every insert — so every caller had to invent a primary key, which is both
+  // the database's job and a race waiting to happen. The same correction the
+  // entry tables already carry.
+  id: bigserial("id", { mode: "number" }).primaryKey(),
   versionId: uuid("version_id")
     .notNull()
     .references(() => keyReportVersions.id, { onDelete: "cascade" }),

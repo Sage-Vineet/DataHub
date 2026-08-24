@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { HttpError } from "../../shared/errors.js";
 import {
-  LegacyReportSyncPort,
+  UnavailableReportSyncPort,
   splitOf,
   toLedgerTransaction,
   toNumber,
@@ -138,16 +138,15 @@ describe("reading a number out of a column", () => {
   });
 });
 
-describe("what is not migrated", () => {
-  it("says so with a 501 rather than failing obscurely", () => {
-    // The seam is explicit: a caller gets "not migrated", not a stack trace
-    // from something half-wired.
-    return expect(new LegacyReportSyncPort().sync("v1")).rejects.toMatchObject({
-      status: 501,
-    });
+describe("a deployment that cannot read a statement", () => {
+  it("says which of the two it is, with a 503", async () => {
+    // A 503 naming the configuration rather than a 501 saying "not migrated":
+    // it IS migrated, but reading a statement needs a model, and a server
+    // without one should say so.
+    await expect(new UnavailableReportSyncPort().sync()).rejects.toMatchObject({ status: 503 });
   });
 
   it("throws an HttpError, so the router maps it rather than 500ing", async () => {
-    await expect(new LegacyReportSyncPort().sync("v1")).rejects.toBeInstanceOf(HttpError);
+    await expect(new UnavailableReportSyncPort().sync()).rejects.toBeInstanceOf(HttpError);
   });
 });

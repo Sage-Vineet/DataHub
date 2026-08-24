@@ -154,6 +154,7 @@ function stub(over: Record<string, unknown> = {}) {
     listSyncLogs: record("listSyncLogs", [{ id: 1, syncStatus: "completed" }]),
     getPopupDismissed: record("getPopupDismissed", false),
     setPopupDismissed: record("setPopupDismissed", true),
+    sync: record("sync", { versionId: VERSION, processed: [], failed: [], years: [] }),
     linkMappings: record("linkMappings", [{ id: "m1" }]),
     deleteMapping: record("deleteMapping", undefined),
     filterOptions: record("filterOptions", {
@@ -278,6 +279,28 @@ describe("versions", () => {
   });
 });
 
+describe("building a version's entry tables", () => {
+  it("answers what it read, under the envelope the page checks", async () => {
+    // These tables are the financial engine's input: the balance sheet is
+    // rolled forward from them and the chart of accounts is regenerated from
+    // them, so this route is what turns uploaded files into every figure the
+    // product reports.
+    const { app, calls } = stub();
+    const res = await request(app)
+      .post(`/key-reports/versions/${VERSION}/sync`)
+      .set("x-client-id", COMPANY)
+      .expect(200);
+
+    expect(res.body).toMatchObject({ success: true, versionId: VERSION });
+    expect(argsOf(calls, "sync")[1]).toBe(VERSION);
+  });
+
+  it("maps a refusal to its own status rather than 500ing", async () => {
+    const { app } = stub({ sync: () => Promise.reject(new NotFoundError("Version not found.")) });
+    await request(app).post(`/key-reports/versions/${VERSION}/sync`).expect(404);
+  });
+});
+
 describe("linking documents to a version", () => {
   it("takes one document or a list of them", async () => {
     // One screen links a single file and another links a multi-select. Reading
@@ -396,14 +419,15 @@ describe("what a domain error becomes on the wire", () => {
 
 describe("paths this router does not own", () => {
   it("leaves them for the proxy", async () => {
-    // The GL sync still belongs to legacy. An unmatched path has to reach the
-    // proxy untouched, which is what 404-from-this-router means in isolation.
+    // An unmatched path has to reach the proxy untouched, which is what
+    // 404-from-this-router means in isolation.
     //
-    // `/extracted-data` used to be listed here and no longer is: this router
-    // serves it now, and leaving the assertion would have pinned the route as
-    // absent rather than noticing it had arrived.
+    // `/extracted-data` and the version SYNC were both listed here and no
+    // longer are: this router serves them now, and leaving the assertions
+    // would have pinned the routes as absent rather than noticing they had
+    // arrived.
     const { app } = stub();
-    await request(app).post(`/key-reports/versions/${VERSION}/sync`).expect(404);
+    await request(app).get("/manual-gl/nothing-here").expect(404);
   });
 });
 

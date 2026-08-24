@@ -164,6 +164,7 @@
   "POST /key-reports/versions/:p/chart-of-accounts/save",
   "POST /key-reports/versions/:p/duplicate",
   "POST /key-reports/versions/:p/mappings",
+  "POST /key-reports/versions/:p/sync",
   "POST /manual-gl/dataset-versions/:p/activate",
   "POST /manual-gl/dataset-versions/:p/rollback",
   "POST /manual-gl/save-mapping",

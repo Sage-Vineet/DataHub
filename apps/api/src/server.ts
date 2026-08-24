@@ -305,7 +305,18 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
     }
 
     if (flags.REPORTS_MODULE_ENABLED) {
-      modules.push({ path: "/", router: createReportsModule({ db, requireAuth }).router });
+      // The same reader the statements module uses: building a version's entry
+      // tables means reading its linked statements, and a server with no model
+      // answers 503 naming the configuration rather than failing obscurely.
+      const reportsReader = process.env.GEMINI_API_KEY;
+      modules.push({
+        path: "/",
+        router: createReportsModule({
+          db,
+          requireAuth,
+          ...(reportsReader ? { reader: new GeminiClient({ apiKey: reportsReader }) } : {}),
+        }).router,
+      });
       console.warn("[gateway] reports module ENABLED at the API root (key-report version lifecycle)");
     }
     // QoE serves /qoe, a prefix legacy does not define, so it adds surface
