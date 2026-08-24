@@ -247,3 +247,78 @@ describe("companies router — deal activity feed (real Postgres)", () => {
     await request(app).get(`/api/companies/${companyId}/activity`).expect(403);
   });
 });
+
+describe("the client's representative (real Postgres)", () => {
+  /**
+   * Creating a company with a contact makes that person a user of it, so the
+   * broker does not have to invite them separately — and re-saving the company
+   * must not make a second account for the same address.
+   *
+   * Only exercised end to end here: the service tests use a fake that records
+   * the call, which proves the call happens and nothing about what it writes.
+   */
+  const created = (over: Record<string, unknown> = {}) =>
+    request(app)
+      .post("/api/companies")
+      .send({
+        name: "Acme Manufacturing",
+        industry: "Manufacturing",
+        contact_name: "Dana Reed",
+        contact_email: "Dana.Reed@Example.COM",
+        ...over,
+      });
+
+  const userByEmail = (email: string) =>
+    db.select().from(schema.users).where(sql`lower(${schema.users.email}) = ${email}`);
+
+  it("creates the contact as a user of the company, with the address folded", async () => {
+    // Stored as typed, the same person invited later under a different casing
+    // becomes a second account with the same mailbox.
+    const res = await created().expect(201);
+
+    const [user] = await userByEmail("dana.reed@example.com");
+    expect(user).toMatchObject({ name: "Dana Reed", role: "buyer", companyId: res.body.id });
+
+    const links = await db
+      .select()
+      .from(schema.userCompanies)
+      .where(eq(schema.userCompanies.userId, user!.id));
+    expect(links).toHaveLength(1);
+  });
+
+  it("repoints an existing account rather than creating a second one", async () => {
+    await db.insert(schema.users).values({
+      name: "Dana Reed",
+      email: "dana.reed@example.com",
+      passwordHash: "!",
+      role: "buyer",
+    });
+
+    const res = await created().expect(201);
+
+    expect(await userByEmail("dana.reed@example.com")).toHaveLength(1);
+    const [user] = await userByEmail("dana.reed@example.com");
+    expect(user!.companyId).toBe(res.body.id);
+  });
+
+  it("does nothing at all when the contact is only half given", async () => {
+    // A name with no address cannot be an account, and an address with no name
+    // would create one called "" — which is worse than not creating it.
+    // Omitted rather than null: the contract treats an explicit null as a
+    // clear, and clearing is a different request from never naming one.
+    await request(app)
+      .post("/api/companies")
+      .send({ name: "Acme Manufacturing", industry: "Manufacturing", contact_name: "Dana Reed" })
+      .expect(201);
+    await request(app)
+      .post("/api/companies")
+      .send({
+        name: "Beta Ltd",
+        industry: "Manufacturing",
+        contact_email: "dana.reed@example.com",
+      })
+      .expect(201);
+
+    expect(await userByEmail("dana.reed@example.com")).toHaveLength(0);
+  });
+});

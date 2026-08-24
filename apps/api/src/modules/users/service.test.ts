@@ -391,6 +391,35 @@ describe("UsersService — reading one person", () => {
   });
 });
 
+describe("UsersService — a row that goes between the write and the read back", () => {
+  it("answers an update from what it knew when the row is no longer there", async () => {
+    // The write already happened as far as the caller is concerned. Failing
+    // here would say it did not, and the next page load would show the change.
+    const { repo, service } = makeService();
+    const target = repo.seedUser({ id: randomUUID(), email: "t@x.com", role: "buyer", companyId: COMPANY_A });
+    repo.update = () => Promise.resolve(null);
+
+    const updated = await service.update(
+      session({ role: "admin" }),
+      target.id,
+      contracts.userUpdate.parse({ name: "Renamed" }),
+    );
+    expect(updated.id).toBe(target.id);
+  });
+});
+
+describe("UsersService — somebody whose only company is their primary one", () => {
+  it("counts it for visibility, not only their memberships", async () => {
+    // `company_id` and `company_ids` are separate columns, and a client
+    // invited to a single deal frequently has only the first.
+    const { repo, service } = makeService();
+    const target = repo.seedUser({ id: randomUUID(), email: "t@x.com", role: "buyer", companyId: COMPANY_A });
+    const broker = session({ role: "broker", company_id: COMPANY_A, company_ids: [] });
+
+    expect((await service.get(broker, target.id)).id).toBe(target.id);
+  });
+});
+
 describe("UsersService — deleting somebody who is not there", () => {
   it("says so rather than reporting a permission problem", async () => {
     const { service } = makeService();

@@ -932,3 +932,70 @@ describe("a section that has no slides yet", () => {
     expect(after.sections.flatMap((x) => x.slides).every((sl) => sl.blocks.length === 0)).toBe(true);
   });
 });
+
+describe("a row that goes between the write and the read back", () => {
+  /**
+   * Each of these writes, then re-reads to answer with the row as it now
+   * stands. A delete landing in between makes the re-read empty, and the
+   * answer has to be the best thing still known rather than a crash — the
+   * write itself already happened, and failing here would tell the caller
+   * their action did not.
+   */
+  const ports = () => memoryCim(store);
+
+  it("answers a publication from what it wrote when the row is no longer there", async () => {
+    // The PDF is already in the data room and the publication is already
+    // recorded by this point. Failing on the read-back would tell the broker
+    // the CIM did not publish, while the document sits in the deal room.
+    const { deck, versionId } = await newDeck();
+    const base = ports();
+    const versions: typeof base.versions = Object.create(base.versions) as typeof base.versions;
+    const decks: typeof base.decks = Object.create(base.decks) as typeof base.decks;
+    let reads = 0;
+    versions.getById = (id: string) =>
+      reads++ === 0 ? base.versions.getById(id) : Promise.resolve(null);
+    // The deck is there for the access check and gone by the naming read, so
+    // the file falls back to "CIM v1.pdf" rather than failing to be named.
+    let deckReads = 0;
+    decks.getById = (id: string) =>
+      id === deck.id && deckReads++ > 0 ? Promise.resolve(null) : base.decks.getById(id);
+    service = new CimService({ ...base, versions, decks, activity: { emit: () => undefined } });
+
+    const published = await service.publish(broker, versionId, Buffer.from("%PDF-1.7 fake"), {
+      contentType: "application/pdf",
+      pageCount: 3,
+    });
+
+    expect(published.version_id).toBe(versionId);
+    expect(published.status).toBe("published");
+    expect(published.published_at).toBeTruthy();
+  });
+
+  it("answers an approval from what it wrote when the version is no longer there", async () => {
+    const { versionId } = await newDeck();
+    const base = ports();
+    const versions: typeof base.versions = Object.create(base.versions) as typeof base.versions;
+    // Present for the access check, gone by the read-back — which is the order
+    // a concurrent delete actually lands in.
+    let reads = 0;
+    versions.getById = (id: string) =>
+      reads++ === 0 ? base.versions.getById(id) : Promise.resolve(null);
+    service = new CimService({ ...base, versions, activity: { emit: () => undefined } });
+
+    const summary = await service.recordApproval(broker, versionId);
+    expect(summary.id).toBe(versionId);
+  });
+});
+
+describe("naming the questions a CIM raises", () => {
+  it("titles a question after the block it is about", async () => {
+    const { versionId } = await newDeck();
+    const gap = await firstGap(versionId);
+    await service.generate(broker, versionId, {
+      questions: [{ block_id: gap.block_id, text: "What does the business do?" }],
+    });
+    // The Q&A list shows titles, and "CIM question" on every row is a list
+    // nobody can scan.
+    expect(store.createdItems.at(-1)?.title).not.toBe("CIM question");
+  });
+});
