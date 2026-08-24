@@ -429,6 +429,53 @@ describe("UsersService — deleting somebody who is not there", () => {
   });
 });
 
+describe("UsersService — who inherits a deleted person's work", () => {
+  /**
+   * The D4 invariant: nothing may be left owned by a user who no longer
+   * exists, so a deletion always names a replacement. The order of preference
+   * is the actor, then somebody who shares a company with the person being
+   * removed, then anybody who could take it on at all.
+   *
+   * The last step is the one worth stating: a replacement outside the deal is
+   * a worse answer than one inside it, and a BETTER answer than leaving the
+   * rows orphaned.
+   */
+  it("prefers somebody who shares a company with the person removed", async () => {
+    const { repo, service } = makeService();
+    const target = repo.seedUser({ id: randomUUID(), email: "gone@x.com", role: "buyer", companyId: COMPANY_A });
+    const nearby = repo.seedUser({ id: randomUUID(), email: "near@x.com", role: "broker", companyId: COMPANY_A });
+    repo.seedUser({ id: randomUUID(), email: "far@x.com", role: "broker", companyId: COMPANY_B });
+
+    // Self-deletion, so the actor cannot be the replacement.
+    await service.delete(session({ id: target.id, role: "admin" }), target.id);
+
+    expect(repo.reassigned).toEqual([{ userId: target.id, replacementId: nearby.id }]);
+  });
+
+  it("falls back to anybody at all rather than leaving the work orphaned", async () => {
+    const { repo, service } = makeService();
+    const target = repo.seedUser({ id: randomUUID(), email: "gone@x.com", role: "buyer", companyId: COMPANY_A });
+    const far = repo.seedUser({ id: randomUUID(), email: "far@x.com", role: "broker", companyId: COMPANY_B });
+
+    await service.delete(session({ id: target.id, role: "admin" }), target.id);
+
+    expect(repo.reassigned).toEqual([{ userId: target.id, replacementId: far.id }]);
+  });
+
+  it("takes the company memberships with the person", async () => {
+    // A membership row for a user who is gone grants access on behalf of
+    // nobody, and nothing in the UI can reach it to revoke it.
+    const { repo, service } = makeService();
+    const target = repo.seedUser({ id: randomUUID(), email: "gone@x.com", role: "buyer", companyId: COMPANY_A });
+    repo.seedUser({ id: randomUUID(), email: "near@x.com", role: "broker", companyId: COMPANY_A });
+    await repo.addCompanies(target.id, [COMPANY_A, COMPANY_B]);
+
+    await service.delete(session({ id: target.id, role: "admin" }), target.id);
+
+    expect((await repo.assignedCompaniesFor([target.id])).get(target.id) ?? []).toEqual([]);
+  });
+});
+
 describe("UsersService — membership + broker-team", () => {
   it("adds within scope, blocks out of scope, and manages team invites", async () => {
     const { repo, service } = makeService();

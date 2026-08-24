@@ -641,6 +641,23 @@ describe("deciding on a recommendation that is not there", () => {
     expect(repo.all()[0]!.status).toBe("pending");
   });
 
+  it("applies nothing for an id nobody has", async () => {
+    // `applyRecommendation` reads the row first, so this is the store's own
+    // guard behind it: a write against a missing id changes nothing rather
+    // than inventing a row to write to.
+    const { repo, service } = build(
+      {
+        coa: { rows: [leaf()] },
+        recommendations: [{ id: "reco-1", account_id: "acc-1", status: "pending" }],
+      },
+      [],
+    );
+
+    const result = await service.applyRecommendation("nope", "user-1");
+    expect(result.ok).toBe(false);
+    expect(repo.all()[0]!.status).toBe("pending");
+  });
+
   it("does not overwrite a decision already taken", async () => {
     // Rejecting an applied recommendation would leave the chart carrying a
     // move the record says was refused.

@@ -500,6 +500,38 @@ describe("attachments", () => {
     expect(detail.responses[0]!.attachments[0]!.name).toBe("aging.xlsx");
   });
 
+  it("names an attachment whose document has gone as nameless, not as broken", async () => {
+    // A document deleted from the data room after being cited. The attachment
+    // row survives — that is the point of keeping evidence — and the answer
+    // still has to render, with the citation showing no name rather than the
+    // whole thread failing to load.
+    const item = await ask({ requestee_ids: [seller.id] });
+    const answer = await service.postResponse(seller, item.id, {
+      body: "see attached",
+      kind: "answer",
+    });
+    store.addDocument({
+      id: "dddddddd-0000-4000-8000-000000000099",
+      companyId: CO,
+      folderId: "eeeeeeee-0000-4000-8000-000000000001",
+      name: "aging.xlsx",
+    });
+    await service.attach(seller, item.id, {
+      document_id: "dddddddd-0000-4000-8000-000000000099",
+      folder_id: "eeeeeeee-0000-4000-8000-000000000001",
+      response_id: answer.id,
+    });
+
+    // Removed from the data room afterwards, which the attachment row outlives.
+    store.documents.delete("dddddddd-0000-4000-8000-000000000099");
+
+    const detail = await service.getItem(broker, item.id);
+    expect(detail.responses[0]!.attachments[0]).toMatchObject({
+      document_id: "dddddddd-0000-4000-8000-000000000099",
+      name: null,
+    });
+  });
+
   it("attaches to the current answer when no response is named", async () => {
     // The contract makes response_id optional; the read path does not — an
     // attachment with no response is stored and then never returned. Resolving it
