@@ -23,7 +23,7 @@ function requireApiBaseUrlOnVercel() {
             'It is inlined at build time, so without it the deployed SPA would call\n' +
             'http://localhost:8080 and fail for every user.\n' +
             'Set it in Vercel → Project → Settings → Environment Variables to the API\n' +
-            'origin (the gateway, which proxies to the legacy backend).',
+            'origin (the gateway).',
         )
       }
     },

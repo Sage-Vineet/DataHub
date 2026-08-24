@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { EnvConfigError, MODULE_FLAGS, loadGatewayEnv, parseFlag } from "./env.js";
 
 describe("gateway env", () => {
-  it("treats an unset or empty flag as off (fall through to legacy)", () => {
+  it("treats an unset or empty flag as off", () => {
     expect(parseFlag("X_ENABLED", undefined)).toBe(false);
     expect(parseFlag("X_ENABLED", "")).toBe(false);
     expect(parseFlag("X_ENABLED", "  ")).toBe(false);

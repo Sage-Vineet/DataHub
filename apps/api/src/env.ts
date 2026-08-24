@@ -77,8 +77,8 @@ export function parseFlag(name: string, raw: string | undefined): boolean {
   if (value === "false") return false;
   throw new EnvConfigError(
     `${name} must be exactly "true" or "false" (got "${raw}"). ` +
-      `A value like "1", "TRUE" or "yes" would be read as OFF, silently leaving the ` +
-      `route-group on legacy — refusing to start rather than fake a cutover.`,
+      `A value like "1", "TRUE" or "yes" would be read as OFF, silently switching ` +
+      `the capability off — refusing to start rather than serve without it.`,
   );
 }
 
