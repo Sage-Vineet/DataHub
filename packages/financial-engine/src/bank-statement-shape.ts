@@ -113,9 +113,19 @@ export function toMonthKey(value: string | null | undefined): string | null {
     return month >= 1 && month <= 12 ? `${iso[1]}-${iso[2]}` : null;
   }
   // `06/30/2024` and `30/06/2024` are both written, and telling them apart
-  // needs a day above twelve. Where both readings are possible the month is
-  // ambiguous, and guessing files a statement in the wrong month — so only the
-  // unambiguous form is accepted.
+  // needs a day above twelve: whichever field exceeds it must be the day, so
+  // the other is the month.
+  //
+  // Where BOTH are twelve or under — `06/07/2024` — nothing in the string can
+  // settle it, and the first field is read as the month. That is a guess, and
+  // saying so matters: this comment used to claim the ambiguous form was
+  // rejected, which it never was. Month-first is the right guess here because
+  // the statements this reads come from US banks and QuickBooks, but it is a
+  // guess, and a statement can land a month out because of it.
+  //
+  // The alternative — refusing the ambiguous form — drops roughly a third of
+  // every date written this way, and a missing statement is harder to notice
+  // than a misfiled one.
   const slashed = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   if (slashed) {
     const first = Number.parseInt(slashed[1]!, 10);

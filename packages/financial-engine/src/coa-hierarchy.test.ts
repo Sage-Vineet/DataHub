@@ -85,6 +85,65 @@ describe("where an asset sits", () => {
     expect(assetSubAndGroup("Accumulated Depreciation")[1]).toBe("Accumulated Depreciation");
   });
 
+  it("puts each kind of asset under the heading a reader expects", () => {
+    /**
+     * Every rule in the chain, in the order it is applied. The order is the
+     * substance: "Loan Receivable" matches both the receivable rule and the
+     * loans-to rule, and "Accumulated Depreciation — Vehicles" matches both
+     * depreciation and vehicles. Whichever runs first wins, and a reader
+     * scanning the balance sheet sees the difference.
+     *
+     * The tail matters as much: an asset nothing recognises still has to land
+     * somewhere, and where it lands depends on the sub-category the FIRST
+     * chain chose. A fixed asset falling through must not become an "Other
+     * Current Asset" — that moves it above the working-capital line.
+     */
+    const cases: Array<[string, string, string]> = [
+      ["Money Market Account", "Current Assets", "Bank Accounts"],
+      ["Petty Cash", "Current Assets", "Bank Accounts"],
+      ["Accounts Receivable", "Current Assets", "Accounts Receivable"],
+      ["Trade A/R", "Current Assets", "Accounts Receivable"],
+      ["Inventory", "Current Assets", "Inventory"],
+      ["Stock on Hand", "Current Assets", "Inventory"],
+      ["Prepaid Insurance", "Current Assets", "Prepaid Expenses"],
+      ["Loans to Shareholder", "Current Assets", "Other Current Assets"],
+      ["Due from Affiliate", "Current Assets", "Other Current Assets"],
+      ["Accumulated Depreciation", "Fixed Assets", "Accumulated Depreciation"],
+      ["Machinery", "Fixed Assets", "Machinery & Equipment"],
+      ["Shop Equipment", "Fixed Assets", "Machinery & Equipment"],
+      ["Furniture", "Fixed Assets", "Furniture & Fixtures"],
+      ["Fixtures", "Fixed Assets", "Furniture & Fixtures"],
+      ["Leasehold Improvements", "Fixed Assets", "Leasehold Improvements"],
+      ["Vehicle", "Fixed Assets", "Vehicles"],
+      ["Delivery Truck", "Fixed Assets", "Vehicles"],
+      ["Land", "Fixed Assets", "Land Improvements"],
+      ["Construction in Progress", "Fixed Assets", "Construction in Progress"],
+      ["Goodwill", "Other Assets", "Other Long-Term Assets"],
+      ["Intangible Assets", "Other Assets", "Other Long-Term Assets"],
+      ["Financing Costs", "Other Assets", "Other Long-Term Assets"],
+      // Nothing matches the group chain, so the sub-category decides.
+      ["Widget Reserve", "Current Assets", "Other Current Assets"],
+      ["Building", "Fixed Assets", "Other Fixed Assets"],
+      ["Security Deposit", "Other Assets", "Other Long-Term Assets"],
+    ];
+
+    for (const [name, sub, group] of cases) {
+      expect([name, ...assetSubAndGroup(name)]).toEqual([name, sub, group]);
+    }
+  });
+
+  it("reads the name whatever case it is written in", () => {
+    // Charts of accounts are typed by people, and "PREPAID INSURANCE" is as
+    // common as "Prepaid Insurance".
+    expect(assetSubAndGroup("PREPAID INSURANCE")[1]).toBe("Prepaid Expenses");
+    expect(assetSubAndGroup("business CHECKING")[1]).toBe("Bank Accounts");
+  });
+
+  it("takes an absent name as an unrecognised current asset", () => {
+    expect(assetSubAndGroup(null)).toEqual(["Current Assets", "Other Current Assets"]);
+    expect(assetSubAndGroup(undefined)).toEqual(["Current Assets", "Other Current Assets"]);
+  });
+
   it("always gives a group, so nothing sits directly under a sub-category", () => {
     for (const name of ["Something Odd", "", "Widget Reserve"]) {
       const [, group] = assetSubAndGroup(name);

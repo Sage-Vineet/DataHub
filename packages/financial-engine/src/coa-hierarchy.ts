@@ -134,10 +134,17 @@ export function assetSubAndGroup(name: string | null | undefined): [string, stri
 
   let sub: string;
   if (
-    /equipment|furniture|fixture|machinery|building|\bland\b|leasehold|accumulated depreciation|construction in progress|\bvehicle\b/.test(
+    /equipment|furniture|fixture|machinery|building|\bland\b|leasehold|accumulated depreciation|construction in progress|\bvehicle\b|\btruck\b/.test(
       text,
     )
   ) {
+    // `\btruck\b` belongs here for the same reason `\bvehicle\b` does, and its
+    // absence was an inconsistency rather than a decision: the GROUP chain
+    // below already files a truck under "Vehicles", which is a fixed-asset
+    // group, while this chain called it a current asset. "Delivery Truck" came
+    // out as `Current Assets > Vehicles` — a heading that contradicts itself,
+    // and one that puts a truck above the working-capital line, overstating
+    // current assets and every ratio drawn from them.
     sub = "Fixed Assets";
   } else if (
     /amortization|goodwill|intangible|other long.?term|\bdeposit\b|financing cost|note receivable/.test(text)

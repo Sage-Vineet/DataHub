@@ -214,6 +214,66 @@ describe("figures and dates it was handed badly", () => {
     expect(shape.banks[0]!.accounts[0]!.months).toHaveLength(1);
   });
 
+  it("groups a statement whose bank nobody named under one heading", () => {
+    // `bank_name` is what the grid groups on. Left blank, every unnamed
+    // statement would land under its own empty heading and the page would show
+    // one account per file.
+    const shape = buildBankResponseShape([
+      month("01", { bank_name: null }),
+      month("02", { bank_name: "   " }),
+    ]);
+    expect(shape.banks).toHaveLength(1);
+    expect(shape.banks[0]!.bank_name).toBe("Unknown Bank");
+    expect(shape.banks[0]!.accounts[0]!.months).toHaveLength(2);
+  });
+
+  it("cleans the account number out of the heading when nothing supplies a clean one", () => {
+    // The heading reads "Wells Fargo", not "Wells Fargo (0067)" — the number
+    // has its own column, and repeating it makes the heading unscannable.
+    const shape = buildBankResponseShape([month("01", { bank_name_clean: null })]);
+    expect(shape.banks[0]!.bank_name_clean).toBe("Wells Fargo");
+  });
+
+  it("fills in an account name and number a later statement knows", () => {
+    /**
+     * Extraction reads what is on the page, and the first page of a statement
+     * run is often a summary that names neither. Leaving the account blank
+     * because the FIRST file was thin puts an unlabelled row on the page while
+     * the answer sits in the next file.
+     */
+    const shape = buildBankResponseShape([
+      month("01", { account_name: null, account_number: null }),
+      month("02", { account_name: "Business Checking", account_number: "1234560067" }),
+    ]);
+    expect(shape.banks[0]!.account_name).toBe("Business Checking");
+    expect(shape.banks[0]!.account_number).toBe("0067");
+  });
+
+  it("keeps the account details the first statement gave", () => {
+    // The other direction: a later statement must not overwrite what is
+    // already known, or a thin summary page would blank a named account.
+    const shape = buildBankResponseShape([
+      month("01"),
+      month("02", { account_name: null, account_number: null }),
+    ]);
+    expect(shape.banks[0]!.account_name).toBe("Business Checking");
+    expect(shape.banks[0]!.account_number).toBe("0067");
+  });
+
+  it("dates a month by its key when the statement states no end date", () => {
+    const shape = buildBankResponseShape([
+      statement({ period_start: "2024-05-01", period_end: null }),
+    ]);
+    expect(shape.banks[0]!.accounts[0]!.months[0]!.statement_end_date).toBe("2024-05");
+  });
+
+  it("calls a statement with no stated status verified", () => {
+    // The status column drives the review queue. Blank reads as neither
+    // verified nor flagged, and the row falls out of both lists.
+    const shape = buildBankResponseShape([month("01", { status: null })]);
+    expect(shape.banks[0]!.accounts[0]!.months[0]!.status).toBe("Verified");
+  });
+
   it("falls back to the period START when the end is missing", () => {
     const shape = buildBankResponseShape([
       statement({ period_start: "2024-05-01", period_end: null }),
