@@ -123,7 +123,16 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
     lastSyncedAt: extract.extractedAt,
   });
 
-  const latestOf = (defaultSourceKey?: string) =>
+  /**
+   * `defaultSourceKey` is required, not optional.
+   *
+   * Both mounts supply one — the manual uploads and the QMS pull are separate
+   * sources and a request naming neither still means one of them. Optional, it
+   * left a branch for "no source at all" that neither call site can reach, and
+   * a source-less resolve would answer whichever statement happened to be
+   * newest across both.
+   */
+  const latestOf = (defaultSourceKey: string) =>
     handle(async (req: Request, res: Response) => {
       const sourceKey = str(req.query.sourceKey) ?? defaultSourceKey;
       const extract = await service.resolve(
@@ -131,7 +140,7 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
         companyOf(req),
         req.params.statementType!.toLowerCase(),
         {
-          ...(sourceKey ? { sourceKey } : {}),
+          sourceKey,
           // `rowId` is legacy's name for it, kept so existing callers still work.
           ...(str(req.query.extractId) ?? str(req.query.rowId)
             ? { extractId: (str(req.query.extractId) ?? str(req.query.rowId))! }
@@ -183,13 +192,14 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
     lastSyncedAt: extract.extractedAt,
   });
 
-  const listFiles = (defaultSourceKey?: string) =>
+  /** Required for the same reason as `latestOf` above. */
+  const listFiles = (defaultSourceKey: string) =>
     handle(async (req: Request, res: Response) => {
       const year = Number.parseInt(String(req.query.fiscalYear ?? ""), 10);
       const statementType = req.params.statementType!.toLowerCase();
       const sourceKey = str(req.query.sourceKey) ?? defaultSourceKey;
       const files = await service.list(req.user!, companyOf(req), statementType, {
-        ...(sourceKey ? { sourceKey } : {}),
+        sourceKey,
         ...(Number.isInteger(year) ? { fiscalYear: year } : {}),
         ...(str(req.query.keyReportVersionId)
           ? { keyReportVersionId: str(req.query.keyReportVersionId)! }

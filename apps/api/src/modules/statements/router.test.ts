@@ -875,3 +875,62 @@ describe("parsing pasted statement text", () => {
     expect(res.body.error).toMatch(/not configured/);
   });
 });
+
+describe("what the router leaves to the layers around it", () => {
+  it("hands an unrecognised failure to the error handler rather than dressing it up", async () => {
+    // Everything above maps a KNOWN failure onto a status. A surprise must not
+    // be reported as one of them.
+    const { app } = stub({ resolve: () => Promise.reject(new Error("boom")) });
+    await latest(app).expect(500);
+  });
+
+  it("resolves against the source its path names when the query names none", async () => {
+    // The two sources are separate on purpose — manual uploads and the QMS
+    // pull — and a request naming neither still means the one its path is
+    // mounted under, never "whichever is newest across both".
+    const { app, calls } = stub();
+    await request(app)
+      .get("/manual-report-uploads/reports/balance_sheet/latest")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "resolve")[3]).toMatchObject({ sourceKey: "manual_upload_excel_pdf" });
+
+    await request(app)
+      .get("/manual-report-uploads/qms-reports/balance_sheet/latest")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "resolve")[3]).not.toMatchObject({
+      sourceKey: "manual_upload_excel_pdf",
+    });
+  });
+
+  it("syncs with no body at all, taking the version from the query", async () => {
+    // The page posts one and the other depending on which button was pressed.
+    const { app, calls } = stub();
+    await request(app)
+      .post("/manual-report-uploads/sync-source?versionId=v-1&force=true")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "syncSource")[3]).toEqual({ versionId: "v-1", force: true });
+  });
+
+  it("asks for neither a version nor a force when neither was sent", async () => {
+    // Absent and false are different to the service: one may serve the cache.
+    const { app, calls } = stub();
+    await request(app)
+      .post("/manual-report-uploads/sync-source")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "syncSource")[3]).toEqual({});
+  });
+
+  it("refuses a bodiless parse-documents as one naming no documents", async () => {
+    // Rather than reading through an undefined body and answering 500 for what
+    // is a 400.
+    const { app } = stub();
+    await request(app)
+      .post("/manual-report-uploads/qms-parse-documents")
+      .set("x-client-id", COMPANY)
+      .expect(400);
+  });
+});

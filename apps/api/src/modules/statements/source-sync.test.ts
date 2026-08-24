@@ -223,6 +223,32 @@ describe("syncing a source", () => {
     expect(await statements.latest(COMPANY, "balance_sheet", {})).toBeNull();
   });
 
+  it("falls back to the document's id when it has no name to give", async () => {
+    // `documents.name` is nullable, and a failure that says
+    // `Nothing could be read out of ""` names nothing a person can go and look
+    // at. The id is ugly and findable, which is the right trade in an error.
+    const { service, statements } = build({ answers: { default: { rows: [] } } });
+    statements.seedLinkedDocument(
+      { documentId: "doc-bs", name: null, folderName: "Financials", category: "balance_sheet" },
+      "v1",
+    );
+
+    const result = await service.syncSource(USER, COMPANY, MANUAL, {}, NOW);
+    expect(result.failed[0]!.reason).toContain("doc-bs");
+  });
+
+  it("reports a failure that is not an Error at all", async () => {
+    // A rejection with a string, or an `undefined` from a library that throws
+    // non-Errors. `String(error)` beats an empty `reason`, which reads on the
+    // page as a file that failed for no reason.
+    const { service, statements, reader: model } = build();
+    link(statements, "doc-bs", "balance_sheet");
+    model.askForJson = () => Promise.reject("the model container was evicted");
+
+    const result = await service.syncSource(USER, COMPANY, MANUAL, {}, NOW);
+    expect(result.failed[0]!.reason).toBe("the model container was evicted");
+  });
+
   it("names a document with no file behind it rather than throwing", async () => {
     const { service, statements } = build({ missing: new Set(["doc-bs"]) });
     link(statements, "doc-bs", "balance_sheet");
