@@ -85,6 +85,63 @@ describe("activity storage (real Postgres)", () => {
     expect(result.reason).toMatch(/removed/);
   });
 
+  it("verifies a range without a record before it to check against", async () => {
+    /**
+     * Verifying the whole log is the honest check; verifying a range is what a
+     * caller does when the log is large. Starting mid-chain the first record's
+     * `prev_hash` has nothing earlier in the range to check it against, so it
+     * is taken on trust — and that is the documented limit of a partial
+     * verification, not a bug.
+     *
+     * What it still catches is everything inside the range: an alteration, and
+     * a gap.
+     */
+    await repo.append([envelope("/a"), envelope("/b"), envelope("/c"), envelope("/d")]);
+
+    await expect(repo.verify({ fromSeq: 3 })).resolves.toMatchObject({ ok: true, checked: 2 });
+
+    await db.execute(sql`UPDATE activity_events SET path = '/tampered' WHERE seq = 4`);
+    const tampered = await repo.verify({ fromSeq: 3 });
+    expect(tampered).toMatchObject({ ok: false, broken_at_seq: 4 });
+    expect(tampered.reason).toMatch(/altered/);
+  });
+
+  it("does not report a record removed BEFORE the range it was asked about", async () => {
+    // The limit stated above, made explicit: seq 1 is gone, and a verification
+    // starting at 2 says the range is sound — which it is. Only a verification
+    // from the beginning can say the log is.
+    await repo.append([envelope("/a"), envelope("/b"), envelope("/c")]);
+    await db.execute(sql`DELETE FROM activity_events WHERE seq = 1`);
+
+    await expect(repo.verify({ fromSeq: 2 })).resolves.toMatchObject({ ok: true });
+    await expect(repo.verify()).resolves.toMatchObject({ ok: false, broken_at_seq: 2 });
+  });
+
+  it("verifies an empty log as sound, having checked nothing", async () => {
+    // Vacuously true and worth saying: a fresh deployment must not report its
+    // audit log as broken.
+    await expect(repo.verify()).resolves.toEqual({
+      ok: true,
+      checked: 0,
+      broken_at_seq: null,
+      reason: null,
+    });
+  });
+
+  it("writes nothing, and touches no chain head, for an empty batch", async () => {
+    // The capture path batches, and a request that emitted no events reaches
+    // here with an empty array. Opening a transaction and taking the chain-head
+    // lock for it would serialize every such request behind one row.
+    await repo.append([envelope("/a")]);
+    const before = await db.execute(sql`SELECT last_seq FROM activity_chain_head WHERE id = 1`);
+
+    expect(await repo.append([])).toEqual([]);
+
+    const after = await db.execute(sql`SELECT last_seq FROM activity_chain_head WHERE id = 1`);
+    expect(after.rows[0]).toEqual(before.rows[0]);
+    expect((await repo.list()).length).toBe(1);
+  });
+
   // Design D4: immutability enforced twice. The repository has no mutation path,
   // AND the role the application connects with cannot mutate the table — so a
   // defect elsewhere in the process cannot rewrite history either.

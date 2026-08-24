@@ -88,6 +88,46 @@ describe("reading a cell", () => {
   });
 });
 
+describe("a cell holding a number no computer can hold", () => {
+  it("reads as nothing rather than as infinity", () => {
+    // A four-hundred-digit figure gets through the shape check — it is all
+    // digits — and `parseFloat` answers Infinity. Stored, it makes every total
+    // it touches Infinity, and a statement of Infinity is harder to trace back
+    // to one bad cell than a statement with a gap in it.
+    const enormous = `1${"0".repeat(400)}`;
+    expect(parseAmount(enormous)).toBeNull();
+    expect(parseAmount(`-${enormous}`)).toBeNull();
+  });
+
+  it("still reads the largest ordinary figures", () => {
+    expect(parseAmount("999999999999.99")).toBe(999999999999.99);
+    expect(parseAmount("(1,250.00)")).toBe(-1250);
+  });
+});
+
+describe("profiling a very long file", () => {
+  it("reads a sample rather than the whole thing", () => {
+    /**
+     * A general ledger runs to hundreds of thousands of rows, and every column
+     * is profiled to decide what it is. Reading all of them turns opening the
+     * mapping page into a minute of work for an answer the first few hundred
+     * rows already give.
+     *
+     * The sample is the FIRST rows, so a file whose character changes further
+     * down profiles on its opening — which is the same assumption a person
+     * scrolling the top of the file makes.
+     */
+    const rows = [
+      ...Array.from({ length: 300 }, () => ({ Amount: "100.00" })),
+      ...Array.from({ length: 500 }, () => ({ Amount: "not a number at all" })),
+    ];
+    const profile = profileColumn(rows, "Amount");
+
+    expect(profile.sampled).toBe(300);
+    expect(profile.numericRatio).toBe(1);
+  });
+});
+
 describe("profiling a column", () => {
   it("measures over non-empty cells, not over every row", () => {
     // A column half full of dates is a date column with gaps, not a

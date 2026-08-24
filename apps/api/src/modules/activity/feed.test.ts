@@ -195,6 +195,42 @@ describe("building the feed", () => {
     expect(byType.get("request_created")).toBe("Request created: Untitled");
     expect(byType.get("activity")).toBe("Activity recorded");
   });
+
+  it("reaches the end of the naming chain rather than rendering a blank", () => {
+    // Every link is nullable in the schema, so the last fallback is the one
+    // that actually protects the page: "Client added: " with nothing after it
+    // reads as a broken feed rather than as a record with a missing name.
+    const feed = build(
+      sources({
+        companies: [
+          { id: "c", name: null, projectName: null, industry: null, createdAt: "2024-01-01T00:00:00Z" },
+        ],
+        buyers: [{ id: "u", name: null, email: null, companyId: null, createdAt: "2024-01-01T00:00:00Z" }],
+      }),
+    );
+    const byType = new Map(feed.map((e) => [e.type, e.message]));
+    expect(byType.get("company_created")).toBe("Company added: Company");
+    expect(byType.get("user_added")).toBe("Client added: User");
+  });
+
+  it("calls a company by its own name when the deal has not been named yet", () => {
+    // The project name is what a broker calls the deal, and it is set later
+    // than the company itself — so between the two, the legal name is right.
+    const feed = build(
+      sources({
+        companies: [
+          {
+            id: "c",
+            name: "Acme Ltd",
+            projectName: null,
+            industry: null,
+            createdAt: "2024-01-01T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    expect(feed[0]!.message).toBe("Company added: Acme Ltd");
+  });
 });
 
 describe("what a non-admin may see", () => {

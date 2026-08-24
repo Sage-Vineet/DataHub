@@ -63,18 +63,31 @@ export class DrizzleFoldersRepository implements FoldersRepository {
     return rows.length;
   }
 
+  /**
+   * Create, or answer the folder that is already there.
+   *
+   * A plain insert raised the (company, parent, name) unique violation as a
+   * raw driver error, which the router has no case for — so a broker typing a
+   * name that already exists under the same parent got a 500. It was invisible
+   * in tests because the in-memory double returns the existing folder, which
+   * is what the port's non-nullable return type and `ensureDefaultFolders`
+   * both say the contract is; this method was the one place that did not
+   * implement it.
+   *
+   * Deliberately idempotent rather than a 409. That is the behaviour the rest
+   * of the module already has, and answering with the folder somebody was
+   * trying to make is a defensible outcome where refusing outright is a
+   * product decision nobody has taken.
+   */
   async create(input: CreateFolderInput): Promise<FolderRecord> {
-    const rows = await this.db
-      .insert(folders)
-      .values({
-        companyId: input.companyId,
-        parentId: input.parentId,
-        name: input.name,
-        color: input.color,
-        createdBy: input.createdBy,
-      })
-      .returning();
-    return toFolder(rows[0]!);
+    return this.upsertFolder(
+      this.db as unknown as Tx,
+      input.companyId,
+      input.parentId,
+      input.name,
+      input.createdBy,
+      input.color,
+    );
   }
 
   async update(id: string, patch: { name?: string; color?: string | null }): Promise<FolderRecord | null> {
@@ -122,10 +135,11 @@ export class DrizzleFoldersRepository implements FoldersRepository {
     parentId: string | null,
     name: string,
     createdBy: string,
+    color: string | null = null,
   ): Promise<FolderRecord> {
     const inserted = await tx
       .insert(folders)
-      .values({ companyId, parentId, name, createdBy })
+      .values({ companyId, parentId, name, color, createdBy })
       .onConflictDoNothing()
       .returning();
     if (inserted[0]) return toFolder(inserted[0]);
