@@ -1,12 +1,9 @@
-import type { AddressInfo } from "node:net";
-import type { Server } from "node:http";
 import express from "express";
 import type { Express } from "express";
 import jwt from "jsonwebtoken";
 import request from "supertest";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { createGateway } from "../gateway.js";
-import { parseRoutingTable } from "../routing.js";
 import { withCommonMiddleware } from "../shared/router.js";
 import {
   attributeActor,
@@ -19,41 +16,10 @@ import { ActivityWriter } from "./writer.js";
 
 const SECRET = "test-secret-value";
 
-interface Upstream {
-  url: string;
-  server: Server;
-}
-
-/** Mock legacy backend: echoes what it received so we can prove the proxy is intact. */
-function startLegacy(): Promise<Upstream> {
-  const app = express();
-  app.use(express.raw({ type: "*/*", limit: "50mb" }));
-  app.get("/legacy/boom", (_req, res) => {
-    res.status(500).json({ error: "legacy exploded" });
-  });
-  app.all("/*", (req, res) => {
-    const body = req.body as Buffer;
-    res.status(200).json({
-      served: "legacy",
-      method: req.method,
-      url: req.url,
-      bodyLength: Buffer.isBuffer(body) ? body.length : 0,
-      bodySha: Buffer.isBuffer(body) ? body.toString("utf8").slice(0, 32) : null,
-    });
-  });
-  return new Promise((resolve) => {
-    const server = app.listen(0, () => {
-      const port = (server.address() as AddressInfo).port;
-      resolve({ url: `http://127.0.0.1:${port}`, server });
-    });
-  });
-}
-
-let legacy: Upstream;
 let repo: InMemoryActivityRepository;
 let writer: ActivityWriter;
 
-/** A module that serves a couple of paths in-process; everything else proxies. */
+/** A module serving a few paths in-process; anything else 404s. */
 function moduleRouter(): express.Router {
   const router = express.Router();
   withCommonMiddleware(router, [express.json()]);
@@ -64,6 +30,9 @@ function moduleRouter(): express.Router {
       payload: { scope: "company" },
     });
     res.json({ served: "module", id: req.params.id });
+  });
+  router.post("/companies/:id/echo", (req, res) => {
+    res.json({ served: "module", body: req.body });
   });
   router.get("/companies/:id/denied", (_req, res) => {
     res.status(403).json({ error: "nope" });
@@ -77,8 +46,7 @@ function moduleRouter(): express.Router {
 }
 
 function buildGateway(options: { capture: boolean }): Express {
-  const table = parseRoutingTable({ LEGACY_ORIGIN: legacy.url });
-  return createGateway(table, {
+  return createGateway({
     modules: [{ path: "/", router: moduleRouter() }],
     activityCapture: options.capture
       ? createActivityCapture({ writer, jwtSecret: SECRET })
@@ -92,13 +60,6 @@ async function settle(): Promise<void> {
   await writer.flush();
 }
 
-beforeAll(async () => {
-  legacy = await startLegacy();
-});
-
-afterAll(async () => {
-  await new Promise((resolve) => legacy.server.close(resolve));
-});
 
 beforeEach(() => {
   repo = new InMemoryActivityRepository();
@@ -199,19 +160,20 @@ describe("path normalization", () => {
 });
 
 describe("tier-1 capture — coverage", () => {
-  it("captures a request the legacy backend served", async () => {
+  it("captures a request that reached no module at all", async () => {
+    // Envelopes are written for what the gateway ANSWERED, not for what it
+    // served. A 404 is an answer, and one nobody can see is a request that
+    // reached the system and left no trace of having done so.
     const app = buildGateway({ capture: true });
     const res = await request(app).get("/requests/open");
-    expect(res.status).toBe(200);
-    expect(res.body.served).toBe("legacy");
+    expect(res.status).toBe(404);
 
     await settle();
     const [record] = await repo.list();
     expect(record?.kind).toBe("envelope");
-    expect(record?.engine).toBe("legacy");
     expect(record?.method).toBe("GET");
     expect(record?.rawPath).toBe("/requests/open");
-    expect(record?.status).toBe(200);
+    expect(record?.status).toBe(404);
   });
 
   it("captures a request a module served", async () => {
@@ -226,17 +188,18 @@ describe("tier-1 capture — coverage", () => {
     expect(envelope?.rawPath).toBe("/companies/8f1e2d3c-4b5a-4968-8776-655443332211");
   });
 
-  it("captures denied and failed requests, not only successful ones", async () => {
+  it("captures denied and unmatched requests, not only successful ones", async () => {
+    // An audit log that records only what worked answers the wrong question.
     const app = buildGateway({ capture: true });
     await request(app).get("/companies/11111111-2222-4333-8444-555566667777/denied");
-    await request(app).get("/legacy/boom");
+    await request(app).get("/nothing/here");
 
     await settle();
     const statuses = (await repo.list())
       .filter((r) => r.kind === "envelope")
       .map((r) => r.status)
       .sort();
-    expect(statuses).toEqual([403, 500]);
+    expect(statuses).toEqual([403, 404]);
   });
 
   it("records duration and user agent", async () => {
@@ -313,20 +276,21 @@ describe("tier-2 semantic events", () => {
 describe("capture does not disturb the request path", () => {
   // The regression this guards: reading the body at the gateway consumes the
   // stream, and legacy then receives a body-less request (shared/router.ts).
-  it("streams a POST body through to legacy untouched", async () => {
-    const payload = "x".repeat(200_000);
+  it("leaves a POST body for the module to read", async () => {
+    /**
+     * Capture must not consume the stream. It used to matter most for the
+     * proxy — a body read here never reached legacy — and it still matters:
+     * a module's own `express.json()` runs after this middleware, so anything
+     * that drained the stream would hand every handler an empty body.
+     */
+    const app = buildGateway({ capture: true });
+    const res = await request(app)
+      .post("/companies/8f1e2d3c-4b5a-4968-8776-655443332211/echo")
+      .set("Content-Type", "application/json")
+      .send({ realmId: "9130347" });
 
-    const withCapture = await request(buildGateway({ capture: true }))
-      .post("/uploads/raw")
-      .set("Content-Type", "application/octet-stream")
-      .send(payload);
-    const withoutCapture = await request(buildGateway({ capture: false }))
-      .post("/uploads/raw")
-      .set("Content-Type", "application/octet-stream")
-      .send(payload);
-
-    expect(withCapture.body.bodyLength).toBe(payload.length);
-    expect(withCapture.body).toEqual(withoutCapture.body);
+    expect(res.status).toBe(200);
+    expect(res.body.body).toEqual({ realmId: "9130347" });
   });
 
   it("leaves status, headers and body identical", async () => {
@@ -359,9 +323,13 @@ describe("capture does not disturb the request path", () => {
     };
     writer = new ActivityWriter(repo, { flushIntervalMs: 0, onError: () => {} });
 
-    const res = await request(buildGateway({ capture: true })).get("/requests/open");
+    // The request still gets its answer — capture failing must never become
+    // the caller's problem.
+    const res = await request(buildGateway({ capture: true })).get(
+      "/companies/8f1e2d3c-4b5a-4968-8776-655443332211",
+    );
     expect(res.status).toBe(200);
-    expect(res.body.served).toBe("legacy");
+    expect(res.body.served).toBe("module");
   });
 
   it("writes nothing at all when capture is disabled", async () => {

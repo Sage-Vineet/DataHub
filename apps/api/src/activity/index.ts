@@ -1,7 +1,6 @@
 export {
   createActivityCapture,
   emitActivity,
-  markProxiedToLegacy,
   normalizePath,
   attributeActor,
 } from "./capture.js";

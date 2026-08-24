@@ -13,7 +13,6 @@ import {
 import { createGateway, type MountedModule } from "./gateway.js";
 import { clientFeatures } from "./features.js";
 import {
-  createAuthModule,
   createBetterAuth,
   createBetterAuthModule,
   DrizzleAuthRepository,
@@ -41,7 +40,6 @@ import { createQuickBooksModule } from "./modules/quickbooks/index.js";
 import { createSyncModule } from "./modules/sync/index.js";
 import { createDatasetsModule } from "./modules/datasets/index.js";
 import { createGlImportModule } from "./modules/gl-import/index.js";
-import { assertReapedModulesEnabled } from "./parity/reaped-guard.js";
 import { createQoeModule } from "./modules/qoe/index.js";
 import { createDataRoomModule } from "./modules/dataroom/index.js";
 import { createQaModule } from "./modules/qa/index.js";
@@ -51,9 +49,6 @@ import { createInProcessHierarchyWriter } from "./modules/coa-review/hierarchy.i
 import { DrizzleCimDataRoomPort, QaServiceAdapter } from "./modules/cim/adapters.js";
 import { unavailableDataRoom } from "./modules/qa/repository.memory.js";
 import { requireSession } from "./shared/session.js";
-import { legacyAuthBridge } from "./legacy-bridge.js";
-import { resolveSessionUser } from "./modules/auth/better-session.js";
-import { parseRoutingTable } from "./routing.js";
 import { EnvConfigError, loadGatewayEnv, type GatewayEnv } from "./env.js";
 
 /** Lazily create a single shared Drizzle client for all in-process modules. */
@@ -72,23 +67,22 @@ function dbFactory(): () => Db {
 }
 
 /**
- * Build the in-process modules to mount ahead of the proxy. Each route-group is
- * served by exactly one engine, chosen by env (cutover/rollback = a flag, not a
- * code deploy — ADR-0003/0007):
- *   - BETTER_AUTH_ENABLED=true → Better Auth serves /auth (ADR-0007; wins if both set)
- *   - AUTH_MODULE_ENABLED=true → the bespoke module serves /auth (rollback target)
- *   - COMPANIES_MODULE_ENABLED=true → the companies module serves /companies
- *   - otherwise → the route-group falls through to legacy.
+ * Build the modules the gateway mounts.
+ *
+ * Every one of these was once behind a cutover flag: on served the module, off
+ * fell through to the legacy backend, and flipping one was the migration
+ * (ADR-0003/0007). They mount unconditionally now — the only flags left are the
+ * capability switches, which subtract a feature rather than roll one back.
+ *
  * Domain modules are protected by the shared Better Auth session guard.
  *
- * MOUNT PATHS ARE THE LEGACY CONTRACT. These mirror `backend/src/app.js` exactly —
- * `/auth`, `/companies`, `/users`, and `/` for the modules that span several
- * prefixes — because that is what the SPA calls (`apps/web/src/lib/api.js`). They
- * are deliberately NOT under `/api`: in legacy, `/api/auth/*` belongs to the
- * QuickBooks OAuth routes (`backend/src/routes/quickbooks/token.js`), so mounting
- * there would both miss all real traffic and disturb QBO. Every module attaches its
- * middleware per-route (`withCommonMiddleware`), so undefined paths under a mount
- * fall through to the proxy untouched.
+ * MOUNT PATHS ARE THE CONTRACT. `/auth`, `/companies`, `/users`, and `/` for the
+ * modules that span several prefixes — because that is what the SPA calls
+ * (`apps/web/src/lib/api.js`). They mirrored the legacy backend's `app.js`, which
+ * is why they are NOT under `/api`: there, `/api/auth/*` belonged to the
+ * QuickBooks OAuth routes, so mounting under it would have missed all real
+ * traffic. That constraint outlived the backend — the SPA still calls these
+ * paths, and moving them is a change to every caller.
  */
 /**
  * Where a published CIM lands in the data room.
@@ -111,7 +105,7 @@ function publishFolderResolver(db: Db): (companyId: string) => Promise<string | 
   };
 }
 
-function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): MountedModule[] {
+function buildModules(flags: GatewayEnv["flags"]): MountedModule[] {
   const modules: MountedModule[] = [];
   // Captured so the CIM builder can reach the Q&A service through a typed port
   // rather than over HTTP — the module convention here (ADR-0004).
@@ -120,41 +114,17 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
   const graphEmailer = () =>
     process.env.GRAPH_TENANT_ID ? GraphEmailer.fromEnv(process.env) : new ConsoleEmailer();
 
-  if (flags.BETTER_AUTH_ENABLED) {
+  // Better Auth serves /auth (ADR-0007). This was a three-way choice between it,
+  // a bespoke module kept as a rollback target, and legacy — and the other two
+  // are gone, so there is nothing left to choose between.
+  {
     const { router } = createBetterAuthModule({ db: getDb(), emailer: graphEmailer() });
     modules.push({ path: "/auth", router });
-    console.warn("[gateway] Better Auth ENABLED at /auth (in-process, ADR-0007)");
-  } else if (flags.AUTH_MODULE_ENABLED) {
-    const repo = new DrizzleAuthRepository(getDb());
-    const { router } = createAuthModule({ repo });
-    modules.push({ path: "/auth", router });
-    console.warn("[gateway] bespoke auth module ENABLED at /auth (in-process)");
   }
 
   // Domain modules share one session guard: a Better Auth instance validates
   // sessions (ADR-0007), even if /auth itself is still legacy.
-  const domainsEnabled =
-    flags.COMPANIES_MODULE_ENABLED ||
-    flags.USERS_MODULE_ENABLED ||
-    flags.FOLDERS_MODULE_ENABLED ||
-    flags.UPLOADS_MODULE_ENABLED ||
-    flags.REQUESTS_MODULE_ENABLED ||
-    flags.MESSAGES_MODULE_ENABLED ||
-    flags.GROUPS_MODULE_ENABLED ||
-    flags.ACTIVITY_MODULE_ENABLED ||
-    flags.WORKSPACE_MODULE_ENABLED ||
-    flags.CHART_OF_ACCOUNTS_MODULE_ENABLED ||
-    flags.REPORTS_MODULE_ENABLED ||
-    flags.QOE_MODULE_ENABLED ||
-    flags.BANK_RECONCILIATION_MODULE_ENABLED ||
-    flags.REPORT_SOURCES_MODULE_ENABLED ||
-    flags.STATEMENTS_MODULE_ENABLED ||
-    flags.QUICKBOOKS_MODULE_ENABLED ||
-    flags.SYNC_MODULE_ENABLED ||
-    flags.DATASETS_MODULE_ENABLED ||
-    flags.GL_IMPORT_MODULE_ENABLED ||
-    flags.TAX_OVERRIDES_MODULE_ENABLED;
-  if (domainsEnabled) {
+  {
     const db = getDb();
     const auth = createBetterAuth({
       db,
@@ -163,18 +133,18 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
     });
     const requireAuth = requireSession(auth, new DrizzleAuthRepository(db));
 
-    if (flags.COMPANIES_MODULE_ENABLED) {
-      // When folders is also enabled, companies provisions via the real folders
-      // service (folders-domain D6) instead of its own basic adapter.
-      const folderProvisioning =
-        flags.FOLDERS_MODULE_ENABLED ? createFolderProvisioningPort(db) : undefined;
+    {
+      // Companies provisions through the real folders service (folders-domain
+      // D6). This used to depend on whether folders had been cut over yet, and
+      // fell back to a basic adapter when it had not.
+      const folderProvisioning = createFolderProvisioningPort(db);
       modules.push({
         path: "/companies",
         router: createCompaniesModule({ db, requireAuth, folderProvisioning }).router,
       });
       console.warn("[gateway] companies module ENABLED at /companies (in-process)");
     }
-    if (flags.USERS_MODULE_ENABLED) {
+    {
       modules.push({ path: "/users", router: createUsersModule({ db, requireAuth }).router });
       console.warn("[gateway] users module ENABLED at /users (in-process)");
     }
@@ -182,72 +152,70 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
     // folder-access/:id) so it mounts at the API root and only defines its own routes;
     // document sub-routes fall through to legacy. Mounted last so the more-specific
     // /companies and /users modules match first.
-    if (flags.FOLDERS_MODULE_ENABLED) {
+    {
       modules.push({ path: "/", router: createFoldersModule({ db, requireAuth }).router });
       console.warn("[gateway] folders module ENABLED at the API root (folder + access routes)");
     }
     // Uploads also spans several path prefixes (uploads, folders/:id/documents,
     // documents/:id) → mounted at the API root, only its own routes defined.
-    if (flags.UPLOADS_MODULE_ENABLED) {
+    {
       modules.push({ path: "/", router: createUploadsModule({ db, requireAuth }).router });
       console.warn("[gateway] uploads module ENABLED at the API root (upload + document routes)");
     }
-    if (flags.REQUESTS_MODULE_ENABLED) {
+    {
       modules.push({ path: "/", router: createRequestsModule({ db, requireAuth }).router });
       console.warn("[gateway] requests module ENABLED at the API root (request routes)");
     }
-    if (flags.MESSAGES_MODULE_ENABLED) {
+    {
       modules.push({ path: "/", router: createMessagesModule({ db, requireAuth }).router });
       console.warn("[gateway] messages module ENABLED at the API root (message routes)");
     }
     // Buyer groups — `/companies/:id/groups` and `/groups/*`. Distinct from the
     // message-groups the messages module serves, despite the similar paths.
-    if (flags.GROUPS_MODULE_ENABLED) {
+    {
       modules.push({ path: "/", router: createGroupsModule({ db, requireAuth }).router });
       console.warn("[gateway] groups module ENABLED at the API root (buyer group routes)");
     }
     // The broker dashboard's cross-company feed. `/companies/:id/activity` is
     // the companies module's; this is the aggregate one.
-    if (flags.ACTIVITY_MODULE_ENABLED) {
+    {
       modules.push({ path: "/", router: createActivityModule({ db, requireAuth }).router });
       console.warn("[gateway] activity module ENABLED at the API root (broker activity feed)");
     }
     // The chart of accounts: the grid, its audit trail and the hierarchy
-    // vocabulary. Built here so the review module below can write through it
-    // rather than over HTTP to legacy.
-    const chartOfAccounts = flags.CHART_OF_ACCOUNTS_MODULE_ENABLED
-      ? createChartOfAccountsModule({ db, requireAuth })
-      : null;
-    if (chartOfAccounts) {
+    // vocabulary. Built here so the review module below writes through it
+    // rather than over HTTP, which is what it used to do.
+    const chartOfAccounts = createChartOfAccountsModule({ db, requireAuth });
+    {
       modules.push({ path: "/", router: chartOfAccounts.router });
       console.warn("[gateway] chart-of-accounts module ENABLED at /key-reports/...");
     }
 
     // Persisted workspace UI state, and the shared CIM questionnaire.
-    if (flags.WORKSPACE_MODULE_ENABLED) {
+    {
       modules.push({ path: "/", router: createWorkspaceModule({ db, requireAuth }).router });
       console.warn("[gateway] workspace module ENABLED at the API root (page state, questionnaire)");
     }
-    if (flags.BANK_RECONCILIATION_MODULE_ENABLED) {
+    {
       modules.push({
         path: "/",
         router: createBankReconciliationModule({ db, requireAuth }).router,
       });
     }
 
-    if (flags.GL_IMPORT_MODULE_ENABLED) {
+    {
       modules.push({ path: "/", router: createGlImportModule({ db, requireAuth }).router });
     }
 
-    if (flags.DATASETS_MODULE_ENABLED) {
+    {
       modules.push({ path: "/", router: createDatasetsModule({ db, requireAuth }).router });
     }
 
-    if (flags.SYNC_MODULE_ENABLED) {
+    {
       modules.push({ path: "/", router: createSyncModule({ db, requireAuth }).router });
     }
 
-    if (flags.QUICKBOOKS_MODULE_ENABLED) {
+    {
       // The token-sealing keys are derived from the application secret, so a
       // deployment without one would store tokens under an empty key — which
       // `secret-box` refuses outright rather than doing badly.
@@ -298,7 +266,7 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
       }
     }
 
-    if (flags.STATEMENTS_MODULE_ENABLED) {
+    {
       // Document extraction needs a model. Where no key is configured the
       // module still serves everything else and the extraction route answers
       // 503 saying so — which is the honest answer for a deployment that does
@@ -319,15 +287,15 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
       }
     }
 
-    if (flags.TAX_OVERRIDES_MODULE_ENABLED) {
+    {
       modules.push({ path: "/", router: createTaxOverridesModule({ db, requireAuth }).router });
     }
 
-    if (flags.REPORT_SOURCES_MODULE_ENABLED) {
+    {
       modules.push({ path: "/", router: createReportSourcesModule({ db, requireAuth }).router });
     }
 
-    if (flags.REPORTS_MODULE_ENABLED) {
+    {
       // The same reader the statements module uses: building a version's entry
       // tables means reading its linked statements, and a server with no model
       // answers 503 naming the configuration rather than failing obscurely.
@@ -440,7 +408,6 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
         router: createCoaReviewModule({
           db,
           requireAuth,
-          legacyOrigin,
           // In-process when the chart of accounts is served here, which removes
           // the HTTP hop to legacy without adding a second hierarchy writer:
           // this delegates to the one that owns the table. Still per request,
@@ -471,37 +438,6 @@ function buildModules(flags: GatewayEnv["flags"], legacyOrigin: string): Mounted
  * as a plain middleware. Disabled → `undefined`, and the request path is exactly
  * what it was before.
  */
-/**
- * Re-sign the gateway's session into the shape legacy verifies.
- *
- * Only useful while routes remain on legacy: Better Auth sessions are opaque
- * database rows and legacy verifies HS256 JWTs, so without this every request
- * the SPA makes to an un-migrated route comes back `401 Invalid token`. See
- * legacy-bridge.ts for why this cannot manufacture an identity.
- */
-function buildLegacyBridge(enabled: boolean): RequestHandler | undefined {
-  if (!enabled) return undefined;
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) {
-    throw new Error("LEGACY_AUTH_BRIDGE_ENABLED=true requires DATABASE_URL.");
-  }
-  const db = createDb(databaseUrl);
-  const auth = createBetterAuth({
-    db,
-    emailer: new ConsoleEmailer(),
-    config: loadBetterAuthConfig(process.env),
-  });
-  const repo = new DrizzleAuthRepository(db);
-  const secret = process.env.JWT_SECRET;
-  if (!secret) {
-    throw new Error("LEGACY_AUTH_BRIDGE_ENABLED=true requires JWT_SECRET (the value legacy verifies).");
-  }
-  console.warn("[gateway] legacy auth bridge ENABLED (re-signs sessions for un-migrated routes)");
-  return legacyAuthBridge({
-    resolveUser: (req) => resolveSessionUser(auth, repo, req),
-    secret,
-  });
-}
 
 interface ActivityCapture {
   handler: RequestHandler;
@@ -588,33 +524,17 @@ function main(): void {
   // Validate our own env before anything else, so a mistyped cutover flag is a
   // startup error rather than a route-group that silently stayed on legacy.
   const env = loadGatewayEnv(process.env);
-  // A flag that is off used to mean "fall through to legacy". For a route-group
-  // legacy has already been reaped of, off means 404 — so that combination is a
-  // startup error too, for the same reason a malformed flag value is.
-  assertReapedModulesEnabled(env.flags);
-  const table = parseRoutingTable(process.env);
-  // `parseRoutingTable` refuses to return without it; the index signature on
-  // `origins` is what loses that, so it is restated rather than asserted away.
-  const legacyOrigin = table.origins.legacy;
-  if (!legacyOrigin) throw new Error("LEGACY_ORIGIN is required.");
   const capture = buildActivityCapture(env.flags.ACTIVITY_LOG_ENABLED);
-  const app = createGateway(table, {
-    modules: buildModules(env.flags, legacyOrigin),
+  const app = createGateway({
+    modules: buildModules(env.flags),
     corsOrigins: env.corsOrigins,
     activityCapture: capture?.handler,
-    beforeProxy: buildLegacyBridge(env.flags.LEGACY_AUTH_BRIDGE_ENABLED),
     features: clientFeatures(env.flags),
   });
   const port = env.port;
 
   const server = app.listen(port, () => {
-    const routes =
-      table.routes.length > 0
-        ? table.routes.map((r) => `${r.prefix} -> ${r.origin}`).join(", ")
-        : "(none)";
-    console.warn(
-      `[gateway] listening on :${port} | default -> legacy (${table.origins.legacy}) | routes: ${routes}`,
-    );
+    console.warn(`[gateway] listening on :${port} | ${buildModules(env.flags).length} modules`);
   });
 
   installShutdown(server, capture);

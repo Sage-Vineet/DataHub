@@ -1,11 +1,10 @@
 /**
  * Boot-time environment validation for the gateway.
  *
- * The cutover mechanism is "flip a flag and restart" (ADR-0003), which makes the
- * flags themselves operational surface: a value the process quietly ignores is
- * indistinguishable from a cutover that did not happen. `COMPANIES_MODULE_ENABLED=1`
- * or `=TRUE` currently reads as "off", so an operator can flip a flag, see a clean
- * boot, and believe a domain migrated when it did not.
+ * A flag the process quietly ignores is indistinguishable from a feature that
+ * was never switched on. `QA_MODULE_ENABLED=1` or `=TRUE` reads as "off" to a
+ * loose parser, so an operator can flip one, see a clean boot, and believe a
+ * capability is live when it is not.
  *
  * So the flags are parsed strictly: exactly "true" or "false", anything else is a
  * startup error naming the variable. Same for PORT, which otherwise coerces junk to
@@ -22,36 +21,23 @@ export class EnvConfigError extends Error {
   }
 }
 
-/** Every module cutover flag, in the documented flip order. */
+/**
+ * Every capability flag.
+ *
+ * These were once two lists. Twenty-one of them were CUTOVER flags — off meant
+ * "fall through to the legacy backend", on meant "serve it here" — and they are
+ * gone, because there is no legacy backend to fall through to and a flag with
+ * one legal value is not a flag. Their modules mount unconditionally.
+ *
+ * What is left is the kill switches: features with no predecessor anywhere, so
+ * switching one off subtracts it rather than rolling anything back.
+ */
 export const MODULE_FLAGS = [
   "BETTER_AUTH_ENABLED",
-  "AUTH_MODULE_ENABLED",
-  "COMPANIES_MODULE_ENABLED",
-  "USERS_MODULE_ENABLED",
-  "FOLDERS_MODULE_ENABLED",
-  "UPLOADS_MODULE_ENABLED",
-  "REQUESTS_MODULE_ENABLED",
-  "MESSAGES_MODULE_ENABLED",
-  "GROUPS_MODULE_ENABLED",
-  "ACTIVITY_MODULE_ENABLED",
-  "WORKSPACE_MODULE_ENABLED",
-  "CHART_OF_ACCOUNTS_MODULE_ENABLED",
-  "REPORTS_MODULE_ENABLED",
   "QOE_MODULE_ENABLED",
-  "BANK_RECONCILIATION_MODULE_ENABLED",
-  "REPORT_SOURCES_MODULE_ENABLED",
-  "STATEMENTS_MODULE_ENABLED",
-  "QUICKBOOKS_MODULE_ENABLED",
-  "SYNC_MODULE_ENABLED",
-  "DATASETS_MODULE_ENABLED",
-  "GL_IMPORT_MODULE_ENABLED",
-  "TAX_OVERRIDES_MODULE_ENABLED",
-  // Not a cutover flag: activity capture has no legacy predecessor to fall back
-  // to. It is parsed here so it gets the same strict validation — a mistyped
-  // value silently meaning "off" would be an audit log nobody notices is absent.
+  // A mistyped value silently meaning "off" would be an audit log nobody
+  // notices is absent, which is why these are parsed strictly.
   "ACTIVITY_LOG_ENABLED",
-  // Greenfield capabilities, like QoE and the activity log: legacy serves none of
-  // these prefixes, so flipping one off is a kill switch rather than a rollback.
   //
   // Sub-flags rather than one per module, deliberately. The demo commitment is
   // that a single unfinished feature can be switched off 48 hours out without
@@ -71,18 +57,17 @@ export const MODULE_FLAGS = [
   // the module still serves, and only generating new recommendations reports
   // unavailable.
   "COA_REVIEW_MODULE_ENABLED",
-  // Not a capability — plumbing. Re-signs the gateway's session into the HS256
-  // shape legacy verifies, so routes that have not been cut over yet keep
-  // working for a cookie-session caller. Flagged so it can be switched off in
-  // one step once the last route-group moves in-process (see legacy-bridge.ts).
-  "LEGACY_AUTH_BRIDGE_ENABLED",
 ] as const;
 
 export type ModuleFlag = (typeof MODULE_FLAGS)[number];
 
 /**
- * Parse a boolean flag strictly. Unset is `false` (the safe default: fall through
- * to legacy); any value other than "true"/"false" is a configuration error.
+ * Parse a boolean flag strictly. Unset is `false`; any value other than
+ * "true"/"false" is a configuration error.
+ *
+ * Unset meaning off was once described here as "the safe default: fall through
+ * to legacy". It is no longer a fallback — every flag left is a capability, and
+ * off means the feature is absent.
  */
 export function parseFlag(name: string, raw: string | undefined): boolean {
   if (raw === undefined) return false;
@@ -113,9 +98,11 @@ export interface GatewayEnv {
 }
 
 /**
- * Validate the gateway's own environment. Upstream routing (`LEGACY_ORIGIN`,
- * `GATEWAY_ROUTES`) is validated by `parseRoutingTable`; secrets and
- * `DATABASE_URL` by the auth/db loaders when a module is actually enabled.
+ * Validate the gateway's own environment: the capability flags and the port.
+ *
+ * Secrets and `DATABASE_URL` are validated by the auth and db loaders, at the
+ * point they are actually needed. Upstream routing used to be validated here
+ * too, by `parseRoutingTable`; there are no upstreams.
  */
 export function loadGatewayEnv(env: NodeJS.ProcessEnv): GatewayEnv {
   const flags = Object.fromEntries(

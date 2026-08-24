@@ -1,11 +1,14 @@
-# Local full-stack demo: SPA → gateway → legacy → Postgres, with seeded data.
+# Local full-stack demo: SPA → gateway → Postgres, with seeded data.
 #
 #   ./tools/demo/up.sh
 #
 # Same shape as docker-compose.staging.yml, plus the SPA and a seeded database,
-# so the whole path a real user takes is exercised end to end. Cutover flags are
-# read from the environment and default OFF, which means the demo starts as
-# legacy-only — flip one and reload to watch a domain move.
+# so the whole path a real user takes is exercised end to end.
+#
+# There is no legacy service any more. The flags below read from the environment
+# and default ON; they began as cutover flags — on served the module, off fell
+# through to legacy — and with legacy gone "off" is a hole rather than a
+# rollback, which the gateway refuses to start into.
 #
 # Ports are offset from the staging stack so both can run at once.
 
@@ -13,7 +16,8 @@ name: datahub-demo
 
 services:
   postgres:
-    # SSL-enabled: the legacy fallback pool demands it. See postgres.Dockerfile.
+    # SSL-enabled. The legacy fallback pool demanded it; kept because the
+    # certificate wiring is a property of the image, not of what connects to it.
     build:
       context: .
       dockerfile: tools/demo/postgres.Dockerfile
@@ -31,33 +35,6 @@ services:
       timeout: 5s
       retries: 30
 
-  legacy:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
-    environment:
-      NODE_ENV: production
-      PORT: 4000
-      DATABASE_URL: postgres://datahub:datahub@postgres:5432/datahub
-      JWT_SECRET: ${JWT_SECRET:-demo-only-insecure-secret}
-      FRONTEND_URL: http://localhost:${DEMO_WEB_PORT:-5173}
-      # Deliberately unreachable. Legacy reads through the Supabase client and
-      # only falls back to direct Postgres when that call returns an error — but
-      # with no credentials at all the client is `null` and the call THROWS first,
-      # so the fallback never runs and every login 500s.
-      #
-      # Port 9 (discard) on loopback refuses instantly, so the Supabase attempt
-      # fails in milliseconds and the Postgres path is taken. An unresolvable
-      # HOSTNAME is not equivalent: DNS there took ~28s per request, which the
-      # gateway then killed as a timeout. This is the dual data-access path
-      # ADR-0002 exists to delete — the demo just makes its failure mode fast.
-      SUPABASE_URL: http://127.0.0.1:9
-      SUPABASE_SERVICE_ROLE_KEY: demo-unreachable-not-a-real-key
-    depends_on:
-      postgres:
-        condition: service_healthy
-    expose:
-      - "4000"
 
   gateway:
     build:
@@ -70,10 +47,7 @@ services:
       # origin, but there is no reason to depend on that for a local demo.
       NODE_ENV: development
       PORT: 8080
-      LEGACY_ORIGIN: http://legacy:4000
       DATABASE_URL: postgres://datahub:datahub@postgres:5432/datahub
-      # Legacy and the gateway MUST share this, or a session minted by one is
-      # rejected by the other and a rollback logs everybody out.
       JWT_SECRET: ${JWT_SECRET:-demo-only-insecure-secret}
       BETTER_AUTH_URL: http://localhost:${DEMO_GATEWAY_PORT:-8080}
       # Overridable so a local `vite dev` on another port can talk to this gateway.
@@ -96,10 +70,6 @@ services:
       FOLDERS_MODULE_ENABLED: ${FOLDERS_MODULE_ENABLED:-true}
       UPLOADS_MODULE_ENABLED: ${UPLOADS_MODULE_ENABLED:-true}
       REQUESTS_MODULE_ENABLED: ${REQUESTS_MODULE_ENABLED:-true}
-      # Without this every screen still served by legacy — reminders, activity,
-      # the chart of accounts, report sources, CIM prep — answers 401 to a
-      # cookie-session caller. See apps/api/src/legacy-bridge.ts.
-      LEGACY_AUTH_BRIDGE_ENABLED: ${LEGACY_AUTH_BRIDGE_ENABLED:-true}
       MESSAGES_MODULE_ENABLED: ${MESSAGES_MODULE_ENABLED:-true}
       GROUPS_MODULE_ENABLED: ${GROUPS_MODULE_ENABLED:-true}
       ACTIVITY_MODULE_ENABLED: ${ACTIVITY_MODULE_ENABLED:-true}
@@ -130,8 +100,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      legacy:
-        condition: service_started
     ports:
       - "${DEMO_GATEWAY_PORT:-8080}:8080"
 

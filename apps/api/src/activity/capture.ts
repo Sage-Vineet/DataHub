@@ -97,11 +97,6 @@ export interface ActivityCaptureOptions {
   now?: () => Date;
 }
 
-/** Mark a request as served by the legacy backend. Called from the proxy hook. */
-export function markProxiedToLegacy(res: Response): void {
-  res.locals.activityEngine = "legacy";
-}
-
 /**
  * Tier-1 capture: one envelope per request, whichever engine served it.
  *
@@ -150,6 +145,14 @@ export function createActivityCapture(options: ActivityCaptureOptions): RequestH
       record.correlationId = correlationId;
       record.actorId = actorId;
       record.actorKind = actorKind;
+      // Always "module" now. The other value was "legacy", set from the proxy
+      // hook for a request the gateway forwarded to the legacy backend; there
+      // is no proxy and no backend, so nothing sets it any more.
+      //
+      // The field stays, and so does its column. Rows written before the reap
+      // say "legacy" and are correct — an append-only audit log exists
+      // precisely so that what it recorded is not revised afterwards, and
+      // dropping the column to tidy up would be the one edit it forbids.
       record.engine = res.locals.activityEngine ?? "module";
       record.method = req.method;
       record.rawPath = rawPath;

@@ -105,4 +105,3 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
 # Parity harness config (contains environment credentials)
-tools/parity/parity.config.json

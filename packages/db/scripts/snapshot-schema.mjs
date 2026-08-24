@@ -35,18 +35,19 @@ const DB_PKG = join(HERE, "..");
 const ROOT = join(DB_PKG, "..", "..");
 export const SNAPSHOT_PATH = join(DB_PKG, "schema-snapshot.sql");
 
-/** Every file the deployed schema is built from, in the order up.sh applies them. */
+/**
+ * Every file the deployed schema is built from.
+ *
+ * `packages/db/migrations` and nothing else. It used to name three files under
+ * `backend/sql` first, because until `0000_baseline.sql` the legacy backend was
+ * the source of record for 43 tables — which is the reason a backend serving no
+ * routes could not be deleted.
+ */
 export function sourceFiles() {
-  const drizzle = readdirSync(join(DB_PKG, "migrations"))
+  return readdirSync(join(DB_PKG, "migrations"))
     .filter((f) => f.endsWith(".sql") && !f.includes(".down."))
     .sort()
     .map((f) => join("packages", "db", "migrations", f));
-  return [
-    join("backend", "sql", "schema.sql"),
-    join("backend", "sql", "migrations", "049_key_reports_entry_tables.sql"),
-    join("backend", "sql", "migrations", "050_general_ledger_entries_new_columns.sql"),
-    ...drizzle,
-  ];
 }
 
 /** A hash over the source SQL, so a snapshot cannot silently go stale. */

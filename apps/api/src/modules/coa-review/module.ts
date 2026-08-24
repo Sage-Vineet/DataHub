@@ -1,8 +1,8 @@
 import type { Request, RequestHandler, Router } from "express";
 import type { Db } from "@datahub/db";
+import { HttpError } from "../../shared/errors.js";
 
 import { createGeminiClassifier } from "./classifier.gemini.js";
-import { createLegacyHierarchyWriter } from "./hierarchy.legacy.js";
 import type { HierarchyWriter, ReasonablenessClassifier } from "./ports.js";
 import { DrizzleCoaReviewRepository } from "./repository.drizzle.js";
 import { createCoaReviewRouter } from "./router.js";
@@ -16,7 +16,6 @@ export interface CreateCoaReviewModuleOptions {
   db: Db;
   requireAuth: RequestHandler;
   /** Where legacy is reachable — it owns `chart_of_accounts` for now. */
-  legacyOrigin: string;
   /**
    * Overridable so a test, or a later provider change, needs no edit here.
    * Defaults to Gemini when `GEMINI_API_KEY` is set.
@@ -56,21 +55,32 @@ export function createCoaReviewModule(opts: CreateCoaReviewModuleOptions): CoaRe
   const repo = new DrizzleCoaReviewRepository(opts.db);
 
   /**
-   * The caller's credentials, forwarded to whoever owns the chart of accounts.
+   * Applying a recommendation means writing to the chart of accounts, and this
+   * module does not own that table.
    *
-   * Both are taken from the incoming request: the bridge has already minted the
-   * `Authorization` header legacy verifies, so this is the same identity legacy
-   * would have seen had the request proxied straight through. Nothing here
-   * invents an actor.
+   * It used to forward the write to the legacy backend over HTTP, carrying the
+   * caller's own credentials so legacy saw the identity it would have seen had
+   * the request proxied straight through. There is no legacy backend now, so
+   * the only writer is the chart-of-accounts module in this process.
+   *
+   * Without it, applying REFUSES rather than failing at a socket. The review
+   * queue itself still works — reading recommendations, rejecting them, and
+   * generating new ones need no writer — so switching the chart of accounts off
+   * subtracts one action rather than the module.
    */
   const hierarchyFor =
     opts.hierarchyFor ??
-    ((req: Request): HierarchyWriter =>
-      createLegacyHierarchyWriter({
-        origin: opts.legacyOrigin,
-        authorization: req.headers.authorization,
-        cookie: req.headers.cookie,
-      }));
+    ((): HierarchyWriter => ({
+      updateAccountHierarchy: () =>
+        Promise.reject(
+          new HttpError(
+            503,
+            "The chart of accounts is not available in this deployment, so a " +
+              "recommendation cannot be applied. Recommendations can still be " +
+              "reviewed and rejected.",
+          ),
+        ),
+    }));
 
   const serviceFor = (req: Request) =>
     createCoaReviewService({

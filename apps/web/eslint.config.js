@@ -36,7 +36,7 @@ export default defineConfig([
     rules: sharedRules,
   },
   {
-    files: ['backend/**/*.{js,jsx}', 'refactor_reports.js'],
+    files: ['refactor_reports.js'],
     languageOptions: {
       ecmaVersion: 'latest',
       globals: globals.node,

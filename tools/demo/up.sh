@@ -1,31 +1,26 @@
 #!/usr/bin/env bash
-# Bring up the local full-stack demo: SPA → gateway → legacy → Postgres, seeded.
+# Bring up the local full-stack demo: SPA → gateway → Postgres, seeded.
 #
-# Database bootstrap still takes several steps, because no single artefact in this
-# repo can build a working database — but the Drizzle half of it is now one call:
+# Database bootstrap is ONE call now:
 #
-#   1. backend/sql/schema.sql   the legacy world. Does NOT apply cleanly: it ends
-#                               with 14 statements that index or constrain six
-#                               tables it never creates — ebitda_adjustments and
-#                               its four satellites, plus dataset_versions.
-#                               Loaded WITHOUT ON_ERROR_STOP so those are skipped
-#                               and reported instead of aborting the whole load.
-#   2. legacy 049/050           key-report entry tables and the general-ledger
-#                               columns that 0002_qoe_bridge ALTERs. They must land
-#                               before the migration runner, which is the only
-#                               ordering constraint in the whole sequence.
-#   3. db:migrate               every packages/db migration, in order, once, in a
-#                               transaction, recorded in schema_migrations. Until
-#                               this existed the three files below were applied by
-#                               hand here and a dev checkout had no bootstrap at
-#                               all (openspec/changes/devenv-schema-bootstrap).
-#   4. seed.sql + backfill      demo rows, then the users → auth_user/account
+#   1. db:migrate               `packages/db/migrations`, in order, once each, in
+#                               a transaction, recorded in schema_migrations. On
+#                               an empty database that is `0000_baseline.sql`
+#                               alone, which creates all 86 tables outright.
+#   2. seed.sql + backfill      demo rows, then the users → auth_user/account
 #                               backfill so login works with the flag either way.
-#   5. QoE engagement           the anonymized walkthrough engagement loaded into
+#   3. QoE engagement           the anonymized walkthrough engagement loaded into
 #                               chart_of_accounts + general_ledger_entries.
 #
-# Step 1 is still the finding: the legacy schema cannot describe itself. Phase C
-# replaces it with a production snapshot and a reconciled schema.
+# It used to take four, and the first was the finding: `backend/sql/schema.sql`
+# could not describe itself. It ended with 14 statements indexing or
+# constraining six tables it never created, so it was loaded WITHOUT
+# ON_ERROR_STOP and the failures counted rather than fixed. Two legacy
+# migrations then had to land before the runner because `0002_qoe_bridge`
+# ALTERed their tables.
+#
+# All of it is folded into the baseline. The legacy DDL is archived, unrun, in
+# docs/legacy-schema-history/.
 
 set -euo pipefail
 
@@ -148,30 +143,9 @@ for _ in $(seq 1 60); do
 done
 psql_demo -c 'select 1' >/dev/null
 
-step "1/7 Loading the legacy schema (tolerating the objects it never creates)"
-# No ON_ERROR_STOP: psql reports each orphaned statement and carries on. Anything
-# beyond the expected 14 is new and worth reading in the output.
-#
-# The count is asserted rather than described, because a comment saying "one known
-# bad statement" is what this file used to carry — accurate when written, silently
-# wrong once schema.sql moved underneath it.
-schema_errors=$(psql_demo < backend/sql/schema.sql 2>&1 | grep -cE '^ERROR' || true)
-if [[ "$schema_errors" == "14" ]]; then
-  echo "   14 statements skipped, as expected: indexes and constraints on"
-  echo "   ebitda_adjustments (+4 satellites) and dataset_versions, which"
-  echo "   schema.sql references but never creates."
-else
-  echo "   ⚠ expected 14 skipped statements, got ${schema_errors}. The legacy"
-  echo "     schema has changed — read the errors above before trusting this stack."
-fi
-
-step "2/7 Applying the legacy tables the Drizzle migrations build on"
-# 049/050 create general_ledger_entries and its raw-row columns; both are
-# idempotent. They must precede db:migrate because 0002_qoe_bridge ALTERs them.
-psql_demo -v ON_ERROR_STOP=1 < backend/sql/migrations/049_key_reports_entry_tables.sql >/dev/null
-psql_demo -v ON_ERROR_STOP=1 < backend/sql/migrations/050_general_ledger_entries_new_columns.sql >/dev/null
-
-step "3/7 Applying the Drizzle migrations"
+step "1/7 Building the schema"
+# One migration on an empty database. Everything the four-step legacy sequence
+# used to produce, and asserted table-for-table against it when it was written.
 DATABASE_URL="$DB_URL" pnpm --filter @datahub/db db:migrate
 
 step "4/7 Seeding demo data and backfilling Better Auth identities"

@@ -11,8 +11,7 @@
  *   service.ts             orchestration, reaching the world only through them
  *   repository.drizzle.ts  the real store, over migration 0005
  *   classifier.gemini.ts   the model, with its fallback chain
- *   hierarchy.legacy.ts    the one write path, over legacy's PATCH route
- *   router.ts              the HTTP contract legacy already serves
+ *   router.ts              the HTTP contract
  *   module.ts              wiring, behind COA_REVIEW_MODULE_ENABLED
  *   repository.memory.ts   in-memory store, stub classifier, recording writer
  *
@@ -28,17 +27,17 @@
  * not using would be the worse trade.
  *
  * The service is built PER REQUEST, which is unusual here and deliberate: the
- * hierarchy writer forwards the caller's own credentials to the route that owns
+ * hierarchy writer carries the caller's own identity into the code that owns
  * `chart_of_accounts`, so a reviewer who cannot edit an account cannot apply a
  * recommendation to it either. A boot-time singleton would have to hold a
  * service identity, which turns the review UI into a privilege escalation.
  *
- * `hierarchy.legacy.ts` pays an HTTP hop rather than writing the level columns
- * directly, because writing them here would make this the second hierarchy
- * writer in the system — diverging from the manual grid's the moment either
- * changes, with no audit entry and no user-modified flag. When the chart of
- * accounts moves in-process, swap that adapter; nothing else changes, because
- * the module depends on the port rather than on it.
+ * This module never writes the level columns itself. Doing so would make it the
+ * second hierarchy writer in the system, diverging from the manual grid's the
+ * moment either changed, with no audit entry and no user-modified flag. It
+ * delegates to the one writer that owns the table — which used to mean an HTTP
+ * hop to legacy and now means an in-process call. Nothing else changed when
+ * that swapped, because the module depends on the port rather than on either.
  *
  * Still absent: the SPA. `ba/rearch` never took the review UI from `data_room`,
  * so nothing calls these routes yet — which is why the flag defaults off.
@@ -52,7 +51,6 @@ export { createCoaReviewModule } from "./module.js";
 export type { CoaReviewModule, CreateCoaReviewModuleOptions } from "./module.js";
 export { createCoaReviewRouter } from "./router.js";
 export { createGeminiClassifier, DEFAULT_MODELS } from "./classifier.gemini.js";
-export { createLegacyHierarchyWriter } from "./hierarchy.legacy.js";
 export { createInProcessHierarchyWriter } from "./hierarchy.in-process.js";
 export type { ApplyHierarchy } from "./hierarchy.in-process.js";
 export { DrizzleCoaReviewRepository } from "./repository.drizzle.js";

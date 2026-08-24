@@ -1,38 +1,75 @@
--- GENERATED FILE — do not edit by hand.
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 0000 — the whole schema, in one migration.
 --
--- The deployed schema, captured with packages/db/scripts/snapshot-schema.mjs.
--- Integration tests load this instead of declaring DDL themselves, so a test
--- can no longer describe a table more permissively than production has it.
+-- WHAT THIS REPLACES
 --
--- Regenerate after changing any file below:
---   DATABASE_URL=... pnpm --filter @datahub/db db:snapshot
+-- Until this file, building a database meant running four things in order:
 --
---   packages/db/migrations/0000_baseline.sql
+--   1. backend/sql/schema.sql          the legacy world, which does NOT apply
+--                                      cleanly — it references dataset_versions(id)
+--                                      without creating it, and fourteen of its
+--                                      statements are expected to fail. Its own
+--                                      header said so.
+--   2. backend/sql/migrations/049      the key-report entry tables
+--   3. backend/sql/migrations/050      general_ledger_entries' raw-row columns
+--   4. packages/db/migrations/0000-0018  everything since
 --
--- source-sha256: 1aa0dd19a047468d77e5d052d99215d4bc6161d9b0711fc830560f67bd7aa0a0
+-- Steps 1 to 3 lived in the legacy backend, which is why the legacy backend
+-- could not be deleted while it served no routes: it was still the source of
+-- record for 43 tables, including companies, users, documents, folders,
+-- requests and the three financial entry tables every statement reads.
+--
+-- HOW IT WAS BUILT
+--
+-- By running that chain against an empty database and dumping the result, then
+-- checking the outcome table-for-table against the running demo database. It is
+-- what the chain produces, not a transcription of it — a transcription is a
+-- second chance to get it wrong.
+--
+-- Two deliberate departures from the dump:
+--
+--   * `schema_migrations` is omitted. The migration runner creates its own
+--     ledger before it applies anything, so a CREATE here would fail on the
+--     first run of the first migration.
+--   * `activity_events`' dated partitions are omitted. The runtime creates
+--     them ahead of time (`upcomingPartitionsDdl`), and freezing 2026's months
+--     into a permanent baseline means a database built in 2027 starts with
+--     stale ones. The partitioned table and its DEFAULT partition are here;
+--     the months are not.
+--
+-- WHAT IT DOES NOT DO
+--
+-- It does not fix the schema. Every oddity the legacy chain produced is
+-- reproduced exactly, because a baseline that quietly corrects things is a
+-- baseline nobody can check against the database it replaced. The drift that
+-- is known and tolerated is recorded in `packages/db/src/drift.ts`; correcting
+-- any of it is a migration after this one, where it can be read and reviewed
+-- on its own.
+-- ═══════════════════════════════════════════════════════════════════════════
+
 --
 -- PostgreSQL database dump
 --
 
--- Dumped from database version 16.15
--- Dumped by pg_dump version 16.14
 
-SET statement_timeout = 0;
-SET lock_timeout = 0;
-SET idle_in_transaction_session_timeout = 0;
-SET client_encoding = 'UTF8';
-SET standard_conforming_strings = on;
-SELECT pg_catalog.set_config('search_path', '', false);
-SET check_function_bodies = false;
-SET xmloption = content;
-SET client_min_messages = warning;
-SET row_security = off;
+-- Dumped from database version 16.15
+-- Dumped by pg_dump version 16.15
+
+-- pg_dump's session preamble is deliberately not carried over.
+--
+-- It ends with `SELECT pg_catalog.set_config('search_path', '', false)`, which
+-- empties the search path so the dump can qualify every object as `public.x`.
+-- Inside a migration that setting outlives the file: the runner's own
+-- `INSERT INTO schema_migrations` then resolves against nothing and the first
+-- run fails with "relation schema_migrations does not exist".
+--
+-- Every object below is schema-qualified anyway, so nothing here needs it.
 
 --
 -- Name: pgcrypto; Type: EXTENSION; Schema: -; Owner: -
 --
 
--- pgcrypto omitted: gen_random_uuid() is core from PG13 and PGlite has no extension.
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
 
 --
 -- Name: activity_type; Type: TYPE; Schema: public; Owner: -
@@ -1701,16 +1738,6 @@ CREATE TABLE public.requests (
 );
 
 --
--- Name: schema_migrations; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.schema_migrations (
-    version text NOT NULL,
-    checksum text NOT NULL,
-    applied_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
---
 -- Name: session; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2638,13 +2665,6 @@ ALTER TABLE ONLY public.request_reminders
 
 ALTER TABLE ONLY public.requests
     ADD CONSTRAINT requests_pkey PRIMARY KEY (id);
-
---
--- Name: schema_migrations schema_migrations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.schema_migrations
-    ADD CONSTRAINT schema_migrations_pkey PRIMARY KEY (version);
 
 --
 -- Name: session session_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -5092,4 +5112,5 @@ ALTER TABLE ONLY public.workspace_page_state
 --
 -- PostgreSQL database dump complete
 --
+
 

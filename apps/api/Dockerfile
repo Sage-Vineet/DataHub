@@ -1,8 +1,10 @@
-# The gateway (apps/api) — the cutover seam. Built from the monorepo root:
+# The gateway (apps/api). Built from the monorepo root:
 #   docker build -f apps/api/Dockerfile -t datahub-gateway .
 #
-# With every *_MODULE_ENABLED flag unset this image is a transparent reverse proxy
-# to LEGACY_ORIGIN, so it can be deployed ahead of any domain cutover (ADR-0003).
+# It was the cutover seam: with every *_MODULE_ENABLED flag unset the image was
+# a transparent reverse proxy to LEGACY_ORIGIN, deployable ahead of any domain
+# moving (ADR-0003). The migration is finished, so it serves every route itself
+# and there is no upstream to proxy to.
 
 FROM node:22-alpine AS base
 RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
@@ -19,7 +21,6 @@ COPY packages/financial-engine/package.json packages/financial-engine/
 COPY packages/ui/package.json packages/ui/
 COPY apps/api/package.json apps/api/
 COPY apps/web/package.json apps/web/
-COPY backend/package.json backend/
 RUN pnpm install --frozen-lockfile --filter @datahub/api...
 
 # ── build ─────────────────────────────────────────────────────────────────────
@@ -65,7 +66,7 @@ USER node
 
 EXPOSE 8080
 # Liveness uses the gateway's own /healthz, which never proxies, so the check
-# reports the gateway's health rather than the legacy backend's.
+# reports the gateway's own health.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 

@@ -1,11 +1,7 @@
-import type { ServerResponse } from "node:http";
 import express from "express";
-import type { Express, RequestHandler, Response, Router } from "express";
-import { createProxyMiddleware } from "http-proxy-middleware";
-import { markProxiedToLegacy } from "./activity/capture.js";
-import { resolveTarget, type RoutingTable } from "./routing.js";
+import type { Express, RequestHandler, Router } from "express";
 
-/** An in-process module mounted ahead of the proxy (e.g. the auth module). */
+/** An in-process module the gateway mounts (e.g. the auth module). */
 export interface MountedModule {
   path: string;
   router: Router;
@@ -44,24 +40,12 @@ function corsMiddleware(origins: ReadonlyArray<string>): RequestHandler {
 }
 
 export interface GatewayOptions {
-  /** Upstream timeout in ms before a request is failed as 504. */
-  proxyTimeoutMs?: number;
-  /**
-   * Runs immediately before the catch-all proxy, so it sees only requests bound
-   * for legacy — never one an in-process module already claimed. Used by the
-   * legacy auth bridge (`legacy-bridge.ts`); omitted → no request-path change.
-   */
-  beforeProxy?: RequestHandler;
   /**
    * Tier-1 activity capture (SE-0004). Runs ahead of everything so it sees every
-   * request — including the ones that proxy to legacy, which is most of them
-   * during the cutover. Omitted → no capture, and no request-path change at all.
+   * request. Omitted → no capture, and no request-path change at all.
    */
   activityCapture?: RequestHandler;
-  /**
-   * In-process modules mounted BEFORE the catch-all proxy. Requests matching a
-   * module path are served in-process; everything else falls through to legacy.
-   */
+  /** In-process modules. A request matching a module path is served by it. */
   modules?: ReadonlyArray<MountedModule>;
   /**
    * Origins allowed to make credentialed (cookie) requests — needed for cookie
@@ -74,29 +58,32 @@ export interface GatewayOptions {
    * The live feature-flag set, reported by `/healthz` so the SPA can hide what is
    * switched off instead of rendering it broken.
    *
-   * This matters more than it looks. An unmatched path does NOT 404 here — it
-   * falls through to the catch-all proxy and reaches legacy, which answers with
-   * something the SPA cannot interpret. So a module flipped off without the client
-   * knowing produces a live nav entry, a request that resolves to nonsense, and a
-   * spinner that never settles. Declaring availability is what makes the kill
-   * switch subtract a feature rather than break one.
+   * This matters more than it looks. A module flipped off without the client
+   * knowing produces a live nav entry and a request that 404s, which the SPA
+   * renders as a spinner that never settles. Declaring availability is what
+   * makes the kill switch subtract a feature rather than break one.
    *
    * It rides on `/healthz` rather than a new endpoint because this handler lives
-   * on the gateway app, not a module router — so it claims no surface that
-   * `route-contract.test.ts` compares against legacy.
+   * on the gateway app rather than a module router.
    */
   features?: Readonly<Record<string, boolean>>;
 }
 
 /**
- * Build the gateway Express app. Its only responsibilities: a health check and
- * a transparent, streaming reverse proxy that forwards every other request to
- * the upstream chosen by the routing table (default: legacy).
+ * Build the gateway Express app: a health check, the in-process modules, and a
+ * 404 for anything else.
  *
- * IMPORTANT: no body parser runs before the proxy — bodies stream through
- * untouched so uploads/downloads are not buffered.
+ * It used to end in a transparent streaming reverse proxy that forwarded every
+ * unmatched request to the legacy backend, which is what made it a gateway
+ * rather than a server. There is nothing behind it now — every route the SPA
+ * calls is served in-process — so an unmatched path is a path that does not
+ * exist, and saying so beats forwarding it to a host that is not listening.
+ *
+ * The name is kept. It still fronts the SPA, still owns CORS and the activity
+ * envelope, and renaming it would touch every compose file, script and doc for
+ * no gain.
  */
-export function createGateway(table: RoutingTable, options: GatewayOptions = {}): Express {
+export function createGateway(options: GatewayOptions = {}): Express {
   const app = express();
 
   // Credentialed CORS (for cross-origin cookie sessions) runs first so it also
@@ -117,44 +104,16 @@ export function createGateway(table: RoutingTable, options: GatewayOptions = {})
     res.status(200).json({ status: "ok", service: "gateway", features: options.features ?? {} });
   });
 
-  // In-process modules are mounted ahead of the proxy: a migrated route-group
-  // (e.g. /api/auth) is served here; everything else still falls through to legacy.
+  // Every route the SPA calls is one of these.
   for (const mod of options.modules ?? []) {
     app.use(mod.path, mod.router);
   }
 
-  const proxy = createProxyMiddleware({
-    // A concrete default target satisfies the middleware; `router` overrides per request.
-    target: resolveTarget(table, "/"),
-    changeOrigin: true,
-    xfwd: true, // adds X-Forwarded-For / -Proto / -Host
-    ws: true,
-    proxyTimeout: options.proxyTimeoutMs ?? 30_000,
-    router: (req) => resolveTarget(table, req.url ?? "/"),
-    on: {
-      // The one place that knows legacy is serving this request. Modules are
-      // mounted ahead of the proxy, so "the proxy ran" is exactly the signal.
-      proxyReq: (_proxyReq, _req, res) => {
-        markProxiedToLegacy(res as Response);
-      },
-      error: (err, _req, res) => {
-        const code = (err as NodeJS.ErrnoException).code ?? "UNKNOWN";
-        const status = code === "ETIMEDOUT" || code === "ESOCKETTIMEDOUT" ? 504 : 502;
-        const response = res as ServerResponse;
-        if (response && typeof response.writeHead === "function" && !response.headersSent) {
-          response.writeHead(status, { "Content-Type": "application/json" });
-          response.end(JSON.stringify({ error: "gateway_upstream_error", code }));
-        } else if (response && typeof response.destroy === "function") {
-          response.destroy();
-        }
-        console.error(`[gateway] upstream error (${status}): ${err.message}`);
-      },
-    },
+  // Anything not matched above does not exist. This was the catch-all proxy to
+  // legacy; the JSON shape is kept because clients already read `error`.
+  app.use((req, res) => {
+    res.status(404).json({ error: "not_found", path: req.path });
   });
 
-  // Last thing before the proxy: everything past this point is legacy's.
-  if (options.beforeProxy) app.use(options.beforeProxy);
-
-  app.use(proxy);
   return app;
 }
