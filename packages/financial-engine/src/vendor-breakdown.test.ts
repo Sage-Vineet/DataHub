@@ -123,3 +123,55 @@ describe("the vendor breakdown", () => {
     }
   });
 });
+
+describe("the order vendors are listed in", () => {
+  it("breaks a tie on total by name, rather than arbitrarily", () => {
+    /**
+     * Two vendors of equal magnitude is ordinary — a duplicated charge, or two
+     * suppliers on the same retainer. Without the tie-break the order comes
+     * from `Map` insertion, which follows whichever row the ledger happened to
+     * list first, and the page reshuffles between loads for no reason a reader
+     * can see.
+     */
+    const rows: GlEntry[] = [
+      { accountId: "rent", fiscalYear: 2024, month: 1, amount: 100, vendor: "Zulu Ltd" },
+      { accountId: "rent", fiscalYear: 2024, month: 1, amount: 100, vendor: "Alpha Ltd" },
+    ];
+    expect(annual(rows).map((v) => v.vendorName)).toEqual(["Alpha Ltd", "Zulu Ltd"]);
+
+    // And the same answer from the other input order.
+    expect(annual([...rows].reverse()).map((v) => v.vendorName)).toEqual([
+      "Alpha Ltd",
+      "Zulu Ltd",
+    ]);
+  });
+
+  it("sorts an unattributed bucket against the named ones without failing", () => {
+    // `vendor` is nullable, so the unnamed bucket takes part in the same sort.
+    const rows: GlEntry[] = [
+      { accountId: "rent", fiscalYear: 2024, month: 1, amount: 100, vendor: null },
+      { accountId: "rent", fiscalYear: 2024, month: 1, amount: 100, vendor: "Alpha Ltd" },
+    ];
+    const names = annual(rows).map((v) => v.vendorName);
+    expect(names).toHaveLength(2);
+    expect(names).toContain(null);
+    expect(names).toContain("Alpha Ltd");
+  });
+
+  it("leaves out a posting in a period nobody asked for", () => {
+    // The breakdown is scoped to the periods in view. A 2023 row reaching a
+    // 2024 breakdown makes a vendor's total disagree with the statement it
+    // sits beside.
+    const rows: GlEntry[] = [
+      { accountId: "rent", fiscalYear: 2024, month: 1, amount: 100, vendor: "Alpha Ltd" },
+      { accountId: "rent", fiscalYear: 2023, month: 1, amount: 900, vendor: "Alpha Ltd" },
+    ];
+    const [alpha] = buildVendorBreakdown(
+      accounts,
+      rows,
+      buildPeriods(rows, [2024], "annual"),
+      "annual",
+    );
+    expect(alpha!.total).toBeCloseTo(-100, 2);
+  });
+});

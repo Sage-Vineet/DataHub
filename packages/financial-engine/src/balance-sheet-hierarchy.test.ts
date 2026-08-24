@@ -137,6 +137,49 @@ describe("specific classifications", () => {
     expect(asset("Loans to Affiliate")).toBe("Other Current Assets");
   });
 
+  it("marks a confident rule as certain, and a fallback as not", () => {
+    /**
+     * `certain` drives whether the page flags the grouping for review. A
+     * derivation nobody can check is not the same as one the name states
+     * outright, and marking both alike either buries the guesses or flags
+     * everything — and a review list that flags everything is one nobody reads.
+     */
+    const stated = assignGroup({
+      name: "Accounts Receivable",
+      accountType: "asset",
+      group: null,
+    })!;
+    expect(stated).toMatchObject({ fromStatement: false, certain: true });
+
+    const guessed = assignGroup({ name: "Widget Reserve", accountType: "asset", group: null })!;
+    expect(guessed).toMatchObject({
+      group: "Other Current Assets",
+      fromStatement: false,
+      certain: false,
+    });
+  });
+
+  it("takes the statement's own group as certain, without deriving anything", () => {
+    // The statement is the source; a derivation can only disagree with it.
+    const assigned = assignGroup({
+      name: "Widget Reserve",
+      accountType: "asset",
+      group: "Fixed Assets",
+    })!;
+    expect(assigned).toEqual({ group: "Fixed Assets", fromStatement: true, certain: true });
+  });
+
+  it("reads an account with no name as an unrecognised one of its type", () => {
+    // `name` is nullable on an account. Falling through to the type's fallback
+    // keeps it on the statement, where dropping it would lose its balance.
+    expect(
+      assignGroup({ name: null as unknown as string, accountType: "asset", group: null })?.group,
+    ).toBe("Other Current Assets");
+    expect(
+      assignGroup({ name: null as unknown as string, accountType: "liability", group: null })?.group,
+    ).toBe("Other Current Liabilities");
+  });
+
   it("returns nothing for a profit-and-loss account", () => {
     expect(deriveGroup({ name: "Sales", accountType: "income", group: null })).toBeNull();
   });

@@ -289,3 +289,34 @@ describe("an anchor dated outside the rolled range", () => {
     expect(backward.tieOut!.differences["cash"]).toBeUndefined();
   });
 });
+
+describe("which years a balance sheet rolls through", () => {
+  const roll = (over: Record<string, unknown> = {}) =>
+    rollForwardBalanceSheet({
+      accounts,
+      entries,
+      anchors: [anchor("starting"), anchor("ending")],
+      ...over,
+    });
+
+  it("derives them from the ledger when none are named", () => {
+    // The roll is what the trial balance and the cash flow both read their
+    // openings from, so an empty roll is three statements empty at once.
+    const derived = roll();
+    const named = roll({ fiscalYears: years });
+    expect(derived.periods.length).toBe(named.periods.length);
+  });
+
+  it("sorts them, whatever order the ledger arrives in", () => {
+    // The roll carries each period's closing into the next opening. Out of
+    // order, every opening is the wrong period's closing and the sheet still
+    // balances — which is what makes it dangerous.
+    const shuffled = roll({ entries: [...entries].reverse() });
+    const keys = shuffled.periods.map((p) => `${p.fiscalYear}-${String(p.month).padStart(2, "0")}`);
+    expect(keys).toEqual([...keys].sort());
+  });
+
+  it("takes an empty year list as naming none", () => {
+    expect(roll({ fiscalYears: [] }).periods.length).toBe(roll().periods.length);
+  });
+});

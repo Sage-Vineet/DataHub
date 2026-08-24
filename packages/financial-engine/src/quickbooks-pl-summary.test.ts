@@ -207,6 +207,44 @@ describe("a report with nothing in it", () => {
   });
 });
 
+describe("rows that carry no figure to read", () => {
+  it("skips a row with no label at all", () => {
+    // QuickBooks emits spacer rows — a row of empty cells between sections.
+    // Matched, an empty label matches nothing; read for a figure, it would
+    // still be looked at once per matcher on every row of the report.
+    const summary = readProfitAndLossSummary(
+      report([
+        { type: "Data", ColData: [{ value: "" }, { value: "" }] },
+        line("Total Revenue", "1000.00"),
+      ]),
+    );
+    expect(summary.totalRevenue).toBe(1000);
+  });
+
+  it("looks past a matching row whose figure cannot be read", () => {
+    // A label that matches with an unreadable amount must not claim the
+    // matcher — the real figure is usually the summary further down, and
+    // claiming it here would answer zero for a report that states a total.
+    const summary = readProfitAndLossSummary(
+      report([line("Total Revenue", "—"), line("Total Revenue", "1000.00")]),
+    );
+    expect(summary.totalRevenue).toBe(1000);
+  });
+
+  it("adds a second occurrence that is not the first one's own detail", () => {
+    // Two separate sections both reporting depreciation are two costs. A row
+    // nested inside the claiming row is that row's detail and already included
+    // — which is the defect this reader was written to fix.
+    const summary = readProfitAndLossSummary(
+      report([
+        group("Depreciation", [line("Depreciation - Vehicles", "400.00")], "400.00"),
+        line("Depreciation", "600.00"),
+      ]),
+    );
+    expect(summary.depreciation).toBe(1000);
+  });
+});
+
 describe("the page's rows", () => {
   it("renders the nine labels in order", () => {
     const rows = toTaxReconciliationRows(readProfitAndLossSummary(report([])));
