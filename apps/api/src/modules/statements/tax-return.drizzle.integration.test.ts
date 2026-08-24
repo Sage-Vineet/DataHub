@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { createSchemaDb, schema, type Db } from "@datahub/db";
 import {
+  mimeTypeFor,
   DrizzleBankStatementDocumentPort,
   DrizzleDocumentBytesPort,
   DrizzleStatementDocumentPort,
@@ -331,5 +332,40 @@ describe("finding the balance sheets behind the bank grid (real Postgres)", () =
     // letter through the model as a balance sheet.
     await addDocument(ours, ourFolder, "Engagement Letter.pdf");
     expect(await port().latest(ours)).toBeNull();
+  });
+});
+
+describe("the type a stored file is handed to the model as", () => {
+  /**
+   * This decides whether the model can read the file at all. Asked to read
+   * `application/octet-stream` it refuses, and the refusal reads on the page
+   * as a document that could not be extracted rather than as a type nobody
+   * determined.
+   *
+   * `uploads.content_type` is NOT NULL, so it is always SOMETHING — which is
+   * why the extension is consulted only for the generic values, never as a
+   * general fallback. A stored type that says something specific is what the
+   * uploader's own browser determined, and it beats an extension anybody can
+   * rename.
+   */
+  it("keeps a type the browser actually determined", () => {
+    expect(mimeTypeFor("application/pdf", "xlsx")).toBe("application/pdf");
+    expect(mimeTypeFor("  APPLICATION/PDF  ", null)).toBe("application/pdf");
+  });
+
+  it("falls back to the extension only when the stored type says nothing", () => {
+    for (const generic of ["", "   ", "application/octet-stream", "binary/octet-stream"]) {
+      expect(mimeTypeFor(generic, "pdf")).toBe("application/pdf");
+      expect(mimeTypeFor(generic, "XLSX")).toBe(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      );
+    }
+  });
+
+  it("gives up honestly when neither says anything", () => {
+    // Rather than guessing PDF, which would send a spreadsheet to the model
+    // announced as something it is not.
+    expect(mimeTypeFor(null, null)).toBe("application/octet-stream");
+    expect(mimeTypeFor("application/octet-stream", "docx")).toBe("application/octet-stream");
   });
 });

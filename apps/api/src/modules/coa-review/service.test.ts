@@ -621,6 +621,43 @@ describe("acceptRecommendation keeps the original throwing contract", () => {
   });
 });
 
+describe("deciding on a recommendation that is not there", () => {
+  /**
+   * Both take an id from a URL, so a recommendation removed by a re-run
+   * between a page loading and a button being pressed lands here. Neither may
+   * throw from the store — the service above them turns a missing row into an
+   * answer a person can read.
+   */
+  it("does nothing rather than failing", async () => {
+    const { repo, service } = build(
+      {
+        coa: { rows: [leaf()] },
+        recommendations: [{ id: "reco-1", account_id: "acc-1", status: "pending" }],
+      },
+      [],
+    );
+
+    await expect(service.rejectRecommendation("nope", "user-1", null)).resolves.toBeDefined();
+    expect(repo.all()[0]!.status).toBe("pending");
+  });
+
+  it("does not overwrite a decision already taken", async () => {
+    // Rejecting an applied recommendation would leave the chart carrying a
+    // move the record says was refused.
+    const { repo, service } = build(
+      {
+        coa: { rows: [leaf()] },
+        recommendations: [{ id: "reco-1", account_id: "acc-1", status: "applied" }],
+      },
+      [],
+    );
+
+    await service.rejectRecommendation("reco-1", "user-2", "changed my mind");
+
+    expect(repo.all()[0]).toMatchObject({ status: "applied" });
+  });
+});
+
 describe("rejecting a recommendation", () => {
   it("writes only to the recommendation row, never to the chart of accounts", async () => {
     const { hierarchy, repo, service } = build(
