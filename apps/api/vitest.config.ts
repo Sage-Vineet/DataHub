@@ -46,16 +46,21 @@ export default defineConfig({
        * eleven points below the truth cannot fail, so it was not a gate.
        */
       thresholds: {
-        lines: 95,
-        // Raised from 92 and 85. The suite reaches 94.38 and 86.53, and a gate
-        // two points below the truth is one that cannot fail — which is the
-        // reason the original 80/80/70 were replaced. Lines and statements
-        // stay at 95 rather than moving to 95.52: a threshold set exactly at
-        // the current figure fails on a hundredth of a point, which trains
-        // people to raise it rather than to look at it.
-        functions: 94,
-        branches: 86,
-        statements: 95,
+        // The suite reaches 97.55 / 96.09 / 95.18. Each gate sits a point or
+        // so under that, for the reason the block above gives: set exactly at
+        // the current figure it fails on a hundredth of a point, which trains
+        // people to raise the number rather than to look at what moved.
+        //
+        // Branches came from 86 the long way. Most of the distance was not
+        // writing tests for untested code — it was finding code that could not
+        // be reached: fallbacks behind a body parser that always sets a body,
+        // `?? ""` on columns declared NOT NULL, a default parameter every call
+        // site supplies. An unreachable branch is not a coverage problem, and
+        // raising this gate by deleting one is the right way to raise it.
+        lines: 97,
+        functions: 95,
+        branches: 94,
+        statements: 97,
       },
     },
   },
