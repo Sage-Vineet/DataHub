@@ -578,6 +578,61 @@ describe("context assembly feeds the model real evidence", () => {
     expect(review.parent).toBe("Income");
   });
 
+  it("treats accounts with no parent as siblings of one another", () => {
+    // Top-level accounts have no parent id. Left ungrouped, each would be its
+    // own neighbourhood and the model would judge every one of them without
+    // the context that makes a placement sensible.
+    const roots: CoaRow[] = [
+      { id: "r1", account_name: "Sales", parent_account_id: null },
+      { id: "r2", account_name: "Other Income", parent_account_id: null },
+      { id: "r3", account_name: "Interest Income", parent_account_id: null },
+    ];
+    const review = toReviewInput(roots[0]!, buildSiblingIndex(roots));
+    expect(review.siblings.sort()).toEqual(["Interest Income", "Other Income"]);
+  });
+
+  it("reads an account by whichever name the chart actually gave it", () => {
+    /**
+     * Three columns carry a name, in order of how deliberate they are: an
+     * adjusted name is one somebody set, a base account is what the import
+     * derived, and the account name is what the source system called it.
+     *
+     * Reading only one of them names an account "" in the prompt, and the
+     * model is then asked whether a blank is well placed.
+     */
+    const index = buildSiblingIndex([]);
+    expect(
+      toReviewInput(
+        { id: "a", adjusted_name: "Interest Income", base_account: "Int Inc", account_name: "4100" },
+        index,
+      ).name,
+    ).toBe("Interest Income");
+    expect(
+      toReviewInput({ id: "a", base_account: "Int Inc", account_name: "4100" }, index).name,
+    ).toBe("Int Inc");
+    expect(toReviewInput({ id: "a", account_name: "4100" }, index).name).toBe("4100");
+    expect(toReviewInput({ id: "a" }, index).name).toBe("");
+  });
+
+  it("reports no parent for an account sitting at the top of the chart", () => {
+    // `hierarchy` is one level deep, so there is no level above it to name.
+    const review = toReviewInput(
+      { id: "a", account_name: "Sales", level_1: "Sales" },
+      buildSiblingIndex([]),
+    );
+    expect(review.parent).toBeNull();
+  });
+
+  it("carries an absent type through as null rather than inventing one", () => {
+    // An unclassified account is precisely what the review exists to find. A
+    // default here would hide it.
+    const review = toReviewInput({ id: "a", account_name: "Sundry" }, buildSiblingIndex([]));
+    expect(review.accountType).toBeNull();
+    expect(review.statementType).toBeNull();
+    expect(review.systemId).toBeNull();
+    expect(review.accountNumber).toBeNull();
+  });
+
   it("caps siblings so one enormous parent cannot dominate the prompt", () => {
     const many: CoaRow[] = Array.from({ length: 20 }, (_, i) => ({
       id: `sib-${i}`,

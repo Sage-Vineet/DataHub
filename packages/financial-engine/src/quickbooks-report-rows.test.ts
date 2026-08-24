@@ -59,6 +59,45 @@ describe("finding the columns", () => {
     expect(columnsOf({})).toEqual([]);
     expect(columnsOf(null)).toEqual([]);
   });
+
+  it("reads a column QuickBooks did not send as a list", () => {
+    // QuickBooks collapses a single-element list to the element itself in some
+    // responses. Treating that as "no columns" loses a report that has exactly
+    // one, which is what a single-account general ledger looks like.
+    const columns = columnsOf({
+      Columns: { Column: { ColType: "tx_date", ColTitle: "Date" } },
+    });
+    expect(columns).toEqual([{ type: "tx_date", title: "date" }]);
+  });
+
+  it("reads a cell value whatever type it arrives as", () => {
+    /**
+     * QuickBooks types these loosely: a column title can come back as a
+     * number, a flag as a boolean, and an absent one as null. Every one has to
+     * become a string, because the column titles are matched by name and a
+     * non-string reaches `.toLowerCase()` and throws — taking the whole report
+     * down over a title.
+     */
+    const columns = columnsOf({
+      Columns: {
+        Column: [
+          { ColType: 7, ColTitle: 2024 },
+          { ColType: true, ColTitle: false },
+          { ColType: null, ColTitle: undefined },
+          { ColType: { nested: "object" }, ColTitle: ["a", "list"] },
+          { ColType: "  spaced  ", ColTitle: "  Amount  " },
+        ],
+      },
+    });
+
+    expect(columns).toEqual([
+      { type: "7", title: "2024" },
+      { type: "true", title: "false" },
+      { type: "", title: "" },
+      { type: "", title: "" },
+      { type: "spaced", title: "amount" },
+    ]);
+  });
 });
 
 describe("walking the tree", () => {
