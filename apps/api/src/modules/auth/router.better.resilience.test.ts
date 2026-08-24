@@ -20,7 +20,7 @@ const config = loadAuthConfig({
   JWT_SECRET: "an-application-secret-long-enough",
 } as NodeJS.ProcessEnv);
 
-function app(over: Partial<Record<string, unknown>> = {}) {
+function app(over: Partial<Record<string, unknown>> = {}, repoOver: Partial<Record<string, unknown>> = {}) {
   const api = {
     signOut: () => Promise.reject(new Error("no session to sign out of")),
     requestPasswordResetEmailOTP: () => Promise.reject(new Error("the mail server refused")),
@@ -33,6 +33,12 @@ function app(over: Partial<Record<string, unknown>> = {}) {
       findUserByEmail: () => Promise.resolve(null),
       findUserById: () => Promise.resolve(null),
       listCompanyIdsForUser: () => Promise.resolve([]),
+      findCompanyIdByContactEmail: () => Promise.resolve(null),
+      setUserCompanyId: () => Promise.resolve(),
+      linkUserCompany: () => Promise.resolve(),
+      companyHasFolders: () => Promise.resolve(false),
+      createDefaultFolders: () => Promise.resolve(),
+      ...repoOver,
     } as unknown as AuthRepository,
     config,
     signupOtp: {
@@ -77,5 +83,115 @@ describe("a login that arrives with no body at all", () => {
     // `req.body.email` there would throw inside rate-limiting middleware,
     // which answers 500 rather than 400.
     await request(app()).post("/auth/login").expect(400);
+  });
+});
+
+describe("where the bearer token comes back from", () => {
+  /**
+   * The bearer plugin returns it as a `set-auth-token` HEADER. Older wiring
+   * put it in the response body. Both are read, and the tests below exist
+   * because the header path is the only one a live Better Auth exercises — so
+   * the body path would rot unnoticed until an upgrade moved it back.
+   *
+   * The empty string matters too: a non-cookie client reading `token` off this
+   * response gets `""` rather than `undefined`, so it fails its own check
+   * rather than sending the literal "undefined" as a credential.
+   */
+  const loginWith = (signIn: unknown) =>
+    request(app({ signInEmail: signIn as () => Promise<unknown> }))
+      .post("/auth/login")
+      .send({ email: "a@b.test", password: "correct1horse" });
+
+  const user = { id: "11111111-1111-4111-8111-111111111111", role: "broker" };
+
+  it("takes it from the header when Better Auth sets one", async () => {
+    const res = await loginWith(() =>
+      Promise.resolve({
+        headers: new Headers({ "set-auth-token": "from-the-header" }),
+        response: { user, token: "from-the-body" },
+      }),
+    ).expect(200);
+    expect(res.body.token).toBe("from-the-header");
+  });
+
+  it("falls back to the body when there is no header", async () => {
+    const res = await loginWith(() =>
+      Promise.resolve({ headers: new Headers(), response: { user, token: "from-the-body" } }),
+    ).expect(200);
+    expect(res.body.token).toBe("from-the-body");
+  });
+
+  it("answers an empty token rather than undefined when there is neither", async () => {
+    const res = await loginWith(() =>
+      Promise.resolve({ headers: new Headers(), response: { user } }),
+    ).expect(200);
+    expect(res.body.token).toBe("");
+  });
+});
+
+describe("a signed-in user Better Auth gave no role", () => {
+  it("is provisioned as a client rather than left with nothing attached", async () => {
+    /**
+     * `users.role` has a default, but the row Better Auth hands back mid-login
+     * may not carry it. Treating an absent role as anything but a buyer skips
+     * provisioning, and the account signs in with no company and no folders —
+     * an empty data room that looks like a permissions fault.
+     *
+     * Provisioning must not be able to FAIL the login either: the credential
+     * was valid. Inside the catch it reported a correct password as "Invalid
+     * credentials", which sends somebody to reset a password that was never
+     * wrong.
+     */
+    const looked: string[] = [];
+    const server = app(
+      {
+        signInEmail: () =>
+          Promise.resolve({
+            headers: new Headers(),
+            response: {
+              user: { id: "22222222-2222-4222-8222-222222222222", email: "a@b.test" },
+            },
+          }),
+      },
+      {
+        findCompanyIdByContactEmail: (email: string) => {
+          looked.push(email);
+          return Promise.resolve(null);
+        },
+      },
+    );
+
+    const res = await request(server)
+      .post("/auth/login")
+      .send({ email: "a@b.test", password: "correct1horse" });
+
+    expect(res.status).toBe(200);
+    // Provisioning was ATTEMPTED, which is what the absent role decides.
+    expect(looked).toEqual(["a@b.test"]);
+  });
+
+  it("signs in anyway when provisioning throws", async () => {
+    // The credential was valid. Inside the catch this reported a correct
+    // password as "Invalid credentials", which sends somebody to reset a
+    // password that was never wrong.
+    const server = app(
+      {
+        signInEmail: () =>
+          Promise.resolve({
+            headers: new Headers(),
+            response: {
+              user: { id: "22222222-2222-4222-8222-222222222222", email: "a@b.test" },
+            },
+          }),
+      },
+      { findCompanyIdByContactEmail: () => Promise.reject(new Error("the database is down")) },
+    );
+
+    const res = await request(server)
+      .post("/auth/login")
+      .send({ email: "a@b.test", password: "correct1horse" });
+
+    expect(res.status).toBe(200);
+    expect(res.status).not.toBe(401);
   });
 });

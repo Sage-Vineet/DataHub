@@ -252,6 +252,50 @@ describe("QoeService — the income statement's own options", () => {
     expect(lines[0]!.account_name).not.toBe("Unknown account");
   });
 
+  it("leaves a posting whose account the chart does not hold out entirely", async () => {
+    /**
+     * Pinning what happens today, which is not obviously what should.
+     *
+     * `buildIncomeStatement` skips an entry whose account is not in the chart
+     * (`income-statement.ts`: `if (!account || account.statementType !==
+     * "profit_loss") continue`). So the amount reaches neither revenue,
+     * expenses, nor the per-account breakdown, and the statement quietly stops
+     * footing to the ledger it was built from.
+     *
+     * The asymmetry worth noticing: an account that IS in the chart but
+     * carries no type is collected into `unclassified` and raised, because
+     * "we cannot classify this" is treated as something a person must decide.
+     * An account missing from the chart altogether is the same statement about
+     * the same money, and it is silently dropped.
+     *
+     * Not changed here. It is `packages/financial-engine`, every statement in
+     * the product reads through it, and altering what it counts is a decision
+     * to take deliberately rather than as a side effect of a coverage pass.
+     */
+    const engagement = fixtureEngagement(COMPANY);
+    const repo = new InMemoryQoeRepository();
+    repo.seedEngagement(VERSION, {
+      ...engagement,
+      entries: [
+        ...engagement.entries,
+        { accountId: "not-in-the-chart", fiscalYear: 2024, month: 6, amount: 1234 },
+      ],
+    });
+
+    const withOrphan = await new QoeService({ repo }).incomeStatement(session(), VERSION);
+    const clean = await new QoeService({
+      repo: (() => {
+        const r = new InMemoryQoeRepository();
+        r.seedEngagement(VERSION, engagement);
+        return r;
+      })(),
+    }).incomeStatement(session(), VERSION);
+
+    expect(withOrphan.lines.find((l) => l.account_id === "not-in-the-chart")).toBeUndefined();
+    expect(withOrphan.lines).toHaveLength(clean.lines.length);
+    expect(withOrphan.revenue).toEqual(clean.revenue);
+  });
+
   it("orders the lines by account name", async () => {
     const { service, user } = make();
     const names = (await service.incomeStatement(user, VERSION)).lines.map((l) => l.account_name);

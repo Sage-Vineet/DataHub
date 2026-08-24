@@ -250,6 +250,20 @@ describe("when the live fetch does not work", () => {
     expect(served.source).toBe("cached_snapshot");
   });
 
+  it("writes a readable note when the request named no period at all", async () => {
+    // The note is shown to the user beside the figures. Interpolating an
+    // absent date gives "No snapshot for undefined–undefined", which reads as
+    // a fault rather than as "these are from a different period".
+    const { service, statements } = build({
+      fetcher: fetcher(new QuickBooksRequestError(503, "unavailable")),
+    });
+    await cache(statements);
+
+    const served = await service.serve(USER, COMPANY, "balance_sheet", {});
+    expect(served.source).toBe("cached_snapshot");
+    expect(served.note ?? "").not.toContain("undefined");
+  });
+
   it("refuses a cached period that does not reach the one asked for", async () => {
     // A narrower stored report does not contain the requested figures, so
     // serving it would silently answer a smaller question.
