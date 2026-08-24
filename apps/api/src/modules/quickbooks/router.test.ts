@@ -138,7 +138,7 @@ function stub(over: Record<string, unknown> = {}) {
       bankActivity,
       writes,
       ...(oauth ? { oauth } : {}),
-      frontendUrl: "https://app.test",
+      ...(over.noFrontendUrl === true ? {} : { frontendUrl: "https://app.test" }),
       entities,
       requireAuth: over.noAuth
         ? ((_req, _res, next) => {
@@ -617,5 +617,77 @@ describe("the OAuth dance", () => {
     await get(app, "/refresh-token").expect(503);
     const res = await request(app).get("/api/auth/callback?code=c").expect(302);
     expect(res.headers.location).toContain("Not+configured");
+  });
+});
+
+describe("what the router does with a failure it does not recognise", () => {
+  it("hands it to the error handler rather than answering 200", async () => {
+    // Everything above this maps a KNOWN failure onto a status. A surprise —
+    // a null dereference, a driver error — must not be dressed up as one of
+    // them, because a 502 says "Intuit answered badly" about a fault that is
+    // ours.
+    const { app } = stub({ entities: { list: () => Promise.reject(new Error("boom")) } });
+    await get(app, "/customers").expect(500);
+  });
+
+  it("still redirects the callback when the failure is not an Error", async () => {
+    // A rejection with a non-Error — a string, a Promise.reject(undefined) —
+    // still leaves a browser on this URL, so it still has to land somewhere in
+    // the application.
+    const { app } = stub({
+      oauth: { completeCallback: () => Promise.reject("a bare string") },
+    });
+    const res = await request(app).get("/api/auth/callback?code=c&realmId=r&state=s").expect(302);
+    expect(res.headers.location).toContain("qbStatus=error");
+    expect(res.headers.location).toContain(encodeURIComponent("Could not connect QuickBooks."));
+  });
+
+  it("redirects within the app when no frontend URL is configured", async () => {
+    // A relative location, which is what the SPA is serving the callback from
+    // anyway when the two share an origin.
+    const { app } = stub({ noFrontendUrl: true });
+    const res = await request(app).get("/api/auth/callback?code=c&realmId=r&state=s").expect(302);
+    expect(res.headers.location).toBe("/#/broker/companies?qbStatus=connected");
+  });
+});
+
+describe("a request that carries no body at all", () => {
+  /**
+   * Not a contrivance: `express.json()` leaves `req.body` undefined when the
+   * request has no `Content-Type`, and a `fetch` with no `body` sends none. A
+   * handler reading `req.body.x` would throw a TypeError and answer 500 for
+   * what is really a 400.
+   */
+  it("treats a bodiless customer create as an empty one", async () => {
+    const { app, calls } = stub();
+    await request(app).post("/customers").set("x-client-id", COMPANY).expect(200);
+    expect(argsOf(calls, "createCustomer")[2]).toEqual({});
+  });
+
+  it("treats a bodiless invoice update as an empty one", async () => {
+    const { app, calls } = stub();
+    await request(app).put("/api/invoices/42").set("x-client-id", COMPANY).expect(200);
+    expect(argsOf(calls, "updateInvoice")[2]).toBe("42");
+    expect(argsOf(calls, "updateInvoice")[3]).toEqual({});
+  });
+
+  it("takes the sync options from the query when there is no body to hold them", async () => {
+    // The SPA posts these as a query string on one path and as JSON on another.
+    const { app, calls } = stub();
+    await request(app)
+      .post("/api/quickbooks/sync?yearsBack=3&accountingMethod=Cash")
+      .set("x-client-id", COMPANY)
+      .expect(200);
+    expect(argsOf(calls, "syncStart")[2]).toEqual({ yearsBack: 3, accountingMethod: "Cash" });
+  });
+
+  it("passes a bodiless transfer through as an unnamed realm", async () => {
+    // The router does not decide this. `QuickBooksOAuthService.transfer` throws
+    // `Missing realmId.` for an empty one, which is a 400 through the real
+    // service; what has to be true here is that the router reaches it at all
+    // rather than throwing on `body.realmId` first.
+    const { app, calls } = stub();
+    await request(app).post("/api/auth/transfer-confirm").set("x-client-id", COMPANY).expect(200);
+    expect(argsOf(calls, "transfer")[2]).toBe("");
   });
 });

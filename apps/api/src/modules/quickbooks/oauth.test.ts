@@ -5,7 +5,11 @@ import { BadRequestError, ForbiddenError, HttpError, NotFoundError } from "../..
 import { QuickBooksAuthError, type QueryEntityInput, type ReportFetcher } from "./reports/client.js";
 import type { OAuthCredentials, OAuthTokenExchange, OAuthTokens } from "./oauth-client.js";
 import { signOAuthState } from "./oauth-state.js";
-import { QuickBooksOAuthService, RealmAlreadyLinkedError } from "./oauth.js";
+import {
+  QuickBooksOAuthService,
+  RealmAlreadyLinkedError,
+  type QuickBooksOAuthConfig,
+} from "./oauth.js";
 import { InMemoryQuickBooksRepository } from "./repository.memory.js";
 
 /**
@@ -78,9 +82,17 @@ function fetcher(name: string | null = "Acme Books", fail = false): ReportFetche
   } as unknown as ReportFetcher;
 }
 
+/** A fetcher answering an arbitrary payload, for the realm-name reader. */
+function payloadFetcher(payload: unknown): ReportFetcher {
+  return {
+    fetchReport: () => Promise.reject(new Error("not used")),
+    queryEntity: (_input: QueryEntityInput) => Promise.resolve({ payload, params: {} }),
+  } as unknown as ReportFetcher;
+}
+
 function build(
   over: {
-    config?: Partial<typeof CONFIG>;
+    config?: Partial<QuickBooksOAuthConfig>;
     exchange?: ReturnType<typeof exchange>;
     fetcher?: ReportFetcher;
   } = {},
@@ -414,5 +426,88 @@ describe("transferring a realm", () => {
     const { service } = build();
     await expect(service.transfer(USER, "", REALM)).rejects.toBeInstanceOf(BadRequestError);
     await expect(service.transfer(USER, COMPANY, "")).rejects.toBeInstanceOf(BadRequestError);
+  });
+});
+
+describe("reading the realm's own name", () => {
+  /**
+   * Best effort, and every shape below has to end in a stored connection.
+   *
+   * The tokens have already been issued by the time this runs. Letting a
+   * surprise in Intuit's payload throw would lose them, and the user would be
+   * sent back to a page saying the connection failed when the only thing that
+   * failed was reading a display name.
+   */
+  const nameAfterConnecting = async (payload: unknown) => {
+    const { service, connections } = build({ fetcher: payloadFetcher(payload) });
+    const state = signOAuthState(
+      { redirect: "/broker/companies", companyId: COMPANY, userId: USER.id },
+      SECRET,
+      NOW,
+    );
+    const done = await service.completeCallback({ code: "c", realmId: REALM, state }, NOW);
+    expect((await connections.get(COMPANY))?.isConnected).toBe(true);
+    return done.realmCompanyName;
+  };
+
+  it("takes the name when Intuit sends one", async () => {
+    expect(await nameAfterConnecting({ QueryResponse: { CompanyInfo: [{ CompanyName: "Acme" }] } })).toBe(
+      "Acme",
+    );
+  });
+
+  it("connects namelessly through every shape that carries no name", async () => {
+    for (const payload of [
+      {},
+      { QueryResponse: null },
+      { QueryResponse: "not an object" },
+      { QueryResponse: {} },
+      { QueryResponse: { CompanyInfo: "not a list" } },
+      { QueryResponse: { CompanyInfo: [] } },
+      { QueryResponse: { CompanyInfo: [{}] } },
+      { QueryResponse: { CompanyInfo: [{ CompanyName: "   " }] } },
+      { QueryResponse: { CompanyInfo: [{ CompanyName: null }] } },
+    ]) {
+      expect(await nameAfterConnecting(payload)).toBeNull();
+    }
+  });
+});
+
+describe("what the configuration leaves unsaid", () => {
+  it("sends the browser to Intuit's own host when none is given", () => {
+    // `authorizeUrl` is injected only so a sandbox realm can be used.
+    const { service } = build({ config: { authorizeUrl: undefined } });
+    const { authorizeUrl } = service.startAuthorization(USER, COMPANY, {}, NOW);
+    expect(authorizeUrl.startsWith("https://appcenter.intuit.com/connect/oauth2?")).toBe(true);
+  });
+
+  it("records a connection as production when no environment is named", async () => {
+    // The alternative is storing an empty string, which reads as neither and
+    // would have to be interpreted at every site that asks.
+    const { service, connections } = build({ config: { environment: undefined } });
+    const state = signOAuthState(
+      { redirect: "/broker/companies", companyId: COMPANY, userId: USER.id },
+      SECRET,
+      NOW,
+    );
+    await service.completeCallback({ code: "c", realmId: REALM, state }, NOW);
+    expect((await connections.get(COMPANY))?.environment).toBe("production");
+  });
+
+  it("refuses a callback that carries no code or no realm at all", async () => {
+    // Absent, not empty: Intuit omits the parameter when the user backs out of
+    // the consent screen, so `req.query.code` is undefined rather than "".
+    const { service } = build();
+    const state = signOAuthState(
+      { redirect: "/broker/companies", companyId: COMPANY, userId: USER.id },
+      SECRET,
+      NOW,
+    );
+    await expect(
+      service.completeCallback({ code: undefined, realmId: REALM, state }, NOW),
+    ).rejects.toThrow(/did not return a usable authorization/i);
+    await expect(
+      service.completeCallback({ code: "c", realmId: undefined, state }, NOW),
+    ).rejects.toThrow(/did not return a usable authorization/i);
   });
 });

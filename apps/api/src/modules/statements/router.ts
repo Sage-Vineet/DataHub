@@ -129,7 +129,7 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
       const extract = await service.resolve(
         req.user!,
         companyOf(req),
-        String(req.params.statementType ?? "").toLowerCase(),
+        req.params.statementType!.toLowerCase(),
         {
           ...(sourceKey ? { sourceKey } : {}),
           // `rowId` is legacy's name for it, kept so existing callers still work.
@@ -186,7 +186,7 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
   const listFiles = (defaultSourceKey?: string) =>
     handle(async (req: Request, res: Response) => {
       const year = Number.parseInt(String(req.query.fiscalYear ?? ""), 10);
-      const statementType = String(req.params.statementType ?? "").toLowerCase();
+      const statementType = req.params.statementType!.toLowerCase();
       const sourceKey = str(req.query.sourceKey) ?? defaultSourceKey;
       const files = await service.list(req.user!, companyOf(req), statementType, {
         ...(sourceKey ? { sourceKey } : {}),

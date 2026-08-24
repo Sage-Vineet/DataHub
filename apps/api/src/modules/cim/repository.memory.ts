@@ -33,9 +33,20 @@ export class CimStore {
   readonly sections: SectionRecord[] = [];
   readonly slides: SlideRecord[] = [];
   readonly blocks: BlockRecord[] = [];
+  /**
+   * Every column the Drizzle writer inserts, not the subset the service happens
+   * to read back. This held four of the eight and dropped who answered, when,
+   * who accepted it and where it came from — so a test could assert a discard
+   * was recorded and be told yes while the attribution silently went nowhere.
+   */
   readonly provenance: Array<{
     blockId: string;
+    source: string;
+    qaItemId: string | null;
     qaResponseId: string | null;
+    respondentId: string | null;
+    answeredAt: string | null;
+    acceptedBy: string | null;
     outcome: "accepted" | "discarded";
     rawAnswer: string | null;
     versionId: string;
@@ -344,7 +355,12 @@ export class MemoryProvenanceRepository implements ProvenanceRepository {
   async record(input: Parameters<ProvenanceRepository["record"]>[0]): Promise<void> {
     this.store.provenance.push({
       blockId: input.blockId,
+      source: input.source,
+      qaItemId: input.qaItemId ?? null,
       qaResponseId: input.qaResponseId,
+      respondentId: input.respondentId ?? null,
+      answeredAt: input.answeredAt ?? null,
+      acceptedBy: input.acceptedBy ?? null,
       outcome: input.outcome,
       rawAnswer: input.rawAnswer,
       versionId: this.store.versionIdForBlock(input.blockId),

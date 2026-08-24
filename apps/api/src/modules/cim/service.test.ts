@@ -520,6 +520,27 @@ describe("the guided Q&A loop", () => {
     expect(await service.reviewQueue(broker, versionId)).toHaveLength(0);
   });
 
+  it("records a discard of a response that is not on the block, with nothing to attribute", async () => {
+    // Deliberately asymmetric with `acceptAnswer`, which refuses this: accept
+    // writes the answer into the deck, so it must have one, while discard only
+    // records that somebody said no. Refusing here would leave the reviewer
+    // stuck on a queue entry they cannot clear.
+    const { gap } = await withAnswer();
+
+    await service.discardAnswer(broker, gap.block_id, {
+      qa_item_id: "i-1",
+      qa_response_id: "no-such-response",
+    });
+
+    const provenance = store.provenance.find((p) => p.qaResponseId === "no-such-response")!;
+    expect(provenance).toMatchObject({
+      outcome: "discarded",
+      respondentId: null,
+      answeredAt: null,
+      rawAnswer: null,
+    });
+  });
+
   it("retains a discarded answer rather than deleting it", async () => {
     const { versionId, gap } = await withAnswer();
 
@@ -804,6 +825,46 @@ describe("asking about something that is not there", () => {
 describe("a company with no CIM at all", () => {
   it("lists nothing rather than failing", async () => {
     expect(await service.listDecks(broker, CO)).toEqual([]);
+  });
+
+  it("lists one once it exists, with the version it is sitting on", async () => {
+    // The empty case was the only one asserted, so the row mapping itself had
+    // never run: every field below could have been wrong.
+    const { deck, versionId } = await newDeck();
+    expect(await service.listDecks(broker, CO)).toEqual([
+      {
+        id: deck.id,
+        company_id: CO,
+        name: "Project Atlas CIM",
+        template_key: "source-38",
+        current_version_id: versionId,
+        current_version_no: 1,
+        current_status: "draft",
+        created_at: expect.any(String) as unknown as string,
+      },
+    ]);
+  });
+
+  it("lists a deck whose version cannot be read as having none", async () => {
+    // Not a state the schema produces — `decks.current_version_id` is a foreign
+    // key. It is what the row mapping does when the join comes back empty, and
+    // the answer has to be a listable deck rather than a crash, because the one
+    // thing worse than a CIM with no version showing is the CIM list not
+    // loading at all.
+    const { deck } = await newDeck();
+    const ports = memoryCim(store);
+    // `Object.create` over the instance rather than a spread: the repository is
+    // a class, and spreading it drops every prototype method.
+    const decks: typeof ports.decks = Object.create(ports.decks) as typeof ports.decks;
+    decks.listFor = () =>
+      Promise.resolve([
+        { ...deck, companyId: CO, templateKey: "source-38", createdAt: deck.created_at },
+      ] as unknown as Awaited<ReturnType<typeof ports.decks.listFor>>);
+    service = new CimService({ ...ports, decks });
+
+    expect(await service.listDecks(broker, CO)).toMatchObject([
+      { id: deck.id, current_version_id: null, current_version_no: null, current_status: null },
+    ]);
   });
 
   it("still refuses a company the caller cannot reach", async () => {

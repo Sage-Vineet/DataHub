@@ -227,7 +227,7 @@ export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
     const result = await writes.updateInvoice(
       req.user!,
       companyOf(req),
-      String(req.params.id ?? ""),
+      req.params.id!,
       (req.body ?? {}) as Record<string, unknown>,
     );
     res.json({
@@ -263,7 +263,7 @@ export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
     const served = await entities.invoiceByDocNumber(
       req.user!,
       companyOf(req),
-      String(req.params.docNumber ?? ""),
+      req.params.docNumber!,
     );
     res.json({ success: true, ...served });
   }));
