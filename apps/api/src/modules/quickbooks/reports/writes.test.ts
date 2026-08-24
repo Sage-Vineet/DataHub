@@ -272,6 +272,22 @@ describe("updating an invoice", () => {
     });
   });
 
+  it("falls back to the id it was asked about, and a zero sync token", async () => {
+    /**
+     * Intuit answered with an invoice that has neither. Sending `Id: undefined`
+     * writes to no invoice at all and comes back a validation fault; sending
+     * `SyncToken: undefined` is refused the same way.
+     *
+     * Zero is the right guess for a missing token — it is what a freshly
+     * created object carries — and being refused for a STALE token is a
+     * meaningful answer, where being refused for a malformed request is not.
+     */
+    const { service, fetcher: fake } = await build({ invoice: { DocNumber: "INV-1" } });
+    await service.updateInvoice(USER, COMPANY, "42", { invoiceNumber: "INV-9" });
+
+    expect(fake.writes[0]?.payload).toMatchObject({ Id: "42", SyncToken: "0" });
+  });
+
   it("refuses to restructure an invoice, and says where it can be done", async () => {
     // A partial write to an invoice is a book somebody has to unpick by hand.
     const { service, fetcher: fake } = await build();

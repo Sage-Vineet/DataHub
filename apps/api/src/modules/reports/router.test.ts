@@ -208,6 +208,31 @@ describe("versions", () => {
     }
   });
 
+  it("400s a create posted with no body at all, rather than 500ing", async () => {
+    // `express.json()` leaves `req.body` undefined when there is no
+    // `Content-Type`, and the create route reads the company out of the body
+    // before the contract ever sees it. Reading through an undefined body
+    // there answers 500 for what is a 400.
+    const { app } = stub();
+    await request(app).post("/key-reports/versions").expect(400);
+  });
+
+  it("still finds the company in a header when the body carries none", async () => {
+    const { app, calls } = stub();
+    await request(app)
+      .post("/key-reports/versions")
+      .set("x-client-id", COMPANY)
+      .expect(201);
+    expect(argsOf(calls, "create")[1]).toMatchObject({ company_id: COMPANY });
+  });
+
+  it("400s an update posted with no body, rather than 500ing", async () => {
+    // Same reason as the create above: the body is read before the contract
+    // validates it, and the contract requires at least one field to change.
+    const { app } = stub();
+    await request(app).put(`/key-reports/versions/${VERSION}`).expect(400);
+  });
+
   it("400s a list with no company anywhere", async () => {
     const { app } = stub();
     const res = await request(app).get("/key-reports/versions").expect(400);

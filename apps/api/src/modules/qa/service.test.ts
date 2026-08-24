@@ -281,6 +281,20 @@ describe("answers are immutable, and versioned by superseding", () => {
     expect(detail.responses.find((r) => r.citation_ref === v1.citation_ref)!.body).toBe("first");
   });
 
+  it("cites a question that predates references by its id", async () => {
+    // `qa_items.reference` is nullable, and rows raised before references
+    // existed carry none. A citation of "undefined-1" resolves to nothing, and
+    // a narrative citing it says nothing a reader can follow.
+    const item = await ask({ requestee_ids: [seller.id] });
+    const stored = store.items.find((i) => i.id === item.id)!;
+    stored.reference = null;
+
+    const posted = await service.postResponse(seller, item.id, { body: "first", kind: "answer" });
+
+    expect(posted.citation_ref).toContain(item.id.slice(0, 8));
+    expect(posted.citation_ref).not.toContain("undefined");
+  });
+
   it("refuses to correct an answer on a different question", async () => {
     const a = await ask({ requestee_ids: [seller.id] });
     const b = await ask({ requestee_ids: [seller.id] });
