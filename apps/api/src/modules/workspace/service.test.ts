@@ -182,6 +182,73 @@ describe("the CIM questionnaire is shared", () => {
     expect(saved.state).toMatchObject({ items: {}, history: [], currentBatchId: "" });
   });
 
+  it("takes a save with nothing in it, and fills the envelope", async () => {
+    // The page saves as somebody types, including before they have typed
+    // anything. A save with no payload must not throw — it is the first one.
+    const { service } = make();
+    const saved = await service.saveQuestionnaire(session(), COMPANY, undefined);
+
+    expect(saved.state).toMatchObject({
+      version: 1,
+      items: {},
+      currentBatchId: "",
+      history: [],
+      createdAt: "2024-06-01T12:00:00.000Z",
+    });
+  });
+
+  it("ignores fields sent in the wrong shape rather than storing them", async () => {
+    // Stored as sent, a string `items` breaks every reader afterwards, and the
+    // questionnaire is unopenable until somebody edits the database.
+    const { service } = make();
+    const saved = await service.saveQuestionnaire(session(), COMPANY, {
+      items: "not an object",
+      currentBatchId: 42,
+      history: "not a list",
+      createdAt: 1999,
+    } as never);
+
+    expect(saved.state).toMatchObject({
+      items: {},
+      currentBatchId: "",
+      history: [],
+      createdAt: "2024-06-01T12:00:00.000Z",
+    });
+  });
+
+  it("keeps the creation time across later saves", async () => {
+    // It is when the questionnaire was started, not when it was last touched —
+    // `updatedAt` is the other one.
+    const { service } = make();
+    await service.saveQuestionnaire(session(), COMPANY, { items: {} });
+    const again = await service.saveQuestionnaire(session(), COMPANY, {
+      items: { q1: "a" },
+      createdAt: "2024-01-01T00:00:00.000Z",
+    });
+    expect((again.state as { createdAt: string }).createdAt).toBe("2024-01-01T00:00:00.000Z");
+  });
+
+  it("names a user who has no name, and one who has nothing at all", async () => {
+    // The stamp goes on screen as "last edited by". An empty one reads as a
+    // rendering fault rather than as an unnamed account.
+    const { service } = make();
+    const nameless = await service.saveQuestionnaire(
+      session({ name: "", email: "someone@example.com" }),
+      COMPANY,
+      { items: {} },
+    );
+    expect((nameless.state as { updatedBy: { name: string } }).updatedBy.name).toBe(
+      "someone@example.com",
+    );
+
+    const anonymous = await service.saveQuestionnaire(
+      session({ name: "", email: "", role: "" as never }),
+      COMPANY,
+      { items: {} },
+    );
+    expect((anonymous.state as { updatedBy: { name: string } }).updatedBy.name).toBe("User");
+  });
+
   it("returns null for a company with no questionnaire yet", async () => {
     const { service } = make();
     expect((await service.getQuestionnaire(session(), COMPANY)).state).toBeNull();
