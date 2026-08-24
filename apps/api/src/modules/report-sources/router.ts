@@ -48,7 +48,7 @@ export function createReportSourcesRouter(deps: ReportSourcesRouterDeps): Router
   }));
 
   router.put("/report-sources/selected", handle(async (req, res) => {
-    const body = (req.body ?? {}) as { sourceKey?: unknown };
+    const body = req.body as { sourceKey?: unknown };
     const state = await service.select(
       req.user!,
       companyOf(req),

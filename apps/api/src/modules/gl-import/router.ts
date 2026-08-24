@@ -57,7 +57,7 @@ export function createGlImportRouter(deps: GlImportRouterDeps): Router {
   }));
 
   router.post("/manual-gl/save-mapping", handle(async (req, res) => {
-    const body = (req.body ?? {}) as { uploadId?: unknown; mapping?: unknown };
+    const body = req.body as { uploadId?: unknown; mapping?: unknown };
     const saved = await service.saveMapping(req.user!, companyOf(req), {
       uploadId: String(body.uploadId ?? ""),
       mapping: (body.mapping ?? {}) as Partial<ColumnMapping>,
@@ -100,7 +100,7 @@ export function createGlImportRouter(deps: GlImportRouterDeps): Router {
    * idempotent, so the retry that follows costs nothing.
    */
   router.post("/manual-gl/staging/multi-year", handle(async (req, res) => {
-    const body = (req.body ?? {}) as {
+    const body = req.body as {
       versionId?: unknown;
       glUploadIds?: unknown;
       uploadIds?: unknown;

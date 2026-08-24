@@ -107,7 +107,7 @@ export function createReportsRouter(deps: ReportsRouterDeps): Router {
    * of it already does.
    */
   const toCreateBody = (req: Request): unknown => {
-    const body = (req.body ?? {}) as Record<string, unknown>;
+    const body = req.body as Record<string, unknown>;
     const companyId =
       body.company_id ?? body.companyId ?? req.query.clientId ?? req.headers["x-client-id"];
     const versionName = body.version_name ?? body.versionName;
@@ -120,7 +120,7 @@ export function createReportsRouter(deps: ReportsRouterDeps): Router {
 
   /** The same translation for a partial update. */
   const toUpdateBody = (req: Request): unknown => {
-    const body = (req.body ?? {}) as Record<string, unknown>;
+    const body = req.body as Record<string, unknown>;
     const versionName = body.version_name ?? body.versionName;
     return { ...body, ...(versionName === undefined ? {} : { version_name: versionName }) };
   };
@@ -330,7 +330,7 @@ export function createReportsRouter(deps: ReportsRouterDeps): Router {
    * a multi-select.
    */
   router.post("/key-reports/versions/:versionId/mappings", handle(async (req, res) => {
-    const body = (req.body ?? {}) as {
+    const body = req.body as {
       reportCategory?: unknown;
       documentId?: unknown;
       documentIds?: unknown;
@@ -392,7 +392,7 @@ export function createReportsRouter(deps: ReportsRouterDeps): Router {
   }));
 
   router.put("/key-reports/popup-preference", handle(async (req, res) => {
-    const raw = (req.body ?? {}) as { dismissed?: unknown };
+    const raw = req.body as { dismissed?: unknown };
     // Legacy accepted the string "true" as well as the boolean, because some
     // callers send a form value. Anything else is false rather than an error —
     // the worst outcome of a bad body here is a popup shown once more.

@@ -67,7 +67,7 @@ export function createTaxOverridesRouter(deps: TaxOverridesRouterDeps): Router {
   }));
 
   router.put("/manual-report-uploads/tax-reconciliation-overrides", handle(async (req, res) => {
-    const body = (req.body ?? {}) as { overrides?: unknown };
+    const body = req.body as { overrides?: unknown };
     const saved = await service.replaceAll(
       req.user!,
       companyOf(req),

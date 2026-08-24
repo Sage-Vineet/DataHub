@@ -85,10 +85,10 @@ describe("forgot-password when the dispatch fails", () => {
 
 describe("a login that arrives with no body at all", () => {
   it("is rate-limited under a key it can build, then refused as malformed", async () => {
-    // `express.json()` leaves `req.body` undefined with no `Content-Type`, and
-    // the limiter's key generator runs BEFORE the handler validates. Reading
-    // `req.body.email` there would throw inside rate-limiting middleware,
-    // which answers 500 rather than 400.
+    // The limiter's key generator runs BEFORE the handler validates, and reads
+    // the email out of the body to key on. A request carrying no body still
+    // has to produce a key — an exception inside rate-limiting middleware
+    // answers 500 for what is a 400.
     await request(app()).post("/auth/login").expect(400);
   });
 });

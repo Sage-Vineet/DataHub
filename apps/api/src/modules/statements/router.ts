@@ -432,7 +432,7 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
       });
       return;
     }
-    const body = (req.body ?? {}) as { userMessage?: unknown; text?: unknown };
+    const body = req.body as { userMessage?: unknown; text?: unknown };
     const result = await statementTransactions.parse(
       req.user!,
       companyOf(req),
@@ -499,7 +499,7 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
   const syncSource = (sourceKey: string): RequestHandler =>
     handle(async (req, res) => {
       const sync = requireSync();
-      const body = (req.body ?? {}) as Record<string, unknown>;
+      const body = req.body as Record<string, unknown>;
       const result = await sync.syncSource(req.user!, companyOf(req), sourceKey, {
         ...(str(body.versionId) ?? str(req.query.versionId)
           ? { versionId: (str(body.versionId) ?? str(req.query.versionId))! }
@@ -521,7 +521,7 @@ export function createStatementsRouter(deps: StatementsRouterDeps): Router {
    */
   router.post("/manual-report-uploads/qms-parse-documents", handle(async (req, res) => {
     const sync = requireSync();
-    const body = (req.body ?? {}) as { documents?: unknown; clearFirst?: unknown };
+    const body = req.body as { documents?: unknown; clearFirst?: unknown };
     if (!Array.isArray(body.documents)) {
       throw new BadRequestError("documents array is required.");
     }

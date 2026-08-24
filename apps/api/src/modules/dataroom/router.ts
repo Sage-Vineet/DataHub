@@ -112,7 +112,7 @@ export function createDataRoomRouter(deps: DataRoomRouterDeps): Router {
     "/dataroom/documents/:id/versions/:versionId/restore",
     requireFeature(features.versions, "document versions"),
     handle(async (req, res) => {
-      const parsed = contracts.versionRestore.safeParse(req.body ?? {});
+      const parsed = contracts.versionRestore.safeParse(req.body);
       if (!parsed.success) {
         res.status(400).json({ error: firstError(parsed.error) });
         return;

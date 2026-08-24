@@ -65,7 +65,7 @@ export function createBankReconciliationRouter(deps: BankReconciliationRouterDep
   }));
 
   router.post("/bank-reconciliation-adjustments", handle(async (req, res) => {
-    const body = (req.body ?? {}) as { month?: unknown; rowKey?: unknown; amount?: unknown };
+    const body = req.body as { month?: unknown; rowKey?: unknown; amount?: unknown };
     await service.setAdjustment(req.user!, companyOf(req), {
       month: String(body.month ?? ""),
       rowKey: String(body.rowKey ?? ""),
@@ -84,7 +84,7 @@ export function createBankReconciliationRouter(deps: BankReconciliationRouterDep
   }));
 
   router.post("/bank-reconciliation-addback-items", handle(async (req, res) => {
-    const body = (req.body ?? {}) as Record<string, unknown>;
+    const body = req.body as Record<string, unknown>;
     const item = await service.createAddbackItem(req.user!, companyOf(req), {
       section: String(body.section ?? ""),
       name: String(body.name ?? ""),
@@ -96,7 +96,7 @@ export function createBankReconciliationRouter(deps: BankReconciliationRouterDep
   }));
 
   router.put("/bank-reconciliation-addback-items/:id", handle(async (req, res) => {
-    const body = (req.body ?? {}) as { monthAmounts?: unknown };
+    const body = req.body as { monthAmounts?: unknown };
     await service.updateAddbackItemAmounts(
       req.user!,
       companyOf(req),

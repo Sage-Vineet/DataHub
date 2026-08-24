@@ -653,10 +653,15 @@ describe("what the router does with a failure it does not recognise", () => {
 
 describe("a request that carries no body at all", () => {
   /**
-   * Not a contrivance: `express.json()` leaves `req.body` undefined when the
-   * request has no `Content-Type`, and a `fetch` with no `body` sends none. A
-   * handler reading `req.body.x` would throw a TypeError and answer 500 for
-   * what is really a 400.
+   * A `fetch` with no `body` sends none, and the SPA does it on every route
+   * here that takes its arguments from the query.
+   *
+   * `express.json()` hands the handler `{}` for such a request — it is set for
+   * a body-less request and for one whose `Content-Type` the parser declines,
+   * so it is never undefined behind this middleware. These assert what a
+   * handler therefore SEES, which is an empty object rather than a missing
+   * one, and that reading fields off it yields the query fallbacks rather than
+   * a 500.
    */
   it("treats a bodiless customer create as an empty one", async () => {
     const { app, calls } = stub();

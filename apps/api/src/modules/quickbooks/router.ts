@@ -218,7 +218,7 @@ export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
     const created = await writes.createCustomer(
       req.user!,
       companyOf(req),
-      (req.body ?? {}) as Record<string, unknown>,
+      req.body as Record<string, unknown>,
     );
     res.json({ success: true, message: "Customer created successfully", ...created });
   }));
@@ -228,7 +228,7 @@ export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
       req.user!,
       companyOf(req),
       req.params.id!,
-      (req.body ?? {}) as Record<string, unknown>,
+      req.body as Record<string, unknown>,
     );
     res.json({
       success: true,
@@ -338,7 +338,7 @@ export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
    * response named no run at all.
    */
   router.post("/api/quickbooks/sync", handle(async (req, res) => {
-    const body = (req.body ?? {}) as Record<string, unknown>;
+    const body = req.body as Record<string, unknown>;
     const companyId = companyOf(req);
     const options = {
       ...(numberOf(body.yearsBack ?? req.query.yearsBack) !== null
@@ -484,7 +484,7 @@ export function createQuickBooksRouter(deps: QuickBooksRouterDeps): Router {
   }));
 
   router.post("/api/auth/transfer-confirm", handle(async (req, res) => {
-    const body = (req.body ?? {}) as { realmId?: unknown };
+    const body = req.body as { realmId?: unknown };
     const moved = await requireOAuth().transfer(
       req.user!,
       companyOf(req),

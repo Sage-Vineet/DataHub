@@ -23,6 +23,13 @@ type RouteRegistrar = (path: string, ...handlers: RequestHandler[]) => Router;
  * Both break unmigrated neighbours that share the prefix — most visibly the legacy
  * QuickBooks OAuth routes under `/api/auth/*`.
  *
+ * One consequence worth stating, because handlers were guarding against the
+ * opposite: once `express.json()` is in this chain, `req.body` is ALWAYS at
+ * least `{}`. It is set for a request with no body at all, and for one whose
+ * `Content-Type` the parser declines — `undefined` happens only where no
+ * parser is mounted, which is not the case for any router built through here.
+ * So `req.body ?? {}` in a handler is a fallback that cannot fire.
+ *
  * Registering the chain per-route instead means an unmatched path leaves the router
  * untouched and reaches the proxy exactly as it arrived.
  */

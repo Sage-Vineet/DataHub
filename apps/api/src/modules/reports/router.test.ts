@@ -209,10 +209,9 @@ describe("versions", () => {
   });
 
   it("400s a create posted with no body at all, rather than 500ing", async () => {
-    // `express.json()` leaves `req.body` undefined when there is no
-    // `Content-Type`, and the create route reads the company out of the body
-    // before the contract ever sees it. Reading through an undefined body
-    // there answers 500 for what is a 400.
+    // The create route reads the company out of the body before the contract
+    // ever sees it, so a request carrying none has to reach the contract as an
+    // empty object and be refused by name — not throw on the way there.
     const { app } = stub();
     await request(app).post("/key-reports/versions").expect(400);
   });
