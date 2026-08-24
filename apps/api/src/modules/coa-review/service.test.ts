@@ -108,6 +108,66 @@ describe("generateRecommendations", () => {
     ]);
   });
 
+  it("does not un-reject an account a reviewer already decided on", async () => {
+    /**
+     * Re-running classification over a chart somebody has already worked
+     * through is the ordinary case — a new period arrives and the whole thing
+     * is re-read. Every settled row would come back as `pending` if the
+     * re-run overwrote status, and the reviewer would be handed their own
+     * rejections again with nothing saying they had seen them.
+     *
+     * Worse for an APPLIED row: it is already reflected in the chart, so
+     * offering it again invites applying it twice.
+     */
+    const { repo, service } = build(
+      { coa: { rows: [leaf(), category()] } },
+      // One batch per run: only the profit-and-loss accounts are reviewable
+      // here, so the balance-sheet pass issues no prompt at all.
+      [modelAnswer([moveProposal]), modelAnswer([moveProposal])],
+    );
+
+    await service.generateRecommendations("co-1", "ver-1");
+    const first = repo.all()[0]!;
+    await service.rejectRecommendation(String(first.id), "user-1", "presentation is fine");
+
+    await service.generateRecommendations("co-1", "ver-1");
+
+    // Proves the re-run actually reached the write. Without this the test
+    // passes when the second run proposes nothing at all, which is how it read
+    // when it was first written.
+    expect(repo.upserts).toHaveLength(2);
+
+    const after = repo.all();
+    expect(after).toHaveLength(1); // matched, not duplicated
+    expect(after[0]).toMatchObject({
+      status: "rejected",
+      rejection_reason: "presentation is fine",
+      decided_by: "user-1",
+    });
+  });
+
+  it("refreshes the recommendation itself while keeping the decision", async () => {
+    // The decision is preserved; the model's latest reasoning is not frozen
+    // with it, so a reviewer reopening a rejected row sees what the model says
+    // now rather than what it said the first time.
+    const { repo, service } = build(
+      { coa: { rows: [leaf(), category()] } },
+      [
+        modelAnswer([moveProposal]),
+        modelAnswer([{ ...moveProposal, reason: "A second look, with more detail." }]),
+      ],
+    );
+
+    await service.generateRecommendations("co-1", "ver-1");
+    await service.rejectRecommendation(String(repo.all()[0]!.id), "user-1", null);
+    await service.generateRecommendations("co-1", "ver-1");
+
+    expect(repo.all()[0]).toMatchObject({
+      status: "rejected",
+      reason: "A second look, with more detail.",
+    });
+  });
+
   it("batches per statement type so each prompt carries the right sections", async () => {
     const { classifier, service } = build(
       {

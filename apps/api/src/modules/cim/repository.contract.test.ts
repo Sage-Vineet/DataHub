@@ -275,6 +275,80 @@ describe.each(STORES)("CIM blocks (%s)", (_name, open) => {
     expect(after?.contentClassLocked).toBe(true);
   });
 
+  it("keeps the lock against a later save that names a class", async () => {
+    /**
+     * The assertion above proves the lock is SET. This proves it does
+     * something — which is the whole point of it, and was not covered.
+     *
+     * The block is saved again with an explicit class, as the editor does
+     * whenever somebody edits answer-derived text and the form posts the
+     * template's class back. Taking it would reclassify the seller's own words
+     * as firm boilerplate, and boilerplate travels into the next company's
+     * deck.
+     */
+    const store = await open();
+    const { version, block } = await withBlock(store);
+    await store.structure.writeAcceptedAnswer({
+      blockId: block.id,
+      content: "From the seller.",
+      acceptedBy: store.userId,
+    });
+
+    await store.structure.upsertBlocks(
+      version.id,
+      [{ blockKey: block.blockKey, content: "Edited by the broker.", contentClass: "firm_boilerplate" }],
+      store.userId,
+    );
+
+    const after = await store.structure.getBlock(block.id);
+    expect(after?.content).toBe("Edited by the broker.");
+    expect(after?.contentClass).not.toBe("firm_boilerplate");
+    expect(after?.contentClassLocked).toBe(true);
+  });
+
+  it("takes a class on a block that is not locked", async () => {
+    // The other side of the same rule: without the lock the class is the
+    // caller's to set, which is how a template's blocks get classified at all.
+    const store = await open();
+    const { version, block } = await withBlock(store);
+    await store.structure.upsertBlocks(
+      version.id,
+      [{ blockKey: block.blockKey, content: "Boilerplate.", contentClass: "firm_boilerplate" }],
+      store.userId,
+    );
+    expect((await store.structure.getBlock(block.id))?.contentClass).toBe("firm_boilerplate");
+  });
+
+  it("does nothing, rather than failing, for an id nobody has", async () => {
+    /**
+     * These are reached from routes that took the id from a URL. A row deleted
+     * between the page loading and the button being pressed lands here, and
+     * the two stores have to agree on the answer or the in-memory suite proves
+     * nothing about the real one.
+     *
+     * No-op rather than throw, because every one of these is idempotent by
+     * intent: publishing a version that is gone, approving one that is gone,
+     * writing an answer into a block that is gone. There is nothing to undo
+     * and nobody to tell.
+     */
+    const store = await open();
+    const ghost = randomUUID();
+
+    await expect(store.versions.markPublished(ghost, store.userId)).resolves.toBeUndefined();
+    await expect(store.versions.recordApproval(ghost, store.userId)).resolves.toBeUndefined();
+    await expect(store.versions.setCover(ghost, { title: "x" })).resolves.toBeUndefined();
+    await expect(
+      store.structure.writeAcceptedAnswer({
+        blockId: ghost,
+        content: "From the seller.",
+        acceptedBy: store.userId,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(await store.versions.getById(ghost)).toBeNull();
+    expect(await store.structure.getBlock(ghost)).toBeNull();
+  });
+
   it("clones a version's structure and content into a fresh draft", async () => {
     const store = await open();
     const { deck, version, block } = await withBlock(store);

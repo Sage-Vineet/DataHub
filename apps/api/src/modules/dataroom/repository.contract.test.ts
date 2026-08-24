@@ -335,6 +335,49 @@ describe.each(STORES)("upload sessions (%s)", (_name, open) => {
     expect((await store.sessions.getById(session.id))?.status).toBe("aborted");
   });
 
+  it("closes a session nobody has as a no-op, not a failure", async () => {
+    /**
+     * Both are reached from a client that may have retried: a completion
+     * arriving twice, or an abort for a session an earlier abort already
+     * closed. There is nothing left to do and nobody to tell, and a failure
+     * here would leave a browser showing an upload error for an upload that
+     * finished.
+     *
+     * Asserted on both stores because it is the kind of thing an in-memory
+     * fake gets right by accident — a `Map.get` that returns undefined — while
+     * a real UPDATE affects zero rows and the code above it has to not care.
+     */
+    const store = await open();
+    const ghost = randomUUID();
+    const uploadId = await store.storeBlob("Ghost.pdf");
+
+    await expect(store.sessions.markCompleted(ghost, uploadId)).resolves.toBeUndefined();
+    await expect(store.sessions.abort(ghost)).resolves.toBeUndefined();
+    expect(await store.sessions.getById(ghost)).toBeNull();
+    expect(await store.sessions.receivedIndices(ghost)).toEqual([]);
+  });
+
+  it("forgets a completed session's chunk bytes", async () => {
+    // The bytes are duplicated into the blob at completion. Keeping them would
+    // hold a second copy of every upload in the database for as long as the
+    // session row survives.
+    const store = await open();
+    const session = await start(store);
+    await store.sessions.putChunk(session.id, 0, Buffer.from("hello"));
+    await store.sessions.markCompleted(session.id, await store.storeBlob("Big.pdf"));
+
+    expect(await store.sessions.receivedIndices(session.id)).toEqual([]);
+  });
+
+  it("forgets an aborted session's chunk bytes too", async () => {
+    const store = await open();
+    const session = await start(store);
+    await store.sessions.putChunk(session.id, 0, Buffer.from("hello"));
+    await store.sessions.abort(session.id);
+
+    expect(await store.sessions.receivedIndices(session.id)).toEqual([]);
+  });
+
   it("sweeps expired sessions without touching a live one", async () => {
     // Called opportunistically on creation rather than on a schedule: there is
     // no scheduler anywhere in this repository.
