@@ -593,7 +593,7 @@ cat <<EOF
 $(printf '\033[1mDemo is up.\033[0m')
 
   SPA        http://localhost:${WEB_PORT}
-  Gateway    http://localhost:${GATEWAY_PORT}   (proxies to legacy)
+  Gateway    http://localhost:${GATEWAY_PORT}   (serves every route)
   Postgres   localhost:${PG_PORT}   datahub/datahub
 
   Sign in with any of these — password is the same for all:

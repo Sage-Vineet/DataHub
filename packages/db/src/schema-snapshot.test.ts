@@ -6,7 +6,7 @@ import * as schema from "./schema.all.js";
 /**
  * The guard that keeps the snapshot honest.
  *
- * Same shape as `route-contract.test.ts` pinning `tools/parity/route-surface.json`:
+ * Same shape as a generated artefact pinned against its source:
  * a generated artifact is only trustworthy if something fails when the thing it
  * was generated from moves underneath it.
  */

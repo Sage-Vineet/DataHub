@@ -17,9 +17,7 @@ COPY packages/db/package.json packages/db/
 COPY packages/ui/package.json packages/ui/
 COPY apps/api/package.json apps/api/
 COPY apps/web/package.json apps/web/
-COPY tools/parity/package.json tools/parity/
 COPY tools/demo/package.json tools/demo/
-COPY backend/package.json backend/
 RUN pnpm install --frozen-lockfile --filter @datahub/web...
 
 FROM deps AS builder
