@@ -48,6 +48,47 @@ describe("addbackCreate", () => {
     expect(result.error?.issues[0]?.message).toMatch(/cannot be entered manually/);
   });
 
+  it("requires a GL account on a GL-sourced add-back", () => {
+    // The amount comes FROM the account. Without one there is nothing to read,
+    // and the add-back would sit on the bridge contributing zero for a reason
+    // no page explains.
+    const result = addbackCreate.safeParse({ ...base, kind: "pnl_account_vendor" });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.message).toMatch(/linked GL account/);
+  });
+
+  it("accepts a GL-sourced add-back that names its account and no amount", () => {
+    const result = addbackCreate.safeParse({
+      ...base,
+      kind: "pnl_account_vendor",
+      linked_account_id: "meals",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("requires a P&L account on a recast", () => {
+    // A recast restates one account's cost at a post-close rate. Without the
+    // account there is nothing being restated — and the normalized value would
+    // be applied against nothing.
+    const result = addbackCreate.safeParse({
+      ...base,
+      kind: "recast",
+      recast_normalized_value: 90000,
+    });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.message).toMatch(/linked P&L account/);
+  });
+
+  it("accepts a recast that names both its account and its value", () => {
+    const result = addbackCreate.safeParse({
+      ...base,
+      kind: "recast",
+      linked_account_id: "rent",
+      recast_normalized_value: 90000,
+    });
+    expect(result.success).toBe(true);
+  });
+
   it("requires a normalized value on a recast", () => {
     const result = addbackCreate.safeParse({
       ...base,

@@ -124,6 +124,35 @@ describe("drift rendering", () => {
     expect(text).toMatch(/ABSENT FROM THE DATABASE/);
   });
 
+  it("prints both sides of a type mismatch, and neither when there are none", () => {
+    /**
+     * The renderer's job is to make a report actionable without opening a
+     * database. A breaking item that names only the column tells somebody
+     * WHICH column and nothing about what to change it to.
+     *
+     * The other side matters as much: for a table that is simply absent there
+     * are no types to print, and "(declared —, database —)" is noise on the
+     * line that matters most.
+     */
+    const mismatch = renderDrift(
+      reconcile({ invoices: { total: "numeric" } }, { invoices: { total: "text" } }, null),
+    );
+    expect(mismatch).toMatch(/declared text, database numeric/);
+
+    const absent = renderDrift(reconcile({}, { ghost: { id: "uuid" } }, null));
+    expect(absent).toMatch(/ghost/);
+    expect(absent).not.toMatch(/declared —, database —/);
+  });
+
+  it("lists backlog drift plainly, under the breaking items", () => {
+    // Two registers on purpose: a broken column stops a deploy, an unmodelled
+    // one is a note. Rendering them alike makes the report unreadable at the
+    // only moment anybody reads it.
+    const text = renderDrift(reconcile({ extra_table: { id: "uuid" } }, {}, null));
+    expect(text).toMatch(/New drift: 1 \(0 breaking\)/);
+    expect(text).toMatch(/· extra_table/);
+  });
+
   it("hides known drift behind a count rather than reprinting it", () => {
     const baseline = baselineFrom(database, declared, "prod-snapshot", "2026-08-17T10:00:00.000Z");
     const text = renderDrift(reconcile(database, declared, baseline));

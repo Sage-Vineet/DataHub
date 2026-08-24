@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  folderAccessUpdate,
   folderAccessCreate,
   folderCreate,
   folderListQuery,
@@ -59,5 +60,24 @@ describe("folderListQuery", () => {
   it("treats either spelling as opt-in", () => {
     expect(folderListQuery.parse({ includeArchived: "true", include_archived: "false" }).include_archived).toBe(true);
     expect(folderListQuery.parse({ includeArchived: "false", include_archived: "true" }).include_archived).toBe(true);
+  });
+});
+
+describe("changing a grant", () => {
+  it("takes one flag on its own, leaving the others alone", () => {
+    // The page sends only what the toggle changed. Requiring all three would
+    // make every change send the other two back, and a stale value in that
+    // payload silently revokes a permission nobody touched.
+    for (const patch of [{ can_read: false }, { can_write: true }, { can_download: true }]) {
+      expect(folderAccessUpdate.safeParse(patch).success).toBe(true);
+    }
+  });
+
+  it("refuses a patch that changes nothing", () => {
+    // An empty patch reaches the repository as an UPDATE with no SET, and the
+    // answer would be a grant reported as changed when nothing was.
+    const result = folderAccessUpdate.safeParse({});
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.message).toMatch(/nothing to update/i);
   });
 });
