@@ -32,10 +32,24 @@ FROM nginx:alpine AS runner
 COPY --from=builder /app/apps/web/dist /usr/share/nginx/html
 # The app uses HashRouter, so deep links never reach the server as paths — but a
 # catch-all keeps it correct if it ever moves to BrowserRouter.
+#
+# `index.html` is served with no-store; the hashed assets it points at are
+# immutable and cached for a year.
+#
+# Without this nginx sends index.html with no Cache-Control at all, so browsers
+# apply a heuristic freshness lifetime and keep serving the OLD one — which
+# names the OLD content-hashed bundle. A rebuilt SPA then never reaches a tab
+# that is already open, and the only symptom is that a fix appears not to work.
+# That cost a full debugging round here: the container was serving
+# index-VxTn0mTU.js while the page ran index-Bi3Eew7T.js. On booth hardware,
+# where the stack is brought up the night before and the iPad is left open, a
+# T-48h flag flip or rebuild would silently not take effect.
 RUN printf 'server {\n\
   listen 5173;\n\
   root /usr/share/nginx/html;\n\
   index index.html;\n\
+  location = /index.html { add_header Cache-Control "no-store, must-revalidate"; }\n\
+  location /assets/ { add_header Cache-Control "public, max-age=31536000, immutable"; }\n\
   location / { try_files $uri $uri/ /index.html; }\n\
 }\n' > /etc/nginx/conf.d/default.conf
 EXPOSE 5173

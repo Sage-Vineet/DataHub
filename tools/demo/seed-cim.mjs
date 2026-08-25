@@ -136,6 +136,31 @@ try {
   // publication record, so a re-run leaves exactly one seeded deck.
   await client.query("DELETE FROM cim_decks WHERE company_id = $1", [ACME]);
 
+  // ...but the published PDF this script writes into the DATA ROOM is a plain
+  // document, and nothing cascaded to it. Every run therefore added another
+  // "Project Atlas CIM v1.pdf" beside the last: seven had piled up in Acme's
+  // Financials folder here, which on a projector reads as a broken data room.
+  // The freeze checklist has the bringup run twice over the weekend, so this
+  // compounds exactly when nobody is looking.
+  //
+  // Order matters. `file_references.document_id` is ON DELETE RESTRICT, so the
+  // references go first; `documents.upload_id` is ON DELETE SET NULL, so the
+  // uploads have to go after the documents or the link is lost before we can
+  // find the blob. `document_versions` cascades from `documents` on its own.
+  const stale = await client.query(
+    `SELECT id, upload_id FROM documents WHERE company_id = $1 AND name LIKE 'Project Atlas CIM v%'`,
+    [ACME],
+  );
+  if (stale.rows.length > 0) {
+    const documentIds = stale.rows.map((r) => r.id);
+    const uploadIds = stale.rows.map((r) => r.upload_id).filter(Boolean);
+    await client.query("DELETE FROM file_references WHERE document_id = ANY($1)", [documentIds]);
+    await client.query("DELETE FROM documents WHERE id = ANY($1)", [documentIds]);
+    if (uploadIds.length > 0) {
+      await client.query("DELETE FROM uploads WHERE id = ANY($1)", [uploadIds]);
+    }
+  }
+
   const deck = await client.query(
     `INSERT INTO cim_decks (company_id, name, created_by) VALUES ($1, $2, $3) RETURNING id`,
     [ACME, "Project Atlas CIM", BROKER],

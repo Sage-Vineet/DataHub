@@ -41,7 +41,22 @@ TRUNCATE
   qa_items,
   qa_nominations,
   document_comments,
-  upload_sessions
+  upload_sessions,
+  -- Requests, and the three tables that hang off them. They used to be re-seeded
+  -- without being cleared, and `seed-requests.sql` inserts ON CONFLICT DO
+  -- NOTHING — so a visitor who approved a request or dragged a card left it that
+  -- way through every later reset, and the next `up.sh` failed its "one awaiting
+  -- approval" and "all four statuses present" checks with no way back short of
+  -- `down -v`. CASCADE would take the children anyway; naming them keeps the
+  -- RESTART IDENTITY explicit and the intent readable.
+  requests,
+  request_documents,
+  request_narratives,
+  request_reminders,
+  -- The activity log is demo-owned too. Leaving it made the feed grow across
+  -- resets, so the seeded state was never actually restored, and the assertion
+  -- below could only ever hold on a database nobody had touched.
+  activity_log
 RESTART IDENTITY CASCADE;
 
 -- Documents and their versions, but only the ones the seeds created: anything a
@@ -97,15 +112,27 @@ step "Re-seeding"
 psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed.sql >/dev/null
 psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-dataroom.sql >/dev/null
 psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-qa.sql >/dev/null
-# Requests were never re-seeded here, so a visitor who dragged a card across the
-# board left it there through every subsequent reset. Idempotent, so it restores
-# the seeded status rather than duplicating the row.
+# Requests are TRUNCATEd above first. `seed-requests.sql` inserts ON CONFLICT DO
+# NOTHING, so re-running it over rows a visitor had modified changed nothing —
+# the clear is what makes this a restore rather than a no-op.
 psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-requests.sql >/dev/null
 psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-cim-questions.sql >/dev/null
 psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-extra.sql >/dev/null
 DATABASE_URL="$DB_URL" pnpm --filter @datahub/demo seed-cim 2>&1 | sed 's/^/   /'
 
 step "Verifying"
+# `check` is exact; `check_min` passes when the value is at or above a floor —
+# for counts that are allowed to grow but must not silently collapse to zero.
+check_min() {
+  local label="$1" floor="$2" actual="$3"
+  if [[ "$actual" =~ ^[0-9]+$ ]] && (( actual >= floor )); then
+    printf '   ✓ %-40s %s\n' "$label" "$actual (>= $floor)"
+  else
+    printf '   ✗ %-40s %s (expected >= %s)\n' "$label" "$actual" "$floor"
+    FAILED=1
+  fi
+}
+
 check() {
   local label="$1" expected="$2" actual="$3"
   if [[ "$expected" == "$actual" ]]; then
@@ -146,7 +173,12 @@ check "companies with content"   8 "$(q "select count(distinct company_id) from 
 check "portfolio documents"      60 "$(q "select count(*) from documents where company_id::text like '90%'")"
 check "portfolio requests"       45 "$(q "select count(*) from requests where company_id::text like '90%'")"
 check "portfolio Q&A items"      30 "$(q "select count(*) from qa_items where company_id::text like '90%'")"
-check "activity feed entries"    129 "$(q "select count(*) from activity_log")"
+# A floor, not an exact count. This asserted 129 against a table the reset did
+# not clear, so any visitor activity — or any probe against the running stack —
+# made the next reset exit 1 while having restored perfectly well. The table is
+# truncated now, so the count is the seed's own; asserting "the breadth seed
+# loaded" is what this check is actually for.
+check_min "activity feed entries" 120 "$(q "select count(*) from activity_log")"
 check "reminders"                49 "$(q "select count(*) from reminders")"
 check "messages"                 55 "$(q "select (select count(*) from company_messages)+(select count(*) from direct_messages)+(select count(*) from group_messages)")"
 check "folder grants"            28 "$(q "select count(*) from folder_access")"
