@@ -72,7 +72,7 @@ export function createUploadsRouter(deps: UploadsRouterDeps): Router {
   router.get(
     "/uploads/:id/content",
     handle(async (req, res) => {
-      const blob = await service.getUploadContent(req.params.id!);
+      const blob = await service.getUploadContent(req.user!, req.params.id!);
       // DR-0006 needs per-file, per-user access history; view *duration* waits on
       // the secure viewer, which does not exist yet (design D8).
       emitActivity(res, {

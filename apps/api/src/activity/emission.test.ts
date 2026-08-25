@@ -85,6 +85,15 @@ beforeEach(async () => {
     "application/pdf",
   );
   uploadId = stored.id;
+  // Filed into a folder, because serving bytes is now authorized through the
+  // document that references them — an unfiled blob is unreachable, and this
+  // fixture is meant to represent a real download.
+  await uploadsService.addDocument(BROKER, folderId, {
+    name: "balance-sheet.pdf",
+    upload_id: uploadId,
+    size: "19",
+    ext: "pdf",
+  });
 
   const requireAuth = (req: Request, _res: Response, next: NextFunction): void => {
     req.user = BROKER;

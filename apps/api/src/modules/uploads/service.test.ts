@@ -44,18 +44,49 @@ async function addDoc(service: UploadsService, user: SessionUser, uploadId: stri
 describe("UploadsService — blob round-trip", () => {
   it("stores bytes and streams them back with the content type", async () => {
     const { service } = make();
+    const user = session();
     const bytes = Buffer.from("hello world", "utf8");
-    const up = await service.storeUpload(session(), bytes, "note.txt", "text/plain");
+    const up = await service.storeUpload(user, bytes, "note.txt", "text/plain");
     expect(up.size_bytes).toBe(bytes.length);
+    await addDoc(service, user, up.id);
 
-    const blob = await service.getUploadContent(up.id);
+    const blob = await service.getUploadContent(user, up.id);
     expect(blob.bytes.equals(bytes)).toBe(true);
     expect(blob.contentType).toBe("text/plain");
   });
 
   it("404s an unknown upload", async () => {
     const { service } = make();
-    await expect(service.getUploadContent(randomUUID())).rejects.toBeInstanceOf(NotFoundError);
+    await expect(service.getUploadContent(session(), randomUUID())).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+  });
+
+  /**
+   * The regression that motivated authorizing this route.
+   *
+   * Every sibling route resolves folder grants, but the one that actually serves
+   * bytes took no caller at all — so a signed-in user of another tenant who knew
+   * (or guessed) an upload id got the file. Reproduced live against the demo
+   * stack before the fix: a broker who was correctly 403'd on the company still
+   * read that company's document through `/uploads/:id/content`.
+   */
+  it("denies a caller who cannot reach the document holding the blob", async () => {
+    const { service } = make();
+    const owner = session();
+    const up = await service.storeUpload(owner, Buffer.from("secret", "utf8"), "s.txt", "text/plain");
+    await addDoc(service, owner, up.id);
+
+    const outsider = session({ company_ids: [OTHER] });
+    await expect(service.getUploadContent(outsider, up.id)).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  /** A blob nothing references is unreachable, and 404 does not confirm the id. */
+  it("404s a blob that no document references", async () => {
+    const { service } = make();
+    const user = session();
+    const up = await service.storeUpload(user, Buffer.from("orphan", "utf8"), "o.txt", "text/plain");
+    await expect(service.getUploadContent(user, up.id)).rejects.toBeInstanceOf(NotFoundError);
   });
 });
 

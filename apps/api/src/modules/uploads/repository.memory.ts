@@ -43,6 +43,11 @@ export class InMemoryDocumentsRepository implements DocumentsRepository {
     return this.docs.get(id) ?? null;
   }
 
+  async findByUploadId(uploadId: string): Promise<DocumentRecord | null> {
+    for (const doc of this.docs.values()) if (doc.uploadId === uploadId) return doc;
+    return null;
+  }
+
   async delete(id: string): Promise<void> {
     this.docs.delete(id);
     for (const [aid, a] of this.activity) if (a.documentId === id) this.activity.delete(aid);

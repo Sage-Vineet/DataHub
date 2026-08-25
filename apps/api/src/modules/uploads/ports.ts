@@ -100,6 +100,17 @@ export interface DocumentsRepository {
   createDocument(input: CreateDocumentInput): Promise<DocumentRecord>;
   listByFolder(folderId: string, includeArchived: boolean): Promise<DocumentRecord[]>;
   getById(id: string): Promise<DocumentRecord | null>;
+  /**
+   * The document a stored blob belongs to, so a byte read can be authorized.
+   *
+   * `GET /uploads/:id/content` addresses the blob, not the document, and a blob
+   * carries no tenant of its own — so without this the only byte-serving route
+   * in the module had nothing to check and served any upload to any signed-in
+   * caller. Matches the current `documents.upload_id` OR any historical
+   * `document_versions.upload_id`, because restoring a version repoints the
+   * document while older versions keep pointing at their own bytes.
+   */
+  findByUploadId(uploadId: string): Promise<DocumentRecord | null>;
   delete(id: string): Promise<void>;
   setArchived(id: string, archived: boolean): Promise<DocumentRecord | null>;
   appendActivity(documentId: string, actorId: string | null, action: string): Promise<ActivityRecord>;

@@ -78,6 +78,14 @@ describe("uploads router — blob round-trip through bytea (real Postgres)", () 
     expect(up.status).toBe(201);
     expect(up.body.size_bytes).toBe(payload.length);
 
+    // Serving bytes is authorized through the document that references them, so
+    // the blob has to be filed before it can be read back. An unfiled blob is
+    // unreachable by design — see the orphan case below.
+    await request(app)
+      .post(`/folders/${folderId}/documents`)
+      .send({ name: "blob.bin", upload_id: up.body.id, size: String(payload.length), ext: "bin" })
+      .expect(201);
+
     const got = await request(app).get(`/uploads/${up.body.id}/content`).buffer(true).parse(binaryParser as unknown as (res: unknown, cb: (err: Error | null, body: unknown) => void) => void);
     expect(got.status).toBe(200);
     expect(got.headers["content-type"]).toContain("application/octet-stream");

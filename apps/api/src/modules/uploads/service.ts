@@ -50,8 +50,29 @@ export class UploadsService {
     return { id: meta.id, file_name: meta.fileName, content_type: meta.contentType, size_bytes: meta.sizeBytes };
   }
 
-  /** Fetch a stored blob's bytes + content type (404 if unknown). */
-  async getUploadContent(uploadId: string): Promise<StoredBlob> {
+  /**
+   * Fetch a stored blob's bytes + content type (404 if unknown).
+   *
+   * Authorized through the document that references the blob, because the blob
+   * itself carries no tenant. This route took no `SessionUser` at all until
+   * now, so any signed-in caller who knew an upload id could read any other
+   * company's document — the folder-grant work on every sibling route did not
+   * cover the one route that actually serves bytes.
+   *
+   * A blob nothing references is treated as not found rather than forbidden: it
+   * is unreachable by any legitimate caller either way, and reporting 403 would
+   * confirm the id exists.
+   */
+  async getUploadContent(user: SessionUser, uploadId: string): Promise<StoredBlob> {
+    const doc = await this.repo.findByUploadId(uploadId);
+    if (!doc) throw new NotFoundError("Upload not found.");
+    if (!canAccessCompany(user, doc.companyId)) {
+      throw new ForbiddenError("You do not have permission to access this document.");
+    }
+    const permissions = await this.permissionsFor(user, doc.folderId);
+    if (!permissions.download) {
+      throw new ForbiddenError("You do not have permission to download this document.");
+    }
     const blob = await this.storage.get(uploadId);
     if (!blob) throw new NotFoundError("Upload not found.");
     return blob;
