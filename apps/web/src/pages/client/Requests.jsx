@@ -138,9 +138,21 @@ function getDocumentExt(doc) {
   return parts.length > 1 ? parts.pop().toLowerCase() : '';
 }
 
+/** Raw byte counts arrive as text; show them the way the file explorer does. */
+function formatDocumentSize(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return raw || '—';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+  const value = n / 1024 ** i;
+  return `${value >= 10 || i === 0 ? Math.round(value) : value.toFixed(1)} ${units[i]}`;
+}
+
 function mapRequestDocumentToUi(doc, fallbackUploadedBy = 'Client') {
   return {
     id: doc.id || doc.document_id,
+    // The id is the last resort, not the first: GET /requests/:id/documents now
+    // resolves the document, so this reads as a filename rather than a UUID.
     name: doc.name || doc.document_id || doc.id,
     uploadedBy: doc.uploaded_by_name || doc.uploadedBy || fallbackUploadedBy,
     uploadedAt: doc.uploaded_at
@@ -149,10 +161,13 @@ function mapRequestDocumentToUi(doc, fallbackUploadedBy = 'Client') {
       ? doc.created_at.slice(0, 10)
       : formatToday(),
     visible: doc.visible !== false,
-    size: doc.size || '—',
+    size: formatDocumentSize(doc.size),
     ext: getDocumentExt(doc),
     status: doc.status || 'under-review',
-    fileUrl: doc.file_url || doc.fileUrl || '',
+    // Same derivation as the file explorer: `file_url` is empty on every
+    // document ever written, and the bytes hang off `upload_id`.
+    fileUrl:
+      doc.file_url || doc.fileUrl || (doc.upload_id ? `/uploads/${doc.upload_id}/content` : ''),
   };
 }
 

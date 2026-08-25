@@ -133,6 +133,26 @@ export const requestDocumentLink = z.object({
 });
 export type RequestDocumentLink = z.infer<typeof requestDocumentLink>;
 
+/**
+ * A document attached to a request, with enough of the document to render it.
+ *
+ * The endpoint used to return `{document_id, visible}` and nothing else, so the
+ * SPA displayed the UUID where the filename belongs and had no URL to open. The
+ * resolved fields are nullable rather than required because a link can outlive
+ * the document it points at.
+ */
+export const requestDocumentResponse = z.object({
+  document_id: uuid,
+  visible: z.boolean(),
+  name: z.string().nullable(),
+  size: z.string().nullable(),
+  ext: z.string().nullable(),
+  upload_id: uuid.nullable(),
+  uploaded_by_name: z.string().nullable(),
+  uploaded_at: z.string().nullable(),
+});
+export type RequestDocumentResponse = z.infer<typeof requestDocumentResponse>;
+
 export const requestListQuery = z.object({});
 export type RequestListQuery = z.infer<typeof requestListQuery>;
 

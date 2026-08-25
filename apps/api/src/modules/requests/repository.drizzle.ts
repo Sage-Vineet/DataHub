@@ -18,7 +18,7 @@ import type {
   UpdateRequestPatch,
 } from "./ports.js";
 
-const { requests, requestReminders, requestNarratives, requestDocuments, companies, users } = schema;
+const { requests, requestReminders, requestNarratives, requestDocuments, companies, users, documents } = schema;
 type Row = typeof requests.$inferSelect;
 
 function toRecord(r: Row): RequestRecord {
@@ -202,8 +202,30 @@ export class DrizzleRequestsRepository implements RequestsRepository {
     return { id: r.id, requestId: r.requestId, documentId: r.documentId, visible: r.visible };
   }
 
+  /**
+   * Left joins, not inner: a link whose document has been deleted must still
+   * list — otherwise an attachment silently disappears from a request rather
+   * than showing as unavailable, and the count on the board stops matching the
+   * detail pane.
+   */
   async listDocuments(requestId: string): Promise<RequestDocumentLinkRecord[]> {
-    const rows = await this.db.select().from(requestDocuments).where(eq(requestDocuments.requestId, requestId));
-    return rows.map((r) => ({ id: r.id, requestId: r.requestId, documentId: r.documentId, visible: r.visible }));
+    const rows = await this.db
+      .select({ link: requestDocuments, doc: documents, uploaderName: users.name })
+      .from(requestDocuments)
+      .leftJoin(documents, eq(documents.id, requestDocuments.documentId))
+      .leftJoin(users, eq(users.id, documents.uploadedBy))
+      .where(eq(requestDocuments.requestId, requestId));
+    return rows.map((r) => ({
+      id: r.link.id,
+      requestId: r.link.requestId,
+      documentId: r.link.documentId,
+      visible: r.link.visible,
+      name: r.doc?.name ?? null,
+      size: r.doc?.size ?? null,
+      ext: r.doc?.ext ?? null,
+      uploadId: r.doc?.uploadId ?? null,
+      uploadedByName: r.uploaderName ?? null,
+      uploadedAt: r.doc?.uploadedAt ? new Date(r.doc.uploadedAt).toISOString() : null,
+    }));
   }
 }

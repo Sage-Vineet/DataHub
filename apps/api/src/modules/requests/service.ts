@@ -3,6 +3,7 @@ import type {
   NarrativeUpdate,
   ReminderResponse,
   RequestCreate,
+  RequestDocumentResponse,
   RequestResponse,
   RequestUpdate,
   SessionUser,
@@ -145,9 +146,18 @@ export class RequestsService {
     return { content: n.content };
   }
 
-  async listDocuments(user: SessionUser, id: string): Promise<Array<{ document_id: string; visible: boolean }>> {
+  async listDocuments(user: SessionUser, id: string): Promise<RequestDocumentResponse[]> {
     await this.requireAccessible(user, id);
-    return (await this.repo.listDocuments(id)).map((d) => ({ document_id: d.documentId, visible: d.visible }));
+    return (await this.repo.listDocuments(id)).map((d) => ({
+      document_id: d.documentId,
+      visible: d.visible,
+      name: d.name ?? null,
+      size: d.size ?? null,
+      ext: d.ext ?? null,
+      upload_id: d.uploadId ?? null,
+      uploaded_by_name: d.uploadedByName ?? null,
+      uploaded_at: d.uploadedAt ?? null,
+    }));
   }
 
   async linkDocument(user: SessionUser, id: string, documentId: string, visible: boolean): Promise<{ document_id: string; visible: boolean }> {

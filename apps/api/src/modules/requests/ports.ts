@@ -120,6 +120,21 @@ export interface RequestDocumentLinkRecord {
   requestId: string;
   documentId: string;
   visible: boolean;
+  /**
+   * The linked document itself, resolved by the store that can reach it.
+   *
+   * The link row carries only an id, and the SPA had nothing else to render —
+   * so a request's attachments listed as raw UUIDs, with no size, no uploader
+   * and nothing to open. Optional because the in-memory store has no documents
+   * table to join against; every field is null there and the UI falls back the
+   * same way it always did.
+   */
+  name?: string | null;
+  size?: string | null;
+  ext?: string | null;
+  uploadId?: string | null;
+  uploadedByName?: string | null;
+  uploadedAt?: string | null;
 }
 
 export interface RequestsRepository {

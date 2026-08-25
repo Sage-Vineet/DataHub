@@ -85,6 +85,7 @@ export type {
   RequestApprove,
   NarrativeUpdate,
   RequestDocumentLink,
+  RequestDocumentResponse,
   RequestListQuery,
   RequestResponse,
   ReminderResponse,
