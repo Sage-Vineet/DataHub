@@ -2312,11 +2312,36 @@ function PreviewModal({ onDownloadFile }) {
 }
 
 // ── UploadProgress Toast ────────────────────────────────────────────────────
+/** "12.4 MB" — bytes at the scale a person reads them. */
+function formatBytes(n) {
+  if (!Number.isFinite(n) || n <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+  const value = n / 1024 ** i;
+  return `${value >= 10 || i === 0 ? Math.round(value) : value.toFixed(1)} ${units[i]}`;
+}
+
 function UploadProgressToast() {
   const { uploadProgress } = useFileExplorerStore();
   if (!uploadProgress) return null;
-  const pct = Math.round((uploadProgress.done / uploadProgress.total) * 100);
-  const done = uploadProgress.done >= uploadProgress.total;
+
+  /**
+   * Within-file bytes when the transfer reports them, file counts otherwise.
+   *
+   * The bar used to be `done / total` on FILE COUNTS alone, so uploading a
+   * single large file sat at 0% for the whole transfer and jumped to 100% — the
+   * one case where a progress bar has to work, and the one it could not show.
+   * The chunked path has always published `{bytes, bytesTotal}`; nothing read
+   * them. Small files still take the single-shot path and report no bytes, but
+   * they finish too fast for it to matter.
+   */
+  const { done: filesDone, total, bytes, bytesTotal, current } = uploadProgress;
+  const hasBytes = Number.isFinite(bytesTotal) && bytesTotal > 0;
+  const fraction = hasBytes
+    ? (filesDone + Math.min(1, bytes / bytesTotal)) / total
+    : filesDone / total;
+  const pct = Math.round(Math.min(1, Math.max(0, fraction)) * 100);
+  const done = filesDone >= total;
 
   return (
     <div className="fixed bottom-6 right-6 z-50 bg-white rounded-2xl shadow-xl border border-gray-100 p-4 w-72 animate-fadeIn">
@@ -2325,8 +2350,14 @@ function UploadProgressToast() {
           {done ? <CheckCircle size={16} className="text-[#8BC53D]" /> : <Upload size={16} className="text-[#05164D] animate-bounce" />}
         </div>
         <div>
-          <p className="text-sm font-semibold text-[#050505]">{done ? 'Upload complete!' : 'Uploading…'}</p>
-          <p className="text-xs text-[#A5A5A5]">{uploadProgress.done} / {uploadProgress.total} files</p>
+          <p className="text-sm font-semibold text-[#050505]">
+            {done ? 'Upload complete!' : current ? `Uploading ${current}` : 'Uploading…'}
+          </p>
+          <p className="text-xs text-[#A5A5A5]">
+            {!done && hasBytes
+              ? `${formatBytes(bytes)} of ${formatBytes(bytesTotal)}${total > 1 ? ` · file ${filesDone + 1} of ${total}` : ''}`
+              : `${filesDone} / ${total} ${plural(total, 'file')}`}
+          </p>
         </div>
       </div>
       <div className="w-full bg-gray-100 rounded-full h-1.5">

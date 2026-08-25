@@ -167,7 +167,13 @@ function mapDocumentNode(doc) {
     archivedAt: doc.archived_at || null,
     status: doc.status || 'under-review',
     ext: doc.ext || doc.name?.split('.').pop()?.toLowerCase() || '',
-    fileUrl: doc.file_url || '',
+    // `file_url` is written empty by every path that creates a document — the
+    // single-shot upload (uploads/repository.drizzle.ts), the chunked assemble
+    // (dataroom/repository.drizzle.ts) and all six seed files. The bytes are
+    // always reachable from `upload_id` instead, so derive the URL rather than
+    // depending on a column nothing populates: without this, preview and
+    // download are dead for every document in the room.
+    fileUrl: doc.file_url || (doc.upload_id ? `/uploads/${doc.upload_id}/content` : ''),
   };
 }
 
