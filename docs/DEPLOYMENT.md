@@ -141,6 +141,64 @@ Do **not** run the demo seeds against production. `tools/demo/*` exists to
 furnish a local booth demo and creates fictional companies and users whose
 passwords are a published constant.
 
+## 3b. Supabase, on a clean database
+
+Supabase is used only as the Postgres host. There is no Supabase SDK and no
+dependency on one — the references left in `apps/api` are historical comments
+about what the deleted legacy backend did.
+
+Point `DATABASE_URL` at the Supabase connection string and add `sslmode`:
+
+```
+DATABASE_URL=postgres://postgres:<pw>@db.<ref>.supabase.co:5432/postgres?sslmode=require
+```
+
+`packages/db/src/client.ts` drives TLS from `sslmode` and deliberately does not
+hardcode `rejectUnauthorized:false` (audit H2), so pass a URL you are willing to
+have verified. Either port works: the pool holds `max: 5` connections and the
+codebase issues **no** prepared statements, so the pgbouncer pooler on `6543` is
+safe if you prefer it.
+
+The baseline creates its 86 tables with bare `CREATE TABLE public.x` — no
+`IF NOT EXISTS`. **It requires an empty database** and will fail on the first
+name it finds already taken. That is the intended behaviour: it refuses to
+half-apply over someone else's schema. Verified against an empty Postgres:
+86 tables plus `schema_migrations`, and `db:migrate --status` reports
+`applied 1, pending 0, drifted 0` — the Drizzle schema and the migrated
+database agree.
+
+The one extension it needs is `pgcrypto`, guarded with `IF NOT EXISTS` and
+grantable by Supabase's `postgres` role.
+
+## 3c. Creating the first account
+
+On an empty database nobody can sign up. `/auth/broker/signup` requires a
+`verification_token`, which is only issued after an emailed OTP is verified —
+and with Microsoft Graph unconfigured the fallback emailer sends nothing. The
+result is a working deployment that no one can get into.
+
+Either configure Graph before launch, or bootstrap an admin directly. The
+bootstrap is two steps and uses the same production function the rollout does:
+
+```sql
+-- 1. A user row with a bcrypt hash of the chosen password.
+--    Generate it yourself; never reuse a hash from tools/demo, whose
+--    password is a published constant.
+INSERT INTO users (id, name, email, password_hash, role, status)
+VALUES (gen_random_uuid(), 'Ops Admin', 'admin@centuriuum.com', '<bcrypt>', 'admin', 'active');
+```
+
+```bash
+# 2. Give it a Better Auth identity.
+DATABASE_URL=… pnpm --filter @datahub/demo backfill
+```
+
+`backfillBetterAuthIdentities` is idempotent and reversible, and carries the
+existing bcrypt hash into the `credential` account row rather than forcing a
+reset. Verified on a clean database: it produced an `auth_user` with
+`email_verified = true` and an `account` row whose password matches the hash
+supplied — so the bootstrapped admin logs in without any email being sent.
+
 ## 4. Order
 
 1. Postgres up, `db:migrate` run.
