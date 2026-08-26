@@ -120,6 +120,18 @@ psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-cim-questions.sql >/dev/null
 psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-extra.sql >/dev/null
 DATABASE_URL="$DB_URL" pnpm --filter @datahub/demo seed-cim 2>&1 | sed 's/^/   /'
 
+# Northwind, in the same order up.sh uses and for the same reasons: after
+# seed-extra because it reuses that file's people and folders, and the CIM before
+# the buyer content that references the published PDF by name.
+#
+# seed-qoe is deliberately NOT re-run here, for Northwind or for Acme. The clear
+# above preserves any document a financial table references, so both engagements
+# survive a reset intact — re-running would only reload identical rows.
+psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-northwind.sql >/dev/null
+psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-northwind-extra.sql >/dev/null
+DATABASE_URL="$DB_URL" pnpm --filter @datahub/demo seed-cim-northwind 2>&1 | sed 's/^/   /'
+psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-northwind-buyers.sql >/dev/null
+
 step "Verifying"
 # `check` is exact; `check_min` passes when the value is at or above a floor —
 # for counts that are allowed to grow but must not silently collapse to zero.
@@ -149,26 +161,26 @@ q() { psql_demo -tAc "$1" | tr -d '[:space:]'; }
 # globally: the breadth seed adds content on five more, and a global count would
 # have to be edited every time that file grows.
 ORIG="'a0000000-0000-4000-8000-000000000001','a0000000-0000-4000-8000-000000000002','a0000000-0000-4000-8000-000000000003'"
-# Seven, not six: the six seed-dataroom documents plus the QoE general ledger,
-# which is preserved above because the earnings bridge references it. The old
-# expectation of six described a state this script could never actually reach,
-# since the delete that would have produced it failed on that document's foreign
-# keys every time.
-check "documents across 3 companies" 7 "$(q "select count(*) from documents where company_id in ($ORIG) and name not like '%CIM v%'")"
+# Seventy-six across the three: Acme five, Northwind seventy, Cardinal one.
+# It was seven before Northwind was furnished (five, one and one). Both QoE
+# general-ledger documents are in that total — they survive the clear above
+# because the earnings bridges reference them, which is what the two "ledger
+# survives" checks at the end of this file assert directly.
+check "documents across 3 companies" 76 "$(q "select count(*) from documents where company_id in ($ORIG) and name not like '%CIM v%'")"
 check "large file present"       12582912 "$(q "select max(size_bytes) from uploads")"
 check "versions on the model"    3 "$(q "select count(*) from document_versions v join documents d on d.id=v.document_id where d.name='Financial Model.txt'")"
-check "comments"                 3 "$(q "select count(*) from document_comments where company_id in ($ORIG)")"
+check "comments"                 32 "$(q "select count(*) from document_comments where company_id in ($ORIG)")"
 check "Q&A items"                5 "$(q "select count(*) from qa_items where company_id='a0000000-0000-4000-8000-000000000001'")"
-check "published rewordings"     1 "$(q "select count(*) from qa_presentations where status='published'")"
+check "published rewordings"     2 "$(q "select count(*) from qa_presentations where status='published'")"
 check "CIM question library"     608 "$(q "select count(*) from cim_question_library")"
-check "CIM versions"             2 "$(q "select count(*) from cim_versions")"
-check "published CIM in the room" 1 "$(q "select count(*) from documents where name like '%CIM v1%'")"
+check "CIM versions"             4 "$(q "select count(*) from cim_versions")"
+check "published CIM in the room" 2 "$(q "select count(*) from documents where name like '%CIM v1%'")"
 
 # The breadth seed (tools/demo/seed-extra.sql). These are the screens that were
 # empty on every company a visitor clicked into, so a reset that silently dropped
 # them would put the demo back to the state this content exists to fix.
 check "portfolio companies"      8 "$(q "select count(*) from companies")"
-check "people who can sign in"   15 "$(q "select count(*) from users")"
+check "people who can sign in"   21 "$(q "select count(*) from users")"
 check "companies with content"   8 "$(q "select count(distinct company_id) from documents")"
 check "portfolio documents"      60 "$(q "select count(*) from documents where company_id::text like '90%'")"
 check "portfolio requests"       45 "$(q "select count(*) from requests where company_id::text like '90%'")"
@@ -179,10 +191,28 @@ check "portfolio Q&A items"      30 "$(q "select count(*) from qa_items where co
 # truncated now, so the count is the seed's own; asserting "the breadth seed
 # loaded" is what this check is actually for.
 check_min "activity feed entries" 120 "$(q "select count(*) from activity_log")"
-check "reminders"                49 "$(q "select count(*) from reminders")"
-check "messages"                 55 "$(q "select (select count(*) from company_messages)+(select count(*) from direct_messages)+(select count(*) from group_messages)")"
-check "folder grants"            28 "$(q "select count(*) from folder_access")"
-check "buyer group members"      12 "$(q "select count(*) from buyer_group_members")"
+check "reminders"                72 "$(q "select count(*) from reminders")"
+check "messages"                 105 "$(q "select (select count(*) from company_messages)+(select count(*) from direct_messages)+(select count(*) from group_messages)")"
+check "folder grants"            90 "$(q "select count(*) from folder_access")"
+check "buyer group members"      22 "$(q "select count(*) from buyer_group_members")"
+
+# Northwind (tools/demo/seed-northwind*.sql). Scoped to the company rather than
+# folded into the totals above: those are sums over eight companies, so any one
+# of these files could stop loading entirely and still leave a global count that
+# looks plausible. These are the assertions that would actually catch it.
+NW="'a0000000-0000-4000-8000-000000000002'"
+check "Northwind documents"      71 "$(q "select count(*) from documents where company_id in ($NW)")"
+check "Northwind folders"        26 "$(q "select count(*) from folders where company_id in ($NW)")"
+check "Northwind requests"       23 "$(q "select count(*) from requests where company_id in ($NW)")"
+check "Northwind Q&A items"      30 "$(q "select count(*) from qa_items where company_id in ($NW)")"
+check "Northwind Q&A evidence"   12 "$(q "select count(*) from qa_attachments a join qa_items i on i.id=a.item_id where i.company_id in ($NW)")"
+check "Northwind comments"       29 "$(q "select count(*) from document_comments where company_id in ($NW)")"
+check "Northwind CIM published"  1 "$(q "select count(*) from documents where company_id in ($NW) and name like 'Project Compass CIM v%'")"
+# The earnings engagement is NOT re-seeded by this script — it survives the clear
+# because the ledger references its source document. Asserting it proves the
+# preservation works rather than assuming it.
+check "Northwind ledger survives" 3723 "$(q "select count(*) from general_ledger_entries where version_id='d0000000-0000-4000-8000-000000000002'")"
+check "Acme ledger survives"      3723 "$(q "select count(*) from general_ledger_entries where version_id='d0000000-0000-4000-8000-000000000001'")"
 
 elapsed=$(( $(date +%s) - started ))
 if [[ "$FAILED" == "1" ]]; then

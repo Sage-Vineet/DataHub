@@ -24,7 +24,16 @@ if (!url) {
 // Acme Manufacturing, from tools/demo/seed.sql — the broker persona's company.
 const COMPANY_ID = process.env.QOE_DEMO_COMPANY_ID ?? "a0000000-0000-4000-8000-000000000001";
 const VERSION_ID = process.env.QOE_DEMO_VERSION_ID ?? "d0000000-0000-4000-8000-000000000001";
-const SOURCE_FILE_ID = "e0000000-0000-4000-8000-00000000000f";
+// Overridable for the same reason COMPANY_ID is. This used to be a bare
+// constant, which made the script unsafe to run for a second company: the
+// document INSERT below is ON CONFLICT (id) DO UPDATE SET name, and company_id
+// is NOT in the update list — so a run against a second company would rename the
+// FIRST company's general-ledger document to the second company's name while
+// leaving it owned by the first, and point every new ledger row at a source
+// document belonging to another tenant. That is precisely the cross-tenant label
+// the comment below exists to prevent.
+const SOURCE_FILE_ID =
+  process.env.QOE_DEMO_SOURCE_FILE_ID ?? "e0000000-0000-4000-8000-00000000000f";
 
 const client = new pg.Client({ connectionString: url });
 await client.connect();
