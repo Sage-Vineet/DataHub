@@ -10,7 +10,8 @@
     "typecheck": "echo \"demo: no TypeScript\"",
     "test": "echo \"demo: exercised by tools/demo/up.sh\"",
     "seed-qoe": "node seed-qoe.mjs",
-    "seed-cim": "node seed-cim.mjs"
+    "seed-cim": "node seed-cim.mjs",
+    "seed-cim-northwind": "node seed-cim-northwind.mjs"
   },
   "dependencies": {
     "@datahub/api": "workspace:*",

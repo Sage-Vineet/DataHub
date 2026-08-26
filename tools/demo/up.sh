@@ -56,6 +56,11 @@ export QA_PRESENTATION_ENABLED="${QA_PRESENTATION_ENABLED:-true}"
 export QA_NOMINATIONS_ENABLED="${QA_NOMINATIONS_ENABLED:-true}"
 export CIM_MODULE_ENABLED="${CIM_MODULE_ENABLED:-true}"
 QOE_VERSION_ID="${QOE_DEMO_VERSION_ID:-d0000000-0000-4000-8000-000000000001}"
+# Northwind, and the ids its engagement is loaded under. Distinct from Acme's in
+# all three, so the two engagements cannot share a version or a source document.
+NORTHWIND="a0000000-0000-4000-8000-000000000002"
+NW_QOE_VERSION_ID="d0000000-0000-4000-8000-000000000002"
+NW_QOE_SOURCE_FILE_ID="e0000000-0000-4000-8000-00000000001f"
 PG_PORT="${DEMO_PG_PORT:-5435}"
 GATEWAY_PORT="${DEMO_GATEWAY_PORT:-8080}"
 WEB_PORT="${DEMO_WEB_PORT:-5173}"
@@ -132,19 +137,19 @@ for _ in $(seq 1 60); do
 done
 psql_demo -c 'select 1' >/dev/null
 
-step "1/7 Building the schema"
+step "1/8 Building the schema"
 # One migration on an empty database. Everything the four-step legacy sequence
 # used to produce, and asserted table-for-table against it when it was written.
 DATABASE_URL="$DB_URL" pnpm --filter @datahub/db db:migrate
 
-step "4/7 Seeding demo data and backfilling Better Auth identities"
+step "4/8 Seeding demo data and backfilling Better Auth identities"
 psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed.sql >/dev/null
 DATABASE_URL="$DB_URL" pnpm --filter @datahub/demo backfill
 
-step "5/7 Loading the QoE engagement"
+step "5/8 Loading the QoE engagement"
 DATABASE_URL="$DB_URL" pnpm --filter @datahub/demo seed-qoe
 
-step "6/7 Seeding the data room, Q&A, requests and CIM"
+step "6/8 Seeding the data room, Q&A, requests and CIM"
 # Content, not just rows: documents with real bytes and version history, a Q&A
 # thread with a superseded answer and a published rewording, and a CIM with one
 # version already published into the data room. A stack that works perfectly and
@@ -155,12 +160,44 @@ psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-requests.sql >/dev/null
 psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-cim-questions.sql >/dev/null
 DATABASE_URL="$DB_URL" pnpm --filter @datahub/demo seed-cim
 
-step "7/7 Seeding the rest of the portfolio"
+step "7/8 Seeding the rest of the portfolio"
 # Breadth, not depth: five more companies, twelve more people, and the tables that
 # were empty on every screen a visitor could reach — activity, reminders,
 # messages, folder grants, buyer groups. Adds nothing to Acme, whose exact counts
 # the checks below assert.
 psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-extra.sql >/dev/null
+
+step "8/8 Furnishing Northwind Logistics"
+# Depth on a second mandate. Acme is the exact fixture every check below asserts
+# against, so it cannot carry volume without breaking them; the breadth seed
+# spreads thin content over five more companies. Northwind is the one deal that
+# gets both — 70 documents, 30 Q&A items, a published CIM and its own earnings
+# engagement — so "show me another deal" has an answer.
+#
+# Order is load-bearing, twice over:
+#   * AFTER seed-extra.sql, because these files reuse the people it creates
+#     (Rosa, Elena, Tom, Priya, Ingrid) and the Operations/Tax/Contracts folders
+#     it gives Northwind. Running earlier leaves half the rows unresolvable.
+#   * seed-cim-northwind BEFORE seed-northwind-buyers, because the buyer comments
+#     and view history reference 'Project Compass CIM v1.pdf' by name. Those rows
+#     resolve documents with a JOIN, so a missing PDF would silently drop them
+#     rather than fail — a seed that quietly does less is worse than one that stops.
+psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-northwind.sql >/dev/null
+psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-northwind-extra.sql >/dev/null
+
+# Northwind's own QoE engagement. Same anonymized walkthrough ledger as Acme's,
+# loaded under its own version and its own source document — which is why
+# SOURCE_FILE_ID is overridable. Northwind's profit_metric is `sde`, so the same
+# ledger renders as Seller's Discretionary Earnings rather than Adjusted EBITDA.
+DATABASE_URL="$DB_URL" \
+  QOE_DEMO_COMPANY_ID="$NORTHWIND" \
+  QOE_DEMO_VERSION_ID="$NW_QOE_VERSION_ID" \
+  QOE_DEMO_SOURCE_FILE_ID="$NW_QOE_SOURCE_FILE_ID" \
+  pnpm --filter @datahub/demo seed-qoe
+
+DATABASE_URL="$DB_URL" pnpm --filter @datahub/demo seed-cim-northwind
+psql_demo -v ON_ERROR_STOP=1 < tools/demo/seed-northwind-buyers.sql >/dev/null
+
 # Again, and deliberately: the step 4 backfill ran before these people existed, so
 # without a second pass every account seeded here fails to sign in the moment
 # BETTER_AUTH_ENABLED is true. Idempotent, so the first eleven are left alone.
