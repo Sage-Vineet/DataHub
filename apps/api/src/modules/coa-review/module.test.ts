@@ -31,7 +31,6 @@ describe("createCoaReviewModule", () => {
     const module = createCoaReviewModule({
       db,
       requireAuth,
-      legacyOrigin: "http://legacy:4000",
       apiKey: "",
       hierarchyFor: () => noopHierarchy,
     });
@@ -53,7 +52,6 @@ describe("createCoaReviewModule", () => {
     const module = createCoaReviewModule({
       db,
       requireAuth,
-      legacyOrigin: "http://legacy:4000",
       apiKey: "",
       hierarchyFor: () => noopHierarchy,
       classifier: {
@@ -79,7 +77,6 @@ describe("createCoaReviewModule", () => {
     const module = createCoaReviewModule({
       db,
       requireAuth,
-      legacyOrigin: "http://legacy:4000",
       apiKey: "",
       hierarchyFor,
     });
@@ -102,7 +99,6 @@ describe("createCoaReviewModule", () => {
     const module = createCoaReviewModule({
       db,
       requireAuth,
-      legacyOrigin: "http://legacy:4000",
       classifier,
       hierarchyFor: () => noopHierarchy,
     });
