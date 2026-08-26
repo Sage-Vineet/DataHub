@@ -18,8 +18,14 @@ RUN apk add --no-cache openssl \
       -out /var/lib/postgresql/ssl/server.crt \
       -keyout /var/lib/postgresql/ssl/server.key \
       -subj "/CN=localhost" \
- && chmod 600 /var/lib/postgresql/ssl/server.key \
- && chown -R postgres:postgres /var/lib/postgresql/ssl
+ # root:postgres at 0640, not postgres:postgres at 0600. PostgreSQL accepts a
+ # key owned by root when the group can read it, and that survives an image
+ # built through `docker buildx --load`, which does not preserve the postgres
+ # uid on every rootless host — the demo stack stopped starting with
+ # "could not load private key file: Permission denied" on exactly that path.
+ && chown -R root:postgres /var/lib/postgresql/ssl \
+ && chmod 640 /var/lib/postgresql/ssl/server.key \
+ && chmod 644 /var/lib/postgresql/ssl/server.crt
 
 CMD ["postgres", \
      "-c", "ssl=on", \
