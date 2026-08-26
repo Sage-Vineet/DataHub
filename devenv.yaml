@@ -1,0 +1,5 @@
+# Inputs for standalone `devenv shell` / `devenv up`.
+# (When entered via the flake — `nix develop` / direnv — flake.lock supplies inputs instead.)
+inputs:
+  nixpkgs:
+    url: github:cachix/devenv-nixpkgs/rolling

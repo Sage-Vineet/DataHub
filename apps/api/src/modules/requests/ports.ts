@@ -1,0 +1,159 @@
+import type {
+  RequestPriority,
+} from "@datahub/contracts";
+
+export type RequestCategory = "Finance" | "Legal" | "Compliance" | "HR" | "Tax" | "M&A" | "Other";
+export type ResponseType = "Upload" | "Narrative" | "Both";
+export type RequestStatusValue = "pending" | "in-review" | "completed" | "blocked";
+export type ApprovalStatusValue = "pending" | "approved";
+export type SubmissionSource = "broker" | "user" | "client";
+
+export interface RequestRecord {
+  id: string;
+  companyId: string;
+  title: string;
+  subLabel: string | null;
+  description: string;
+  category: RequestCategory;
+  responseType: ResponseType;
+  priority: RequestPriority;
+  status: RequestStatusValue;
+  dueDate: string;
+  assignedTo: string | null;
+  visible: boolean;
+  reminderFrequencyDays: number;
+  submissionSource: SubmissionSource;
+  approvalStatus: ApprovalStatusValue;
+  approvedBy: string | null;
+  createdBy: string;
+}
+
+export interface CreateRequestInput {
+  companyId: string;
+  title: string;
+  subLabel: string | null;
+  description: string;
+  category: RequestCategory;
+  responseType: ResponseType;
+  priority: RequestPriority;
+  status: RequestStatusValue;
+  dueDate: string;
+  assignedTo: string | null;
+  visible: boolean;
+  reminderFrequencyDays: number;
+  submissionSource: SubmissionSource;
+  approvalStatus: ApprovalStatusValue;
+  approvedBy: string | null;
+  approvedAt: Date | null;
+  createdBy: string;
+}
+
+export type UpdateRequestPatch = Partial<
+  Pick<
+    RequestRecord,
+    | "title"
+    | "subLabel"
+    | "description"
+    | "category"
+    | "responseType"
+    | "priority"
+    | "status"
+    | "dueDate"
+    | "assignedTo"
+    | "visible"
+    | "reminderFrequencyDays"
+  >
+>;
+
+export interface ReminderRecord {
+  id: string;
+  requestId: string;
+  sentBy: string;
+  sentAt: string;
+}
+
+/**
+ * One request, as the reminders view needs it.
+ *
+ * Reminders are not rows — legacy derives them from requests plus the send
+ * history, and the chase cadence comes from the request's priority. This is the
+ * request read widened with the fields that derivation needs (timestamps to date
+ * the cadence from, and the company contact a broker would actually call).
+ */
+export interface ReminderSourceRow {
+  request: RequestRecord;
+  createdAt: string;
+  approvedAt: string | null;
+  companyName: string | null;
+  companyContactName: string | null;
+  companyContactEmail: string | null;
+  companyContactPhone: string | null;
+}
+
+/** One send, with the sender resolved — "sent by 3a7f…" tells a broker nothing. */
+export interface ReminderHistoryRow {
+  requestId: string;
+  sentAt: string;
+  sentBy: string;
+  sentByName: string | null;
+  sentByEmail: string | null;
+}
+
+export interface NarrativeRecord {
+  requestId: string;
+  content: string;
+  updatedBy: string;
+  updatedAt: string;
+  /**
+   * The author, resolved from `users` at read time rather than denormalized.
+   *
+   * Null when the narrative predates the author's row or the join misses — the
+   * legacy query used a LEFT JOIN for exactly that reason, and the SPA renders
+   * the narrative with an anonymous byline rather than failing.
+   */
+  authorName: string | null;
+  authorRole: string | null;
+}
+
+export interface RequestDocumentLinkRecord {
+  id: string;
+  requestId: string;
+  documentId: string;
+  visible: boolean;
+  /**
+   * The linked document itself, resolved by the store that can reach it.
+   *
+   * The link row carries only an id, and the SPA had nothing else to render —
+   * so a request's attachments listed as raw UUIDs, with no size, no uploader
+   * and nothing to open. Optional because the in-memory store has no documents
+   * table to join against; every field is null there and the UI falls back the
+   * same way it always did.
+   */
+  name?: string | null;
+  size?: string | null;
+  ext?: string | null;
+  uploadId?: string | null;
+  uploadedByName?: string | null;
+  uploadedAt?: string | null;
+}
+
+export interface RequestsRepository {
+  listByCompany(companyId: string): Promise<RequestRecord[]>;
+  getById(id: string): Promise<RequestRecord | null>;
+  create(input: CreateRequestInput): Promise<RequestRecord>;
+  createMany(inputs: CreateRequestInput[]): Promise<RequestRecord[]>;
+  update(id: string, patch: UpdateRequestPatch): Promise<RequestRecord | null>;
+  approve(id: string, approvedBy: string, assignedTo: string | null): Promise<RequestRecord | null>;
+  delete(id: string): Promise<void>;
+
+  appendReminder(requestId: string, sentBy: string): Promise<ReminderRecord>;
+  listReminders(requestId: string): Promise<ReminderRecord[]>;
+  listReminderSources(companyId: string): Promise<ReminderSourceRow[]>;
+  listReminderHistory(requestIds: string[]): Promise<ReminderHistoryRow[]>;
+
+  getNarrative(requestId: string): Promise<NarrativeRecord | null>;
+  upsertNarrative(requestId: string, content: string, updatedBy: string): Promise<NarrativeRecord>;
+
+  linkDocument(requestId: string, documentId: string, visible: boolean): Promise<RequestDocumentLinkRecord>;
+  listDocuments(requestId: string): Promise<RequestDocumentLinkRecord[]>;
+}

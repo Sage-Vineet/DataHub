@@ -1,0 +1,121 @@
+# Local full-stack demo: SPA → gateway → Postgres, with seeded data.
+#
+#   ./tools/demo/up.sh
+#
+# Same shape as docker-compose.staging.yml, plus the SPA and a seeded database,
+# so the whole path a real user takes is exercised end to end.
+#
+# There is no legacy service any more. The flags below read from the environment
+# and default ON; they began as cutover flags — on served the module, off fell
+# through to legacy — and with legacy gone "off" is a hole rather than a
+# rollback, which the gateway refuses to start into.
+#
+# Ports are offset from the staging stack so both can run at once.
+
+name: datahub-demo
+
+services:
+  postgres:
+    # SSL-enabled. The legacy fallback pool demanded it; kept because the
+    # certificate wiring is a property of the image, not of what connects to it.
+    build:
+      context: .
+      dockerfile: tools/demo/postgres.Dockerfile
+    environment:
+      POSTGRES_USER: datahub
+      POSTGRES_PASSWORD: datahub
+      POSTGRES_DB: datahub
+    ports:
+      - "${DEMO_PG_PORT:-5435}:5432"
+    volumes:
+      - demo_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U datahub -d datahub"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+
+  gateway:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      # `development`, unlike the staging compose. Better Auth marks the session
+      # cookie `Secure` when NODE_ENV=production, and this demo is served over
+      # plain http://localhost. Browsers do treat localhost as a trustworthy
+      # origin, but there is no reason to depend on that for a local demo.
+      NODE_ENV: development
+      PORT: 8080
+      DATABASE_URL: postgres://datahub:datahub@postgres:5432/datahub
+      JWT_SECRET: ${JWT_SECRET:-demo-only-insecure-secret}
+      BETTER_AUTH_URL: http://localhost:${DEMO_GATEWAY_PORT:-8080}
+      # Overridable so a local `vite dev` on another port can talk to this gateway.
+      AUTH_TRUSTED_ORIGINS: ${AUTH_TRUSTED_ORIGINS:-http://localhost:${DEMO_WEB_PORT:-5173}}
+      # Cutover flags — ON by default here, unlike the staging compose.
+      #
+      # The demo is of the modernised stack, and the modules talk to Postgres
+      # directly via Drizzle. Legacy instead reaches for Supabase first and only
+      # falls back to Postgres on error, so with no real Supabase a single client
+      # login takes ~49s of failing calls. That is the dual data-access path
+      # ADR-0002 exists to delete — and a fair illustration of why.
+      #
+      # These all default ON and now have to be. They began as cutover flags —
+      # on served the module, off fell through to legacy — but the legacy
+      # handlers behind them have been deleted, so "off" is a hole rather than
+      # a rollback, and the gateway refuses to start in that state.
+      BETTER_AUTH_ENABLED: ${BETTER_AUTH_ENABLED:-true}
+      COMPANIES_MODULE_ENABLED: ${COMPANIES_MODULE_ENABLED:-true}
+      USERS_MODULE_ENABLED: ${USERS_MODULE_ENABLED:-true}
+      FOLDERS_MODULE_ENABLED: ${FOLDERS_MODULE_ENABLED:-true}
+      UPLOADS_MODULE_ENABLED: ${UPLOADS_MODULE_ENABLED:-true}
+      REQUESTS_MODULE_ENABLED: ${REQUESTS_MODULE_ENABLED:-true}
+      MESSAGES_MODULE_ENABLED: ${MESSAGES_MODULE_ENABLED:-true}
+      GROUPS_MODULE_ENABLED: ${GROUPS_MODULE_ENABLED:-true}
+      ACTIVITY_MODULE_ENABLED: ${ACTIVITY_MODULE_ENABLED:-true}
+      WORKSPACE_MODULE_ENABLED: ${WORKSPACE_MODULE_ENABLED:-true}
+      CHART_OF_ACCOUNTS_MODULE_ENABLED: ${CHART_OF_ACCOUNTS_MODULE_ENABLED:-true}
+      REPORTS_MODULE_ENABLED: ${REPORTS_MODULE_ENABLED:-true}
+      QOE_MODULE_ENABLED: ${QOE_MODULE_ENABLED:-true}
+      BANK_RECONCILIATION_MODULE_ENABLED: ${BANK_RECONCILIATION_MODULE_ENABLED:-true}
+      REPORT_SOURCES_MODULE_ENABLED: ${REPORT_SOURCES_MODULE_ENABLED:-true}
+      STATEMENTS_MODULE_ENABLED: ${STATEMENTS_MODULE_ENABLED:-true}
+      TAX_OVERRIDES_MODULE_ENABLED: ${TAX_OVERRIDES_MODULE_ENABLED:-true}
+      QUICKBOOKS_MODULE_ENABLED: ${QUICKBOOKS_MODULE_ENABLED:-true}
+      SYNC_MODULE_ENABLED: ${SYNC_MODULE_ENABLED:-true}
+      DATASETS_MODULE_ENABLED: ${DATASETS_MODULE_ENABLED:-true}
+      GL_IMPORT_MODULE_ENABLED: ${GL_IMPORT_MODULE_ENABLED:-true}
+      # Greenfield capabilities. Legacy serves none of these prefixes, so there is
+      # nothing to fall back to and nothing to shadow — they default on, like QoE.
+      # Sub-flags so one unfinished feature can be switched off without losing the
+      # module around it (the T-48h freeze, docs/DEMO_FREEZE_CHECKLIST.md).
+      DATAROOM_MODULE_ENABLED: ${DATAROOM_MODULE_ENABLED:-true}
+      DATAROOM_VERSIONS_ENABLED: ${DATAROOM_VERSIONS_ENABLED:-true}
+      DATAROOM_COMMENTS_ENABLED: ${DATAROOM_COMMENTS_ENABLED:-true}
+      DATAROOM_CHUNKED_UPLOAD_ENABLED: ${DATAROOM_CHUNKED_UPLOAD_ENABLED:-true}
+      QA_MODULE_ENABLED: ${QA_MODULE_ENABLED:-true}
+      QA_PRESENTATION_ENABLED: ${QA_PRESENTATION_ENABLED:-true}
+      QA_NOMINATIONS_ENABLED: ${QA_NOMINATIONS_ENABLED:-true}
+      CIM_MODULE_ENABLED: ${CIM_MODULE_ENABLED:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${DEMO_GATEWAY_PORT:-8080}:8080"
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        # Build-time, not runtime: the SPA points at the GATEWAY, never at legacy
+        # directly, so the cutover seam is in the path a real user takes.
+        VITE_API_BASE_URL: http://localhost:${DEMO_GATEWAY_PORT:-8080}
+    depends_on:
+      gateway:
+        condition: service_started
+    ports:
+      - "${DEMO_WEB_PORT:-5173}:5173"
+
+volumes:
+  demo_pgdata:

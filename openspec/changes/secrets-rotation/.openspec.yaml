@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-22
+# No product behavior change (security remediation / infra).
+skip_specs: true

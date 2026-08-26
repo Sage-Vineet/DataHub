@@ -1,0 +1,43 @@
+{
+  "name": "@datahub/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "development": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "db:pull": "drizzle-kit pull",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "node scripts/migrate.mjs",
+    "db:snapshot": "node scripts/snapshot-schema.mjs",
+    "test:cov": "vitest run --coverage"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@datahub/config": "workspace:*",
+    "@electric-sql/pglite": "^0.2.17",
+    "@eslint/js": "^9.39.4",
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "@vitest/coverage-v8": "^2.1.9",
+    "drizzle-kit": "^0.30.1",
+    "eslint": "^9.39.4",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.1",
+    "vitest": "^2.1.9"
+  }
+}

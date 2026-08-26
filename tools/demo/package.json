@@ -1,0 +1,22 @@
+{
+  "name": "@datahub/demo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local full-stack demo: brings up postgres + legacy + gateway + SPA with seeded data.",
+  "scripts": {
+    "backfill": "node backfill.mjs",
+    "lint": "echo \"demo: shell + SQL only\"",
+    "typecheck": "echo \"demo: no TypeScript\"",
+    "test": "echo \"demo: exercised by tools/demo/up.sh\"",
+    "seed-qoe": "node seed-qoe.mjs",
+    "seed-cim": "node seed-cim.mjs",
+    "seed-cim-northwind": "node seed-cim-northwind.mjs"
+  },
+  "dependencies": {
+    "@datahub/api": "workspace:*",
+    "@datahub/db": "workspace:*",
+    "@datahub/financial-engine": "workspace:*",
+    "pg": "^8.13.1"
+  }
+}

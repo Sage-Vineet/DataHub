@@ -1,0 +1,74 @@
+# Staging: SPA → gateway → Postgres.
+#
+#   docker compose -f docker-compose.staging.yml up --build
+#
+# This was the pair behind the cutover seam, and the flags below were the seam:
+# off fell through to the legacy backend, on served the module, and equivalence
+# between the two was the thing staging existed to verify (ADR-0003).
+#
+# The migration finished. Every legacy handler is deleted, so there is nothing
+# behind "off" and the gateway refuses to start into it. The flags are kept as
+# the capability switches they now are rather than as rollbacks.
+
+name: datahub-staging
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-datahub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-datahub}
+      POSTGRES_DB: ${POSTGRES_DB:-datahub}
+    ports:
+      - "${POSTGRES_PORT:-5434}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-datahub} -d ${POSTGRES_DB:-datahub}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+
+  gateway:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      DATABASE_URL: postgres://${POSTGRES_USER:-datahub}:${POSTGRES_PASSWORD:-datahub}@postgres:5432/${POSTGRES_DB:-datahub}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:8080}
+      AUTH_TRUSTED_ORIGINS: ${AUTH_TRUSTED_ORIGINS:-http://localhost:5173}
+      # ── Cutover flags. All off = transparent proxy. Flip ONE at a time, in the
+      # order auth → companies → users → folders → uploads → requests → messages
+      # → reports, verifying parity between each (MODERNIZATION_PLAN.md §5).
+      BETTER_AUTH_ENABLED: ${BETTER_AUTH_ENABLED:-false}
+      COMPANIES_MODULE_ENABLED: ${COMPANIES_MODULE_ENABLED:-false}
+      USERS_MODULE_ENABLED: ${USERS_MODULE_ENABLED:-false}
+      FOLDERS_MODULE_ENABLED: ${FOLDERS_MODULE_ENABLED:-false}
+      UPLOADS_MODULE_ENABLED: ${UPLOADS_MODULE_ENABLED:-false}
+      REQUESTS_MODULE_ENABLED: ${REQUESTS_MODULE_ENABLED:-false}
+      MESSAGES_MODULE_ENABLED: ${MESSAGES_MODULE_ENABLED:-false}
+      REPORTS_MODULE_ENABLED: ${REPORTS_MODULE_ENABLED:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    # /healthz is served by the gateway itself and never proxied, so this reports
+    # the gateway's own liveness.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  pgdata:

@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Refuse to commit a secret.
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+# (the devenv shell does this for you on entry)
+#
+# Scans only what is staged, so it costs a fraction of a second on a normal
+# commit and never re-reports something already in history — history is the
+# separate, destructive problem tracked in
+# `openspec/changes/secrets-history-purge/`.
+#
+# Skip deliberately, when you know the finding is wrong and cannot wait:
+#   git commit --no-verify
+# CI runs the same scan over the pushed range, so skipping here defers the
+# check rather than removing it.
+
+set -uo pipefail
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  # Warn and continue rather than blocking.
+  #
+  # Failing closed here would stop every commit made outside the devenv shell —
+  # including from an IDE or a GUI client, where the error may not even be
+  # visible. The reliable outcome of that is somebody unsetting core.hooksPath,
+  # which removes the check permanently instead of for one commit.
+  #
+  # The hard gate is CI (.github/workflows/ci.yml), which always has the tool and
+  # cannot be skipped with --no-verify. This hook exists to catch a secret one
+  # second after it is staged rather than ten minutes later in a pull request;
+  # it is the fast path, not the enforcement point.
+  echo "pre-commit: gitleaks not on PATH — skipping the secret scan." >&2
+  echo "  Enter the dev shell (direnv allow / nix develop) to enable it." >&2
+  echo "  CI scans regardless, so a secret staged now will still be caught there." >&2
+  exit 0
+fi
+
+# `protect --staged` scans the staged diff — the content about to become a
+# commit — rather than the working tree or the whole repository.
+if ! gitleaks protect --staged --redact --config .gitleaks.toml; then
+  cat >&2 <<'MSG'
+
+pre-commit: a staged change looks like a secret, so the commit was stopped.
+
+  If it IS a secret:
+    git restore --staged <file>      unstage it
+    then move the value into the deploy secret manager and reference it by env
+    var. A secret that reaches a commit has to be rotated even if the commit is
+    amended away, because it was on disk in a reachable object.
+
+  If it is NOT a secret:
+    add a narrow entry to the [allowlist] in .gitleaks.toml and stage that too,
+    or annotate the line with:  # gitleaks:allow
+
+MSG
+  exit 1
+fi

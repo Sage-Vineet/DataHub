@@ -1,0 +1,16 @@
+{
+  "name": "spike-better-auth",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Time-boxed spike (ADR-0007): prove Better Auth over Drizzle+Postgres with bcrypt-login parity and revocable cookie sessions. NOT production code.",
+  "scripts": {
+    "spike": "node --experimental-strip-types spike.ts"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.2.17",
+    "better-auth": "^1.6.27",
+    "bcryptjs": "^2.4.3",
+    "drizzle-orm": "^0.40.1"
+  }
+}

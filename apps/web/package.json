@@ -1,0 +1,53 @@
+{
+  "name": "@datahub/web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint . || echo \"web: pre-existing lint issues — gated in the frontend TS-migration phase, advisory for now\"",
+    "lint:strict": "eslint .",
+    "typecheck": "echo \"web: still JS — TS migration is a later phase\"",
+    "test": "vitest run --passWithNoTests",
+    "test:cov": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@datahub/ui": "workspace:*",
+    "@google/generative-ai": "^0.24.1",
+    "axios": "^1.14.0",
+    "fflate": "^0.8.3",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^4.2.1",
+    "lucide-react": "^1.7.0",
+    "pdfjs-dist": "^5.6.205",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-router-dom": "^7.13.2",
+    "xlsx": "^0.18.5",
+    "zustand": "^5.0.12"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@testing-library/dom": "^10",
+    "@testing-library/react": "^16",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^4.3.4",
+    "@vitest/coverage-v8": "^2.1.9",
+    "autoprefixer": "^10.4.27",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.4.0",
+    "jsdom": "^25",
+    "postcss": "^8.5.8",
+    "tailwindcss": "^3.4.19",
+    "vite": "5.4.19",
+    "vitest": "^2.1.9"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-linux-x64-gnu": "^4.60.1"
+  }
+}
