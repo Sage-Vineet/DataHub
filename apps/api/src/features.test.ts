@@ -17,12 +17,17 @@ describe("clientFeatures", () => {
     );
   });
 
-  it("exposes only the greenfield capabilities, never the cutover flags", () => {
-    // Whether /companies is served in-process or proxied to legacy is an
-    // operational detail the SPA must not be able to observe, let alone branch
-    // on — parity means both answer identically. A greenfield flag is different
-    // in kind: off means the feature does not exist.
-    const keys = Object.keys(clientFeatures(flags({ COMPANIES_MODULE_ENABLED: true })));
+  it("exposes only the greenfield capabilities", () => {
+    // The cutover flags this used to set (COMPANIES_MODULE_ENABLED and its
+    // siblings) went with the legacy backend: whether /companies was served
+    // in-process or proxied was an operational detail the SPA must never have
+    // been able to observe. A greenfield flag is different in kind — off means
+    // the feature does not exist — and only those belong in this list.
+    //
+    // BETTER_AUTH_ENABLED stands in as a flag that is real but is NOT a client
+    // capability, so it still proves the list is a chosen subset rather than
+    // everything in MODULE_FLAGS.
+    const keys = Object.keys(clientFeatures(flags({ BETTER_AUTH_ENABLED: true })));
 
     expect(keys).toEqual([
       "dataroom",
@@ -38,23 +43,19 @@ describe("clientFeatures", () => {
     ]);
   });
 
-  it("does not leak a cutover flag's value into any feature", () => {
-    const everyCutoverOn = clientFeatures(
+  it("does not leak a non-capability flag's value into any feature", () => {
+    // This asserted the same thing about the cutover flags until they were
+    // deleted with the legacy backend. Two flags in MODULE_FLAGS are still not
+    // client capabilities — one selects the auth engine, one switches an audit
+    // log — and neither may show up in what the SPA is told it can render.
+    const nonCapabilitiesOn = clientFeatures(
       flags({
         BETTER_AUTH_ENABLED: true,
-        AUTH_MODULE_ENABLED: true,
-        COMPANIES_MODULE_ENABLED: true,
-        USERS_MODULE_ENABLED: true,
-        FOLDERS_MODULE_ENABLED: true,
-        UPLOADS_MODULE_ENABLED: true,
-        REQUESTS_MODULE_ENABLED: true,
-        MESSAGES_MODULE_ENABLED: true,
-        REPORTS_MODULE_ENABLED: true,
         ACTIVITY_LOG_ENABLED: true,
       }),
     );
 
-    expect(Object.values(everyCutoverOn).every((v) => v === false)).toBe(true);
+    expect(Object.values(nonCapabilitiesOn).every((v) => v === false)).toBe(true);
   });
 
   it("declares QoE, because legacy defines nothing at its prefix", () => {

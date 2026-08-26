@@ -292,13 +292,17 @@ describe("the months a date range covers", () => {
     // A ladder built over an unreadable range would have no columns, and every
     // balance would land nowhere — a grid that renders empty for an account
     // with a year of statements.
-    for (const [start, end] of [
+    // Annotated as tuples rather than left to inference: a bare array literal
+    // widens to string[][], and destructuring an element of that yields
+    // `string | undefined`, which `monthsInRange` does not accept.
+    const unreadable: Array<[string, string]> = [
       ["", "2024-03-31"],
       ["2024-01-01", ""],
       ["not a date", "also not"],
       [null as unknown as string, null as unknown as string],
       ["2024", "2024-03"],
-    ]) {
+    ];
+    for (const [start, end] of unreadable) {
       expect(monthsInRange(start, end)).toEqual([]);
     }
   });

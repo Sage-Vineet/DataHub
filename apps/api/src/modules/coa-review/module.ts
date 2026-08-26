@@ -15,7 +15,6 @@ export interface CoaReviewModule {
 export interface CreateCoaReviewModuleOptions {
   db: Db;
   requireAuth: RequestHandler;
-  /** Where legacy is reachable — it owns `chart_of_accounts` for now. */
   /**
    * Overridable so a test, or a later provider change, needs no edit here.
    * Defaults to Gemini when `GEMINI_API_KEY` is set.

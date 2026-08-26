@@ -7,7 +7,7 @@ import {
   validateAddback,
 } from "./addbacks.js";
 import { buildIncomeStatement } from "./income-statement.js";
-import { periodKey } from "./periods.js";
+import { periodKey, periodLabel } from "./periods.js";
 import type { Account, Addback, GlEntry, Period } from "./types.js";
 
 /**
@@ -202,8 +202,12 @@ describe("what an add-back is worth, per period", () => {
     { accountId: "rent", fiscalYear: 2024, month: 1, amount: 120_000 },
   ];
 
-  const ANNUAL: Period[] = [{ fiscalYear: 2024, month: null }];
-  const MONTHLY: Period[] = [1, 2, 3].map((month) => ({ fiscalYear: 2024, month }));
+  const ANNUAL: Period[] = [{ fiscalYear: 2024, month: null, label: periodLabel(2024, null) }];
+  const MONTHLY: Period[] = [1, 2, 3].map((month) => ({
+    fiscalYear: 2024,
+    month,
+    label: periodLabel(2024, month),
+  }));
 
   const annualKey = (entry: GlEntry) => periodKey(entry.fiscalYear, null);
   const monthlyKey = (entry: GlEntry) => periodKey(entry.fiscalYear, entry.month);
